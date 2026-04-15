@@ -73,20 +73,39 @@ Either way, predictions are content-addressed and cached under
 
 ## Endpoints
 
-| method | path                              | purpose                      |
-|--------|-----------------------------------|------------------------------|
-| POST   | /score/text                       | JSON `{text}` → score        |
-| POST   | /score/{image,ui,video}           | multipart `file` → score     |
-| GET    | /score/{id}                       | cached result by id          |
-| GET    | /autoresearch/history             | experiment log               |
-| GET    | /autoresearch/current             | current `score.py` + rubric  |
-| POST   | /autoresearch/run?budget=5        | SSE stream of experiments    |
+| method | path                              | purpose                              |
+|--------|-----------------------------------|--------------------------------------|
+| POST   | /score/text                       | JSON `{text}` → score                |
+| POST   | /score/{image,ui,video}           | multipart `file` → score             |
+| GET    | /score/{id}                       | cached result by id                  |
+| GET    | /score/{id}/brain.png             | nilearn fsaverage5 cortex rendering  |
+| POST   | /labeled/add                      | promote a result into training set   |
+| GET    | /labeled/stats                    | per-modality labeled row counts      |
+| GET    | /autoresearch/history             | experiment log                       |
+| GET    | /autoresearch/current             | current `score.py` + rubric          |
+| POST   | /autoresearch/run?budget=5        | SSE stream of experiments            |
 
 ## Seed dataset
 
-`data/labeled/tweets.jsonl` ships with 20 seed tweets and their approximate
-view counts. Drop more rows there (and assets for image/ui/video modalities
-under `data/labeled/assets/`) to strengthen the autoresearch signal.
+Ships with 50 labeled tweets + 10 images + 8 UI screenshots + 4 reel videos
+(72 rows total) under `data/labeled/*.jsonl` with assets in
+`data/labeled/assets/`. Regenerate or extend the non-text assets with:
+
+```bash
+python scripts/generate_seed_assets.py
+```
+
+The result page has an **Add to training set** form — any content you score
+through the app can be promoted into the labeled dataset with its actual
+view count, and the autoresearch agent will see it on the next run.
+
+## Tests
+
+```bash
+cd api
+pytest -q     # 21 tests covering TRIBE mock, ingest, scoring, eval,
+              # runner, and all FastAPI endpoints (incl. the add-label loop)
+```
 
 ## Credits
 

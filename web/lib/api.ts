@@ -12,8 +12,29 @@ export type ScoreResponse = {
   duration_s: number;
   sampling_hz: number;
   backend: string;
+  input_preview?: string | null;
   meta?: Record<string, unknown>;
 };
+
+export function brainPngUrl(id: string) {
+  return `${API}/score/${id}/brain.png`;
+}
+
+export async function addLabel(id: string, views: number, label: string) {
+  const r = await fetch(`${API}/labeled/add`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ id, views, label }),
+  });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json() as Promise<{ ok: boolean; written_to: string }>;
+}
+
+export async function labeledStats(): Promise<Record<string, number>> {
+  const r = await fetch(`${API}/labeled/stats`, { cache: "no-store" });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
 
 export async function scoreText(text: string): Promise<ScoreResponse> {
   const r = await fetch(`${API}/score/text`, {

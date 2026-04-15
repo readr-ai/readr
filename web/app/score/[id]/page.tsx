@@ -6,6 +6,7 @@ import EngagementTimeline from "@/components/EngagementTimeline";
 import ROIBars from "@/components/ROIBars";
 import BrainHeatmap from "@/components/BrainHeatmap";
 import ScoreDial from "@/components/ScoreDial";
+import AddToTrainingSet from "@/components/AddToTrainingSet";
 
 export default function ResultPage({
   params,
@@ -77,9 +78,11 @@ export default function ResultPage({
         </div>
         <div className="card">
           <div className="label mb-2">Cortex heatmap</div>
-          <BrainHeatmap rois={data.roi_breakdown} />
+          <BrainHeatmap rois={data.roi_breakdown} resultId={id} />
           <div className="text-[11px] text-muted mt-2">
-            Symbolic fsaverage5 view · colored by per-ROI peak response
+            fsaverage5 surface · colored by per-vertex peak response (90th
+            percentile over time). Falls back to symbolic view if nilearn is
+            unavailable.
           </div>
         </div>
       </div>
@@ -92,6 +95,8 @@ export default function ResultPage({
           value={`${data.duration_s.toFixed(1)} s`}
         />
       </div>
+
+      <AddToTrainingSet id={id} modality={data.modality} />
     </div>
   );
 }

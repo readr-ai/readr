@@ -1,0 +1,8 @@
+{"modality": "ui", "content": null, "asset": "ui/landing_clean.png", "views": 84000, "label": "Clean landing, strong hierarchy"}
+{"modality": "ui", "content": null, "asset": "ui/landing_cluttered.png", "views": 3600, "label": "Cluttered landing, weak hierarchy"}
+{"modality": "ui", "content": null, "asset": "ui/dashboard_data.png", "views": 21000, "label": "Data-dense dashboard"}
+{"modality": "ui", "content": null, "asset": "ui/pricing_aligned.png", "views": 48000, "label": "Clean three-tier pricing"}
+{"modality": "ui", "content": null, "asset": "ui/dark_admin.png", "views": 12000, "label": "Dark admin panel"}
+{"modality": "ui", "content": null, "asset": "ui/launch_hero.png", "views": 132000, "label": "Launch hero with huge CTA"}
+{"modality": "ui", "content": null, "asset": "ui/form_wall.png", "views": 1900, "label": "Wall of form fields"}
+{"modality": "ui", "content": null, "asset": "ui/mobile_onboard.png", "views": 56000, "label": "Mobile onboarding card"}

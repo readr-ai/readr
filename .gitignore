@@ -22,6 +22,9 @@ next-env.d.ts
 data/tribe_cache/*.npy
 data/tribe_cache/*.json
 data/results/*.json
+data/inputs/
+data/preds/
+data/brain_cache/
 
 # OS
 .DS_Store

@@ -18,3 +18,33 @@
 {"modality": "text", "content": "i was broke 12 months ago. now i run a 7-figure agency. the one decision that changed everything:", "views": 267000, "label": "Rags-to-riches + cliffhanger"}
 {"modality": "text", "content": "LLM inference latency is a function of kv-cache size and attention pattern.", "views": 4100, "label": "Technical truism"}
 {"modality": "text", "content": "today i learned that whales can hold their breath for 90 minutes.", "views": 18500, "label": "Novel fact"}
+{"modality": "text", "content": "i built a startup to $10k MRR in 90 days using only AI tools. here's the exact stack + playbook:", "views": 310000, "label": "Income + time + promise"}
+{"modality": "text", "content": "andrej karpathy just dropped a 630-line script that does overnight AI research. this changes everything for small teams.", "views": 198000, "label": "Famous name + claim"}
+{"modality": "text", "content": "reading the new anthropic paper.", "views": 9200, "label": "Low-information status"}
+{"modality": "text", "content": "4 framework choices that are silently killing your app's performance (and the replacements you should pick instead).", "views": 89000, "label": "Listicle + problem framing"}
+{"modality": "text", "content": "this one prompt reduces hallucinations by 80%. try it on any model.", "views": 164000, "label": "Silver-bullet claim"}
+{"modality": "text", "content": "i'm hiring a founding engineer. remote. equity. dm if interested.", "views": 52000, "label": "Clear call, personal network"}
+{"modality": "text", "content": "retrieval augmented generation is overrated. here's why in-context learning beats it on 80% of tasks.", "views": 71000, "label": "Contrarian technical take"}
+{"modality": "text", "content": "let me cook", "views": 1400, "label": "Meme line without substance"}
+{"modality": "text", "content": "tested GPT-5 vs Claude Opus 4.6 on 50 real coding tasks. results are surprising.", "views": 145000, "label": "Benchmark curiosity hook"}
+{"modality": "text", "content": "cursor's new composer feature is wild.", "views": 19000, "label": "Tool opinion"}
+{"modality": "text", "content": "fine-tuning is dead. long live prompt engineering.", "views": 93000, "label": "Hot take"}
+{"modality": "text", "content": "the meta TRIBE v2 model is probably the most underrated open-source release of 2026. here's why you should care:", "views": 103000, "label": "Underrated + justification"}
+{"modality": "text", "content": "3 hours into debugging this. turns out it was a trailing comma.", "views": 28000, "label": "Relatable dev pain"}
+{"modality": "text", "content": "gm", "views": 380, "label": "Absolute baseline"}
+{"modality": "text", "content": "spent the last week reading every paper on video understanding. the gap between research and production is insane.", "views": 47000, "label": "Personal research narrative"}
+{"modality": "text", "content": "do not build your next project on langchain.", "views": 76000, "label": "Imperative negation"}
+{"modality": "text", "content": "every ai agent that actually ships in 2026 will have these 5 properties.", "views": 112000, "label": "Predictive listicle"}
+{"modality": "text", "content": "my saas hit $40k MRR last month. shipping speed is the only moat.", "views": 138000, "label": "Income + principle"}
+{"modality": "text", "content": "one-line update to CSS.", "views": 2100, "label": "Context-free mundane"}
+{"modality": "text", "content": "the reason your startup will fail isn't what you think. it's that you're too attached to your first idea.", "views": 67000, "label": "Negation hook + insight"}
+{"modality": "text", "content": "you don't need a PhD to train a GPT. you need 3 weekends and $200. here's the minimal path:", "views": 231000, "label": "Demystification + cost anchor"}
+{"modality": "text", "content": "karpathy's autoresearch ran 700 experiments in 2 days on one GPU. the era of human-in-the-loop tuning is ending.", "views": 172000, "label": "Big number + narrative arc"}
+{"modality": "text", "content": "interesting paper today: 'scaling laws for neural net physics'. link in replies.", "views": 14000, "label": "Paper drop, muted tone"}
+{"modality": "text", "content": "unpopular opinion: most AI demos you see on X are cherrypicked garbage. here's how to tell which ones aren't:", "views": 119000, "label": "Contrarian + useful promise"}
+{"modality": "text", "content": "the best founders i know all share one weird habit.", "views": 96000, "label": "Curiosity gap"}
+{"modality": "text", "content": "congrats to the team!", "views": 2800, "label": "Generic congrats"}
+{"modality": "text", "content": "just finished the meta TRIBE v2 notebook. honestly the most fun i've had with a research model in years.", "views": 23000, "label": "Personal reaction"}
+{"modality": "text", "content": "look at this chart.", "views": 6400, "label": "No context"}
+{"modality": "text", "content": "I read 47 research papers on brain-to-text decoding this week. Here's what actually matters for builders:", "views": 89000, "label": "Quantified research + practical framing"}
+{"modality": "text", "content": "viral content isn't luck. it's a reward prediction error. here's the neuroscience + 3 examples:", "views": 157000, "label": "Neuroscience + framework + examples"}
