@@ -8,6 +8,7 @@ import BrainHeatmap from "@/components/BrainHeatmap";
 import ScoreDial from "@/components/ScoreDial";
 import AddToTrainingSet from "@/components/AddToTrainingSet";
 import PredictedViewsCard from "@/components/PredictedViews";
+import TimelineExport from "@/components/TimelineExport";
 
 export default function ResultPage({
   params,
@@ -97,6 +98,13 @@ export default function ResultPage({
           value={`${data.duration_s.toFixed(1)} s`}
         />
       </div>
+
+      <TimelineExport
+        id={id}
+        modality={data.modality}
+        hotspots={data.hotspots.length}
+        deadZones={data.dead_zones.length}
+      />
 
       <AddToTrainingSet id={id} modality={data.modality} />
     </div>

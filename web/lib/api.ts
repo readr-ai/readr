@@ -59,8 +59,32 @@ export async function refitCalibration(): Promise<{ ok: boolean; n: number }> {
   return r.json();
 }
 
-export function brainPngUrl(id: string) {
-  return `${API}/score/${id}/brain.png`;
+export function brainPngUrl(
+  id: string,
+  opts?: { view?: "lateral" | "medial"; roi?: string | null },
+) {
+  const p = new URLSearchParams();
+  if (opts?.view) p.set("view", opts.view);
+  if (opts?.roi) p.set("roi", opts.roi);
+  const qs = p.toString();
+  return `${API}/score/${id}/brain.png${qs ? `?${qs}` : ""}`;
+}
+
+export function timelineUrl(id: string, fmt: "csv" | "fcpxml", fps = 30) {
+  return `${API}/score/${id}/timeline.${fmt}?fps=${fps}`;
+}
+
+export async function importLabeledCsv(
+  file: File,
+): Promise<{ ok: boolean; added: number; skipped: number; warnings: string[] }> {
+  const fd = new FormData();
+  fd.append("file", file);
+  const r = await fetch(`${API}/labeled/import_csv`, {
+    method: "POST",
+    body: fd,
+  });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
 }
 
 export async function addLabel(id: string, views: number, label: string) {

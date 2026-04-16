@@ -80,21 +80,23 @@ Either way, predictions are content-addressed and cached under
 
 ## Endpoints
 
-| method | path                              | purpose                              |
-|--------|-----------------------------------|--------------------------------------|
-| POST   | /score/text                       | JSON `{text}` → score                |
-| POST   | /score/{image,ui,video}           | multipart `file` → score             |
-| POST   | /compare/text                     | JSON `{variants}` → ranked results   |
-| POST   | /compare/upload                   | multipart: rank image/ui/video batch |
-| GET    | /score/{id}                       | cached result by id                  |
-| GET    | /score/{id}/brain.png             | nilearn fsaverage5 cortex rendering  |
-| POST   | /labeled/add                      | promote a result into training set   |
-| GET    | /labeled/stats                    | per-modality labeled row counts      |
-| POST   | /calibration/refit                | refit score → views regression       |
-| GET    | /calibration/status               | current calibration summary          |
-| GET    | /autoresearch/history             | experiment log                       |
-| GET    | /autoresearch/current             | current `score.py` + rubric          |
-| POST   | /autoresearch/run?budget=5        | SSE stream of experiments (phased)   |
+| method | path                                         | purpose                              |
+|--------|----------------------------------------------|--------------------------------------|
+| POST   | /score/text                                  | JSON `{text}` → score                |
+| POST   | /score/{image,ui,video}                      | multipart `file` → score             |
+| POST   | /compare/text                                | JSON `{variants}` → ranked results   |
+| POST   | /compare/upload                              | multipart: rank image/ui/video batch |
+| GET    | /score/{id}                                  | cached result by id                  |
+| GET    | /score/{id}/brain.png?view=&roi=             | nilearn fsaverage5 rendering (lateral/medial, per-ROI filter) |
+| GET    | /score/{id}/timeline.{csv,fcpxml}?fps=30     | marker track for Final Cut / Premiere / Resolve |
+| POST   | /labeled/add                                 | promote a result into training set   |
+| POST   | /labeled/import_csv                          | bulk import X analytics / generic CSV |
+| GET    | /labeled/stats                               | per-modality labeled row counts      |
+| POST   | /calibration/refit                           | refit score → views regression       |
+| GET    | /calibration/status                          | current calibration summary          |
+| GET    | /autoresearch/history                        | experiment log                       |
+| GET    | /autoresearch/current                        | current `score.py` + rubric          |
+| POST   | /autoresearch/run?budget=5                   | SSE stream of experiments (phased)   |
 
 ## Seed dataset
 

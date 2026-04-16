@@ -7,6 +7,7 @@ import {
   streamAutoresearch,
 } from "@/lib/api";
 import SpearmanChart from "@/components/SpearmanChart";
+import CsvImport from "@/components/CsvImport";
 
 export default function Autoresearch() {
   const [history, setHistory] = useState<Experiment[]>([]);
@@ -123,6 +124,8 @@ export default function Autoresearch() {
       {current && (
         <LiveCard exp={current} />
       )}
+
+      <CsvImport onDone={refresh} />
 
       <div className="card">
         <div className="label mb-2">Spearman over experiments</div>

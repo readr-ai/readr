@@ -133,3 +133,80 @@ def test_calibration_status(client):
     assert r.status_code == 200
     body = r.json()
     assert body["n"] > 0
+
+
+def test_csv_import_generic_schema(client):
+    import io
+    csv_bytes = (
+        "content,views,label\n"
+        "imported tweet A,12345,csv-a\n"
+        "imported tweet B,67890,\n"
+        ",100,empty-content-skipped\n"
+        "bad row,not-a-number,also-skipped\n"
+    ).encode()
+    r = client.post(
+        "/labeled/import_csv",
+        files={"file": ("x.csv", csv_bytes, "text/csv")},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is True
+    assert body["added"] == 2
+    assert body["skipped"] == 2
+
+    # Clean up: remove the rows we just added.
+    from api.config import LABELED_DIR
+    lines = (LABELED_DIR / "tweets.jsonl").read_text().splitlines()
+    kept = [l for l in lines if "imported tweet" not in l]
+    (LABELED_DIR / "tweets.jsonl").write_text("\n".join(kept) + ("\n" if kept else ""))
+
+
+def test_csv_import_x_analytics_schema(client):
+    csv_bytes = b'"Tweet text","impressions"\n"hello world from X",5000\n'
+    r = client.post(
+        "/labeled/import_csv",
+        files={"file": ("x.csv", csv_bytes, "text/csv")},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["added"] == 1
+
+    from api.config import LABELED_DIR
+    lines = (LABELED_DIR / "tweets.jsonl").read_text().splitlines()
+    kept = [l for l in lines if "hello world from X" not in l]
+    (LABELED_DIR / "tweets.jsonl").write_text("\n".join(kept) + ("\n" if kept else ""))
+
+
+def test_csv_import_rejects_missing_columns(client):
+    r = client.post(
+        "/labeled/import_csv",
+        files={"file": ("bad.csv", b"foo,bar\na,b\n", "text/csv")},
+    )
+    assert r.status_code == 400
+
+
+def test_timeline_csv_export(client):
+    r = client.post("/score/text", json={"text": "timeline export test"})
+    rid = r.json()["id"]
+    r2 = client.get(f"/score/{rid}/timeline.csv")
+    assert r2.status_code == 200
+    assert r2.headers["content-type"].startswith("text/csv")
+    body = r2.text
+    # First line is the header.
+    assert body.splitlines()[0].startswith("start_tc,end_tc")
+
+
+def test_timeline_fcpxml_export(client):
+    r = client.post("/score/text", json={"text": "fcpxml export test"})
+    rid = r.json()["id"]
+    r2 = client.get(f"/score/{rid}/timeline.fcpxml")
+    assert r2.status_code == 200
+    body = r2.text
+    assert body.startswith("<?xml")
+    assert "<fcpxml" in body
+    assert "sequence" in body
+
+
+def test_timeline_404_for_unknown(client):
+    r = client.get("/score/does-not-exist/timeline.csv")
+    assert r.status_code == 404

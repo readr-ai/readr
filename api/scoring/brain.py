@@ -1,11 +1,15 @@
 """Render fsaverage5 cortex with predicted TRIBE response per vertex.
 
-Uses nilearn's pre-packaged fsaverage5 mesh. We produce a 2-hemisphere
-lateral view PNG (left + right). The vertex array from TRIBE is split
-10242/10242 left/right in standard fsaverage5 order.
+Uses nilearn's pre-packaged fsaverage5 mesh. Output is a dark-background
+PNG rendered off-screen via matplotlib's Agg backend.
 
-Renders are cached to disk by sha1(preds_hash + view), so a repeated
-request for the same result is free.
+Supports:
+- view: "lateral" (default) or "medial" -- switches the camera angle.
+- roi:  None means full-cortex peak response; otherwise one of
+        {visual, attention, language, emotion, reward} and vertices
+        outside that ROI are masked to zero.
+
+Renders are cached on disk by sha1(vertex_vec + view + roi).
 """
 from __future__ import annotations
 
@@ -20,44 +24,56 @@ BRAIN_CACHE = DATA_DIR / "brain_cache"
 BRAIN_CACHE.mkdir(exist_ok=True)
 
 
-def _cache_path(vertex_vec: np.ndarray) -> Path:
-    h = hashlib.sha1(vertex_vec.tobytes()).hexdigest()[:16]
-    return BRAIN_CACHE / f"cortex_{h}.png"
+def _cache_path(vertex_vec: np.ndarray, view: str, roi: str | None) -> Path:
+    key = hashlib.sha1(vertex_vec.tobytes() + view.encode() + (roi or "all").encode()).hexdigest()[:16]
+    return BRAIN_CACHE / f"cortex_{view}_{roi or 'all'}_{key}.png"
 
 
-def render_cortex_png(preds: np.ndarray) -> Path:
-    """Render a lateral-view 2-hemisphere PNG of the mean-over-time response.
+def render_cortex_png(
+    preds: np.ndarray, view: str = "lateral", roi: str | None = None
+) -> Path:
+    """Render a 2-hemisphere PNG of the per-vertex response.
 
-    preds: (T, 20484) float array from TRIBE. We collapse over time with a
-    90th percentile so we highlight peak engagement per vertex.
+    preds: (T, 20484) float array from TRIBE.
+    view:  'lateral' | 'medial'
+    roi:   'visual' | 'attention' | 'language' | 'emotion' | 'reward' | None
     """
     vertex_vec = np.percentile(preds, 90, axis=0).astype(np.float32)
-    out = _cache_path(vertex_vec)
+
+    if roi is not None:
+        from api.scoring.rois import get_roi_masks
+        masks = get_roi_masks()
+        if roi not in masks:
+            raise ValueError(f"Unknown ROI: {roi}")
+        mask = masks[roi]
+        # Zero out non-ROI vertices so they fall below vmin and render dark.
+        vertex_vec = np.where(mask, vertex_vec, np.nan)
+
+    out = _cache_path(np.nan_to_num(vertex_vec, nan=-1e9), view, roi)
     if out.exists():
         return out
 
-    # Deferred import so the scoring pipeline stays import-light.
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
-    from nilearn import datasets, plotting, surface
+    from nilearn import datasets, plotting
 
-    # Pull fsaverage5 the first time; subsequent calls are instant.
     fs = datasets.fetch_surf_fsaverage(mesh="fsaverage5")
     n = vertex_vec.shape[0]
     if n != 20484:
-        # Fallback: interpolate / pad to 20484 if upstream vertex count
-        # differs (e.g. a different TRIBE variant).
         reps = int(np.ceil(20484 / n))
         vertex_vec = np.tile(vertex_vec, reps)[:20484]
     left = vertex_vec[:10242]
     right = vertex_vec[10242:]
 
-    # Normalize for display so weak signals are still visible.
-    vmin = float(np.percentile(vertex_vec, 5))
-    vmax = float(np.percentile(vertex_vec, 99))
-    if vmax - vmin < 1e-6:
-        vmax = vmin + 1.0
+    finite = vertex_vec[np.isfinite(vertex_vec)]
+    if finite.size == 0:
+        vmin, vmax = 0.0, 1.0
+    else:
+        vmin = float(np.percentile(finite, 5))
+        vmax = float(np.percentile(finite, 99))
+        if vmax - vmin < 1e-6:
+            vmax = vmin + 1.0
 
     fig, axes = plt.subplots(
         1, 2, figsize=(6, 3), subplot_kw={"projection": "3d"}, facecolor="#0a0a0f"
@@ -68,9 +84,9 @@ def render_cortex_png(preds: np.ndarray) -> Path:
     ):
         plotting.plot_surf_stat_map(
             bg_mesh,
-            stat_map=data,
+            stat_map=np.nan_to_num(data, nan=vmin - 1e3),
             hemi=hemi,
-            view="lateral",
+            view=view,
             bg_map=sulc,
             bg_on_data=True,
             colorbar=False,

@@ -253,18 +253,65 @@ async def compare_upload(
     return {"modality": modality, "winner_id": out[0]["id"], "results": out}
 
 
+@app.get("/score/{result_id}/timeline.csv")
+def get_timeline_csv(result_id: str, fps: int = 30):
+    fp = RESULTS_DIR / f"{result_id}.json"
+    if not fp.exists():
+        raise HTTPException(404, "unknown result id")
+    from api.scoring.timeline import csv_markers
+    payload = json.loads(fp.read_text())
+    body = csv_markers(payload["dead_zones"], payload["hotspots"], fps=fps)
+    from fastapi.responses import Response
+    return Response(
+        content=body,
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="cbt_{result_id}.csv"'},
+    )
+
+
+@app.get("/score/{result_id}/timeline.fcpxml")
+def get_timeline_fcpxml(result_id: str, fps: int = 30):
+    fp = RESULTS_DIR / f"{result_id}.json"
+    if not fp.exists():
+        raise HTTPException(404, "unknown result id")
+    from api.scoring.timeline import fcpxml
+    payload = json.loads(fp.read_text())
+    body = fcpxml(
+        payload["dead_zones"],
+        payload["hotspots"],
+        duration_s=float(payload.get("duration_s", 1.0)),
+        fps=fps,
+    )
+    from fastapi.responses import Response
+    return Response(
+        content=body,
+        media_type="application/xml",
+        headers={"Content-Disposition": f'attachment; filename="cbt_{result_id}.fcpxml"'},
+    )
+
+
 @app.get("/score/{result_id}/brain.png")
-def get_brain(result_id: str):
-    """Render the fsaverage5 cortex coloured by this result's peak response."""
+def get_brain(result_id: str, view: str = "lateral", roi: str | None = None):
+    """Render the fsaverage5 cortex coloured by this result's peak response.
+
+    Query params:
+      view: 'lateral' (default) or 'medial'
+      roi:  None for full cortex, else one of
+            visual|attention|language|emotion|reward
+    """
+    if view not in ("lateral", "medial"):
+        raise HTTPException(400, "view must be 'lateral' or 'medial'")
     npy = PREDS_DIR / f"{result_id}.npy"
     if not npy.exists():
         raise HTTPException(404, "no cached preds for this result")
     preds = np.load(npy).astype(np.float32)
     try:
         from api.scoring.brain import render_cortex_png
-        png_path = render_cortex_png(preds)
+        png_path = render_cortex_png(preds, view=view, roi=roi)
     except ImportError as e:
         raise HTTPException(500, f"nilearn/matplotlib not installed: {e}")
+    except ValueError as e:
+        raise HTTPException(400, str(e))
     return FileResponse(png_path, media_type="image/png")
 
 
@@ -309,6 +356,28 @@ def add_label(body: LabelIn):
     with target.open("a") as f:
         f.write(json.dumps(row) + "\n")
     return {"ok": True, "written_to": str(target.relative_to(DATA_DIR.parent))}
+
+
+@app.post("/labeled/import_csv")
+async def labeled_import_csv(file: UploadFile = File(...)):
+    """Bulk-append labeled tweet rows from a CSV (e.g. X analytics export).
+
+    See api/ingest/csv_import.py for the accepted schemas.
+    """
+    raw = await file.read()
+    if not raw:
+        raise HTTPException(400, "empty upload")
+    from api.ingest.csv_import import import_text_csv
+    try:
+        result = import_text_csv(raw)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return {
+        "ok": True,
+        "added": result.added,
+        "skipped": result.skipped,
+        "warnings": result.warnings,
+    }
 
 
 @app.get("/labeled/stats")

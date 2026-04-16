@@ -1,6 +1,19 @@
 "use client";
 import { useEffect, useState } from "react";
+import clsx from "clsx";
 import { brainPngUrl } from "@/lib/api";
+
+type View = "lateral" | "medial";
+type Roi = null | "visual" | "attention" | "language" | "emotion" | "reward";
+
+const ROIS: { id: Roi; label: string }[] = [
+  { id: null, label: "All" },
+  { id: "reward", label: "Reward" },
+  { id: "emotion", label: "Emotion" },
+  { id: "attention", label: "Attention" },
+  { id: "language", label: "Language" },
+  { id: "visual", label: "Visual" },
+];
 
 const ROI_PATCHES: {
   roi: string;
@@ -20,24 +33,61 @@ type Props = {
 };
 
 export default function BrainHeatmap({ rois, resultId }: Props) {
+  const [view, setView] = useState<View>("lateral");
+  const [roi, setRoi] = useState<Roi>(null);
   const [pngOk, setPngOk] = useState<boolean | null>(null);
+  const [loading, setLoading] = useState(false);
+
   useEffect(() => {
     if (!resultId) return setPngOk(false);
-    // HEAD would be cleaner, but the endpoint streams files — fetch and
-    // inspect status.
-    fetch(brainPngUrl(resultId), { method: "GET" })
+    setLoading(true);
+    fetch(brainPngUrl(resultId, { view, roi }), { method: "GET" })
       .then((r) => setPngOk(r.ok))
-      .catch(() => setPngOk(false));
-  }, [resultId]);
+      .catch(() => setPngOk(false))
+      .finally(() => setLoading(false));
+  }, [resultId, view, roi]);
 
   if (resultId && pngOk) {
     return (
-      // eslint-disable-next-line @next/next/no-img-element
-      <img
-        src={brainPngUrl(resultId)}
-        alt="fsaverage5 cortex rendering"
-        className="w-full rounded bg-bg"
-      />
+      <div>
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img
+          src={brainPngUrl(resultId, { view, roi })}
+          alt={`fsaverage5 cortex, ${view} view${roi ? ", " + roi + " only" : ""}`}
+          className={clsx("w-full rounded bg-bg transition-opacity", loading && "opacity-60")}
+        />
+        <div className="mt-3 flex flex-wrap gap-1.5">
+          {(["lateral", "medial"] as View[]).map((v) => (
+            <button
+              key={v}
+              onClick={() => setView(v)}
+              className={clsx(
+                "px-2 py-1 text-[11px] rounded border transition",
+                view === v
+                  ? "bg-accent2 text-white border-accent2"
+                  : "border-border text-muted hover:text-text",
+              )}
+            >
+              {v}
+            </button>
+          ))}
+          <div className="w-px bg-border mx-1" />
+          {ROIS.map((r) => (
+            <button
+              key={r.id ?? "all"}
+              onClick={() => setRoi(r.id)}
+              className={clsx(
+                "px-2 py-1 text-[11px] rounded border transition",
+                roi === r.id
+                  ? "bg-accent text-white border-accent"
+                  : "border-border text-muted hover:text-text",
+              )}
+            >
+              {r.label}
+            </button>
+          ))}
+        </div>
+      </div>
     );
   }
 
