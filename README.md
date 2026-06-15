@@ -77,25 +77,39 @@ upgrades the trust story:
   that signed the credential, and now knows it was issued by *your named
   organisation* — not just an anonymous key.
 
+This is wired to the **DeDi v2 API** (`api/openapi.yaml` from the
+[decentralized-directory-protocol](https://github.com/LF-Decentralized-Trust-labs/decentralized-directory-protocol)),
+whose model is **namespace → registry → record**:
+
+| Action | DeDi v2 endpoint | Auth |
+| --- | --- | --- |
+| Create namespace | `POST /dedi/create-namespace` | Bearer |
+| Create registry | `POST /dedi/{namespace}/create-registry` | Bearer |
+| Publish key record | `POST /dedi/{namespace}/{registry}/save-record-as-draft?publish=true` | Bearer |
+| Resolve record | `GET /dedi/lookup/{namespace}/{registry}/{record}` | **public** |
+
 ### Set it up
 
 1. Open the extension's **options** page (right-click the icon → *Options*, or
    **Identity → Manage DeDi hosting…**).
-2. Enter your **issuer name**, **DeDi base URL** (default `https://dedi.global`),
-   **namespace**, **registry**, and an **API key** if your instance needs one for
-   writes. Endpoint path templates are configurable under *Advanced* because
-   they differ per DeDi instance.
-3. Click **Publish public key to DeDi**. You'll be asked to grant access to that
-   directory's origin (the manifest only requests it optionally). The extension
-   POSTs a record containing your `did:jwk`, `ES256` public JWK, and issuer name,
-   then stores the resolvable **lookup URL**.
+2. Enter your **issuer name**, **base URL** (default `https://api.dedi.global`;
+   staging is `https://staging-api.dedi.global`), **namespace**, **registry**,
+   and your **API key** — create one in your DeDi account (`/dedi/api-keys`); it
+   is sent as `Authorization: Bearer …`. Endpoint templates are editable under
+   *Advanced*.
+3. If you don't already have a namespace, click **Create namespace**.
+4. Click **Publish public key to DeDi**. You'll be asked to grant access to the
+   directory's origin (the manifest requests it only optionally). The extension
+   auto-creates the key registry (with a JSON Schema for the key fields), then
+   publishes a record whose `details` carry your `did:jwk`, `ES256` public JWK,
+   `kid`, and issuer name, and stores the resolvable **lookup URL**.
 
 From then on, every credential you sign embeds the directory hint. In the
-**Verify** page, a *Verify issuer via DeDi directory* button fetches the record
-and confirms the hosted key matches the signing key.
+**Verify** page, *Verify issuer via DeDi directory* calls the **public** lookup
+endpoint and confirms the hosted key matches the signing key.
 
 > The published record holds only your **public** key and issuer name — never the
-> private key, which stays in your browser.
+> private key, which stays in your browser. Lookups need no API key.
 
 Docs: [DeDi](https://dedi-global.gitbook.io/docs) ·
 [OpenCred](https://opencred.gitbook.io/docs)

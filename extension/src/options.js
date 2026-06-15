@@ -2,7 +2,25 @@
 const $ = (id) => document.getElementById(id);
 const send = (msg) => chrome.runtime.sendMessage(msg);
 
-const FIELDS = ["issuerName", "baseUrl", "namespaceId", "registryName", "apiKey", "addRecordPath", "lookupPath"];
+const FIELDS = [
+  "issuerName", "baseUrl", "namespaceId", "registryName", "apiKey",
+  "createNamespacePath", "createRegistryPath", "saveRecordPath", "lookupPath",
+];
+
+// Ensure the extension may reach the configured directory origin. The manifest
+// only declares optional host access, so nothing is granted until the user agrees.
+async function ensureOrigin(baseUrl) {
+  let origin;
+  try {
+    origin = new URL(baseUrl).origin + "/*";
+  } catch {
+    show("bad", "That base URL is not valid.");
+    return false;
+  }
+  const granted = await chrome.permissions.request({ origins: [origin] });
+  if (!granted) show("bad", "Permission to reach " + origin + " was denied.");
+  return granted;
+}
 
 async function load() {
   const id = await send({ type: "GET_IDENTITY" });
@@ -24,25 +42,30 @@ $("saveBtn").addEventListener("click", async () => {
   show("ok", "Settings saved.");
 });
 
+$("createNsBtn").addEventListener("click", async () => {
+  const patch = collect();
+  if (!patch.baseUrl || !patch.namespaceId) return show("bad", "Enter the base URL and a namespace name first.");
+  if (!patch.apiKey) return show("bad", "A DeDi API key is required to create a namespace.");
+  await send({ type: "SET_DEDI", patch });
+  if (!(await ensureOrigin(patch.baseUrl))) return;
+
+  show("busy", "Creating namespace…");
+  const res = await send({ type: "CREATE_DEDI_NAMESPACE" });
+  if (!res?.ok) return show("bad", "✕ " + res.error);
+  if (res.namespaceId) $("namespaceId").value = res.namespaceId;
+  show("ok", `✓ Namespace ready: ${res.namespaceId}. Now publish your public key.`);
+});
+
 $("publishBtn").addEventListener("click", async () => {
   const patch = collect();
   if (!patch.baseUrl || !patch.namespaceId || !patch.registryName) {
     return show("bad", "Fill in the base URL, namespace, and registry first.");
   }
+  if (!patch.apiKey) return show("bad", "A DeDi API key is required to publish.");
   await send({ type: "SET_DEDI", patch });
+  if (!(await ensureOrigin(patch.baseUrl))) return;
 
-  // Ask for permission to talk to this specific directory origin (the manifest
-  // only declares optional access, so nothing is granted until the user agrees).
-  let origin;
-  try {
-    origin = new URL(patch.baseUrl).origin + "/*";
-  } catch {
-    return show("bad", "That base URL is not valid.");
-  }
-  const granted = await chrome.permissions.request({ origins: [origin] });
-  if (!granted) return show("bad", "Permission to reach " + origin + " was denied.");
-
-  show("busy", "Publishing your public key to the directory…");
+  show("busy", "Creating the key registry (if needed) and publishing…");
   const res = await send({ type: "PUBLISH_DEDI" });
   if (!res?.ok) return show("bad", "✕ " + res.error);
 

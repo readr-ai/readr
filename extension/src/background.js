@@ -23,18 +23,36 @@ const DEDI_STORAGE = "docsigner.dedi.v1";
 // publish public keys, membership lists, etc. as records under a namespace, so
 // they can be resolved and trusted by anyone. We host the issuer's public key
 // there so a credential's anonymous did:jwk can be bound to a named directory
-// entry. Endpoint templates are configurable because paths differ per instance.
+// entry. Paths follow the DeDi v2 API (api/openapi.yaml) but stay configurable.
 const DEDI_DEFAULTS = {
   enabled: false,
-  baseUrl: "https://dedi.global",
-  apiKey: "",
+  baseUrl: "https://api.dedi.global", // staging: https://staging-api.dedi.global
+  apiKey: "", // a DeDi API key / bearer token with write access
   namespaceId: "",
   registryName: "docsigner-keys",
   issuerName: "",
-  // {placeholders} are filled from the config at call time.
-  addRecordPath: "/dedi/{namespaceId}/{registryName}/add-record",
-  lookupPath: "/dedi/lookup/{namespaceId}/{registryName}/{recordName}",
-  published: null, // { recordName, lookupUrl, publishedAt }
+  // DeDi v2 endpoint templates. {namespace}/{registryName}/{recordName} are filled in.
+  createNamespacePath: "/dedi/create-namespace",
+  createRegistryPath: "/dedi/{namespace}/create-registry",
+  saveRecordPath: "/dedi/{namespace}/{registryName}/save-record-as-draft",
+  lookupPath: "/dedi/lookup/{namespace}/{registryName}/{recordName}",
+  published: null, // { recordName, lookupUrl, publishedAt, namespaceId }
+};
+
+// JSON Schema for the registry that holds signing keys. The record `details`
+// must conform to this (DeDi validates server-side).
+const KEY_REGISTRY_SCHEMA = {
+  $schema: "http://json-schema.org/draft-07/schema#",
+  type: "object",
+  required: ["did", "alg", "publicKeyJwk"],
+  properties: {
+    did: { type: "string" },
+    name: { type: "string" },
+    type: { type: "string" },
+    alg: { type: "string" },
+    kid: { type: "string" },
+    publicKeyJwk: { type: "object" },
+  },
 };
 
 // ---------------------------------------------------------------------------
@@ -86,60 +104,113 @@ function fillTemplate(tpl, vars) {
 }
 
 function dediHeaders(cfg) {
-  const h = { "Content-Type": "application/json" };
+  const h = { "Content-Type": "application/json", Accept: "application/json" };
   if (cfg.apiKey) h["Authorization"] = "Bearer " + cfg.apiKey;
   return h;
 }
 
+// POST helper that surfaces DeDi's JSON `message` on failure.
+async function dediPost(url, cfg, body) {
+  const res = await fetch(url, { method: "POST", headers: dediHeaders(cfg), body: JSON.stringify(body) });
+  let payload = null;
+  const text = await res.text();
+  try { payload = JSON.parse(text); } catch { /* non-JSON error body */ }
+  return { res, payload, text };
+}
+
+function dediMessage(payload, text, fallback) {
+  return (payload && (payload.message || payload.error)) || text?.slice(0, 200) || fallback;
+}
+
+// Create the namespace that will hold the issuer's key (DeDi v2:
+// POST /dedi/create-namespace). Returns the server-assigned namespace_id.
+async function createDediNamespace() {
+  const cfg = await getDediConfig();
+  if (!cfg.namespaceId) throw new Error("Enter a namespace name first.");
+  const base = cfg.baseUrl.replace(/\/+$/, "");
+  const { res, payload, text } = await dediPost(base + cfg.createNamespacePath, cfg, {
+    name: cfg.namespaceId,
+    description: cfg.issuerName ? `${cfg.issuerName} — DocSigner keys` : "DocSigner signing keys",
+    version_count: 1,
+  });
+  if (!res.ok && res.status !== 409) {
+    throw new Error(`Could not create namespace (HTTP ${res.status}). ${dediMessage(payload, text)}`);
+  }
+  // Adopt the canonical namespace_id if the server returned one.
+  const nsId = payload?.data?.namespace_id;
+  if (nsId && nsId !== cfg.namespaceId) await setDediConfig({ namespaceId: nsId });
+  return { namespaceId: nsId || cfg.namespaceId, created: res.ok };
+}
+
+// Idempotently ensure the key registry exists (409 = already there).
+async function ensureDediRegistry(cfg) {
+  const base = cfg.baseUrl.replace(/\/+$/, "");
+  const url = base + fillTemplate(cfg.createRegistryPath, { namespace: cfg.namespaceId });
+  const { res, payload, text } = await dediPost(url, cfg, {
+    registry_name: cfg.registryName,
+    description: "Public keys used to sign document credentials",
+    schema: KEY_REGISTRY_SCHEMA,
+  });
+  if (!res.ok && res.status !== 409) {
+    throw new Error(`Could not create registry (HTTP ${res.status}). ${dediMessage(payload, text)}`);
+  }
+}
+
 // Publish the issuer's public key as a DeDi record and remember its lookup URL.
+// DeDi v2: POST /dedi/{ns}/{registry}/save-record-as-draft?publish=true.
 async function publishKeyToDedi() {
   const cfg = await getDediConfig();
   const key = await getOrCreateKey();
   if (!cfg.baseUrl || !cfg.namespaceId || !cfg.registryName) {
     throw new Error("Set the DeDi base URL, namespace, and registry first.");
   }
+  if (!cfg.apiKey) throw new Error("A DeDi API key is required to publish.");
+
+  await ensureDediRegistry(cfg);
 
   const base = cfg.baseUrl.replace(/\/+$/, "");
   const recordName = cfg.published?.recordName || "key-" + key.did.slice(-12);
-  const lookupUrl = base + fillTemplate(cfg.lookupPath, { ...cfg, recordName });
+  const vars = { namespace: cfg.namespaceId, registryName: cfg.registryName, recordName };
+  const lookupUrl = base + fillTemplate(cfg.lookupPath, vars);
 
-  // The record carries everything a verifier needs to trust this key.
-  const body = {
+  // The record's `details` must conform to KEY_REGISTRY_SCHEMA.
+  const details = { did: key.did, type: "JsonWebKey", alg: "ES256", kid: key.did + "#0", publicKeyJwk: key.publicJwk };
+  if (cfg.issuerName) details.name = cfg.issuerName;
+
+  const url = base + fillTemplate(cfg.saveRecordPath, vars) + "?publish=true";
+  const { res, payload, text } = await dediPost(url, cfg, {
     record_name: recordName,
     description: `Document-signing public key for ${cfg.issuerName || "issuer"}`,
-    details: {
-      did: key.did,
-      name: cfg.issuerName || undefined,
-      type: "JsonWebKey",
-      alg: "ES256",
-      kid: key.did + "#0",
-      publicKeyJwk: key.publicJwk,
-    },
-  };
-
-  const url = base + fillTemplate(cfg.addRecordPath, { ...cfg, recordName });
-  const res = await fetch(url, { method: "POST", headers: dediHeaders(cfg), body: JSON.stringify(body) });
-  const text = await res.text();
-  if (!res.ok) {
-    throw new Error(`DeDi rejected the record (HTTP ${res.status}). ${text.slice(0, 200)}`);
+    details,
+    meta: {},
+  });
+  // 409 = a record with this name already holds our key; treat as success.
+  if (!res.ok && res.status !== 409) {
+    throw new Error(`DeDi rejected the record (HTTP ${res.status}). ${dediMessage(payload, text)}`);
   }
 
-  const published = { recordName, lookupUrl, publishedAt: new Date().toISOString() };
+  const published = { recordName, lookupUrl, namespaceId: cfg.namespaceId, publishedAt: new Date().toISOString() };
   await setDediConfig({ enabled: true, published });
   return published;
 }
 
-// Fetch a published record and return its public key JWK (run from the worker
-// so the user's granted host permission applies and CORS is a non-issue).
+// Resolve a public record (no auth — lookup is public in DeDi v2) and return
+// its key. Run from the worker so granted host permission applies (no CORS).
 async function resolveDedi(lookupUrl) {
   const res = await fetch(lookupUrl, { headers: { Accept: "application/json" } });
   if (!res.ok) throw new Error(`Directory lookup failed (HTTP ${res.status}).`);
-  const data = await res.json();
-  // Be liberal about where the key sits in the response envelope.
-  const details = data?.details || data?.record?.details || data?.data?.details || data;
-  const publicKeyJwk = details?.publicKeyJwk || details?.publicJwk || data?.publicKeyJwk;
+  const json = await res.json();
+  const details = json?.data?.details || json?.details; // DeDi v2 returns { message, data: Record }
+  const publicKeyJwk = details?.publicKeyJwk;
   if (!publicKeyJwk) throw new Error("No public key found in the directory record.");
-  return { publicKeyJwk, did: details?.did, name: details?.name, raw: data };
+  return {
+    publicKeyJwk,
+    did: details.did,
+    name: details.name,
+    state: json?.data?.state,
+    digest: json?.data?.digest,
+    raw: json,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -277,6 +348,11 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         }
         case "SET_DEDI": {
           sendResponse({ ok: true, config: await setDediConfig(msg.patch || {}) });
+          break;
+        }
+        case "CREATE_DEDI_NAMESPACE": {
+          const result = await createDediNamespace();
+          sendResponse({ ok: true, ...result });
           break;
         }
         case "PUBLISH_DEDI": {

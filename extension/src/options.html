@@ -51,44 +51,61 @@
         </div>
         <div>
           <label class="field-label" for="baseUrl">DeDi base URL</label>
-          <input type="url" id="baseUrl" placeholder="https://dedi.global" />
+          <input type="url" id="baseUrl" placeholder="https://api.dedi.global" />
         </div>
         <div>
-          <label class="field-label" for="namespaceId">Namespace ID</label>
-          <input type="text" id="namespaceId" placeholder="your-org-namespace" />
+          <label class="field-label" for="namespaceId">Namespace (name or ID)</label>
+          <input type="text" id="namespaceId" placeholder="acme-university" />
         </div>
         <div>
           <label class="field-label" for="registryName">Registry name</label>
           <input type="text" id="registryName" placeholder="docsigner-keys" />
         </div>
         <div>
-          <label class="field-label" for="apiKey">API key / token (optional)</label>
-          <input type="password" id="apiKey" placeholder="Bearer token for write access" />
-          <p class="help">Sent as <code>Authorization: Bearer …</code> when publishing. Stored locally.</p>
+          <label class="field-label" for="apiKey">API key (Bearer token)</label>
+          <input type="password" id="apiKey" placeholder="DeDi API key with write access" />
+          <p class="help">
+            Create one in your DeDi account (<code>/dedi/api-keys</code>). Sent as
+            <code>Authorization: Bearer …</code>, stored locally, never published.
+          </p>
         </div>
       </div>
 
       <details>
-        <summary>Advanced — endpoint templates (per-instance)</summary>
+        <summary>Advanced — endpoint templates (DeDi v2 defaults)</summary>
         <div class="grid" style="margin-top:10px">
           <div>
-            <label class="field-label" for="addRecordPath">Add-record path</label>
-            <input type="text" id="addRecordPath" />
+            <label class="field-label" for="createNamespacePath">Create-namespace path</label>
+            <input type="text" id="createNamespacePath" />
           </div>
           <div>
-            <label class="field-label" for="lookupPath">Lookup path</label>
+            <label class="field-label" for="createRegistryPath">Create-registry path</label>
+            <input type="text" id="createRegistryPath" />
+          </div>
+          <div>
+            <label class="field-label" for="saveRecordPath">Save-record path</label>
+            <input type="text" id="saveRecordPath" />
+          </div>
+          <div>
+            <label class="field-label" for="lookupPath">Lookup path (public)</label>
             <input type="text" id="lookupPath" />
           </div>
           <p class="help">
-            Placeholders: <code>{namespaceId}</code>, <code>{registryName}</code>, <code>{recordName}</code>.
+            Placeholders: <code>{namespace}</code>, <code>{registryName}</code>, <code>{recordName}</code>.
+            Publishing posts to <code>save-record</code> with <code>?publish=true</code>.
           </p>
         </div>
       </details>
 
       <div class="row" style="margin-top:8px">
         <button id="saveBtn" class="ghost">Save</button>
+        <button id="createNsBtn" class="ghost">Create namespace</button>
         <button id="publishBtn" class="primary" style="width:auto">Publish public key to DeDi</button>
       </div>
+      <p class="help">
+        Publishing auto-creates the key registry if needed. Use <em>Create namespace</em>
+        first only if you don't already have one.
+      </p>
 
       <div id="status" class="status" hidden></div>
 
