@@ -42,6 +42,18 @@ always stays on-device. Full rationale and citations in
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
+## Planning
+
+- [docs/USER-JOURNEYS.md](docs/USER-JOURNEYS.md) — the spec: user journeys +
+  expected behaviour, as testable acceptance criteria.
+- [docs/DEVELOPMENT-PLAN.md](docs/DEVELOPMENT-PLAN.md) — test-first milestone
+  plan (tests written before code, verified against journeys after).
+- [docs/AUTH.md](docs/AUTH.md) — how "sign in with Claude/ChatGPT", BYO key, and
+  local models work (OAuth+PKCE, modeled on Muesli).
+- [docs/CONTEXT-STRATEGY.md](docs/CONTEXT-STRATEGY.md) — the adaptive
+  whole-book-vs-retrieval decision.
+- [docs/ROADMAP.md](docs/ROADMAP.md) — milestone checklist.
+
 ## Building
 
 > Requires **macOS + Xcode 15+**. (The app cannot be built on Linux.)
