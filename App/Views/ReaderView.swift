@@ -167,11 +167,14 @@ private struct HighlightsListView: View {
     @EnvironmentObject private var model: AppModel
     let book: Book
     @Environment(\.dismiss) private var dismiss
+    @State private var showArticle = false
+
+    private var highlights: [Highlight] { model.highlights(for: book) }
 
     var body: some View {
         NavigationStack {
             List {
-                ForEach(model.highlights(for: book)) { highlight in
+                ForEach(highlights) { highlight in
                     VStack(alignment: .leading, spacing: 4) {
                         Text(highlight.quotedText).italic()
                         if let note = highlight.note, !note.isEmpty {
@@ -180,20 +183,35 @@ private struct HighlightsListView: View {
                     }
                 }
                 .onDelete { offsets in
-                    let items = model.highlights(for: book)
+                    let items = highlights
                     offsets.map { items[$0] }.forEach { model.removeHighlight($0, in: book) }
                 }
             }
             .overlay {
-                if model.highlights(for: book).isEmpty {
+                if highlights.isEmpty {
                     ContentUnavailableView("No highlights yet", systemImage: "highlighter")
                 }
             }
             .navigationTitle("Highlights")
             .toolbar {
+                ToolbarItem(placement: .primaryAction) {
+                    Button {
+                        showArticle = true
+                    } label: {
+                        Label("Compose article", systemImage: "doc.text")
+                    }
+                    .disabled(highlights.isEmpty)
+                }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Done") { dismiss() }
                 }
+            }
+            .sheet(isPresented: $showArticle) {
+                ArticleComposeView(
+                    book: book,
+                    highlights: highlights,
+                    resolveProvider: { model.activeProvider() }
+                )
             }
         }
     }

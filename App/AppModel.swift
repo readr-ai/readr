@@ -134,10 +134,13 @@ final class AppModel: ObservableObject {
 
     /// An `AskService` bound to the active provider, or nil if none is configured.
     func makeAskService() -> AskService? {
-        let provider: LLMProvider?
-        do { provider = try providerManager.activeProvider() } catch { provider = nil }
-        guard let provider else { return nil }
+        guard let provider = activeProvider() else { return nil }
         return AskService(strategy: AdaptiveContextStrategy(index: ragIndex), provider: provider)
+    }
+
+    /// The active LLM provider, or nil if none is configured.
+    func activeProvider() -> LLMProvider? {
+        try? providerManager.activeProvider()
     }
 
     /// Build the retrieval index for a book if it hasn't been built yet. Cheap to

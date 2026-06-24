@@ -46,12 +46,14 @@ highlights→article) together, per project direction.
 - [ ] SQLite (sqlite-vec + FTS5) persistence for the index (currently in-memory)
 - [ ] Citations surfaced in the Ask panel; manual J4 walk on a Mac
 
-## M4 — Highlights → article
-- [ ] Collect & order highlights/notes
-- [ ] `ArticleComposer` → editable Markdown article
-- [ ] Export (Markdown / PDF / share sheet)
+## M4 — Highlights → article (in progress)
+- [x] Order highlights by reading position; zero-highlights guidance (no LLM call)
+- [x] `LLMArticleComposer` → article (tested)
+- [x] Compose UI: highlights → editable Markdown editor, ShareLink export
+- [ ] PDF export (Markdown share shipped; PDF is a follow-up)
+- [ ] Streamed composition in the editor; manual J6 walk on a Mac
 
-## M4 — Polish & OSS health
+## M5 — Polish & OSS health
 - [ ] iCloud sync of library/annotations
 - [ ] Accessibility & localization passes
 - [ ] Issue templates, discussions, release process
