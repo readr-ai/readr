@@ -1,0 +1,39 @@
+# XcodeGen spec — run `xcodegen generate` to produce Readr.xcodeproj.
+# Requires macOS + Xcode 15+. The project is regenerated from this file, so the
+# .xcodeproj is git-ignored (see .gitignore).
+name: Readr
+
+options:
+  bundleIdPrefix: com.readr
+  deploymentTarget:
+    iOS: "17.0"
+    macOS: "14.0"
+
+packages:
+  # The core logic lives in the local Swift package at the repo root.
+  ReadrKit:
+    path: .
+  # Readium (EPUB/PDF rendering) is wired in during the M1 Readium increment:
+  # ReadiumShared:
+  #   url: https://github.com/readium/swift-toolkit
+  #   from: "3.0.0"
+
+targets:
+  Readr:
+    type: application
+    supportedDestinations: [iOS, macOS]
+    sources:
+      - App
+    dependencies:
+      - package: ReadrKit
+        product: ReadrKit
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.readr.app
+        GENERATE_INFOPLIST_FILE: "YES"
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        SWIFT_VERSION: "5.9"
+        INFOPLIST_KEY_CFBundleDisplayName: Readr
+        # Allow importing book files via the file importer.
+        INFOPLIST_KEY_UILaunchScreen_Generation: "YES"

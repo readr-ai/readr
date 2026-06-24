@@ -3,18 +3,22 @@
 The first milestone builds the reader and **both** AI features (ask-the-book and
 highlights→article) together, per project direction.
 
-## M0 — Foundation (this scaffold)
+## M0 — Foundation ✅
 - [x] Repo, license, docs, architecture
 - [x] Context strategy research + decision
-- [ ] `ReadrKit` package skeleton with core protocols & models
-- [ ] XcodeGen `project.yml` + SwiftUI app shell
-- [ ] CI building the package
+- [x] `ReadrKit` package skeleton with core protocols & models
+- [x] XcodeGen `project.yml` + SwiftUI app shell
+- [x] CI building the package
 
-## M1 — Reading
-- [ ] Import EPUB + PDF (DRM-free)
-- [ ] Library shelf + reader view (Readium)
-- [ ] Highlights & notes with persistence
-- [ ] Reading position / progress
+## M1 — Reading (in progress)
+- [x] Library shelf + basic reader view (SwiftUI)
+- [x] Import plain-text / Markdown (parser + registry, tested)
+- [x] Reading position persistence (store + reader wiring)
+- [x] Highlights & notes — store/persistence logic (tested)
+- [ ] EPUB + PDF import & paginated rendering via Readium (needs Mac/Xcode)
+- [ ] Highlight/note capture UI in the reader
+- [ ] SwiftData/GRDB-backed store to replace `InMemoryLibraryStore`
+- [ ] UI test: import → library → open → resume position
 
 ## M2 — Ask the book
 - [ ] Provider settings: Anthropic key, OpenAI key, local model
