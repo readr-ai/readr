@@ -30,12 +30,14 @@ final class OAuthCoordinator {
         let callbackURL: URL = try await withCheckedThrowingContinuation { continuation in
             let server = LoopbackHTTPServer(port: UInt16(port))
             self.server = server
-            server.start(redirectBase: redirectBase) { result in
+            server.start(redirectBase: redirectBase, expectedPath: redirectURL.path) { [weak self] result in
+                // Always release the listener/port, success or failure.
+                self?.server?.stop()
+                self?.server = nil
                 continuation.resume(with: result)
             }
             Self.openInBrowser(authorizeURL)
         }
-        self.server = nil
 
         let code = try client.handleCallback(url: callbackURL, expectedState: state)
         return try await client.exchangeCode(code, pkce: pkce)

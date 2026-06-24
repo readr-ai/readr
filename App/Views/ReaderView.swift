@@ -10,6 +10,7 @@ struct ReaderView: View {
     let book: Book
 
     @State private var chapterIndex = 0
+    @State private var didRestorePosition = false
     @State private var selectedRange: Range<Int>?
     @State private var showHighlights = false
     @State private var noteDraft = ""
@@ -85,7 +86,13 @@ struct ReaderView: View {
                 pendingNoteRange = nil
             }
         }
-        .onAppear { chapterIndex = model.position(for: book)?.chapterIndex ?? 0 }
+        .onAppear {
+            // Restore once; later re-appears (e.g. after dismissing a sheet)
+            // must not clobber the chapter the reader navigated to.
+            guard !didRestorePosition else { return }
+            didRestorePosition = true
+            chapterIndex = model.position(for: book)?.chapterIndex ?? 0
+        }
         .onChange(of: chapterIndex) { _, newValue in
             selectedRange = nil
             model.savePosition(ReadingPosition(chapterIndex: newValue), for: book)

@@ -95,6 +95,13 @@ public struct OAuthClient: Sendable {
         guard returnedState == expectedState else {
             throw AuthError.stateMismatch
         }
+        // The provider may redirect with an error (e.g. the user denied consent)
+        // while still echoing a valid state — surface that, don't report "missing code".
+        if let error = items.first(where: { $0.name == "error" })?.value {
+            if error == "access_denied" { throw AuthError.userCancelled }
+            let description = items.first(where: { $0.name == "error_description" })?.value
+            throw AuthError.tokenExchangeFailed(description ?? error)
+        }
         guard let code = items.first(where: { $0.name == "code" })?.value, !code.isEmpty else {
             throw AuthError.tokenExchangeFailed("missing code")
         }

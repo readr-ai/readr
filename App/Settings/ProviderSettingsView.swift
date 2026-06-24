@@ -33,6 +33,7 @@ struct ProviderSettingsView: View {
                 }
             }
             .navigationTitle("AI Providers")
+            .task { model.refresh() }
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Done") { dismiss() }

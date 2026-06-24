@@ -98,7 +98,11 @@ final class AnthropicProviderTests: XCTestCase {
         let object = try XCTUnwrap(
             JSONSerialization.jsonObject(with: body) as? [String: Any]
         )
-        XCTAssertEqual(object["system"] as? String, "You are a tutor.")
+        // `system` is always an array of text blocks (consistent shape).
+        let system = try XCTUnwrap(object["system"] as? [[String: Any]])
+        XCTAssertEqual(system.count, 1)
+        XCTAssertEqual(system.first?["text"] as? String, "You are a tutor.")
+        XCTAssertNil(system.first?["cache_control"])
         let messages = try XCTUnwrap(object["messages"] as? [[String: Any]])
         XCTAssertEqual(messages.count, 1)
         XCTAssertEqual(messages.first?["role"] as? String, "user")

@@ -19,10 +19,19 @@ public final class FileLibraryStore: LibraryStore, @unchecked Sendable {
     /// Loads existing state from `fileURL` if present; otherwise starts empty.
     public init(fileURL: URL) {
         self.url = fileURL
-        if let data = try? Data(contentsOf: fileURL),
-           let decoded = try? JSONDecoder().decode(State.self, from: data) {
+        guard let data = try? Data(contentsOf: fileURL) else {
+            self.state = State()
+            return
+        }
+        if let decoded = try? JSONDecoder().decode(State.self, from: data) {
             self.state = decoded
         } else {
+            // The file exists but can't be decoded (truncated write, schema
+            // change, ...). Don't start empty and overwrite it on the next
+            // mutation — set it aside so the user's data is recoverable.
+            let backup = fileURL.appendingPathExtension("corrupt")
+            try? FileManager.default.removeItem(at: backup)
+            try? FileManager.default.moveItem(at: fileURL, to: backup)
             self.state = State()
         }
     }

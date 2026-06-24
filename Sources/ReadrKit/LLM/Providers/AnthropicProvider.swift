@@ -106,13 +106,22 @@ public struct AnthropicProvider: LLMProvider {
         }
         payload["messages"] = messages
 
-        // Prompt caching: a cacheable prefix is sent as an ephemeral text block.
+        // System field as an array of text blocks (always the same shape). Any
+        // explicit system instructions come first; the large cacheable prefix
+        // (e.g. the whole book) goes last and carries the cache breakpoint, so
+        // the instructions are cached along with it.
+        var systemBlocks: [[String: Any]] = hoistedSystemTexts.map {
+            ["type": "text", "text": $0]
+        }
         if let prefix = request.cacheableSystemPrefix {
-            var block: [String: Any] = ["type": "text", "text": prefix]
-            block["cache_control"] = ["type": "ephemeral"]
-            payload["system"] = [block]
-        } else if !hoistedSystemTexts.isEmpty {
-            payload["system"] = hoistedSystemTexts.joined(separator: "\n\n")
+            systemBlocks.append([
+                "type": "text",
+                "text": prefix,
+                "cache_control": ["type": "ephemeral"],
+            ])
+        }
+        if !systemBlocks.isEmpty {
+            payload["system"] = systemBlocks
         }
 
         return try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])

@@ -57,7 +57,8 @@ public enum XHTMLTextExtractor {
 
     static func decodeEntities(_ s: String) -> String {
         var out = s
-        let named = ["&amp;": "&", "&lt;": "<", "&gt;": ">", "&quot;": "\"",
+        // All entities except `&amp;`. These can be applied in any order.
+        let named = ["&lt;": "<", "&gt;": ">", "&quot;": "\"",
                      "&apos;": "'", "&#39;": "'", "&nbsp;": " ", "&mdash;": "—",
                      "&ndash;": "–", "&hellip;": "…", "&rsquo;": "’", "&lsquo;": "‘",
                      "&ldquo;": "“", "&rdquo;": "”"]
@@ -66,6 +67,9 @@ public enum XHTMLTextExtractor {
         }
         // Numeric entities: &#123; and &#x1F600;
         out = replaceNumericEntities(out)
+        // `&amp;` MUST be decoded last so escaped sequences like `&amp;lt;` decode
+        // to the literal text `&lt;` rather than being double-decoded to `<`.
+        out = out.replacingOccurrences(of: "&amp;", with: "&")
         return out
     }
 

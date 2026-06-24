@@ -1,11 +1,15 @@
 import Foundation
 import Network
 
-/// A one-shot loopback HTTP server that captures the OAuth redirect. The browser
-/// is sent to `127.0.0.1:<port>/auth/callback?...`; we read that one request,
-/// hand back the full callback URL, and reply with a small "you can close this"
-/// page. Used because the providers use loopback redirect URIs (the Codex/Zed
-/// pattern), which `ASWebAuthenticationSession` can't intercept.
+/// A loopback HTTP server that captures the OAuth redirect. The browser is sent
+/// to `127.0.0.1:<port><callbackPath>?...`; we read that request, hand back the
+/// full callback URL, and reply with a "you can close this" page. Used because
+/// the providers use loopback redirect URIs (the Codex/Zed pattern), which
+/// `ASWebAuthenticationSession` can't intercept.
+///
+/// Only a request to the exact `expectedPath` completes the flow; other requests
+/// the browser/OS may make to the port (favicon, speculative pre-connects) get a
+/// 404 and the server keeps listening for the real callback.
 final class LoopbackHTTPServer {
     private var listener: NWListener?
     private let port: UInt16
@@ -15,9 +19,11 @@ final class LoopbackHTTPServer {
         self.port = port
     }
 
-    /// Begin listening. `onCallback` fires once with the reconstructed callback
-    /// URL (or an error), after which the server stops.
-    func start(redirectBase: String, onCallback: @escaping (Result<URL, Error>) -> Void) {
+    func start(
+        redirectBase: String,
+        expectedPath: String,
+        onCallback: @escaping (Result<URL, Error>) -> Void
+    ) {
         do {
             guard let nwPort = NWEndpoint.Port(rawValue: port) else {
                 throw LoopbackError.invalidPort
@@ -25,7 +31,11 @@ final class LoopbackHTTPServer {
             let listener = try NWListener(using: .tcp, on: nwPort)
             self.listener = listener
             listener.newConnectionHandler = { [weak self] connection in
-                self?.handle(connection, redirectBase: redirectBase, onCallback: onCallback)
+                connection.start(queue: .main)
+                self?.readRequestLine(
+                    connection, accumulated: Data(),
+                    redirectBase: redirectBase, expectedPath: expectedPath, onCallback: onCallback
+                )
             }
             listener.start(queue: .main)
         } catch {
@@ -38,56 +48,94 @@ final class LoopbackHTTPServer {
         listener = nil
     }
 
-    private func handle(
+    /// Read until the HTTP request line (terminated by CRLF) is complete; the
+    /// line can arrive split across multiple TCP segments.
+    private func readRequestLine(
         _ connection: NWConnection,
+        accumulated: Data,
         redirectBase: String,
+        expectedPath: String,
         onCallback: @escaping (Result<URL, Error>) -> Void
     ) {
-        connection.start(queue: .main)
-        connection.receive(minimumIncompleteLength: 1, maximumLength: 65_536) { [weak self] data, _, _, error in
+        connection.receive(minimumIncompleteLength: 1, maximumLength: 65_536) { [weak self] data, _, isComplete, error in
             guard let self else { return }
-            if let error {
-                self.finish(.failure(error), connection: connection, onCallback: onCallback)
-                return
+            if error != nil { connection.cancel(); return }
+
+            var buffer = accumulated
+            if let data { buffer.append(data) }
+
+            if let text = String(data: buffer, encoding: .utf8),
+               let lineEnd = text.range(of: "\r\n") {
+                let requestLine = String(text[text.startIndex..<lineEnd.lowerBound])
+                self.process(
+                    requestLine: requestLine, connection: connection,
+                    redirectBase: redirectBase, expectedPath: expectedPath, onCallback: onCallback
+                )
+            } else if isComplete {
+                connection.cancel()
+            } else {
+                self.readRequestLine(
+                    connection, accumulated: buffer,
+                    redirectBase: redirectBase, expectedPath: expectedPath, onCallback: onCallback
+                )
             }
-            guard let data, let request = String(data: data, encoding: .utf8),
-                  let target = Self.requestTarget(request),
-                  let url = URL(string: redirectBase + target) else {
-                self.finish(.failure(LoopbackError.badRequest), connection: connection, onCallback: onCallback)
-                return
-            }
-            self.respondOK(on: connection)
-            self.finish(.success(url), connection: connection, onCallback: onCallback)
         }
     }
 
-    private func respondOK(on connection: NWConnection) {
+    private func process(
+        requestLine: String,
+        connection: NWConnection,
+        redirectBase: String,
+        expectedPath: String,
+        onCallback: @escaping (Result<URL, Error>) -> Void
+    ) {
+        guard let target = Self.requestTarget(requestLine),
+              let url = URL(string: redirectBase + target) else {
+            respond(status: "400 Bad Request", body: "Bad request", on: connection)
+            return
+        }
+        guard url.path == expectedPath else {
+            // Not the OAuth callback (e.g. /favicon.ico) — ignore, keep listening.
+            respond(status: "404 Not Found", body: "Not found", on: connection)
+            return
+        }
         let body = "<html><body style=\"font-family:-apple-system;padding:3rem;text-align:center\">"
             + "<h2>Signed in to Readr</h2><p>You can close this tab and return to the app.</p></body></html>"
-        let response = "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\n"
+        respond(status: "200 OK", body: body, contentType: "text/html; charset=utf-8", on: connection)
+        finish(.success(url), onCallback: onCallback)
+    }
+
+    private func respond(
+        status: String,
+        body: String,
+        contentType: String = "text/plain; charset=utf-8",
+        on connection: NWConnection
+    ) {
+        let response = "HTTP/1.1 \(status)\r\nContent-Type: \(contentType)\r\n"
             + "Content-Length: \(body.utf8.count)\r\nConnection: close\r\n\r\n\(body)"
-        connection.send(content: Data(response.utf8), completion: .contentProcessed { _ in })
+        // Cancel only after the bytes are flushed, so the browser actually
+        // receives the page.
+        connection.send(content: Data(response.utf8), completion: .contentProcessed { _ in
+            connection.cancel()
+        })
     }
 
     private func finish(
         _ result: Result<URL, Error>,
-        connection: NWConnection,
         onCallback: @escaping (Result<URL, Error>) -> Void
     ) {
         guard !didComplete else { return }
         didComplete = true
         onCallback(result)
-        connection.cancel()
         stop()
     }
 
-    /// Extract the request target ("/auth/callback?...") from the request line.
-    static func requestTarget(_ request: String) -> String? {
-        guard let firstLine = request.split(separator: "\r\n", maxSplits: 1).first else { return nil }
-        let parts = firstLine.split(separator: " ")
+    /// Extract the request target ("/auth/callback?...") from a request line.
+    static func requestTarget(_ requestLine: String) -> String? {
+        let parts = requestLine.split(separator: " ")
         guard parts.count >= 2 else { return nil }
         return String(parts[1])
     }
 
-    enum LoopbackError: Error { case invalidPort, badRequest }
+    enum LoopbackError: Error { case invalidPort }
 }

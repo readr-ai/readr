@@ -84,6 +84,9 @@ private struct Representable: UIViewRepresentable {
     func updateUIView(_ view: UITextView, context: Context) {
         context.coordinator.onSelect = onSelect
         context.coordinator.text = text
+        // Only rebuild the attributed string when the content actually changed —
+        // reassigning it resets the user's selection and re-fires the delegate.
+        guard context.coordinator.needsRender(text: text, ranges: highlightRanges) else { return }
         view.attributedText = TextRangeConvert.attributedString(text, highlightRanges: highlightRanges)
     }
 
@@ -92,8 +95,17 @@ private struct Representable: UIViewRepresentable {
     final class Coordinator: NSObject, UITextViewDelegate {
         var text: String
         var onSelect: (Range<Int>) -> Void
+        private var renderedText: String?
+        private var renderedRanges: [Range<Int>] = []
         init(text: String, onSelect: @escaping (Range<Int>) -> Void) {
             self.text = text; self.onSelect = onSelect
+        }
+        func needsRender(text: String, ranges: [Range<Int>]) -> Bool {
+            guard renderedText == text, renderedRanges == ranges else {
+                renderedText = text; renderedRanges = ranges
+                return true
+            }
+            return false
         }
         func textViewDidChangeSelection(_ textView: UITextView) {
             if let range = TextRangeConvert.characterRange(from: textView.selectedRange, in: text) {
@@ -122,6 +134,7 @@ private struct Representable: NSViewRepresentable {
         guard let textView = scroll.documentView as? NSTextView else { return }
         context.coordinator.onSelect = onSelect
         context.coordinator.text = text
+        guard context.coordinator.needsRender(text: text, ranges: highlightRanges) else { return }
         textView.textStorage?.setAttributedString(
             TextRangeConvert.attributedString(text, highlightRanges: highlightRanges)
         )
@@ -132,8 +145,17 @@ private struct Representable: NSViewRepresentable {
     final class Coordinator: NSObject, NSTextViewDelegate {
         var text: String
         var onSelect: (Range<Int>) -> Void
+        private var renderedText: String?
+        private var renderedRanges: [Range<Int>] = []
         init(text: String, onSelect: @escaping (Range<Int>) -> Void) {
             self.text = text; self.onSelect = onSelect
+        }
+        func needsRender(text: String, ranges: [Range<Int>]) -> Bool {
+            guard renderedText == text, renderedRanges == ranges else {
+                renderedText = text; renderedRanges = ranges
+                return true
+            }
+            return false
         }
         func textViewDidChangeSelection(_ notification: Notification) {
             guard let textView = notification.object as? NSTextView else { return }

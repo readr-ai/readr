@@ -19,7 +19,9 @@ final class SettingsModel: ObservableObject {
         self.manager = manager
         self.store = store
         self.activeSelection = manager.selection
-        refresh()
+        // No Keychain I/O here: SwiftUI re-evaluates `StateObject(wrappedValue:)`
+        // on every re-render and discards all but the first instance. The view
+        // calls `refresh()` from `.task` instead.
     }
 
     func refresh() {

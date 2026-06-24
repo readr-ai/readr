@@ -66,7 +66,10 @@ public struct EPUBBookParser {
     /// Resolve a manifest href (relative to the OPF directory), handling `.`/`..`
     /// and dropping any fragment.
     static func resolve(base: String, href: String) -> String {
-        let withoutFragment = href.split(separator: "#", maxSplits: 1).first.map(String.init) ?? href
+        let raw = href.split(separator: "#", maxSplits: 1).first.map(String.init) ?? href
+        // OPF hrefs are URI-encoded; ZIP entry names are not, so percent-decode
+        // (e.g. "chapter%201.xhtml" → "chapter 1.xhtml") before looking them up.
+        let withoutFragment = raw.removingPercentEncoding ?? raw
         var components = base.isEmpty ? [] : base.split(separator: "/").map(String.init)
         for part in withoutFragment.split(separator: "/").map(String.init) {
             switch part {
@@ -120,6 +123,13 @@ private final class OPFDelegate: NSObject, XMLParserDelegate {
     private var capturing: String?
     private var buffer = ""
 
+    /// Local name without the namespace prefix. XMLParser runs with namespace
+    /// processing off, so `<dc:title>` and `<dcterms:title>` both arrive as
+    /// qualified names — match on the suffix so any DC prefix works.
+    private static func localName(_ qualified: String) -> String {
+        qualified.split(separator: ":").last.map(String.init) ?? qualified
+    }
+
     func parser(_ parser: XMLParser, didStartElement elementName: String,
                 namespaceURI: String?, qualifiedName qName: String?,
                 attributes attributeDict: [String: String]) {
@@ -130,11 +140,14 @@ private final class OPFDelegate: NSObject, XMLParserDelegate {
             }
         case "itemref":
             if let idref = attributeDict["idref"] { opf.spine.append(idref) }
-        case "dc:title", "dc:creator", "dc:language":
-            capturing = elementName
-            buffer = ""
         default:
-            break
+            switch Self.localName(elementName) {
+            case "title", "creator", "language":
+                capturing = Self.localName(elementName)
+                buffer = ""
+            default:
+                break
+            }
         }
     }
 
@@ -144,12 +157,12 @@ private final class OPFDelegate: NSObject, XMLParserDelegate {
 
     func parser(_ parser: XMLParser, didEndElement elementName: String,
                 namespaceURI: String?, qualifiedName qName: String?) {
-        guard elementName == capturing else { return }
+        guard Self.localName(elementName) == capturing else { return }
         let value = buffer.trimmingCharacters(in: .whitespacesAndNewlines)
-        switch elementName {
-        case "dc:title": if opf.title.isEmpty { opf.title = value }
-        case "dc:creator": if !value.isEmpty { opf.creators.append(value) }
-        case "dc:language": opf.language = value
+        switch capturing {
+        case "title": if opf.title.isEmpty { opf.title = value }
+        case "creator": if !value.isEmpty { opf.creators.append(value) }
+        case "language": opf.language = value
         default: break
         }
         capturing = nil
