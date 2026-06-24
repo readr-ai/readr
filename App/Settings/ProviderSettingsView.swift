@@ -71,16 +71,19 @@ struct ProviderSettingsView: View {
 
         if kind != .local {
             APIKeyField(kind: kind) { model.saveAPIKey($0, for: kind) }
-            Button {
-                Task { await model.signIn(kind) }
-            } label: {
-                if model.isSigningIn {
-                    ProgressView()
-                } else {
-                    Label("Sign in with subscription", systemImage: "person.badge.key")
+            if model.supportsOAuth(kind) {
+                Button {
+                    Task { await model.signIn(kind) }
+                } label: {
+                    if model.isSigningIn {
+                        ProgressView()
+                    } else {
+                        Label("Sign in with subscription", systemImage: "person.badge.key")
+                    }
                 }
+                .accessibilityLabel("Sign in with subscription")
+                .disabled(model.isSigningIn)
             }
-            .disabled(model.isSigningIn)
         }
 
         ModelPicker(
@@ -114,6 +117,7 @@ private struct APIKeyField: View {
                 onSave(key)
                 key = ""
             }
+            .accessibilityLabel("Save API key")
             .disabled(key.trimmingCharacters(in: .whitespaces).isEmpty)
         }
     }

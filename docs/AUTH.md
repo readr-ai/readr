@@ -38,9 +38,12 @@ same shape. We mirror it.
   `127.0.0.1:1455`). ([ref](https://developers.openai.com/apps-sdk/build/auth),
   [Zed PR](https://github.com/zed-industries/zed/pull/56811),
   [querymt/openai-auth](https://github.com/querymt/openai-auth))
-- **Anthropic / Claude** — OAuth 2.1 authorization code + **mandatory PKCE
-  (S256)**; public client id + loopback redirect, no secret. ([Claude Code
-  auth](https://code.claude.com/docs/en/authentication))
+- **Anthropic / Claude** — subscription OAuth is **not supported** in Readr.
+  Anthropic's Consumer Terms prohibit using Free/Pro/Max OAuth tokens in any
+  third-party product/tool/service, so we deliberately do **not** offer a
+  "sign in with Claude" button — connect Anthropic with an **API key** instead.
+  ([Claude Code auth](https://code.claude.com/docs/en/authentication),
+  [ToS discussion](https://github.com/AndyMik90/Aperant/issues/1871))
 
 > ⚠️ **ToS caveat — call this out to users.** Driving a third-party app with a
 > *consumer subscription's* OAuth client is a gray area under provider terms,

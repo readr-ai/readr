@@ -48,6 +48,7 @@ struct LibraryView: View {
                     } label: {
                         Label("Import", systemImage: "plus")
                     }
+                    .accessibilityLabel("Import book")
                 }
                 ToolbarItem(placement: .secondaryAction) {
                     Button {
@@ -55,6 +56,7 @@ struct LibraryView: View {
                     } label: {
                         Label("AI Providers", systemImage: "gearshape")
                     }
+                    .accessibilityLabel("AI providers")
                 }
             }
             .sheet(isPresented: $showSettings) {

@@ -97,4 +97,37 @@ final class ArticleComposerTests: XCTestCase {
         XCTAssertEqual(article.title, "Notes on 1984")
         XCTAssertEqual(provider.receivedRequests.count, 1)
     }
+
+    // MARK: J6 — streaming composition
+
+    func testComposeStreamingYieldsScriptedDeltasInOrder() async throws {
+        let book = makeBook()
+        let scripted = ["# Notes\n", "First paragraph. ", "Second paragraph."]
+        let provider = MockLLMProvider(info: .fixture(), scriptedChunks: scripted)
+        let highlights = [highlight(chapter: book.chapters[0], lower: 0, quoted: "x", at: 0)]
+
+        var collected = ""
+        var deltas: [String] = []
+        for try await delta in composer.composeStreaming(from: highlights, in: book, provider: provider) {
+            deltas.append(delta)
+            collected += delta
+        }
+
+        XCTAssertEqual(deltas, scripted, "deltas should arrive in scripted order")
+        XCTAssertEqual(collected, scripted.joined())
+        XCTAssertEqual(provider.receivedRequests.count, 1)
+    }
+
+    func testComposeStreamingEmptyHighlightsThrowsNoHighlights() async {
+        let provider = MockLLMProvider(info: .fixture(), scriptedChunks: ["should not run"])
+        do {
+            for try await _ in composer.composeStreaming(from: [], in: makeBook(), provider: provider) {
+                XCTFail("empty highlights should not yield any deltas")
+            }
+            XCTFail("expected noHighlights to be thrown")
+        } catch {
+            XCTAssertEqual(error as? ArticleComposerError, .noHighlights)
+        }
+        XCTAssertTrue(provider.receivedRequests.isEmpty, "no LLM call should be made")
+    }
 }

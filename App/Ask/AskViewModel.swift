@@ -7,6 +7,7 @@ import ReadrKit
 final class AskViewModel: ObservableObject {
     @Published var answer = ""
     @Published var tier: AssembledContext.Tier?
+    @Published var citations: [Citation] = []
     @Published var isStreaming = false
     @Published var errorMessage: String?
 
@@ -37,6 +38,7 @@ final class AskViewModel: ObservableObject {
         }
         answer = ""
         tier = nil
+        citations = []
         errorMessage = nil
         isStreaming = true
         defer { isStreaming = false }
@@ -47,6 +49,8 @@ final class AskViewModel: ObservableObject {
                 switch event {
                 case let .contextAssembled(tier):
                     self.tier = tier
+                case let .citations(list):
+                    self.citations = list
                 case let .token(delta):
                     answer += delta
                 case let .completed(fullText):

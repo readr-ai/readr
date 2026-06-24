@@ -78,6 +78,9 @@ private struct Representable: UIViewRepresentable {
         view.backgroundColor = .clear
         view.delegate = context.coordinator
         view.textContainerInset = .zero
+        // Respond to the user's Dynamic Type setting; fonts already use the
+        // preferred .body text style, so they rescale automatically.
+        view.adjustsFontForContentSizeCategory = true
         return view
     }
 

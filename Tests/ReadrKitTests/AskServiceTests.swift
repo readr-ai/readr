@@ -76,6 +76,60 @@ final class AskServiceTests: XCTestCase {
         XCTAssertEqual(index.retrieveCallCount, 1)
     }
 
+    func testRetrievalTierYieldsCitationsEventMatchingPassages() async throws {
+        let book = makeBook(tokenCount: 5_000_000)
+        let provider = MockLLMProvider(
+            info: .fixture(
+                kind: .anthropic,
+                contextBudget: 200_000,
+                supportsPromptCaching: true
+            )
+        )
+        let index = StubRAGIndex(passages: [
+            RetrievedPassage(text: "First passage.", locator: "Ch. 2 ¶3", score: 0.9),
+            RetrievedPassage(text: "Second passage.", locator: "Ch. 7 ¶1", score: 0.8),
+        ])
+        let strategy = AdaptiveContextStrategy(index: index)
+        let service = AskService(strategy: strategy, provider: provider)
+
+        let events = try await collect(service.ask("What happens?", about: book, selection: nil))
+
+        let citations = events.compactMap { event -> [Citation]? in
+            if case let .citations(list) = event { return list }
+            return nil
+        }
+        let surfaced = try XCTUnwrap(citations.first)
+        XCTAssertEqual(surfaced.map(\.locator), ["Ch. 2 ¶3", "Ch. 7 ¶1"])
+
+        // The citations event arrives right after context is assembled.
+        XCTAssertEqual(events.first, .contextAssembled(tier: .retrieval))
+        if case .citations = events[1] {} else {
+            XCTFail("Expected the citations event to immediately follow contextAssembled; got \(events[1])")
+        }
+    }
+
+    func testWholeBookTierYieldsNoCitationsEvent() async throws {
+        let book = makeBook(tokenCount: 100)
+        let provider = MockLLMProvider(
+            info: .fixture(
+                kind: .anthropic,
+                contextBudget: 200_000,
+                supportsPromptCaching: true
+            ),
+            scriptedChunks: ["Hi"]
+        )
+        let strategy = AdaptiveContextStrategy(index: StubRAGIndex())
+        let service = AskService(strategy: strategy, provider: provider)
+
+        let events = try await collect(service.ask("What happens?", about: book, selection: nil))
+
+        let hasCitations = events.contains { event in
+            if case .citations = event { return true }
+            return false
+        }
+        XCTAssertFalse(hasCitations, "Whole-book tier must not surface citations")
+    }
+
     // MARK: - Selection anchor
 
     func testSelectionAnchorAppearsInUserMessage() async throws {

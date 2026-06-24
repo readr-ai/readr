@@ -31,17 +31,17 @@ public struct OAuthProviderConfig: Sendable, Equatable {
         scopes: ["openid", "profile", "email", "offline_access"]
     )
 
-    /// Anthropic / Claude OAuth configuration.
-    ///
-    /// NEEDS-VERIFICATION: confirm Anthropic OAuth client id/endpoints before shipping.
-    /// The `clientID` below is an explicit placeholder and MUST be replaced with a
-    /// real registered client identifier; the endpoints are best-known values.
-    public static let anthropic = OAuthProviderConfig(
+    /// Anthropic does NOT offer a supported subscription-OAuth path for Readr:
+    /// Anthropic's Consumer Terms prohibit using Free/Pro/Max OAuth tokens in any
+    /// third-party product. Connect Anthropic with an **API key** instead. This
+    /// config is intentionally left unwired (see SettingsModel.oauthConfig) and
+    /// kept only as a marker; do not enable it. (docs/AUTH.md)
+    public static let anthropicUnsupported = OAuthProviderConfig(
         authorizationEndpoint: URL(string: "https://claude.ai/oauth/authorize")!,
         tokenEndpoint: URL(string: "https://console.anthropic.com/v1/oauth/token")!,
-        clientID: "READR_ANTHROPIC_CLIENT_ID_PLACEHOLDER", // NEEDS-VERIFICATION: placeholder
+        clientID: "UNSUPPORTED_ANTHROPIC_OAUTH_PROHIBITED_BY_TOS",
         redirectURI: "http://127.0.0.1:1456/auth/callback",
-        scopes: ["org:create_api_key", "user:profile"]
+        scopes: []
     )
 }
 

@@ -63,17 +63,20 @@ struct ReaderView: View {
                     Image(systemName: "chevron.left")
                 }
                 .accessibilityIdentifier("prevChapter")
+                .accessibilityLabel("Previous chapter")
                 .disabled(chapterIndex == 0)
                 Button { chapterIndex = min(book.chapters.count - 1, chapterIndex + 1) } label: {
                     Image(systemName: "chevron.right")
                 }
                 .accessibilityIdentifier("nextChapter")
+                .accessibilityLabel("Next chapter")
                 .disabled(chapterIndex >= book.chapters.count - 1)
             }
             ToolbarItem(placement: .primaryAction) {
                 Button { showHighlights = true } label: {
                     Label("Highlights", systemImage: "highlighter")
                 }
+                .accessibilityLabel("Highlights")
             }
         }
         .sheet(isPresented: $showHighlights) {
@@ -103,6 +106,9 @@ struct ReaderView: View {
             selectedRange = nil
             model.savePosition(ReadingPosition(chapterIndex: newValue), for: book)
         }
+        // Build the retrieval index in the background when the book opens so the
+        // first "ask" is fast. Safe to call repeatedly; runs off the main thread.
+        .task(id: book.id) { await model.ensureIndexed(book) }
     }
 
     @ViewBuilder
@@ -200,6 +206,7 @@ private struct HighlightsListView: View {
                     } label: {
                         Label("Compose article", systemImage: "doc.text")
                     }
+                    .accessibilityLabel("Compose article")
                     .disabled(highlights.isEmpty)
                 }
                 ToolbarItem(placement: .confirmationAction) {

@@ -80,9 +80,15 @@ struct AskPanelView: View {
             }
 
             ScrollView {
-                Text(vm.answer)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .textSelection(.enabled)
+                VStack(alignment: .leading, spacing: 12) {
+                    Text(vm.answer)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .textSelection(.enabled)
+
+                    if !vm.citations.isEmpty {
+                        citationsSection
+                    }
+                }
             }
 
             if vm.isStreaming { ProgressView() }
@@ -92,6 +98,30 @@ struct AskPanelView: View {
             Spacer()
         }
         .padding()
+    }
+
+    private var citationsSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Label("Sources", systemImage: "quote.opening")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+
+            ForEach(Array(vm.citations.enumerated()), id: \.offset) { _, citation in
+                DisclosureGroup {
+                    Text(citation.quotedText)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                } label: {
+                    Text(citation.locator)
+                        .font(.caption.weight(.medium))
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(10)
+        .background(.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
     }
 
     private func submit() {

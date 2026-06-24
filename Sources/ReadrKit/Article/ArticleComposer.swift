@@ -38,19 +38,48 @@ public struct LLMArticleComposer: ArticleComposer {
         in book: Book,
         provider: LLMProvider
     ) async throws -> Article {
-        guard !highlights.isEmpty else { throw ArticleComposerError.noHighlights }
-
-        let prompt = Self.buildPrompt(highlights: highlights, book: book)
-        let request = ChatRequest(
-            messages: [.init(role: .user, content: prompt)],
-            maxOutputTokens: 2048
-        )
-
         var markdown = ""
-        for try await chunk in provider.stream(request) {
-            markdown += chunk.textDelta
+        for try await delta in composeStreaming(from: highlights, in: book, provider: provider) {
+            markdown += delta
         }
         return Article(title: "Notes on \(book.metadata.title)", markdown: markdown)
+    }
+
+    /// Streams the article's Markdown text deltas as the provider produces them.
+    ///
+    /// Guards against empty highlights (finishes throwing `.noHighlights` without
+    /// making an LLM call), builds the same prompt as `compose`, and forwards the
+    /// provider's text deltas. This is the single code path; `compose` simply
+    /// accumulates the stream into a full `Article`.
+    public func composeStreaming(
+        from highlights: [Highlight],
+        in book: Book,
+        provider: LLMProvider
+    ) -> AsyncThrowingStream<String, Error> {
+        AsyncThrowingStream { continuation in
+            guard !highlights.isEmpty else {
+                continuation.finish(throwing: ArticleComposerError.noHighlights)
+                return
+            }
+
+            let prompt = Self.buildPrompt(highlights: highlights, book: book)
+            let request = ChatRequest(
+                messages: [.init(role: .user, content: prompt)],
+                maxOutputTokens: 2048
+            )
+
+            let task = Task {
+                do {
+                    for try await chunk in provider.stream(request) {
+                        continuation.yield(chunk.textDelta)
+                    }
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
     }
 
     // MARK: - Prompt (exposed for testing)

@@ -68,10 +68,18 @@ final class SettingsModel: ObservableObject {
         activeSelection = manager.selection
     }
 
+    /// Whether a kind offers a browser OAuth "sign in" option.
+    func supportsOAuth(_ kind: ProviderInfo.Kind) -> Bool {
+        Self.oauthConfig(for: kind) != nil
+    }
+
     static func oauthConfig(for kind: ProviderInfo.Kind) -> OAuthProviderConfig? {
         switch kind {
         case .openAI: return .openAI
-        case .anthropic: return .anthropic
+        // Anthropic subscription OAuth is intentionally NOT offered: Anthropic's
+        // Consumer Terms prohibit using Free/Pro/Max OAuth tokens in third-party
+        // apps. Use an Anthropic API key instead. See docs/AUTH.md.
+        case .anthropic: return nil
         case .local: return nil
         }
     }

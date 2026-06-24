@@ -39,18 +39,26 @@ final class ArticleViewModel: ObservableObject {
         }
         isComposing = true
         errorMessage = nil
+        title = "Notes on \(book.metadata.title)"
         defer { isComposing = false }
         do {
-            let article = try await composer.compose(from: highlights, in: book, provider: provider)
-            guard !article.markdown.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            // Append deltas live so the editor fills in as the article streams.
+            for try await delta in composer.composeStreaming(
+                from: highlights, in: book, provider: provider
+            ) {
+                markdown += delta
+            }
+            guard !markdown.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                // Reset any partial whitespace-only output so the empty state shows.
+                markdown = ""
                 errorMessage = "The model returned an empty article. Try again."
                 return
             }
-            title = article.title
-            markdown = article.markdown
         } catch ArticleComposerError.noHighlights {
+            markdown = ""
             errorMessage = "Highlight something first to compose an article."
         } catch {
+            markdown = ""
             errorMessage = error.localizedDescription
         }
     }

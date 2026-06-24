@@ -53,10 +53,16 @@ highlights→article) together, per project direction.
 - [ ] PDF export (Markdown share shipped; PDF is a follow-up)
 - [ ] Streamed composition in the editor; manual J6 walk on a Mac
 
-## M5 — Polish & OSS health
+## M5 — Privacy hardening & polish (in progress)
+- [x] J7 zero-egress audit: on-device pipeline needs no network; local provider
+  only contacts loopback; no telemetry by default (`PrivacyAuditTests`)
+- [x] Accessibility: VoiceOver labels on icon controls; Dynamic Type in the reader
+- [x] Background indexing: build the RAG index on book open (faster first ask)
+- [x] Citations surfaced in the Ask panel; streamed article composition
 - [ ] iCloud sync of library/annotations
-- [ ] Accessibility & localization passes
-- [ ] Issue templates, discussions, release process
+- [ ] Localization (`Localizable.strings`), issue templates, release process
+- [ ] SQLite (`sqlite-vec` + FTS5) RAG persistence; PDF article export
+- [ ] Manual passes on a Mac (J1–J7)
 
 ## Open questions / decisions to revisit
 - OAuth feasibility for "log in with Claude / ChatGPT" vs. API keys only.

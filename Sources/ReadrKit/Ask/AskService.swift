@@ -4,6 +4,8 @@ import Foundation
 public enum AskEvent: Sendable, Equatable {
     /// The router chose a context tier and the request is ready to send.
     case contextAssembled(tier: AssembledContext.Tier)
+    /// The retrieved passages grounding the answer (retrieval tier only).
+    case citations([Citation])
     /// A streamed text delta from the model.
     case token(String)
     /// Streaming finished; carries the full accumulated answer text.
@@ -42,6 +44,9 @@ public struct AskService: Sendable {
                     )
                     try Task.checkCancellation()
                     continuation.yield(.contextAssembled(tier: assembled.tier))
+                    if !assembled.citations.isEmpty {
+                        continuation.yield(.citations(assembled.citations))
+                    }
 
                     var fullText = ""
                     for try await chunk in provider.stream(assembled.request) {

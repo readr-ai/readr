@@ -26,10 +26,13 @@ public struct AssembledContext: Sendable {
     public enum Tier: String, Sendable { case wholeBook, retrieval }
     public var tier: Tier
     public var request: ChatRequest
+    /// Passages surfaced to the reader as sources. Empty for the whole-book tier.
+    public var citations: [Citation]
 
-    public init(tier: Tier, request: ChatRequest) {
+    public init(tier: Tier, request: ChatRequest, citations: [Citation] = []) {
         self.tier = tier
         self.request = request
+        self.citations = citations
     }
 }
 
@@ -91,6 +94,12 @@ public struct AdaptiveContextStrategy: ContextStrategy {
         let retrieved = passages
             .map { "[\($0.locator)] \($0.text)" }
             .joined(separator: "\n\n")
+        let citations = passages.map { passage in
+            Citation(
+                locator: passage.locator,
+                quotedText: Self.snippet(from: passage.text)
+            )
+        }
         let request = ChatRequest(
             messages: [
                 .init(role: .system, content: Self.systemPrompt),
@@ -104,7 +113,7 @@ public struct AdaptiveContextStrategy: ContextStrategy {
             ],
             maxOutputTokens: 1024
         )
-        return AssembledContext(tier: .retrieval, request: request)
+        return AssembledContext(tier: .retrieval, request: request, citations: citations)
     }
 
     static let systemPrompt = """
@@ -112,6 +121,19 @@ public struct AdaptiveContextStrategy: ContextStrategy {
     question using the provided book context. Be precise, cite the relevant part \
     of the text when useful, and say so if the answer is not in the book.
     """
+
+    /// A short, trimmed preview of a retrieved passage for display as a citation.
+    static func snippet(from text: String, maxLength: Int = 160) -> String {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.count > maxLength else { return trimmed }
+        let cutoff = trimmed.index(trimmed.startIndex, offsetBy: maxLength)
+        var clipped = String(trimmed[..<cutoff])
+        // Prefer to end on a word boundary rather than mid-word.
+        if let lastSpace = clipped.lastIndex(where: { $0.isWhitespace }) {
+            clipped = String(clipped[..<lastSpace])
+        }
+        return clipped.trimmingCharacters(in: .whitespacesAndNewlines) + "…"
+    }
 
     /// The always-injected "where you are" anchor (Tier 3).
     static func anchor(for book: Book, selection: Selection?) -> String {

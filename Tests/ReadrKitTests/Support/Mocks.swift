@@ -33,13 +33,19 @@ final class MockHTTPClient: HTTPClient, @unchecked Sendable {
 
 /// Fails (and records) on any network use — enforces the local/offline path (J7).
 final class NetworkSentinel: HTTPClient, @unchecked Sendable {
-    private(set) var didAttemptNetwork = false
+    private let lock = NSLock()
+    private var _attemptedURLs: [URL] = []
+    var attemptedURLs: [URL] { lock.lock(); defer { lock.unlock() }; return _attemptedURLs }
+    var didAttemptNetwork: Bool { !attemptedURLs.isEmpty }
+
+    private func record(_ url: URL) { lock.lock(); _attemptedURLs.append(url); lock.unlock() }
+
     func send(_ request: HTTPRequest) async throws -> HTTPResponse {
-        didAttemptNetwork = true
+        record(request.url)
         throw URLError(.notConnectedToInternet)
     }
     func stream(_ request: HTTPRequest) async throws -> AsyncThrowingStream<Data, Error> {
-        didAttemptNetwork = true
+        record(request.url)
         throw URLError(.notConnectedToInternet)
     }
 }
