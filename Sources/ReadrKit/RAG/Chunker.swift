@@ -34,12 +34,11 @@ public struct Chunker {
     /// Chunk every chapter independently — chunks never span chapter boundaries.
     public func chunk(_ book: Book) -> [Chunk] {
         var result: [Chunk] = []
-        // Iterate chapters in reading order while preserving stable indices.
-        let ordered = book.chapters.enumerated().sorted { lhs, rhs in
-            lhs.element.order < rhs.element.order
-        }
+        // Enumerate AFTER sorting so `chapterIndex` is the reading-order position,
+        // matching the doc, even when `book.chapters` is stored out of order.
+        let ordered = book.chapters.sorted { $0.order < $1.order }
 
-        for (chapterIndex, chapter) in ordered {
+        for (chapterIndex, chapter) in ordered.enumerated() {
             let locator = Self.locator(for: chapter)
             let pieces = splitChapter(chapter.text)
             for piece in pieces {

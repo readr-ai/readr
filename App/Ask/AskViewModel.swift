@@ -29,6 +29,8 @@ final class AskViewModel: ObservableObject {
     func ask(_ question: String) async {
         let trimmed = question.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
+        // Ignore re-entrant submits while a stream is already in flight.
+        guard !isStreaming else { return }
         guard let service else {
             errorMessage = "Connect an AI provider in settings to ask questions."
             return
@@ -47,8 +49,10 @@ final class AskViewModel: ObservableObject {
                     self.tier = tier
                 case let .token(delta):
                     answer += delta
-                case .completed:
-                    break
+                case let .completed(fullText):
+                    // Authoritative final text — covers providers that don't
+                    // stream incremental deltas.
+                    answer = fullText
                 }
             }
         } catch {

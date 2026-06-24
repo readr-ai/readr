@@ -20,6 +20,9 @@ public final class HybridRAGIndex: RAGIndex, @unchecked Sendable {
         var documentFrequency: [String: Int]
         /// Average document length across all chunks.
         var averageDocLength: Double
+        /// The provider used to embed this book — reused to embed its queries so
+        /// build-time and query-time embeddings always share a vector space.
+        var provider: EmbeddingProvider
     }
 
     private let chunker: Chunker
@@ -67,12 +70,12 @@ public final class HybridRAGIndex: RAGIndex, @unchecked Sendable {
             termCounts: termCounts,
             docLengths: docLengths,
             documentFrequency: documentFrequency,
-            averageDocLength: averageDocLength
+            averageDocLength: averageDocLength,
+            provider: embeddings
         )
 
         lock.lock()
         indexes[book.id] = entry  // Idempotent: rebuild replaces prior state.
-        lastProvider = embeddings  // Reuse the same provider to embed queries.
         lock.unlock()
     }
 
@@ -83,8 +86,9 @@ public final class HybridRAGIndex: RAGIndex, @unchecked Sendable {
 
         guard let entry, !entry.chunks.isEmpty, limit > 0 else { return [] }
 
-        // Vector score: cosine of query embedding vs each chunk embedding.
-        let queryVectors = try await embeddingProvider.embed([query])
+        // Vector score: cosine of query embedding vs each chunk embedding, using
+        // the same provider that built this book (matching vector spaces).
+        let queryVectors = try await entry.provider.embed([query])
         let queryVector = queryVectors.first ?? []
 
         let count = entry.chunks.count
@@ -132,29 +136,15 @@ public final class HybridRAGIndex: RAGIndex, @unchecked Sendable {
         }
     }
 
+    /// Whether the book was built. Presence-based (not chunk-count based) so a
+    /// book that legitimately yields zero chunks isn't rebuilt on every query.
     public func isBuilt(bookID: UUID) async -> Bool {
         lock.lock()
         defer { lock.unlock() }
-        if let entry = indexes[bookID] {
-            return !entry.chunks.isEmpty
-        }
-        return false
+        return indexes[bookID] != nil
     }
 
     // MARK: - Internals
-
-    /// The provider used to embed queries at retrieval time. The same kind of
-    /// provider must be used for `build` and `retrieve`; we capture the most
-    /// recent one to embed queries.
-    private var lastProvider: EmbeddingProvider?
-
-    /// Local default so query embedding works even if `build` was never given a
-    /// custom provider variant. Overwritten on each `build`.
-    private var embeddingProvider: EmbeddingProvider {
-        lock.lock()
-        defer { lock.unlock() }
-        return lastProvider ?? LocalEmbeddingProvider()
-    }
 
     static func minMaxNormalize(_ values: [Double]) -> [Double] {
         guard let minValue = values.min(), let maxValue = values.max() else {
@@ -162,8 +152,11 @@ public final class HybridRAGIndex: RAGIndex, @unchecked Sendable {
         }
         let range = maxValue - minValue
         guard range > 0 else {
-            // All equal — return zeros so this signal doesn't bias the fusion.
-            return [Double](repeating: 0, count: values.count)
+            // All equal: a present signal (non-zero) is uniformly relevant (1);
+            // an absent signal (all zero) contributes nothing (0). Avoids zeroing
+            // the score of a sole/tied perfect match.
+            let value = maxValue > 0 ? 1.0 : 0.0
+            return [Double](repeating: value, count: values.count)
         }
         return values.map { ($0 - minValue) / range }
     }
