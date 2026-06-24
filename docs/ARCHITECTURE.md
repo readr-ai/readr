@@ -28,7 +28,7 @@ can be swapped or mocked.
 
 | Protocol | Responsibility | Default impl |
 |----------|----------------|--------------|
-| `BookParser` | Turn an EPUB/PDF file into a `Book` (chapters, text, TOC, metadata) | Readium-backed |
+| `BookParser` | Turn an EPUB/PDF/text file into a `Book` (chapters, text, TOC, metadata) | Native: `PlainTextBookParser`, `EPUBBookParser` (+ZIPFoundation), `PDFKitBookParser` |
 | `LLMProvider` | Chat completion + streaming + token counting | Anthropic / OpenAI / Local |
 | `EmbeddingProvider` | Text → vectors | Hosted or on-device (MLX) |
 | `RAGIndex` | Build/query the hybrid index for a book | SQLite (`sqlite-vec` + FTS5) |

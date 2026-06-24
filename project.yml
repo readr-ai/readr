@@ -13,8 +13,14 @@ packages:
   # The core logic lives in the local Swift package at the repo root.
   ReadrKit:
     path: .
-  # Readium (EPUB/PDF rendering) is wired in during the M1 Readium increment:
-  # ReadiumShared:
+  # EPUB reading: ZIPFoundation supplies the archive bytes; all EPUB parsing
+  # lives in ReadrKit.EPUBBookParser.
+  ZIPFoundation:
+    url: https://github.com/weichsel/ZIPFoundation
+    from: "0.9.19"
+  # Readium's paginated navigator (reflow/fonts/decorations) is an optional
+  # rendering upgrade tracked for a later milestone:
+  # ReadiumNavigator:
   #   url: https://github.com/readium/swift-toolkit
   #   from: "3.0.0"
 
@@ -27,6 +33,8 @@ targets:
     dependencies:
       - package: ReadrKit
         product: ReadrKit
+      - package: ZIPFoundation
+        product: ZIPFoundation
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.readr.app

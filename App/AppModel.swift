@@ -49,6 +49,9 @@ final class AppModel: ObservableObject {
         #if canImport(PDFKit)
         parsers.append(PDFKitBookParser())
         #endif
+        #if canImport(ZIPFoundation)
+        parsers.append(EPUBFileParser())
+        #endif
         return BookParserRegistry(parsers: parsers)
     }
 
