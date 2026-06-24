@@ -31,7 +31,7 @@ public protocol CredentialStore: Sendable {
     func delete(for kind: ProviderInfo.Kind) throws
 }
 
-public enum AuthError: Error, Sendable {
+public enum AuthError: Error, Sendable, Equatable {
     case userCancelled
     case stateMismatch
     case tokenExchangeFailed(String)
