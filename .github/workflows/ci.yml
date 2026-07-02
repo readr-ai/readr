@@ -17,3 +17,33 @@ jobs:
         run: swift build
       - name: Test
         run: swift test
+
+  reader-app:
+    name: Build Readr app (iOS + macOS)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select Xcode
+        run: sudo xcode-select -switch /Applications/Xcode_15.4.app
+      - name: Install XcodeGen
+        run: brew install xcodegen
+      - name: Generate Xcode project
+        run: xcodegen generate
+      - name: Build (macOS)
+        run: >
+          set -o pipefail &&
+          xcodebuild build
+          -project Readr.xcodeproj
+          -scheme Readr
+          -destination 'generic/platform=macOS'
+          -skipPackagePluginValidation
+          CODE_SIGNING_ALLOWED=NO
+      - name: Build (iOS Simulator)
+        run: >
+          set -o pipefail &&
+          xcodebuild build
+          -project Readr.xcodeproj
+          -scheme Readr
+          -destination 'generic/platform=iOS Simulator'
+          -skipPackagePluginValidation
+          CODE_SIGNING_ALLOWED=NO
