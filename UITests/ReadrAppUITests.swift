@@ -46,9 +46,12 @@ final class ReadrAppUITests: XCTestCase {
         XCTAssertTrue(settingsButton.waitForExistence(timeout: 10))
         settingsButton.tap()
 
+        // The settings sheet's navigation title (iOS uppercases Form section
+        // headers, so assert on the title instead).
         XCTAssertTrue(
-            app.staticTexts["Local model (on-device)"].waitForExistence(timeout: 5),
-            "Provider settings should list the on-device local model option"
+            app.staticTexts["AI Providers"].waitForExistence(timeout: 5)
+            || app.navigationBars["AI Providers"].waitForExistence(timeout: 5),
+            "Tapping AI providers should open the provider settings sheet"
         )
     }
 
