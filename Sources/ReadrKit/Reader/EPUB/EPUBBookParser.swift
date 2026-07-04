@@ -51,8 +51,39 @@ public struct EPUBBookParser {
         return Book(
             metadata: metadata,
             chapters: chapters,
-            estimatedTokenCount: estimateTokens(fullText)
+            estimatedTokenCount: estimateTokens(fullText),
+            coverImageData: Self.coverImageData(opf: opf, baseDir: baseDir, container: container)
         )
+    }
+
+    // MARK: - Cover image
+
+    /// Loads the cover artwork declared in the OPF, if any. Prefers the EPUB3
+    /// `properties="cover-image"` manifest item, falling back to the EPUB2
+    /// `<meta name="cover" content="…"/>` reference. Never throws — a missing
+    /// or unreadable cover just yields nil.
+    static func coverImageData(opf: OPF, baseDir: String, container: EPUBContainer) -> Data? {
+        for id in [opf.coverItemID, opf.metaCoverID].compactMap({ $0 }) {
+            guard let item = opf.manifest[id],
+                  isImage(mediaType: item.type, href: item.href) else { continue }
+            let path = resolve(base: baseDir, href: item.href)
+            if let data = try? container.data(at: path), !data.isEmpty {
+                return data
+            }
+        }
+        return nil
+    }
+
+    /// True when the manifest item plausibly refers to an image: media-type
+    /// starts with `image/`, or — when the media-type is absent — the href has
+    /// a well-known image file extension.
+    private static func isImage(mediaType: String, href: String) -> Bool {
+        if !mediaType.isEmpty {
+            return mediaType.hasPrefix("image/")
+        }
+        let lower = (href.split(separator: "#", maxSplits: 1).first.map(String.init) ?? href)
+            .lowercased()
+        return [".jpg", ".jpeg", ".png", ".gif", ".webp"].contains { lower.hasSuffix($0) }
     }
 
     // MARK: - Path helpers
@@ -97,6 +128,10 @@ struct OPF {
     var language: String?
     var manifest: [String: (href: String, type: String)] = [:]
     var spine: [String] = []
+    /// Manifest id of the EPUB3 cover item (`properties="cover-image"`).
+    var coverItemID: String?
+    /// Manifest id referenced by the EPUB2 `<meta name="cover" content="…"/>`.
+    var metaCoverID: String?
 
     static func parse(_ data: Data) -> OPF {
         let delegate = OPFDelegate()
@@ -137,11 +172,24 @@ private final class OPFDelegate: NSObject, XMLParserDelegate {
         case "item":
             if let id = attributeDict["id"], let href = attributeDict["href"] {
                 opf.manifest[id] = (href, attributeDict["media-type"] ?? "")
+                if opf.coverItemID == nil,
+                   let properties = attributeDict["properties"],
+                   properties.split(whereSeparator: \.isWhitespace).contains("cover-image") {
+                    opf.coverItemID = id
+                }
             }
         case "itemref":
             if let idref = attributeDict["idref"] { opf.spine.append(idref) }
         default:
             switch Self.localName(elementName) {
+            case "meta":
+                // EPUB2 cover convention: <meta name="cover" content="ITEM_ID"/>.
+                if opf.metaCoverID == nil,
+                   attributeDict["name"] == "cover",
+                   let content = attributeDict["content"],
+                   !content.isEmpty {
+                    opf.metaCoverID = content
+                }
             case "title", "creator", "language":
                 capturing = Self.localName(elementName)
                 buffer = ""

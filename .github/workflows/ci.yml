@@ -5,6 +5,11 @@ on:
     branches: [main]
   pull_request:
 
+# contents: write lets the reader-app job push captured screenshots to the
+# `ci-screenshots` branch.
+permissions:
+  contents: write
+
 jobs:
   reader-kit:
     name: Build & test ReadrKit
@@ -47,4 +52,23 @@ jobs:
           -scheme Readr
           -destination 'platform=iOS Simulator,name=iPhone 16'
           -skipPackagePluginValidation
+          -resultBundlePath TestResults
           CODE_SIGNING_ALLOWED=NO
+      - name: Extract screenshots
+        if: always()
+        run: >
+          brew install chargepoint/xcparse/xcparse &&
+          xcparse screenshots TestResults.xcresult shots &&
+          ls -R shots || true
+      - name: Publish screenshots
+        if: always()
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ -d shots ] && [ -n "$(ls -A shots 2>/dev/null)" ]; then
+            cd shots
+            git init -q -b ci-screenshots
+            git config user.name "readr-ci" && git config user.email "ci@readr.local"
+            git add -A && git commit -qm "screenshots for $GITHUB_SHA"
+            git push -f "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" ci-screenshots
+          fi

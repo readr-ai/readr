@@ -4,8 +4,15 @@ import Foundation
 public struct Page: Sendable, Hashable {
     /// The page's text (never cut mid-word).
     public var text: String
-    /// Character range within the chapter's text that this page covers.
+    /// Character range within the chapter's text that this page covers. May
+    /// start BEFORE the text does: whitespace folded at a page boundary is
+    /// covered by the range but excluded from `text`.
     public var range: Range<Int>
+
+    /// Chapter offset of `text`'s first character — the correct origin for
+    /// mapping page-local selections/highlights into chapter coordinates
+    /// (`range.lowerBound` is wrong whenever leading whitespace was folded).
+    public var textStartOffset: Int { range.upperBound - text.count }
 
     public init(text: String, range: Range<Int>) {
         self.text = text

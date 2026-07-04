@@ -113,6 +113,22 @@ final class PaginatorTests: XCTestCase {
         }
     }
 
+    func testTextStartOffsetLocatesPageTextExactly() {
+        // Multi-space word boundaries force whitespace folding, so ranges start
+        // before the text does; textStartOffset must still locate the text.
+        let text = "alpha  beta   gamma delta  epsilon zeta eta theta iota kappa"
+        let chars = Array(text)
+        let pages = Paginator(capacity: 14).paginate(text)
+        XCTAssertGreaterThan(pages.count, 1)
+        for page in pages {
+            let start = page.textStartOffset
+            XCTAssertEqual(
+                String(chars[start..<(start + page.text.count)]), page.text,
+                "textStartOffset must be the chapter offset of the page's text"
+            )
+        }
+    }
+
     func testPageLayoutSpreadSizes() {
         XCTAssertEqual(PageLayout.scroll.pagesPerSpread, 1)
         XCTAssertEqual(PageLayout.singlePage.pagesPerSpread, 1)

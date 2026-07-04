@@ -89,4 +89,128 @@ final class EPUBBookParserTests: XCTestCase {
         XCTAssertEqual(EPUBBookParser.resolve(base: "OEBPS", href: "ch1.xhtml#frag"), "OEBPS/ch1.xhtml")
         XCTAssertEqual(EPUBBookParser.resolve(base: "", href: "content.opf"), "content.opf")
     }
+
+    // MARK: - Cover image extraction
+
+    /// Builds a minimal one-chapter EPUB whose OPF metadata/manifest blocks are
+    /// injectable, plus optional binary entries (e.g. cover image bytes).
+    private func makeCoverContainer(
+        metadataExtra: String = "",
+        manifestExtra: String = "",
+        binaryEntries: [String: Data] = [:]
+    ) -> InMemoryEPUBContainer {
+        let containerXML = """
+        <?xml version="1.0"?>
+        <container xmlns="urn:oasis:names:tc:opendocument:xmlns:container" version="1.0">
+          <rootfiles>
+            <rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/>
+          </rootfiles>
+        </container>
+        """
+        let opf = """
+        <?xml version="1.0"?>
+        <package xmlns="http://www.idpf.org/2007/opf" version="3.0">
+          <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+            <dc:title>Covered</dc:title>
+            \(metadataExtra)
+          </metadata>
+          <manifest>
+            <item id="c1" href="ch1.xhtml" media-type="application/xhtml+xml"/>
+            \(manifestExtra)
+          </manifest>
+          <spine>
+            <itemref idref="c1"/>
+          </spine>
+        </package>
+        """
+        let ch1 = "<html><body><h1>One</h1><p>Some content here.</p></body></html>"
+        var entries: [String: Data] = [
+            "META-INF/container.xml": Data(containerXML.utf8),
+            "OEBPS/content.opf": Data(opf.utf8),
+            "OEBPS/ch1.xhtml": Data(ch1.utf8),
+        ]
+        for (path, data) in binaryEntries {
+            entries[path] = data
+        }
+        return InMemoryEPUBContainer(entries: entries)
+    }
+
+    func testExtractsEPUB3CoverImageViaManifestProperties() throws {
+        let jpegBytes = Data([0xFF, 0xD8, 0xFF])
+        let container = makeCoverContainer(
+            manifestExtra: """
+            <item id="cov" href="images/cover.jpg" media-type="image/jpeg" properties="cover-image"/>
+            """,
+            binaryEntries: ["OEBPS/images/cover.jpg": jpegBytes]
+        )
+        let book = try parser.parse(container: container, fallbackTitle: "x")
+        XCTAssertEqual(book.coverImageData, jpegBytes)
+    }
+
+    func testExtractsEPUB2CoverImageViaMetaCover() throws {
+        let pngBytes = Data([0x89, 0x50, 0x4E, 0x47])
+        let container = makeCoverContainer(
+            metadataExtra: #"<meta name="cover" content="cimg"/>"#,
+            manifestExtra: """
+            <item id="cimg" href="cover.png" media-type="image/png"/>
+            """,
+            binaryEntries: ["OEBPS/cover.png": pngBytes]
+        )
+        let book = try parser.parse(container: container, fallbackTitle: "x")
+        XCTAssertEqual(book.coverImageData, pngBytes)
+    }
+
+    func testEPUB3CoverTakesPriorityOverEPUB2Meta() throws {
+        let epub3Bytes = Data([0xFF, 0xD8, 0xFF, 0x01])
+        let epub2Bytes = Data([0x89, 0x50, 0x4E, 0x47])
+        let container = makeCoverContainer(
+            metadataExtra: #"<meta name="cover" content="old"/>"#,
+            manifestExtra: """
+            <item id="new" href="new.jpg" media-type="image/jpeg" properties="cover-image"/>
+            <item id="old" href="old.png" media-type="image/png"/>
+            """,
+            binaryEntries: [
+                "OEBPS/new.jpg": epub3Bytes,
+                "OEBPS/old.png": epub2Bytes,
+            ]
+        )
+        let book = try parser.parse(container: container, fallbackTitle: "x")
+        XCTAssertEqual(book.coverImageData, epub3Bytes)
+    }
+
+    func testCoverAcceptedByExtensionWhenMediaTypeMissing() throws {
+        let bytes = Data([0x89, 0x50, 0x4E, 0x47])
+        let container = makeCoverContainer(
+            metadataExtra: #"<meta name="cover" content="cimg"/>"#,
+            manifestExtra: """
+            <item id="cimg" href="art/cover.PNG"/>
+            """,
+            binaryEntries: ["OEBPS/art/cover.PNG": bytes]
+        )
+        let book = try parser.parse(container: container, fallbackTitle: "x")
+        XCTAssertEqual(book.coverImageData, bytes)
+    }
+
+    func testNonImageCoverCandidateIsIgnored() throws {
+        let container = makeCoverContainer(
+            metadataExtra: #"<meta name="cover" content="c1"/>"#
+        )
+        let book = try parser.parse(container: container, fallbackTitle: "x")
+        XCTAssertNil(book.coverImageData)
+    }
+
+    func testMissingCoverEntryYieldsNilWithoutThrowing() throws {
+        let container = makeCoverContainer(
+            manifestExtra: """
+            <item id="cov" href="images/cover.jpg" media-type="image/jpeg" properties="cover-image"/>
+            """
+        )
+        let book = try parser.parse(container: container, fallbackTitle: "x")
+        XCTAssertNil(book.coverImageData)
+    }
+
+    func testNoCoverDeclaredYieldsNil() throws {
+        let book = try parser.parse(container: makeContainer(), fallbackTitle: "x")
+        XCTAssertNil(book.coverImageData)
+    }
 }

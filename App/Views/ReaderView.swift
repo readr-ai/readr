@@ -19,9 +19,35 @@ struct ReaderView: View {
     @State private var showAsk = false
     /// Persisted reading layout: continuous scroll, one page, or facing pages.
     @AppStorage("readerLayout") private var layoutRaw = PageLayout.scroll.rawValue
+    /// Persisted appearance: reading theme (Paper/Sepia/Night) and text size.
+    @AppStorage("readingTheme") private var themeRaw = ReadingTheme.paper.rawValue
+    @AppStorage("readingFontSize") private var fontSize = 18.0
+    /// PDFs: show the original pages (native PDFKit) or the extracted text
+    /// (which keeps highlights and select-to-Ask available).
+    @AppStorage("pdfShowsOriginal") private var pdfShowsOriginal = true
 
     private var layout: PageLayout {
         PageLayout(rawValue: layoutRaw) ?? .scroll
+    }
+
+    /// Everything the text renderer needs, derived from the persisted
+    /// appearance settings (clamped in case stored values drift out of range).
+    private var style: ReaderStyle {
+        ReaderStyle(
+            theme: ReadingTheme(rawValue: themeRaw) ?? .paper,
+            fontSize: min(
+                max(CGFloat(fontSize), ReaderStyle.fontSizeRange.lowerBound),
+                ReaderStyle.fontSizeRange.upperBound
+            )
+        )
+    }
+
+    /// Non-nil when the book's retained source file is a PDF — rendered
+    /// natively via PDFKit instead of the text reading modes.
+    private var pdfURL: URL? {
+        guard let url = model.sourceURL(for: book),
+              url.pathExtension.lowercased() == "pdf" else { return nil }
+        return url
     }
 
     private var chapter: Chapter? {
@@ -38,11 +64,17 @@ struct ReaderView: View {
 
     var body: some View {
         Group {
-            if let chapter {
+            if let pdfURL, pdfShowsOriginal {
+                // Native PDF pages. Highlights/Ask need text selection — the
+                // Aa menu offers "Extracted text" for that.
+                PDFReaderView(url: pdfURL)
+            } else if let chapter {
                 VStack(spacing: 0) {
                     if let title = chapter.title {
                         Text(title)
                             .font(.title3.bold())
+                            .fontDesign(.serif)
+                            .foregroundStyle(style.theme.inkColor)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .padding(.horizontal)
                             .padding(.top)
@@ -51,6 +83,7 @@ struct ReaderView: View {
                         SelectableTextView(
                             text: chapter.text,
                             highlightRanges: chapterHighlights,
+                            style: style,
                             onSelect: { selectedRange = $0 }
                         )
                         .padding()
@@ -58,12 +91,14 @@ struct ReaderView: View {
                         PagedChapterView(
                             chapter: chapter,
                             layout: layout,
+                            style: style,
                             highlightRanges: chapterHighlights,
                             onSelect: { selectedRange = $0 }
                         )
                     }
                     selectionBar(for: chapter)
                 }
+                .background(style.theme.background.ignoresSafeArea())
             } else {
                 ContentUnavailableView("No readable content", systemImage: "doc")
             }
@@ -79,19 +114,27 @@ struct ReaderView: View {
                 }
                 .accessibilityIdentifier("prevChapter")
                 .accessibilityLabel("Previous chapter")
-                .disabled(chapterIndex == 0)
+                .disabled(chapterIndex == 0 || (pdfURL != nil && pdfShowsOriginal))
                 Button { chapterIndex = min(book.chapters.count - 1, chapterIndex + 1) } label: {
                     Image(systemName: "chevron.right")
                 }
                 .accessibilityIdentifier("nextChapter")
                 .accessibilityLabel("Next chapter")
-                .disabled(chapterIndex >= book.chapters.count - 1)
+                .disabled(chapterIndex >= book.chapters.count - 1 || (pdfURL != nil && pdfShowsOriginal))
             }
             ToolbarItemGroup(placement: .primaryAction) {
-                // A compact menu, not a segmented control: an inline picker
-                // crowds the iPhone nav bar and pushes Highlights out of reach
-                // (caught by the UI tests).
+                // ONE "Aa" menu for all appearance — layout, theme, text size —
+                // Apple-Books style. Three separate trailing items collapse into
+                // an iOS overflow menu and hide Highlights (seen in the CI
+                // screenshots), so keep the trailing bar to Aa + Highlights.
                 Menu {
+                    if pdfURL != nil {
+                        Picker("PDF display", selection: $pdfShowsOriginal) {
+                            Label("Original pages", systemImage: "doc.richtext").tag(true)
+                            Label("Extracted text", systemImage: "text.alignleft").tag(false)
+                        }
+                        Divider()
+                    }
                     Picker("Reading layout", selection: $layoutRaw) {
                         Label("Scroll", systemImage: "text.justify.left")
                             .tag(PageLayout.scroll.rawValue)
@@ -100,10 +143,25 @@ struct ReaderView: View {
                         Label("Two pages", systemImage: "book")
                             .tag(PageLayout.doublePage.rawValue)
                     }
+                    Divider()
+                    Picker("Theme", selection: $themeRaw) {
+                        ForEach(ReadingTheme.allCases) { theme in
+                            Text(theme.displayName).tag(theme.rawValue)
+                        }
+                    }
+                    Divider()
+                    Button("Larger text") {
+                        fontSize = min(fontSize + 1, Double(ReaderStyle.fontSizeRange.upperBound))
+                    }
+                    .disabled(fontSize >= Double(ReaderStyle.fontSizeRange.upperBound))
+                    Button("Smaller text") {
+                        fontSize = max(fontSize - 1, Double(ReaderStyle.fontSizeRange.lowerBound))
+                    }
+                    .disabled(fontSize <= Double(ReaderStyle.fontSizeRange.lowerBound))
                 } label: {
-                    Label("Reading layout", systemImage: "book.pages")
+                    Label("Appearance", systemImage: "textformat.size")
                 }
-                .accessibilityLabel("Reading layout")
+                .accessibilityLabel("Appearance")
                 Button { showHighlights = true } label: {
                     Label("Highlights", systemImage: "highlighter")
                 }
