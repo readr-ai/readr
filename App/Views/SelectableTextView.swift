@@ -9,17 +9,23 @@ import AppKit
 /// A read-only, selectable text view that reports the selected **character**
 /// range and paints existing highlights. Wraps `UITextView` (iOS) / `NSTextView`
 /// (macOS) because SwiftUI's `Text` does not expose selection ranges to code —
-/// which we need for highlight capture (J3). Replaced by the Readium navigator's
-/// decoration API once EPUB/PDF rendering lands.
+/// which we need for highlight capture (J3). Renders with the app's
+/// `ReaderStyle` (theme ink, serif type, line spacing).
 struct SelectableTextView: View {
     let text: String
     /// Character ranges to paint as highlights.
     let highlightRanges: [Range<Int>]
+    var style = ReaderStyle()
     /// Called with the selected character range (empty selection ⇒ not called).
     let onSelect: (Range<Int>) -> Void
 
     var body: some View {
-        Representable(text: text, highlightRanges: highlightRanges, onSelect: onSelect)
+        Representable(
+            text: text,
+            highlightRanges: highlightRanges,
+            style: style,
+            onSelect: onSelect
+        )
     }
 }
 
@@ -42,21 +48,25 @@ enum TextRangeConvert {
         return NSRange(lower..<upper, in: text)
     }
 
-    static func attributedString(_ text: String, highlightRanges: [Range<Int>]) -> NSAttributedString {
+    static func attributedString(
+        _ text: String,
+        highlightRanges: [Range<Int>],
+        style: ReaderStyle
+    ) -> NSAttributedString {
         let attributed = NSMutableAttributedString(string: text)
         let full = NSRange(text.startIndex..<text.endIndex, in: text)
-        #if canImport(UIKit)
-        attributed.addAttribute(.font, value: UIFont.preferredFont(forTextStyle: .body), range: full)
-        attributed.addAttribute(.foregroundColor, value: UIColor.label, range: full)
-        let highlightColor = UIColor.systemYellow.withAlphaComponent(0.4)
-        #else
-        attributed.addAttribute(.font, value: NSFont.preferredFont(forTextStyle: .body), range: full)
-        attributed.addAttribute(.foregroundColor, value: NSColor.labelColor, range: full)
-        let highlightColor = NSColor.systemYellow.withAlphaComponent(0.4)
-        #endif
+
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.lineSpacing = style.lineSpacing
+        paragraph.paragraphSpacing = style.fontSize * 0.6
+
+        attributed.addAttribute(.font, value: style.contentFont, range: full)
+        attributed.addAttribute(.foregroundColor, value: style.theme.ink, range: full)
+        attributed.addAttribute(.paragraphStyle, value: paragraph, range: full)
+
         for range in highlightRanges {
             if let ns = nsRange(from: range, in: text) {
-                attributed.addAttribute(.backgroundColor, value: highlightColor, range: ns)
+                attributed.addAttribute(.backgroundColor, value: style.theme.highlight, range: ns)
             }
         }
         return attributed
@@ -69,6 +79,7 @@ enum TextRangeConvert {
 private struct Representable: UIViewRepresentable {
     let text: String
     let highlightRanges: [Range<Int>]
+    let style: ReaderStyle
     let onSelect: (Range<Int>) -> Void
 
     func makeUIView(context: Context) -> UITextView {
@@ -78,8 +89,6 @@ private struct Representable: UIViewRepresentable {
         view.backgroundColor = .clear
         view.delegate = context.coordinator
         view.textContainerInset = .zero
-        // Respond to the user's Dynamic Type setting; fonts already use the
-        // preferred .body text style, so they rescale automatically.
         view.adjustsFontForContentSizeCategory = true
         return view
     }
@@ -89,8 +98,10 @@ private struct Representable: UIViewRepresentable {
         context.coordinator.text = text
         // Only rebuild the attributed string when the content actually changed —
         // reassigning it resets the user's selection and re-fires the delegate.
-        guard context.coordinator.needsRender(text: text, ranges: highlightRanges) else { return }
-        view.attributedText = TextRangeConvert.attributedString(text, highlightRanges: highlightRanges)
+        guard context.coordinator.needsRender(text: text, ranges: highlightRanges, style: style) else { return }
+        view.attributedText = TextRangeConvert.attributedString(
+            text, highlightRanges: highlightRanges, style: style
+        )
     }
 
     func makeCoordinator() -> Coordinator { Coordinator(text: text, onSelect: onSelect) }
@@ -100,12 +111,13 @@ private struct Representable: UIViewRepresentable {
         var onSelect: (Range<Int>) -> Void
         private var renderedText: String?
         private var renderedRanges: [Range<Int>] = []
+        private var renderedStyle: ReaderStyle?
         init(text: String, onSelect: @escaping (Range<Int>) -> Void) {
             self.text = text; self.onSelect = onSelect
         }
-        func needsRender(text: String, ranges: [Range<Int>]) -> Bool {
-            guard renderedText == text, renderedRanges == ranges else {
-                renderedText = text; renderedRanges = ranges
+        func needsRender(text: String, ranges: [Range<Int>], style: ReaderStyle) -> Bool {
+            guard renderedText == text, renderedRanges == ranges, renderedStyle == style else {
+                renderedText = text; renderedRanges = ranges; renderedStyle = style
                 return true
             }
             return false
@@ -121,6 +133,7 @@ private struct Representable: UIViewRepresentable {
 private struct Representable: NSViewRepresentable {
     let text: String
     let highlightRanges: [Range<Int>]
+    let style: ReaderStyle
     let onSelect: (Range<Int>) -> Void
 
     func makeNSView(context: Context) -> NSScrollView {
@@ -129,6 +142,7 @@ private struct Representable: NSViewRepresentable {
         textView.isEditable = false
         textView.isSelectable = true
         textView.drawsBackground = false
+        scroll.drawsBackground = false
         textView.delegate = context.coordinator
         return scroll
     }
@@ -137,9 +151,9 @@ private struct Representable: NSViewRepresentable {
         guard let textView = scroll.documentView as? NSTextView else { return }
         context.coordinator.onSelect = onSelect
         context.coordinator.text = text
-        guard context.coordinator.needsRender(text: text, ranges: highlightRanges) else { return }
+        guard context.coordinator.needsRender(text: text, ranges: highlightRanges, style: style) else { return }
         textView.textStorage?.setAttributedString(
-            TextRangeConvert.attributedString(text, highlightRanges: highlightRanges)
+            TextRangeConvert.attributedString(text, highlightRanges: highlightRanges, style: style)
         )
     }
 
@@ -150,12 +164,13 @@ private struct Representable: NSViewRepresentable {
         var onSelect: (Range<Int>) -> Void
         private var renderedText: String?
         private var renderedRanges: [Range<Int>] = []
+        private var renderedStyle: ReaderStyle?
         init(text: String, onSelect: @escaping (Range<Int>) -> Void) {
             self.text = text; self.onSelect = onSelect
         }
-        func needsRender(text: String, ranges: [Range<Int>]) -> Bool {
-            guard renderedText == text, renderedRanges == ranges else {
-                renderedText = text; renderedRanges = ranges
+        func needsRender(text: String, ranges: [Range<Int>], style: ReaderStyle) -> Bool {
+            guard renderedText == text, renderedRanges == ranges, renderedStyle == style else {
+                renderedText = text; renderedRanges = ranges; renderedStyle = style
                 return true
             }
             return false

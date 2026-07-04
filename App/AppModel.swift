@@ -21,7 +21,7 @@ final class AppModel: ObservableObject {
     init(store: (any LibraryStore)? = nil, parsers: BookParserRegistry? = nil) {
         if store == nil, ProcessInfo.processInfo.arguments.contains("-uiTestSeed") {
             let seeded = InMemoryLibraryStore()
-            try? seeded.add(Self.sampleBook)
+            for book in Self.sampleBooks { try? seeded.add(book) }
             self.store = seeded
         } else {
             self.store = store ?? Self.makeDefaultStore()
@@ -45,15 +45,38 @@ final class AppModel: ObservableObject {
         #endif
     }
 
-    /// Deterministic fixture for UI tests (seeded via the `-uiTestSeed` arg).
-    static let sampleBook = Book(
-        metadata: BookMetadata(title: "Sample Book", authors: ["Test Author"]),
-        chapters: [
-            Chapter(title: "Chapter One", order: 0, text: "It was a bright cold day in April."),
-            Chapter(title: "Chapter Two", order: 1, text: "The clocks were striking thirteen."),
-        ],
-        estimatedTokenCount: 16
-    )
+    /// Deterministic fixtures for UI tests and screenshots (seeded via the
+    /// `-uiTestSeed` arg). The first book keeps the titles the UI tests assert
+    /// on; the extra books fill the shelf so screenshots look like a library.
+    static let sampleBooks: [Book] = {
+        let paragraph = """
+        It was a bright cold day in April, and the clocks were striking \
+        thirteen. Winston Smith, his chin nuzzled into his breast in an effort \
+        to escape the vile wind, slipped quickly through the glass doors of \
+        Victory Mansions, though not quickly enough to prevent a swirl of \
+        gritty dust from entering along with him.
+        """
+        let chapterOne = (0..<6).map { _ in paragraph }.joined(separator: "\n\n")
+        let sample = Book(
+            metadata: BookMetadata(title: "Sample Book", authors: ["Test Author"]),
+            chapters: [
+                Chapter(title: "Chapter One", order: 0, text: chapterOne),
+                Chapter(title: "Chapter Two", order: 1, text: "The clocks were striking thirteen.\n\n" + paragraph),
+            ],
+            estimatedTokenCount: 500
+        )
+        let voyage = Book(
+            metadata: BookMetadata(title: "A Voyage North", authors: ["I. Larsen"]),
+            chapters: [Chapter(title: "Departure", order: 0, text: paragraph)],
+            estimatedTokenCount: 90
+        )
+        let letters = Book(
+            metadata: BookMetadata(title: "Letters on Design", authors: ["M. Ortiz"]),
+            chapters: [Chapter(title: "On Type", order: 0, text: paragraph)],
+            estimatedTokenCount: 90
+        )
+        return [sample, voyage, letters]
+    }()
 
     // MARK: Defaults
 
@@ -81,7 +104,15 @@ final class AppModel: ObservableObject {
         let scoped = url.startAccessingSecurityScopedResource()
         defer { if scoped { url.stopAccessingSecurityScopedResource() } }
         do {
-            let book = try await parsers.parse(url)
+            var book = try await parsers.parse(url)
+            // Retain the original file so PDFs render natively and EPUB assets
+            // (covers, images) stay available after import.
+            if let retained = try? Self.retainSource(url, for: book.id) {
+                book.sourceFilename = retained
+            }
+            if book.coverImageData == nil {
+                book.coverImageData = Self.pdfCoverThumbnail(for: url)
+            }
             try store.add(book)
             books = store.allBooks()
         } catch let error as BookParserError {
@@ -89,6 +120,44 @@ final class AppModel: ObservableObject {
         } catch {
             importError = "Couldn't import this file: \(error.localizedDescription)"
         }
+    }
+
+    /// Copy the imported file into the app's Books directory as `<id>.<ext>`.
+    static func retainSource(_ url: URL, for bookID: UUID) throws -> String {
+        let dir = try booksDirectory()
+        let filename = "\(bookID.uuidString).\(url.pathExtension.lowercased())"
+        let destination = dir.appendingPathComponent(filename)
+        try? FileManager.default.removeItem(at: destination)
+        try FileManager.default.copyItem(at: url, to: destination)
+        return filename
+    }
+
+    static func booksDirectory() throws -> URL {
+        let base = try FileManager.default.url(
+            for: .applicationSupportDirectory, in: .userDomainMask,
+            appropriateFor: nil, create: true
+        )
+        let dir = base.appendingPathComponent("Readr/Books", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
+    }
+
+    /// Absolute URL of a book's retained source file, if any.
+    func sourceURL(for book: Book) -> URL? {
+        guard let filename = book.sourceFilename,
+              let dir = try? Self.booksDirectory() else { return nil }
+        let url = dir.appendingPathComponent(filename)
+        return FileManager.default.fileExists(atPath: url.path) ? url : nil
+    }
+
+    /// First-page thumbnail for PDFs (nil for other formats).
+    private static func pdfCoverThumbnail(for url: URL) -> Data? {
+        #if canImport(PDFKit)
+        guard url.pathExtension.lowercased() == "pdf" else { return nil }
+        return PDFCoverRenderer.firstPageThumbnail(url: url)
+        #else
+        return nil
+        #endif
     }
 
     // MARK: Reading position

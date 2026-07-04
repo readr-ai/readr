@@ -8,17 +8,28 @@ public struct Book: Identifiable, Hashable, Sendable, Codable {
     /// Approximate token count of the full text, computed once at import and
     /// used by `ContextStrategy` to choose whole-book vs. retrieval.
     public var estimatedTokenCount: Int
+    /// Cover artwork (PNG/JPEG bytes) extracted at import — from the EPUB
+    /// manifest or a PDF first-page thumbnail. Nil → the UI shows a generated
+    /// placeholder cover.
+    public var coverImageData: Data?
+    /// File name of the retained original inside the app's Books directory
+    /// (e.g. `<uuid>.pdf`) — enables native rendering of the source document.
+    public var sourceFilename: String?
 
     public init(
         id: UUID = UUID(),
         metadata: BookMetadata,
         chapters: [Chapter],
-        estimatedTokenCount: Int
+        estimatedTokenCount: Int,
+        coverImageData: Data? = nil,
+        sourceFilename: String? = nil
     ) {
         self.id = id
         self.metadata = metadata
         self.chapters = chapters
         self.estimatedTokenCount = estimatedTokenCount
+        self.coverImageData = coverImageData
+        self.sourceFilename = sourceFilename
     }
 
     /// Full plain text, chapters joined in reading order.
