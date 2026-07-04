@@ -120,8 +120,20 @@ struct ReaderView: View {
                 .disabled(chapterIndex >= book.chapters.count - 1)
             }
             ToolbarItemGroup(placement: .primaryAction) {
-                // "Aa" appearance menu, Apple-Books style: theme + text size.
+                // ONE "Aa" menu for all appearance — layout, theme, text size —
+                // Apple-Books style. Three separate trailing items collapse into
+                // an iOS overflow menu and hide Highlights (seen in the CI
+                // screenshots), so keep the trailing bar to Aa + Highlights.
                 Menu {
+                    Picker("Reading layout", selection: $layoutRaw) {
+                        Label("Scroll", systemImage: "text.justify.left")
+                            .tag(PageLayout.scroll.rawValue)
+                        Label("Single page", systemImage: "doc.plaintext")
+                            .tag(PageLayout.singlePage.rawValue)
+                        Label("Two pages", systemImage: "book")
+                            .tag(PageLayout.doublePage.rawValue)
+                    }
+                    Divider()
                     Picker("Theme", selection: $themeRaw) {
                         ForEach(ReadingTheme.allCases) { theme in
                             Text(theme.displayName).tag(theme.rawValue)
@@ -140,22 +152,6 @@ struct ReaderView: View {
                     Label("Appearance", systemImage: "textformat.size")
                 }
                 .accessibilityLabel("Appearance")
-                // A compact menu, not a segmented control: an inline picker
-                // crowds the iPhone nav bar and pushes Highlights out of reach
-                // (caught by the UI tests).
-                Menu {
-                    Picker("Reading layout", selection: $layoutRaw) {
-                        Label("Scroll", systemImage: "text.justify.left")
-                            .tag(PageLayout.scroll.rawValue)
-                        Label("Single page", systemImage: "doc.plaintext")
-                            .tag(PageLayout.singlePage.rawValue)
-                        Label("Two pages", systemImage: "book")
-                            .tag(PageLayout.doublePage.rawValue)
-                    }
-                } label: {
-                    Label("Reading layout", systemImage: "book.pages")
-                }
-                .accessibilityLabel("Reading layout")
                 Button { showHighlights = true } label: {
                     Label("Highlights", systemImage: "highlighter")
                 }

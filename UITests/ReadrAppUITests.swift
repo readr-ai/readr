@@ -99,7 +99,7 @@ final class ReadrAppUITests: XCTestCase {
         snap(app, "02-reader-scroll")
 
         // c. Two-page layout, then restore scroll.
-        let layoutButton = app.buttons["Reading layout"]
+        let layoutButton = app.buttons["Appearance"]  // layout lives in the Aa menu now
         if layoutButton.waitForExistence(timeout: 3) {
             layoutButton.tap()
             let twoPagesButton = app.buttons["Two pages"].firstMatch
