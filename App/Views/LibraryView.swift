@@ -42,21 +42,21 @@ struct LibraryView: View {
             }
             .navigationTitle("Readr")
             .toolbar {
-                ToolbarItem(placement: .primaryAction) {
-                    Button {
-                        isImporting = true
-                    } label: {
-                        Label("Import", systemImage: "plus")
-                    }
-                    .accessibilityLabel("Import book")
-                }
-                ToolbarItem(placement: .secondaryAction) {
+                // Both directly visible: .secondaryAction collapses into an
+                // overflow menu on iOS, hiding the settings gear.
+                ToolbarItemGroup(placement: .primaryAction) {
                     Button {
                         showSettings = true
                     } label: {
                         Label("AI Providers", systemImage: "gearshape")
                     }
                     .accessibilityLabel("AI providers")
+                    Button {
+                        isImporting = true
+                    } label: {
+                        Label("Import", systemImage: "plus")
+                    }
+                    .accessibilityLabel("Import book")
                 }
             }
             .sheet(isPresented: $showSettings) {

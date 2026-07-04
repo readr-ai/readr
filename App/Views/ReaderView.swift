@@ -17,6 +17,12 @@ struct ReaderView: View {
     @State private var pendingNoteRange: Range<Int>?
     @State private var askSelection: Selection?
     @State private var showAsk = false
+    /// Persisted reading layout: continuous scroll, one page, or facing pages.
+    @AppStorage("readerLayout") private var layoutRaw = PageLayout.scroll.rawValue
+
+    private var layout: PageLayout {
+        PageLayout(rawValue: layoutRaw) ?? .scroll
+    }
 
     private var chapter: Chapter? {
         guard book.chapters.indices.contains(chapterIndex) else { return nil }
@@ -41,12 +47,21 @@ struct ReaderView: View {
                             .padding(.horizontal)
                             .padding(.top)
                     }
-                    SelectableTextView(
-                        text: chapter.text,
-                        highlightRanges: chapterHighlights,
-                        onSelect: { selectedRange = $0 }
-                    )
-                    .padding()
+                    if layout == .scroll {
+                        SelectableTextView(
+                            text: chapter.text,
+                            highlightRanges: chapterHighlights,
+                            onSelect: { selectedRange = $0 }
+                        )
+                        .padding()
+                    } else {
+                        PagedChapterView(
+                            chapter: chapter,
+                            layout: layout,
+                            highlightRanges: chapterHighlights,
+                            onSelect: { selectedRange = $0 }
+                        )
+                    }
                     selectionBar(for: chapter)
                 }
             } else {
@@ -72,7 +87,23 @@ struct ReaderView: View {
                 .accessibilityLabel("Next chapter")
                 .disabled(chapterIndex >= book.chapters.count - 1)
             }
-            ToolbarItem(placement: .primaryAction) {
+            ToolbarItemGroup(placement: .primaryAction) {
+                // A compact menu, not a segmented control: an inline picker
+                // crowds the iPhone nav bar and pushes Highlights out of reach
+                // (caught by the UI tests).
+                Menu {
+                    Picker("Reading layout", selection: $layoutRaw) {
+                        Label("Scroll", systemImage: "text.justify.left")
+                            .tag(PageLayout.scroll.rawValue)
+                        Label("Single page", systemImage: "doc.plaintext")
+                            .tag(PageLayout.singlePage.rawValue)
+                        Label("Two pages", systemImage: "book")
+                            .tag(PageLayout.doublePage.rawValue)
+                    }
+                } label: {
+                    Label("Reading layout", systemImage: "book.pages")
+                }
+                .accessibilityLabel("Reading layout")
                 Button { showHighlights = true } label: {
                     Label("Highlights", systemImage: "highlighter")
                 }

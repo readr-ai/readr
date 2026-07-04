@@ -1,0 +1,41 @@
+name: Release
+
+# Build and publish a macOS app artifact for every version tag (v1.0.0, ...).
+# The binary is unsigned pre-1.0; users right-click -> Open on first launch.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  macos-app:
+    name: Build & publish Readr.app (macOS)
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install XcodeGen
+        run: brew install xcodegen
+      - name: Generate Xcode project
+        run: xcodegen generate
+      - name: Build Release app
+        run: >
+          set -o pipefail &&
+          xcodebuild build
+          -project Readr.xcodeproj
+          -scheme Readr
+          -configuration Release
+          -destination 'generic/platform=macOS'
+          -derivedDataPath build
+          -skipPackagePluginValidation
+          CODE_SIGNING_ALLOWED=NO
+      - name: Zip the app
+        run: |
+          cd build/Build/Products/Release
+          ditto -c -k --sequesterRsrc --keepParent Readr.app Readr-macOS-${GITHUB_REF_NAME}.zip
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: build/Build/Products/Release/Readr-macOS-*.zip
+          generate_release_notes: true

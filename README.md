@@ -1,11 +1,12 @@
 # Readr
 
-An AI-powered, native **iOS & macOS** ebook reader — think Apple Books, but you can
-ask the book questions and turn your highlights into articles.
+An AI-powered, native **macOS & iOS** ebook reader — think Apple Books, but you can
+ask the book questions and turn your highlights into articles. Open source (MIT).
 
-> Status: **early scaffolding.** This repo currently contains the architecture,
-> the context-strategy research, and the core `ReadrKit` package skeleton.
-> The app is not yet buildable end-to-end. See [docs/ROADMAP.md](docs/ROADMAP.md).
+> Status: **feature-complete core, pre-1.0.** All features below are implemented,
+> unit/integration tested, and CI builds the app for macOS + iOS and runs the
+> UI-test suite on a simulator. Remaining pre-1.0 work (real-provider smoke
+> tests, richer EPUB styling) is tracked in [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ## Why
 
@@ -14,16 +15,20 @@ Claude/ChatGPT, and ask. Readr removes that loop: select text → ask → get an
 answer grounded in **the whole book**, without leaving the page. Your highlights
 and notes can also be auto-composed into a shareable article.
 
-## Features (target)
+## Features
 
-- 📖 Native EPUB + PDF reading (DRM-free) with a clean, Apple-Books-like UI.
-- 🤖 **Ask the book**: select a sentence, ask a question, get an answer with full
-  book context.
+- 📖 Native **EPUB**, PDF, and text/Markdown reading (DRM-free).
+- 📄 **Three reading layouts**: continuous scroll, **single page**, or **two
+  facing pages** like an open book — with page turns via buttons or arrow keys,
+  reflowing on window resize (macOS).
+- 🤖 **Ask the book**: select a sentence, ask a question, get a streamed answer
+  with full book context and **source citations**.
 - ✍️ **Highlights → article**: auto-compose your highlights and notes into an
-  editable, exportable article.
-- 🔌 **Bring your own LLM**: log in / paste a key for **Claude** or **OpenAI
-  (Codex/ChatGPT)**, or run a **local LLM** fully offline.
-- 🔒 Privacy-first: local-LLM mode keeps everything on device.
+  editable, exportable Markdown article (streams in live).
+- 🔌 **Bring your own LLM**: paste an **Anthropic** or **OpenAI** API key, sign
+  in with a ChatGPT subscription, or run a **local LLM** (Ollama) fully offline.
+- 🔒 Privacy-first: no telemetry; local mode is proven zero-egress by tests;
+  keys live only in the Keychain.
 
 ## How book context works
 
@@ -54,14 +59,20 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
   whole-book-vs-retrieval decision.
 - [docs/ROADMAP.md](docs/ROADMAP.md) — milestone checklist.
 
-## Building
+## Installing (macOS)
 
-> Requires **macOS + Xcode 15+**. (The app cannot be built on Linux.)
+Grab `Readr.app` from the latest [GitHub Release](../../releases) (built by CI
+on every `v*` tag). The app is unsigned pre-1.0: on first launch, right-click →
+**Open** to bypass Gatekeeper — or build from source below.
+
+## Building from source
+
+> Requires **macOS + Xcode 16+**. (The app cannot be built on Linux.)
 
 ```sh
 brew install xcodegen
 xcodegen generate      # produces Readr.xcodeproj from project.yml
-open Readr.xcodeproj
+open Readr.xcodeproj   # run the "Readr" scheme (macOS or iOS)
 ```
 
 The core package alone builds anywhere Swift runs:

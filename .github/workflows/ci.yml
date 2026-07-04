@@ -39,12 +39,12 @@ jobs:
           -destination 'generic/platform=macOS'
           -skipPackagePluginValidation
           CODE_SIGNING_ALLOWED=NO
-      - name: Build (iOS Simulator)
+      - name: UI tests (iOS Simulator)
         run: >
           set -o pipefail &&
-          xcodebuild build
+          xcodebuild test
           -project Readr.xcodeproj
           -scheme Readr
-          -destination 'generic/platform=iOS Simulator'
+          -destination 'platform=iOS Simulator,name=iPhone 16'
           -skipPackagePluginValidation
           CODE_SIGNING_ALLOWED=NO
