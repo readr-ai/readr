@@ -42,6 +42,15 @@ jobs:
           -derivedDataPath build
           -skipPackagePluginValidation
           CODE_SIGNING_ALLOWED=NO
+      - name: Ad-hoc sign the app
+        # No Developer ID in CI, so sign ad-hoc: Apple Silicon requires at
+        # least an ad-hoc signature, and a consistent bundle-wide signature
+        # avoids "damaged app" errors. Users still see the one-time Gatekeeper
+        # prompt until the app is notarized with a real Developer ID.
+        run: |
+          cd build/Build/Products/Release
+          codesign --force --deep --sign - Readr.app
+          codesign --verify --deep --strict Readr.app
       - name: Zip the app
         run: |
           cd build/Build/Products/Release
@@ -52,3 +61,13 @@ jobs:
           tag_name: ${{ env.VERSION }}
           files: build/Build/Products/Release/Readr-macOS-*.zip
           generate_release_notes: true
+          body: |
+            ## Opening the app (unsigned build)
+
+            Readr is ad-hoc signed but not yet notarized, so macOS shows a
+            one-time Gatekeeper warning:
+
+            - **macOS 15+**: open the app once (click **Done** on the warning),
+              then **System Settings → Privacy & Security → Open Anyway**.
+            - **macOS 13/14**: right-click `Readr.app` → **Open** → **Open**.
+            - Terminal: `xattr -d com.apple.quarantine /Applications/Readr.app`

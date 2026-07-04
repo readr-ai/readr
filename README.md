@@ -61,9 +61,17 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## Installing (macOS)
 
-Grab `Readr.app` from the latest [GitHub Release](../../releases) (built by CI
-on every `v*` tag). The app is unsigned pre-1.0: on first launch, right-click →
-**Open** to bypass Gatekeeper — or build from source below.
+Grab `Readr.app` from the latest [GitHub Release](../../releases) (built by CI).
+The app is ad-hoc signed but **not notarized** (no Apple Developer ID yet), so
+macOS shows a one-time *"Apple could not verify…"* warning. To open it:
+
+- **macOS 15 (Sequoia) or newer**: launch it once and click **Done**, then go to
+  **System Settings → Privacy & Security**, find *"Readr" was blocked…*, and
+  click **Open Anyway**.
+- **macOS 13/14**: right-click `Readr.app` → **Open** → **Open**.
+- **Terminal**: `xattr -d com.apple.quarantine /Applications/Readr.app`
+
+Or build from source below — locally built apps don't get quarantined.
 
 ## Building from source
 
