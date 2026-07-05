@@ -114,6 +114,14 @@ public struct ChapterImage: Hashable, Sendable, Codable {
     }
 }
 
+/// Highlight marker colors. Color carries meaning for the reader and is
+/// filterable at review/export time (see docs/DESIGN.md).
+public enum HighlightColor: String, CaseIterable, Hashable, Sendable, Codable {
+    case yellow, green, blue, pink, purple
+
+    public var displayName: String { rawValue.capitalized }
+}
+
 /// A reader's highlight, anchored to a text range.
 public struct Highlight: Identifiable, Hashable, Sendable, Codable {
     public let id: UUID
@@ -124,6 +132,11 @@ public struct Highlight: Identifiable, Hashable, Sendable, Codable {
     public var quotedText: String
     public var note: String?
     public var createdAt: Date
+    /// Marker color. Optional so pre-v2 libraries decode; nil means yellow.
+    public var color: HighlightColor?
+
+    /// The effective marker color (yellow for legacy highlights).
+    public var markerColor: HighlightColor { color ?? .yellow }
 
     public init(
         id: UUID = UUID(),
@@ -132,7 +145,8 @@ public struct Highlight: Identifiable, Hashable, Sendable, Codable {
         range: Range<Int>,
         quotedText: String,
         note: String? = nil,
-        createdAt: Date
+        createdAt: Date,
+        color: HighlightColor? = nil
     ) {
         self.id = id
         self.bookID = bookID
@@ -141,5 +155,6 @@ public struct Highlight: Identifiable, Hashable, Sendable, Codable {
         self.quotedText = quotedText
         self.note = note
         self.createdAt = createdAt
+        self.color = color
     }
 }

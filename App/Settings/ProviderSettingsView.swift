@@ -3,11 +3,16 @@ import ReadrKit
 
 /// Provider settings (J5): connect Claude, ChatGPT, or a local model and pick
 /// the active one. Per docs/AUTH.md, API keys are the default path; OAuth is an
-/// opt-in "use your subscription" option.
+/// opt-in "use your subscription" option. Styled as the design's Settings:
+/// caps section labels, provider cards on the elevated surface with a status
+/// dot + badge, and the privacy footer.
 struct ProviderSettingsView: View {
     @EnvironmentObject private var app: AppModel
     @StateObject private var model: SettingsModel
     @Environment(\.dismiss) private var dismiss
+
+    @AppStorage("readingTheme") private var themeRaw = ReadingTheme.paper.rawValue
+    private var theme: ReadingTheme { ReadingTheme(rawValue: themeRaw) ?? .paper }
 
     init(app: AppModel) {
         _model = StateObject(wrappedValue: SettingsModel(
@@ -18,20 +23,31 @@ struct ProviderSettingsView: View {
 
     var body: some View {
         NavigationStack {
-            Form {
-                ForEach(model.kinds, id: \.self) { kind in
-                    Section(header: Text(title(for: kind))) {
-                        providerSection(kind)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 10) {
+                    sectionLabel("MODEL")
+                    ForEach(model.kinds, id: \.self) { kind in
+                        providerCard(kind)
                     }
-                }
-                Section {
+
+                    sectionLabel("PRIVACY")
+                        .padding(.top, 18)
+                    Text("No telemetry, no accounts. Books, highlights, notes and questions stay on this device; questions leave it only when you choose a cloud model.")
+                        .font(.system(size: 11.5))
+                        .lineSpacing(4)
+                        .foregroundStyle(theme.faint)
                     Text("API keys and tokens are stored in your device Keychain. "
                          + "Signing in with a Claude/ChatGPT subscription is optional and "
                          + "may be subject to the provider's terms. Local models stay on-device.")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
+                        .font(.system(size: 11.5))
+                        .lineSpacing(4)
+                        .foregroundStyle(theme.faint)
                 }
+                .padding(20)
+                .frame(maxWidth: 560, alignment: .leading)
+                .frame(maxWidth: .infinity)
             }
+            .background(theme.background)
             .navigationTitle("AI Providers")
             .task { model.refresh() }
             .toolbar {
@@ -53,47 +69,87 @@ struct ProviderSettingsView: View {
         }
     }
 
+    private func sectionLabel(_ text: String) -> some View {
+        Text(text)
+            .font(.system(size: 10.5, weight: .semibold))
+            .tracking(1.5)
+            .foregroundStyle(theme.faint)
+            .padding(.bottom, 2)
+    }
+
+    // MARK: Provider cards
+
     @ViewBuilder
-    private func providerSection(_ kind: ProviderInfo.Kind) -> some View {
+    private func providerCard(_ kind: ProviderInfo.Kind) -> some View {
         let isConfigured = model.configured[kind] ?? false
 
-        HStack {
-            Image(systemName: isConfigured ? "checkmark.seal.fill" : "seal")
-                .foregroundStyle(isConfigured ? .green : .secondary)
-            Text(isConfigured ? "Connected" : "Not connected")
-                .foregroundStyle(.secondary)
-            Spacer()
-            if isConfigured {
-                Button("Disconnect", role: .destructive) { model.disconnect(kind) }
-                    .buttonStyle(.borderless)
-            }
-        }
-
-        if kind != .local {
-            APIKeyField(kind: kind) { model.saveAPIKey($0, for: kind) }
-            if model.supportsOAuth(kind) {
-                Button {
-                    Task { await model.signIn(kind) }
-                } label: {
-                    if model.isSigningIn {
-                        ProgressView()
-                    } else {
-                        Label("Sign in with subscription", systemImage: "person.badge.key")
-                    }
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 10) {
+                Circle()
+                    .fill(isConfigured ? Color.green.opacity(0.85) : theme.faint.opacity(0.55))
+                    .frame(width: 8, height: 8)
+                Text(title(for: kind))
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(theme.inkColor)
+                badge(for: kind)
+                Spacer(minLength: 0)
+                if isConfigured {
+                    Button("Disconnect", role: .destructive) { model.disconnect(kind) }
+                        .buttonStyle(.plain)
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(.red)
                 }
-                .accessibilityLabel("Sign in with subscription")
-                .disabled(model.isSigningIn)
+            }
+
+            Text(isConfigured ? "Connected" : "Not connected")
+                .font(.system(size: 11.5))
+                .foregroundStyle(theme.muted)
+
+            if kind != .local {
+                APIKeyField(kind: kind, theme: theme) { model.saveAPIKey($0, for: kind) }
+                if model.supportsOAuth(kind) {
+                    Button {
+                        Task { await model.signIn(kind) }
+                    } label: {
+                        if model.isSigningIn {
+                            ProgressView()
+                                .controlSize(.small)
+                        } else {
+                            Label("Sign in with subscription", systemImage: "person.badge.key")
+                                .font(.system(size: 12))
+                                .foregroundStyle(theme.muted)
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Sign in with subscription")
+                    .disabled(model.isSigningIn)
+                }
+            }
+
+            ModelPicker(
+                kind: kind,
+                models: model.models(for: kind),
+                selection: model.activeSelection,
+                enabled: isConfigured
+            ) { modelID in
+                model.makeActive(kind: kind, modelID: modelID)
             }
         }
+        .padding(15)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(theme.elevated, in: RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(theme.line, lineWidth: 1))
+    }
 
-        ModelPicker(
-            kind: kind,
-            models: model.models(for: kind),
-            selection: model.activeSelection,
-            enabled: isConfigured
-        ) { modelID in
-            model.makeActive(kind: kind, modelID: modelID)
-        }
+    /// Small pill naming how this provider connects, derived from the flow it
+    /// offers: keys for cloud providers, on-device for the local model.
+    private func badge(for kind: ProviderInfo.Kind) -> some View {
+        Text(kind == .local ? "Local" : "API key")
+            .font(.system(size: 9.5, weight: .semibold))
+            .foregroundStyle(theme.faint)
+            .padding(.vertical, 2)
+            .padding(.horizontal, 7)
+            .overlay(Capsule().strokeBorder(theme.line, lineWidth: 1))
     }
 
     private func title(for kind: ProviderInfo.Kind) -> String {
@@ -107,18 +163,39 @@ struct ProviderSettingsView: View {
 
 private struct APIKeyField: View {
     let kind: ProviderInfo.Kind
+    let theme: ReadingTheme
     let onSave: (String) -> Void
     @State private var key = ""
 
+    private var canSave: Bool {
+        !key.trimmingCharacters(in: .whitespaces).isEmpty
+    }
+
     var body: some View {
-        HStack {
+        HStack(spacing: 8) {
             SecureField("API key", text: $key)
-            Button("Save") {
+                .textFieldStyle(.plain)
+                .font(.system(size: 12))
+                .foregroundStyle(theme.inkColor)
+                .padding(.vertical, 7)
+                .padding(.horizontal, 10)
+                .background(theme.paper, in: RoundedRectangle(cornerRadius: 8))
+                .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(theme.line, lineWidth: 1))
+            Button {
                 onSave(key)
                 key = ""
+            } label: {
+                Text("Save")
+                    .font(.system(size: 11.5, weight: .semibold))
+                    .foregroundStyle(theme.background)
+                    .padding(.vertical, 7)
+                    .padding(.horizontal, 12)
+                    .background(theme.inkColor, in: RoundedRectangle(cornerRadius: 8))
+                    .opacity(canSave ? 1 : 0.45)
             }
+            .buttonStyle(.plain)
             .accessibilityLabel("Save API key")
-            .disabled(key.trimmingCharacters(in: .whitespaces).isEmpty)
+            .disabled(!canSave)
         }
     }
 }
@@ -144,6 +221,7 @@ private struct ModelPicker: View {
                 Text(info.modelID).tag(info.modelID)
             }
         }
+        .font(.system(size: 12))
         .disabled(!enabled)
     }
 }

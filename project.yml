@@ -45,6 +45,9 @@ targets:
         INFOPLIST_KEY_CFBundleDisplayName: Readr
         # Allow importing book files via the file importer.
         INFOPLIST_KEY_UILaunchScreen_Generation: "YES"
+        # App icon + accent live in App/Assets.xcassets.
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
 
   ReadrAppUITests:
     type: bundle.ui-testing

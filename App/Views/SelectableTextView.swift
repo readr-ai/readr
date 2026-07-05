@@ -1,4 +1,5 @@
 import SwiftUI
+import ReadrKit
 
 #if canImport(UIKit)
 import UIKit
@@ -6,31 +7,140 @@ import UIKit
 import AppKit
 #endif
 
-/// A read-only, selectable text view that reports the selected **character**
-/// range and paints existing highlights. Wraps `UITextView` (iOS) / `NSTextView`
-/// (macOS) because SwiftUI's `Text` does not expose selection ranges to code —
-/// which we need for highlight capture (J3). Renders with the app's
-/// `ReaderStyle` (theme ink, serif type, line spacing).
+// MARK: - Annotation vocabulary
+
+/// One highlight to paint, in the local coordinates of the text being shown.
+/// Carries the `Highlight`'s id so menu actions can be resolved back to the
+/// model even after the range is shifted into page coordinates.
+struct HighlightSpan: Equatable, Identifiable {
+    let id: UUID
+    var range: Range<Int>
+    var color: HighlightColor
+    /// Painted with a note indicator (see `TextRangeConvert.attributedString`).
+    var hasNote: Bool
+}
+
+/// What the annotation menu was opened for.
+enum AnnotationTarget: Equatable {
+    /// A fresh selection (create mode), in local text coordinates.
+    case selection(Range<Int>)
+    /// An existing highlight the reader clicked (edit mode).
+    case span(HighlightSpan)
+}
+
+/// A button press inside the annotation menu.
+enum AnnotationAction: Equatable {
+    /// Create (selection target) or recolor (span target) a highlight.
+    case highlight(HighlightColor)
+    case note
+    case ask
+    case copy
+    /// Span targets only.
+    case remove
+}
+
+/// Builds the shared menu content for a target, funneling every button into a
+/// single `fire` so hosts dismiss + forward in one place (the menu view itself
+/// is presentation-agnostic — see AnnotationMenuView).
+private func makeAnnotationMenu(
+    for target: AnnotationTarget,
+    theme: ReadingTheme,
+    fire: @escaping (AnnotationAction) -> Void
+) -> AnnotationMenuView {
+    let mode: AnnotationMenuView.Mode
+    switch target {
+    case .selection:
+        mode = .create
+    case let .span(span):
+        mode = .edit(currentColor: span.color, hasNote: span.hasNote)
+    }
+    var removeAction: (() -> Void)?
+    if case .span = target { removeAction = { fire(.remove) } }
+    return AnnotationMenuView(
+        mode: mode,
+        theme: theme,
+        onHighlight: { fire(.highlight($0)) },
+        onNote: { fire(.note) },
+        onAsk: { fire(.ask) },
+        onCopy: { fire(.copy) },
+        onRemove: removeAction
+    )
+}
+
+// MARK: - SelectableTextView
+
+/// A read-only, selectable text view that paints highlights in their marker
+/// colors and owns the select-to-annotate gesture. Wraps `UITextView` (iOS) /
+/// `NSTextView` (macOS) because SwiftUI's `Text` exposes neither selection
+/// ranges nor selection geometry.
+///
+/// - macOS: releasing a selection (or clicking an existing highlight) anchors
+///   an `NSPopover` with `AnnotationMenuView` at the selection rect.
+/// - iOS: a committed selection (or a tap on a highlight) shows a floating
+///   material bar with the same menu at the bottom of the text area.
 struct SelectableTextView: View {
     let text: String
-    /// Character ranges to paint as highlights.
-    let highlightRanges: [Range<Int>]
+    /// Highlights to paint, in `text` coordinates.
+    let highlights: [HighlightSpan]
     var style = ReaderStyle()
     /// Inline images keyed by the character offset of their U+FFFC placeholder
     /// in `text`.
     var inlineImages: [Int: PlatformImage] = [:]
-    /// Called with the selected character range (empty selection ⇒ not called).
-    let onSelect: (Range<Int>) -> Void
+    /// Programmatic jump: a character offset to scroll into view. The view
+    /// performs the scroll on its next update, then clears the binding
+    /// (asynchronously — never during the update pass) so the same offset can
+    /// be targeted again later. Defaulted so paged-mode embedders, which
+    /// never jump within a page, are unaffected.
+    var scrollToOffset: Binding<Int?>? = nil
+    /// An annotation-menu action, with the target in `text` coordinates.
+    var onAnnotate: (AnnotationTarget, AnnotationAction) -> Void = { _, _ in }
+
+    #if canImport(UIKit)
+    /// The target the floating bar is showing for (nil ⇒ bar hidden).
+    @State private var barTarget: AnnotationTarget?
 
     var body: some View {
         Representable(
             text: text,
-            highlightRanges: highlightRanges,
+            highlights: highlights,
             style: style,
             inlineImages: inlineImages,
-            onSelect: onSelect
+            // Read the wrapped value here so SwiftUI re-runs update* when
+            // the host sets a new target.
+            scrollTarget: scrollToOffset?.wrappedValue,
+            clearScrollTarget: { scrollToOffset?.wrappedValue = nil },
+            onTarget: { barTarget = $0 }
+        )
+        .overlay(alignment: .bottom) {
+            if let target = barTarget {
+                // Marginalia: an elevated capsule with a hairline border — no
+                // material blur (the menu supplies its own elev background).
+                makeAnnotationMenu(for: target, theme: style.theme) { action in
+                    barTarget = nil
+                    onAnnotate(target, action)
+                }
+                .clipShape(Capsule())
+                .overlay(Capsule().strokeBorder(style.theme.line, lineWidth: 1))
+                .shadow(color: .black.opacity(0.15), radius: 8, y: 2)
+                .padding(.bottom, 12)
+            }
+        }
+    }
+    #else
+    var body: some View {
+        Representable(
+            text: text,
+            highlights: highlights,
+            style: style,
+            inlineImages: inlineImages,
+            // Read the wrapped value here so SwiftUI re-runs update* when
+            // the host sets a new target.
+            scrollTarget: scrollToOffset?.wrappedValue,
+            clearScrollTarget: { scrollToOffset?.wrappedValue = nil },
+            onAnnotate: onAnnotate
         )
     }
+    #endif
 }
 
 // MARK: - Range conversion helpers
@@ -44,6 +154,14 @@ enum TextRangeConvert {
         return lower..<upper
     }
 
+    /// UTF-16 location (e.g. an insertion point) → character offset into `text`.
+    static func characterOffset(fromUTF16Location location: Int, in text: String) -> Int? {
+        guard location >= 0, location <= text.utf16.count,
+              let r = Range(NSRange(location: location, length: 0), in: text)
+        else { return nil }
+        return text.distance(from: text.startIndex, to: r.lowerBound)
+    }
+
     /// Character-offset range → NSRange (UTF-16) for attributing the string.
     static func nsRange(from range: Range<Int>, in text: String) -> NSRange? {
         guard let lower = text.index(text.startIndex, offsetBy: range.lowerBound, limitedBy: text.endIndex),
@@ -54,7 +172,7 @@ enum TextRangeConvert {
 
     static func attributedString(
         _ text: String,
-        highlightRanges: [Range<Int>],
+        highlights: [HighlightSpan],
         style: ReaderStyle,
         inlineImages: [Int: PlatformImage] = [:]
     ) -> NSAttributedString {
@@ -69,9 +187,22 @@ enum TextRangeConvert {
         attributed.addAttribute(.foregroundColor, value: style.theme.ink, range: full)
         attributed.addAttribute(.paragraphStyle, value: paragraph, range: full)
 
-        for range in highlightRanges {
-            if let ns = nsRange(from: range, in: text) {
-                attributed.addAttribute(.backgroundColor, value: style.theme.highlight, range: ns)
+        for span in highlights {
+            guard let ns = nsRange(from: span.range, in: text) else { continue }
+            attributed.addAttribute(
+                .backgroundColor, value: style.theme.marker(span.color), range: ns
+            )
+            if span.hasNote {
+                // Note indicator: a single underline in the marker's base
+                // color. Chosen over a superscript glyph because underline
+                // attributes never perturb text layout or character offsets —
+                // inserting marker characters would shift every stored range.
+                attributed.addAttribute(
+                    .underlineStyle, value: NSUnderlineStyle.single.rawValue, range: ns
+                )
+                attributed.addAttribute(
+                    .underlineColor, value: ReadingTheme.markerBase(span.color), range: ns
+                )
             }
         }
 
@@ -100,126 +231,438 @@ enum TextRangeConvert {
 // MARK: - Platform representable
 
 #if canImport(UIKit)
+
+/// UITextView subclass that suppresses the system edit menu — the floating
+/// annotation bar replaces it (and provides Copy itself).
+private final class AnnotatingUITextView: UITextView {
+    override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
+        false
+    }
+}
+
 private struct Representable: UIViewRepresentable {
     let text: String
-    let highlightRanges: [Range<Int>]
+    let highlights: [HighlightSpan]
     let style: ReaderStyle
     let inlineImages: [Int: PlatformImage]
-    let onSelect: (Range<Int>) -> Void
+    /// Pending programmatic scroll (character offset into `text`); nil ⇒ none.
+    let scrollTarget: Int?
+    /// Clears the host's scroll target once the scroll has been issued.
+    let clearScrollTarget: () -> Void
+    /// Reports the annotation target to show the bar for (nil ⇒ hide).
+    let onTarget: (AnnotationTarget?) -> Void
 
     func makeUIView(context: Context) -> UITextView {
-        let view = UITextView()
+        let view = AnnotatingUITextView()
         view.isEditable = false
         view.isSelectable = true
         view.backgroundColor = .clear
         view.delegate = context.coordinator
         view.textContainerInset = .zero
         view.adjustsFontForContentSizeCategory = true
+        context.coordinator.textView = view
+
+        // Tap on an existing highlight opens the edit variant of the bar.
+        let tap = UITapGestureRecognizer(
+            target: context.coordinator, action: #selector(Coordinator.handleTap(_:))
+        )
+        tap.cancelsTouchesInView = false
+        tap.delegate = context.coordinator
+        view.addGestureRecognizer(tap)
         return view
     }
 
     func updateUIView(_ view: UITextView, context: Context) {
-        context.coordinator.onSelect = onSelect
-        context.coordinator.text = text
+        let coordinator = context.coordinator
+        coordinator.onTarget = onTarget
+        coordinator.text = text
+        coordinator.spans = highlights
         // Only rebuild the attributed string when the content actually changed —
         // reassigning it resets the user's selection and re-fires the delegate.
-        guard context.coordinator.needsRender(
-            text: text, ranges: highlightRanges, style: style,
+        if coordinator.needsRender(
+            text: text, spans: highlights, style: style,
             imageOffsets: inlineImages.keys.sorted()
-        ) else { return }
-        view.attributedText = TextRangeConvert.attributedString(
-            text, highlightRanges: highlightRanges, style: style, inlineImages: inlineImages
-        )
+        ) {
+            // Hiding the bar writes SwiftUI state via onTarget, which is
+            // undefined behavior synchronously inside a view update — defer.
+            coordinator.hideBarAsync()
+            view.attributedText = TextRangeConvert.attributedString(
+                text, highlights: highlights, style: style, inlineImages: inlineImages
+            )
+        }
+        performPendingScroll(on: view)
     }
 
-    func makeCoordinator() -> Coordinator { Coordinator(text: text, onSelect: onSelect) }
+    /// Programmatic jump (search hit / bookmark / notes panel): scroll the
+    /// target offset into view, then clear the host's binding on the next
+    /// runloop turn — writing SwiftUI state synchronously from update* is
+    /// undefined behavior (and re-issuing an idempotent scroll before the
+    /// clear lands is harmless).
+    private func performPendingScroll(on view: UITextView) {
+        guard let offset = scrollTarget else { return }
+        let lower = min(max(0, offset), text.count)
+        let upper = min(lower + 1, text.count)
+        if let ns = TextRangeConvert.nsRange(from: lower..<upper, in: text) {
+            view.scrollRangeToVisible(ns)
+        }
+        DispatchQueue.main.async { clearScrollTarget() }
+    }
 
-    final class Coordinator: NSObject, UITextViewDelegate {
+    func makeCoordinator() -> Coordinator { Coordinator(text: text, onTarget: onTarget) }
+
+    final class Coordinator: NSObject, UITextViewDelegate, UIGestureRecognizerDelegate {
         var text: String
-        var onSelect: (Range<Int>) -> Void
+        var spans: [HighlightSpan] = []
+        var onTarget: (AnnotationTarget?) -> Void
+        weak var textView: UITextView?
+
+        private var debounce: Timer?
+        private var barVisible = false
         private var renderedText: String?
-        private var renderedRanges: [Range<Int>] = []
+        private var renderedSpans: [HighlightSpan] = []
         private var renderedStyle: ReaderStyle?
         private var renderedImageOffsets: [Int] = []
-        init(text: String, onSelect: @escaping (Range<Int>) -> Void) {
-            self.text = text; self.onSelect = onSelect
+
+        init(text: String, onTarget: @escaping (AnnotationTarget?) -> Void) {
+            self.text = text
+            self.onTarget = onTarget
         }
-        func needsRender(text: String, ranges: [Range<Int>], style: ReaderStyle, imageOffsets: [Int]) -> Bool {
-            guard renderedText == text, renderedRanges == ranges, renderedStyle == style,
+
+        deinit { debounce?.invalidate() }
+
+        func needsRender(
+            text: String, spans: [HighlightSpan], style: ReaderStyle, imageOffsets: [Int]
+        ) -> Bool {
+            guard renderedText == text, renderedSpans == spans, renderedStyle == style,
                   renderedImageOffsets == imageOffsets else {
-                renderedText = text; renderedRanges = ranges; renderedStyle = style
+                renderedText = text; renderedSpans = spans; renderedStyle = style
                 renderedImageOffsets = imageOffsets
                 return true
             }
             return false
         }
+
+        func hideBar() {
+            debounce?.invalidate()
+            guard barVisible else { return }
+            barVisible = false
+            onTarget(nil)
+        }
+
+        /// Content is being replaced during a SwiftUI update pass: the bar
+        /// (if shown) must go, but the actual hide runs async because
+        /// `onTarget` writes SwiftUI state. `barVisible` gates repeat calls.
+        func hideBarAsync() {
+            debounce?.invalidate()
+            guard barVisible else { return }
+            DispatchQueue.main.async { [weak self] in self?.hideBar() }
+        }
+
+        private func show(_ target: AnnotationTarget) {
+            barVisible = true
+            onTarget(target)
+        }
+
+        // Selection handles fire continuously while dragging; debounce so the
+        // bar appears once the selection is committed.
         func textViewDidChangeSelection(_ textView: UITextView) {
-            if let range = TextRangeConvert.characterRange(from: textView.selectedRange, in: text) {
-                onSelect(range)
+            debounce?.invalidate()
+            let selected = textView.selectedRange
+            guard selected.length > 0 else {
+                hideBar()
+                return
             }
+            debounce = Timer.scheduledTimer(withTimeInterval: 0.4, repeats: false) { [weak self] _ in
+                guard let self, let view = self.textView else { return }
+                let current = view.selectedRange
+                guard current.length > 0,
+                      let range = TextRangeConvert.characterRange(from: current, in: self.text)
+                else { return }
+                self.show(.selection(range))
+            }
+        }
+
+        // Scrolling under an open bar would leave it pointing at moved text.
+        func scrollViewDidScroll(_ scrollView: UIScrollView) {
+            if barVisible { hideBar() }
+        }
+
+        @objc func handleTap(_ gesture: UITapGestureRecognizer) {
+            guard let view = textView,
+                  let position = view.closestPosition(to: gesture.location(in: view))
+            else { return }
+            let utf16 = view.offset(from: view.beginningOfDocument, to: position)
+            // The tap also collapses the selection, whose delegate callback
+            // hides the bar — resolve the tapped span after that settles.
+            DispatchQueue.main.async { [weak self] in
+                guard let self,
+                      let offset = TextRangeConvert.characterOffset(
+                          fromUTF16Location: utf16, in: self.text
+                      ),
+                      let span = self.spans.first(where: { $0.range.contains(offset) })
+                else { return }
+                self.show(.span(span))
+            }
+        }
+
+        func gestureRecognizer(
+            _ gestureRecognizer: UIGestureRecognizer,
+            shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer
+        ) -> Bool {
+            true // don't steal UITextView's own selection gestures
         }
     }
 }
+
 #elseif canImport(AppKit)
+
+/// NSTextView subclass that reports mouse-up so the coordinator can anchor the
+/// annotation popover at the *committed* selection (delegate selection-change
+/// callbacks fire continuously during a drag).
+private final class AnnotatingNSTextView: NSTextView {
+    var onMouseUp: (() -> Void)?
+
+    override func mouseUp(with event: NSEvent) {
+        super.mouseUp(with: event)
+        onMouseUp?()
+    }
+}
+
 private struct Representable: NSViewRepresentable {
     let text: String
-    let highlightRanges: [Range<Int>]
+    let highlights: [HighlightSpan]
     let style: ReaderStyle
     let inlineImages: [Int: PlatformImage]
-    let onSelect: (Range<Int>) -> Void
+    /// Pending programmatic scroll (character offset into `text`); nil ⇒ none.
+    let scrollTarget: Int?
+    /// Clears the host's scroll target once the scroll has been issued.
+    let clearScrollTarget: () -> Void
+    let onAnnotate: (AnnotationTarget, AnnotationAction) -> Void
 
     func makeNSView(context: Context) -> NSScrollView {
-        let scroll = NSTextView.scrollableTextView()
-        guard let textView = scroll.documentView as? NSTextView else { return scroll }
+        // Built by hand (not NSTextView.scrollableTextView()) so the document
+        // view is our mouse-up-reporting subclass.
+        let scroll = NSScrollView()
+        scroll.hasVerticalScroller = true
+        scroll.drawsBackground = false
+        scroll.borderType = .noBorder
+
+        let textView = AnnotatingNSTextView(frame: NSRect(x: 0, y: 0, width: 100, height: 100))
         textView.isEditable = false
         textView.isSelectable = true
         textView.drawsBackground = false
-        scroll.drawsBackground = false
+        textView.isVerticallyResizable = true
+        textView.isHorizontallyResizable = false
+        textView.autoresizingMask = [.width]
+        textView.minSize = .zero
+        textView.maxSize = NSSize(
+            width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude
+        )
+        textView.textContainer?.widthTracksTextView = true
+        textView.textContainer?.containerSize = NSSize(
+            width: 100, height: CGFloat.greatestFiniteMagnitude
+        )
         textView.delegate = context.coordinator
+        textView.onMouseUp = { [weak coordinator = context.coordinator] in
+            coordinator?.handleMouseUp()
+        }
+        scroll.documentView = textView
+        context.coordinator.textView = textView
+
+        // A scroll moves the anchored text out from under the popover.
+        scroll.contentView.postsBoundsChangedNotifications = true
+        context.coordinator.observeScroll(of: scroll.contentView)
         return scroll
     }
 
     func updateNSView(_ scroll: NSScrollView, context: Context) {
         guard let textView = scroll.documentView as? NSTextView else { return }
-        context.coordinator.onSelect = onSelect
-        context.coordinator.text = text
-        guard context.coordinator.needsRender(
-            text: text, ranges: highlightRanges, style: style,
+        let coordinator = context.coordinator
+        coordinator.onAnnotate = onAnnotate
+        coordinator.text = text
+        coordinator.spans = highlights
+        coordinator.theme = style.theme
+        if coordinator.needsRender(
+            text: text, spans: highlights, style: style,
             imageOffsets: inlineImages.keys.sorted()
-        ) else { return }
-        textView.textStorage?.setAttributedString(
-            TextRangeConvert.attributedString(
-                text, highlightRanges: highlightRanges, style: style, inlineImages: inlineImages
+        ) {
+            // Content changed under the popover (chapter turn, highlight
+            // edits) — its anchor rect is stale.
+            coordinator.dismissMenu()
+            textView.textStorage?.setAttributedString(
+                TextRangeConvert.attributedString(
+                    text, highlights: highlights, style: style, inlineImages: inlineImages
+                )
             )
-        )
+        }
+        performPendingScroll(on: textView)
     }
 
-    func makeCoordinator() -> Coordinator { Coordinator(text: text, onSelect: onSelect) }
+    /// Programmatic jump (search hit / bookmark / notes panel): scroll the
+    /// target offset into view, then clear the host's binding on the next
+    /// runloop turn — writing SwiftUI state synchronously from update* is
+    /// undefined behavior (and re-issuing an idempotent scroll before the
+    /// clear lands is harmless).
+    private func performPendingScroll(on textView: NSTextView) {
+        guard let offset = scrollTarget else { return }
+        let lower = min(max(0, offset), text.count)
+        let upper = min(lower + 1, text.count)
+        if let ns = TextRangeConvert.nsRange(from: lower..<upper, in: text) {
+            textView.scrollRangeToVisible(ns)
+        }
+        DispatchQueue.main.async { clearScrollTarget() }
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(text: text, theme: style.theme, onAnnotate: onAnnotate)
+    }
 
     final class Coordinator: NSObject, NSTextViewDelegate {
         var text: String
-        var onSelect: (Range<Int>) -> Void
+        var spans: [HighlightSpan] = []
+        /// Reading theme of the hosting page, forwarded to the menu.
+        var theme: ReadingTheme
+        var onAnnotate: (AnnotationTarget, AnnotationAction) -> Void
+        weak var textView: NSTextView?
+
+        /// The popover + hosting controller are created once and reused; only
+        /// the root view (mode + callbacks) changes per presentation.
+        private var popover: NSPopover?
+        private var hosting: NSHostingController<AnnotationMenuView>?
+        private var keyboardDebounce: Timer?
+        private var scrollObserver: NSObjectProtocol?
+
         private var renderedText: String?
-        private var renderedRanges: [Range<Int>] = []
+        private var renderedSpans: [HighlightSpan] = []
         private var renderedStyle: ReaderStyle?
         private var renderedImageOffsets: [Int] = []
-        init(text: String, onSelect: @escaping (Range<Int>) -> Void) {
-            self.text = text; self.onSelect = onSelect
+
+        init(
+            text: String,
+            theme: ReadingTheme,
+            onAnnotate: @escaping (AnnotationTarget, AnnotationAction) -> Void
+        ) {
+            self.text = text
+            self.theme = theme
+            self.onAnnotate = onAnnotate
         }
-        func needsRender(text: String, ranges: [Range<Int>], style: ReaderStyle, imageOffsets: [Int]) -> Bool {
-            guard renderedText == text, renderedRanges == ranges, renderedStyle == style,
+
+        deinit {
+            keyboardDebounce?.invalidate()
+            if let scrollObserver {
+                NotificationCenter.default.removeObserver(scrollObserver)
+            }
+            popover?.close()
+        }
+
+        func needsRender(
+            text: String, spans: [HighlightSpan], style: ReaderStyle, imageOffsets: [Int]
+        ) -> Bool {
+            guard renderedText == text, renderedSpans == spans, renderedStyle == style,
                   renderedImageOffsets == imageOffsets else {
-                renderedText = text; renderedRanges = ranges; renderedStyle = style
+                renderedText = text; renderedSpans = spans; renderedStyle = style
                 renderedImageOffsets = imageOffsets
                 return true
             }
             return false
         }
-        func textViewDidChangeSelection(_ notification: Notification) {
-            guard let textView = notification.object as? NSTextView else { return }
-            if let range = TextRangeConvert.characterRange(from: textView.selectedRange(), in: text) {
-                onSelect(range)
+
+        func observeScroll(of contentView: NSClipView) {
+            scrollObserver = NotificationCenter.default.addObserver(
+                forName: NSView.boundsDidChangeNotification, object: contentView, queue: .main
+            ) { [weak self] _ in
+                self?.dismissMenu()
             }
+        }
+
+        func dismissMenu() {
+            keyboardDebounce?.invalidate()
+            if popover?.isShown == true { popover?.close() }
+        }
+
+        /// Mouse released: a non-empty selection opens the create menu; a bare
+        /// click inside an existing highlight opens the edit menu; anything
+        /// else dismisses.
+        func handleMouseUp() {
+            keyboardDebounce?.invalidate()
+            guard let textView else { return }
+            let selected = textView.selectedRange()
+            if selected.length > 0 {
+                guard let range = TextRangeConvert.characterRange(from: selected, in: text)
+                else { return }
+                present(target: .selection(range), anchor: selected)
+            } else if let offset = TextRangeConvert.characterOffset(
+                fromUTF16Location: selected.location, in: text
+            ),
+                let span = spans.first(where: { $0.range.contains(offset) }),
+                let anchor = TextRangeConvert.nsRange(from: span.range, in: text) {
+                present(target: .span(span), anchor: anchor)
+            } else {
+                dismissMenu()
+            }
+        }
+
+        func textViewDidChangeSelection(_ notification: Notification) {
+            guard let textView, (notification.object as? NSTextView) === textView else { return }
+            let selected = textView.selectedRange()
+            keyboardDebounce?.invalidate()
+            guard selected.length > 0 else {
+                // Selection collapsed — the menu no longer has a subject.
+                dismissMenu()
+                return
+            }
+            // Keyboard-extended selections (⇧→, ⇧⌘→, …) never see a mouseUp;
+            // present once the selection has settled. Skipped while a mouse
+            // drag is in flight — mouseUp handles that path immediately.
+            keyboardDebounce = Timer.scheduledTimer(
+                withTimeInterval: 0.4, repeats: false
+            ) { [weak self] _ in
+                guard let self, NSEvent.pressedMouseButtons == 0,
+                      let view = self.textView else { return }
+                let current = view.selectedRange()
+                guard current.length > 0,
+                      let range = TextRangeConvert.characterRange(from: current, in: self.text)
+                else { return }
+                self.present(target: .selection(range), anchor: current)
+            }
+        }
+
+        private func present(target: AnnotationTarget, anchor: NSRange) {
+            guard let textView, let window = textView.window else { return }
+            // Selection geometry comes back in screen coordinates; the popover
+            // wants view coordinates. Screen → window → view.
+            var rect = textView.firstRect(forCharacterRange: anchor, actualRange: nil)
+            rect = window.convertFromScreen(rect)
+            rect = textView.convert(rect, from: nil)
+            rect.size.width = max(rect.size.width, 1)
+            rect.size.height = max(rect.size.height, 1)
+
+            let menu = makeAnnotationMenu(for: target, theme: theme) { [weak self] action in
+                self?.dismissMenu()
+                self?.onAnnotate(target, action)
+            }
+            if let hosting {
+                hosting.rootView = menu
+            } else {
+                let controller = NSHostingController(rootView: menu)
+                controller.sizingOptions = .preferredContentSize
+                hosting = controller
+            }
+            if popover == nil {
+                let created = NSPopover()
+                created.behavior = .transient
+                created.animates = false
+                created.contentViewController = hosting
+                popover = created
+            }
+            // Size the popover to the menu's fitting size — mode changes
+            // (create ↔ edit) change the row's width.
+            if let view = hosting?.view {
+                view.layoutSubtreeIfNeeded()
+                let size = view.fittingSize
+                if size.width > 0, size.height > 0 { popover?.contentSize = size }
+            }
+            popover?.show(relativeTo: rect, of: textView, preferredEdge: .minY)
         }
     }
 }

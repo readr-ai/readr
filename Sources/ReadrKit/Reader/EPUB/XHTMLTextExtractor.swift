@@ -10,6 +10,9 @@ public enum XHTMLTextExtractor {
         "h1", "h2", "h3", "h4", "h5", "h6",
     ]
 
+    /// Container tags whose entire contents are non-content and get dropped.
+    private static let nonContentTags = ["script", "style", "head"]
+
     /// The placeholder each `<img>` becomes in extracted text: U+FFFC OBJECT
     /// REPLACEMENT CHARACTER — the same character `NSAttributedString` uses for
     /// attachments, so renderers can attach the image in place and every other
@@ -32,9 +35,18 @@ public enum XHTMLTextExtractor {
     /// text, and the images' `src`/`alt` are returned in document order — the
     /// k-th placeholder in the text corresponds to `images[k]`.
     public static func textAndImages(from html: String) -> (text: String, images: [InlineImageRef]) {
+        // Drop non-content blocks BEFORE scanning for <img>: an image inside
+        // <script>/<style>/<head> must yield neither a placeholder nor a ref.
+        // (Scanning first and letting `text(from:)` strip the blocks later
+        // would delete those placeholders but keep their refs, pairing the
+        // k-th surviving placeholder with the wrong `images[k]`.)
+        var pruned = html
+        for tag in nonContentTags {
+            pruned = remove(tag: tag, in: pruned)
+        }
         var images: [InlineImageRef] = []
         var s = ""
-        var remainder = Substring(html)
+        var remainder = Substring(pruned)
         // Replace every <img ...> with the placeholder, collecting srcs in order.
         while let match = remainder.range(of: "<img\\b[^>]*>", options: [.regularExpression, .caseInsensitive]) {
             s += remainder[remainder.startIndex..<match.lowerBound]
@@ -49,10 +61,12 @@ public enum XHTMLTextExtractor {
         return (text(from: s), images)
     }
 
-    /// Value of an HTML attribute inside a single tag string.
+    /// Value of an HTML attribute inside a single tag string. The name is
+    /// anchored on its left so it can't match as the suffix of another
+    /// attribute (asking for `src` must not match `data-src`).
     static func attribute(_ name: String, in tag: String) -> String? {
         guard let range = tag.range(
-            of: "\(name)\\s*=\\s*(\"[^\"]*\"|'[^']*')",
+            of: "(?<![\\w-])\(name)\\s*=\\s*(\"[^\"]*\"|'[^']*')",
             options: [.regularExpression, .caseInsensitive]
         ) else { return nil }
         let pair = tag[range]
@@ -64,8 +78,10 @@ public enum XHTMLTextExtractor {
     /// Plain text with paragraph breaks preserved.
     public static func text(from html: String) -> String {
         var s = html
-        // Drop non-content blocks entirely.
-        for tag in ["script", "style", "head"] {
+        // Drop non-content blocks entirely. (Also done up front by
+        // `textAndImages`; repeating here keeps this legacy path complete on
+        // its own.)
+        for tag in nonContentTags {
             s = remove(tag: tag, in: s)
         }
         // Turn block-level boundaries into newlines.

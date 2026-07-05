@@ -7,6 +7,9 @@ import ReadrKit
 final class AppModel: ObservableObject {
     @Published private(set) var books: [Book] = []
     @Published private(set) var highlightsByBook: [UUID: [Highlight]] = [:]
+    @Published private(set) var pdfHighlightsByBook: [UUID: [PDFHighlight]] = [:]
+    @Published private(set) var bookmarksByBook: [UUID: [Bookmark]] = [:]
+    @Published private(set) var statesByBook: [UUID: BookState] = [:]
     @Published var importError: String?
 
     private let store: any LibraryStore
@@ -22,6 +25,7 @@ final class AppModel: ObservableObject {
         if store == nil, ProcessInfo.processInfo.arguments.contains("-uiTestSeed") {
             let seeded = InMemoryLibraryStore()
             for book in Self.sampleBooks { try? seeded.add(book) }
+            Self.seedFixtureState(into: seeded)
             self.store = seeded
         } else {
             self.store = store ?? Self.makeDefaultStore()
@@ -35,6 +39,18 @@ final class AppModel: ObservableObject {
             store: credentials,
             factory: DefaultProviderFactory.factory()
         )
+
+        // All stored properties are initialized above — only now may init
+        // touch self freely (Swift definite-initialization rule). Cache only
+        // the states that exist: getters fall through to the store for the
+        // rest, and must never write the cache themselves (see bookState).
+        // `self.store` explicitly: the bare name is the optional `store`
+        // parameter, which shadows the stored property inside init.
+        for book in books {
+            if let state = self.store.bookState(for: book.id) {
+                statesByBook[book.id] = state
+            }
+        }
     }
 
     private static func makeCredentialStore() -> any CredentialStore {
@@ -77,6 +93,82 @@ final class AppModel: ObservableObject {
         )
         return [sample, voyage, letters]
     }()
+
+    /// Layers lifecycle state and annotations over `sampleBooks` so seeded
+    /// runs exercise the whole v2 surface: Home gets a Continue Reading card
+    /// (saved position + `lastOpenedAt` on "Sample Book"), the Finished shelf
+    /// has an entry, Recently Added has a fresh import, and the notes screens
+    /// have colored highlights to show. UI tests and CI screenshots both
+    /// launch with `-uiTestSeed`, so this is exactly what they see.
+    private static func seedFixtureState(into store: InMemoryLibraryStore) {
+        let now = Date()
+        let books = sampleBooks
+        guard books.count >= 3 else { return }
+        let sample = books[0]
+        let voyage = books[1]
+        let letters = books[2]
+
+        // "Sample Book" is mid-read: halfway down chapter one, opened just
+        // now — it leads Home's Continue Reading row with a visible progress
+        // bar and a minutes-left estimate.
+        if let chapter = sample.chapters.first {
+            try? store.savePosition(
+                ReadingPosition(chapterIndex: 0, characterOffset: chapter.text.count / 2),
+                for: sample.id
+            )
+            try? store.saveBookState(
+                BookState(addedAt: now.addingTimeInterval(-3 * 86_400), lastOpenedAt: now),
+                for: sample.id
+            )
+
+            // A few colored highlights (one with a note) so the Notes panel,
+            // Highlights & Notes review, and Article Studio have real content.
+            let marks: [(phrase: String, color: HighlightColor, note: String?)] = [
+                ("It was a bright cold day in April", .yellow, nil),
+                ("the clocks were striking thirteen", .blue,
+                 "Something is off from the very first line."),
+                ("a swirl of gritty dust", .green, nil),
+            ]
+            for (index, mark) in marks.enumerated() {
+                guard let range = characterRange(of: mark.phrase, in: chapter.text) else { continue }
+                try? store.addHighlight(Highlight(
+                    bookID: sample.id,
+                    chapterID: chapter.id,
+                    range: range,
+                    quotedText: mark.phrase,
+                    note: mark.note,
+                    createdAt: now.addingTimeInterval(Double(index - 3) * 60),
+                    color: mark.color
+                ))
+            }
+        }
+
+        // "A Voyage North" is a fresh import (leads Recently Added) …
+        try? store.saveBookState(
+            BookState(addedAt: now.addingTimeInterval(-3_600)),
+            for: voyage.id
+        )
+        // … and "Letters on Design" is finished, populating the Finished
+        // shelf and the checkmark badge (finished books stay out of
+        // Continue Reading even though they were opened).
+        try? store.saveBookState(
+            BookState(
+                addedAt: now.addingTimeInterval(-14 * 86_400),
+                lastOpenedAt: now.addingTimeInterval(-7 * 86_400),
+                finishedAt: now.addingTimeInterval(-6 * 86_400)
+            ),
+            for: letters.id
+        )
+    }
+
+    /// Character-offset range of `phrase` in `text`. Highlights address
+    /// chapter text by character offsets (matching the reader's
+    /// `Array(chapter.text)` indexing), not by `String.Index`.
+    private static func characterRange(of phrase: String, in text: String) -> Range<Int>? {
+        guard let match = text.range(of: phrase) else { return nil }
+        let lower = text.distance(from: text.startIndex, to: match.lowerBound)
+        return lower..<(lower + phrase.count)
+    }
 
     // MARK: Defaults
 
@@ -126,6 +218,10 @@ final class AppModel: ObservableObject {
                 book.coverImageData = nil
             }
             try store.add(book)
+            var state = store.bookState(for: book.id) ?? BookState()
+            state.addedAt = Date()
+            try? store.saveBookState(state, for: book.id)
+            statesByBook[book.id] = state
             books = store.allBooks()
         } catch let error as BookParserError {
             importError = Self.message(for: error)
@@ -245,6 +341,27 @@ final class AppModel: ObservableObject {
         #endif
     }
 
+    // MARK: Removal
+
+    /// Deletes a book everywhere: library entry (with its positions and
+    /// annotations), the retained source file, and the cover file.
+    func removeBook(_ book: Book) {
+        try? store.removeBook(id: book.id)
+        if let source = sourceURL(for: book) {
+            try? FileManager.default.removeItem(at: source)
+        }
+        if let cover = try? Self.coversDirectory()
+            .appendingPathComponent("\(book.id.uuidString).img") {
+            try? FileManager.default.removeItem(at: cover)
+        }
+        coverCache.removeObject(forKey: book.id as NSUUID)
+        highlightsByBook[book.id] = nil
+        pdfHighlightsByBook[book.id] = nil
+        bookmarksByBook[book.id] = nil
+        statesByBook[book.id] = nil
+        books = store.allBooks()
+    }
+
     // MARK: Reading position
 
     func position(for book: Book) -> ReadingPosition? {
@@ -255,25 +372,143 @@ final class AppModel: ObservableObject {
         try? store.savePosition(position, for: book.id)
     }
 
-    // MARK: Highlights
+    // MARK: Book state (Home / Finished)
 
-    func highlights(for book: Book) -> [Highlight] {
-        if let cached = highlightsByBook[book.id] { return cached }
-        let loaded = store.highlights(for: book.id)
-        highlightsByBook[book.id] = loaded
-        return loaded
+    /// SwiftUI body calls this, so it must not mutate `@Published` state —
+    /// writing the cache here would publish during a view update (and, for a
+    /// book with no saved state, re-publish on every render). The cache is
+    /// populated by init and by every mutation path instead; the store
+    /// fallback is a cheap in-memory dictionary read.
+    func bookState(for book: Book) -> BookState? {
+        statesByBook[book.id] ?? store.bookState(for: book.id)
     }
 
-    func addHighlight(in book: Book, chapter: Chapter, range: Range<Int>, note: String? = nil) {
+    /// Record that the reader opened this book (drives "Continue Reading").
+    func markOpened(_ book: Book) {
+        var state = bookState(for: book) ?? BookState()
+        state.lastOpenedAt = Date()
+        try? store.saveBookState(state, for: book.id)
+        statesByBook[book.id] = state
+    }
+
+    func setFinished(_ finished: Bool, for book: Book) {
+        var state = bookState(for: book) ?? BookState()
+        state.finishedAt = finished ? Date() : nil
+        try? store.saveBookState(state, for: book.id)
+        statesByBook[book.id] = state
+    }
+
+    /// Books to resume, most recently opened first (unfinished only).
+    var continueReading: [Book] {
+        books
+            .filter { statesByBook[$0.id]?.lastOpenedAt != nil }
+            .filter { statesByBook[$0.id]?.isFinished != true }
+            .sorted {
+                (statesByBook[$0.id]?.lastOpenedAt ?? .distantPast)
+                    > (statesByBook[$1.id]?.lastOpenedAt ?? .distantPast)
+            }
+    }
+
+    /// Most recently imported books first (books without a recorded addedAt
+    /// keep library order at the end).
+    var recentlyAdded: [Book] {
+        books.sorted {
+            (statesByBook[$0.id]?.addedAt ?? .distantPast)
+                > (statesByBook[$1.id]?.addedAt ?? .distantPast)
+        }
+    }
+
+    /// True when the book's retained source is a PDF (native PDF reading).
+    func isPDF(_ book: Book) -> Bool {
+        book.sourceFilename?.lowercased().hasSuffix(".pdf") == true
+    }
+
+    // MARK: Bookmarks
+
+    /// Called from body — no `@Published` writes here (see bookState). The
+    /// add/remove paths below keep the cache fresh.
+    func bookmarks(for book: Book) -> [Bookmark] {
+        bookmarksByBook[book.id] ?? store.bookmarks(for: book.id)
+    }
+
+    func addBookmark(_ bookmark: Bookmark) {
+        try? store.addBookmark(bookmark)
+        bookmarksByBook[bookmark.bookID] = store.bookmarks(for: bookmark.bookID)
+    }
+
+    func removeBookmark(_ bookmark: Bookmark) {
+        try? store.removeBookmark(id: bookmark.id)
+        bookmarksByBook[bookmark.bookID] = store.bookmarks(for: bookmark.bookID)
+    }
+
+    // MARK: PDF highlights
+
+    /// Called from body — no `@Published` writes here (see bookState). The
+    /// add/update/remove paths below keep the cache fresh.
+    func pdfHighlights(for book: Book) -> [PDFHighlight] {
+        pdfHighlightsByBook[book.id] ?? store.pdfHighlights(for: book.id)
+    }
+
+    func addPDFHighlight(_ highlight: PDFHighlight) {
+        try? store.addPDFHighlight(highlight)
+        pdfHighlightsByBook[highlight.bookID] = store.pdfHighlights(for: highlight.bookID)
+    }
+
+    func updatePDFHighlight(_ highlight: PDFHighlight) {
+        try? store.updatePDFHighlight(highlight)
+        pdfHighlightsByBook[highlight.bookID] = store.pdfHighlights(for: highlight.bookID)
+    }
+
+    func removePDFHighlight(_ highlight: PDFHighlight) {
+        try? store.removePDFHighlight(id: highlight.id)
+        pdfHighlightsByBook[highlight.bookID] = store.pdfHighlights(for: highlight.bookID)
+    }
+
+    // MARK: Export
+
+    /// Markdown for all of a book's annotations, or nil when it has none.
+    func annotationsMarkdown(for book: Book) -> String? {
+        AnnotationMarkdownExporter().markdown(
+            book: book,
+            highlights: highlights(for: book),
+            pdfHighlights: pdfHighlights(for: book)
+        )
+    }
+
+    // MARK: Highlights
+
+    /// Called from body — no `@Published` writes here (see bookState). The
+    /// add/update/remove paths below keep the cache fresh.
+    func highlights(for book: Book) -> [Highlight] {
+        highlightsByBook[book.id] ?? store.highlights(for: book.id)
+    }
+
+    @discardableResult
+    func addHighlight(
+        in book: Book,
+        chapter: Chapter,
+        range: Range<Int>,
+        note: String? = nil,
+        color: HighlightColor = .yellow
+    ) -> Highlight? {
         do {
-            let highlight = try highlightService.makeHighlight(
+            var highlight = try highlightService.makeHighlight(
                 in: book, chapter: chapter, range: range, note: note, createdAt: Date()
             )
+            highlight.color = color
             try store.addHighlight(highlight)
             highlightsByBook[book.id] = store.highlights(for: book.id)
+            return highlight
         } catch {
             // Empty selection or persistence error — nothing to add.
+            return nil
         }
+    }
+
+    /// Persist note/color edits to an existing highlight.
+    func updateHighlight(_ highlight: Highlight) {
+        try? store.updateHighlight(highlight)
+        highlightsByBook[highlight.bookID] = store.highlights(for: highlight.bookID)
     }
 
     func removeHighlight(_ highlight: Highlight, in book: Book) {

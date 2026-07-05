@@ -20,9 +20,13 @@ public enum ArticleComposerError: Error, Sendable, Equatable {
 /// Turns a set of highlights + notes into a coherent, editable article,
 /// grounded in the book's context.
 public protocol ArticleComposer: Sendable {
+    /// `guidance` is the reader's optional instruction about the article
+    /// itself (tone, emphasis, …) — it is not book content and must never be
+    /// presented to the model as a highlight.
     func compose(
         from highlights: [Highlight],
         in book: Book,
+        guidance: String?,
         provider: LLMProvider
     ) async throws -> Article
 }
@@ -36,10 +40,13 @@ public struct LLMArticleComposer: ArticleComposer {
     public func compose(
         from highlights: [Highlight],
         in book: Book,
+        guidance: String? = nil,
         provider: LLMProvider
     ) async throws -> Article {
         var markdown = ""
-        for try await delta in composeStreaming(from: highlights, in: book, provider: provider) {
+        for try await delta in composeStreaming(
+            from: highlights, in: book, guidance: guidance, provider: provider
+        ) {
             markdown += delta
         }
         return Article(title: "Notes on \(book.metadata.title)", markdown: markdown)
@@ -54,6 +61,7 @@ public struct LLMArticleComposer: ArticleComposer {
     public func composeStreaming(
         from highlights: [Highlight],
         in book: Book,
+        guidance: String? = nil,
         provider: LLMProvider
     ) -> AsyncThrowingStream<String, Error> {
         AsyncThrowingStream { continuation in
@@ -62,7 +70,7 @@ public struct LLMArticleComposer: ArticleComposer {
                 return
             }
 
-            let prompt = Self.buildPrompt(highlights: highlights, book: book)
+            let prompt = Self.buildPrompt(highlights: highlights, book: book, guidance: guidance)
             let request = ChatRequest(
                 messages: [.init(role: .user, content: prompt)],
                 maxOutputTokens: 2048
@@ -102,7 +110,7 @@ public struct LLMArticleComposer: ArticleComposer {
         }
     }
 
-    static func buildPrompt(highlights: [Highlight], book: Book) -> String {
+    static func buildPrompt(highlights: [Highlight], book: Book, guidance: String? = nil) -> String {
         let bullets = orderedHighlights(highlights, in: book).map { highlight -> String in
             // Collapse internal newlines so each highlight stays a single bullet.
             var line = "- \"\(singleLine(highlight.quotedText))\""
@@ -115,7 +123,7 @@ public struct LLMArticleComposer: ArticleComposer {
 
         let authors = book.metadata.authors.joined(separator: ", ")
         let attribution = authors.isEmpty ? "" : " by \(authors)"
-        return """
+        var prompt = """
         Compose a coherent, well-structured article in Markdown from the reader's \
         highlights and notes below, taken from "\(book.metadata.title)"\(attribution). \
         Keep the highlights in the given (reading) order, weave them into a narrative \
@@ -124,6 +132,19 @@ public struct LLMArticleComposer: ArticleComposer {
         Highlights and notes (in reading order):
         \(bullets)
         """
+
+        // Reader guidance gets its own clearly-labeled section — it is an
+        // instruction about the article, never one of the quoted highlights.
+        let trimmedGuidance = guidance?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !trimmedGuidance.isEmpty {
+            prompt += """
+
+
+            Reader's guidance for this article (instructions, not book content):
+            \(trimmedGuidance)
+            """
+        }
+        return prompt
     }
 
     /// Collapse all internal whitespace/newlines to single spaces.

@@ -7,9 +7,10 @@ import UIKit
 import AppKit
 #endif
 
-/// A book jacket in the "Paper & Ink" style: real cover art when the book
-/// carries it, otherwise a generated placeholder cover (deterministic gradient
-/// plus serif title/author). Always 2:3, with the shared cover radius/shadow.
+/// A book jacket in the Marginalia style: real cover art when the book
+/// carries it, otherwise a flat tinted placeholder jacket (title-keyed muted
+/// field, short top rule, serif title, small-caps author). Always 2:3, with
+/// the shared cover radius/shadow.
 ///
 /// The cover is treated as decorative for accessibility — the surrounding cell
 /// supplies the book's title/author as text, so the jacket's painted text is
@@ -29,12 +30,27 @@ struct BookCoverView: View {
                 .aspectRatio(2.0 / 3.0, contentMode: .fit)
                 .frame(width: width)
                 .overlay(coverContent)
+                .overlay(sheen)
                 .clipShape(RoundedRectangle(cornerRadius: AppTheme.coverRadius, style: .continuous))
                 .overlay(
                     RoundedRectangle(cornerRadius: AppTheme.coverRadius, style: .continuous)
                         .strokeBorder(Color.black.opacity(0.08), lineWidth: 0.5)
                 )
         )
+    }
+
+    /// A faint diagonal gloss over real artwork so it reads as a printed
+    /// cover. Placeholder jackets stay flat (the Marginalia look).
+    @ViewBuilder
+    private var sheen: some View {
+        if coverImage != nil {
+            LinearGradient(
+                colors: [Color.white.opacity(0.10), .clear, Color.black.opacity(0.06)],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+            .allowsHitTesting(false)
+        }
     }
 
     @ViewBuilder
@@ -50,33 +66,33 @@ struct BookCoverView: View {
         }
     }
 
-    /// A tasteful placeholder jacket: title-keyed gradient, serif title, and
-    /// the author in small type at the bottom.
+    /// The flat tinted placeholder jacket: a deep muted field keyed off the
+    /// title, a short 2px rule in the cover ink, the serif title, and the
+    /// author in tracked small caps pinned to the foot.
     private var generatedCover: some View {
-        ZStack {
-            LinearGradient(
-                colors: AppTheme.coverGradient(for: book.metadata.title),
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
-            VStack(alignment: .leading, spacing: 8) {
+        let tint = AppTheme.coverTint(for: book.metadata.title)
+        return ZStack {
+            tint.field
+            VStack(alignment: .leading, spacing: 10) {
+                Rectangle()
+                    .fill(tint.ink.opacity(0.55))
+                    .frame(width: 26, height: 2)
                 Text(book.metadata.title)
-                    .font(.title3.weight(.semibold))
-                    .fontDesign(.serif)
-                    .foregroundStyle(.white)
+                    .font(.system(size: 15.5, weight: .semibold, design: .serif))
+                    .foregroundStyle(tint.ink)
                     .multilineTextAlignment(.leading)
-                    .lineLimit(4)
+                    .lineLimit(3)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 Spacer(minLength: 0)
                 if let author = book.metadata.authors.first {
-                    Text(author)
-                        .font(.caption)
-                        .fontDesign(.serif)
-                        .foregroundStyle(.white.opacity(0.85))
+                    Text(author.uppercased())
+                        .font(.system(size: 9.5))
+                        .tracking(1.24)
+                        .foregroundStyle(tint.ink.opacity(0.75))
                         .lineLimit(1)
                 }
             }
-            .padding(12)
+            .padding(14)
             // The cell's own title/author text carries the accessible name;
             // hiding the painted text avoids duplicate static-text elements
             // (the UI tests tap `staticTexts["Sample Book"]`).

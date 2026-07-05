@@ -10,6 +10,10 @@ public final class FileLibraryStore: LibraryStore, @unchecked Sendable {
         var books: [UUID: Book] = [:]
         var positions: [UUID: ReadingPosition] = [:]
         var highlights: [UUID: [Highlight]] = [:]
+        // v2 additions — optional so pre-v2 library.json files decode.
+        var bookmarks: [UUID: [Bookmark]]? = [:]
+        var pdfHighlights: [UUID: [PDFHighlight]]? = [:]
+        var bookStates: [UUID: BookState]? = [:]
     }
 
     private let url: URL
@@ -85,6 +89,97 @@ public final class FileLibraryStore: LibraryStore, @unchecked Sendable {
         for (bookID, list) in state.highlights {
             state.highlights[bookID] = list.filter { $0.id != id }
         }
+        try persist()
+    }
+
+    public func removeBook(id: UUID) throws {
+        lock.lock(); defer { lock.unlock() }
+        state.books[id] = nil
+        state.order.removeAll { $0 == id }
+        state.positions[id] = nil
+        state.highlights[id] = nil
+        state.bookmarks?[id] = nil
+        state.pdfHighlights?[id] = nil
+        state.bookStates?[id] = nil
+        try persist()
+    }
+
+    public func updateHighlight(_ highlight: Highlight) throws {
+        lock.lock(); defer { lock.unlock() }
+        guard var list = state.highlights[highlight.bookID],
+              let index = list.firstIndex(where: { $0.id == highlight.id }) else { return }
+        list[index] = highlight
+        state.highlights[highlight.bookID] = list
+        try persist()
+    }
+
+    public func bookmarks(for bookID: UUID) -> [Bookmark] {
+        lock.lock(); defer { lock.unlock() }
+        return state.bookmarks?[bookID] ?? []
+    }
+
+    public func addBookmark(_ bookmark: Bookmark) throws {
+        lock.lock(); defer { lock.unlock() }
+        var all = state.bookmarks ?? [:]
+        all[bookmark.bookID, default: []].append(bookmark)
+        state.bookmarks = all
+        try persist()
+    }
+
+    public func removeBookmark(id: UUID) throws {
+        lock.lock(); defer { lock.unlock() }
+        guard var all = state.bookmarks else { return }
+        for (bookID, list) in all {
+            all[bookID] = list.filter { $0.id != id }
+        }
+        state.bookmarks = all
+        try persist()
+    }
+
+    public func pdfHighlights(for bookID: UUID) -> [PDFHighlight] {
+        lock.lock(); defer { lock.unlock() }
+        return state.pdfHighlights?[bookID] ?? []
+    }
+
+    public func addPDFHighlight(_ highlight: PDFHighlight) throws {
+        lock.lock(); defer { lock.unlock() }
+        var all = state.pdfHighlights ?? [:]
+        all[highlight.bookID, default: []].append(highlight)
+        state.pdfHighlights = all
+        try persist()
+    }
+
+    public func updatePDFHighlight(_ highlight: PDFHighlight) throws {
+        lock.lock(); defer { lock.unlock() }
+        guard var all = state.pdfHighlights,
+              var list = all[highlight.bookID],
+              let index = list.firstIndex(where: { $0.id == highlight.id }) else { return }
+        list[index] = highlight
+        all[highlight.bookID] = list
+        state.pdfHighlights = all
+        try persist()
+    }
+
+    public func removePDFHighlight(id: UUID) throws {
+        lock.lock(); defer { lock.unlock() }
+        guard var all = state.pdfHighlights else { return }
+        for (bookID, list) in all {
+            all[bookID] = list.filter { $0.id != id }
+        }
+        state.pdfHighlights = all
+        try persist()
+    }
+
+    public func bookState(for bookID: UUID) -> BookState? {
+        lock.lock(); defer { lock.unlock() }
+        return state.bookStates?[bookID]
+    }
+
+    public func saveBookState(_ bookState: BookState, for bookID: UUID) throws {
+        lock.lock(); defer { lock.unlock() }
+        var all = state.bookStates ?? [:]
+        all[bookID] = bookState
+        state.bookStates = all
         try persist()
     }
 }
