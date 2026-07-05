@@ -53,60 +53,58 @@ final class V2BackwardCompatibilityTests: XCTestCase {
 
     // MARK: Pre-v2 library.json
 
-    /// A pre-v2 state file: only order/books/positions/highlights, and the
-    /// highlight has no `color`. Written as a literal, not re-encoded.
     private let legacyBookID = UUID(uuidString: "11111111-2222-3333-4444-555555555555")!
     private let legacyChapterID = UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE")!
     private let legacyHighlightID = UUID(uuidString: "99999999-8888-7777-6666-555555555555")!
 
-    private var legacyLibraryJSON: String {
-        """
-        {
-            "order": ["11111111-2222-3333-4444-555555555555"],
-            "books": {
-                "11111111-2222-3333-4444-555555555555": {
-                    "id": "11111111-2222-3333-4444-555555555555",
-                    "metadata": {
-                        "title": "Legacy Book",
-                        "authors": ["Ada Lovelace"],
-                        "tableOfContents": []
-                    },
-                    "chapters": [
-                        {
-                            "id": "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE",
-                            "title": "One",
-                            "order": 0,
-                            "text": "hello world"
-                        }
-                    ],
-                    "estimatedTokenCount": 3
-                }
-            },
-            "positions": {
-                "11111111-2222-3333-4444-555555555555": {
-                    "chapterIndex": 1,
-                    "characterOffset": 42
-                }
-            },
-            "highlights": {
-                "11111111-2222-3333-4444-555555555555": [
-                    {
-                        "id": "99999999-8888-7777-6666-555555555555",
-                        "bookID": "11111111-2222-3333-4444-555555555555",
-                        "chapterID": "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE",
-                        "range": [0, 5],
-                        "quotedText": "hello",
-                        "note": "greeting",
-                        "createdAt": 0
-                    }
-                ]
-            }
-        }
-        """
+    /// Exactly the shape pre-v2 `FileLibraryStore.State` had — no bookmarks/
+    /// pdfHighlights/bookStates keys. Encoded with JSONEncoder so the fixture
+    /// is byte-compatible with what the old store actually wrote (notably:
+    /// Swift encodes `[UUID: T]` as a flat [key, value, …] ARRAY, not a
+    /// string-keyed object, and synthesized Codable omits nil optionals, so a
+    /// v2 `Highlight` with `color == nil` encodes exactly like a pre-v2 one).
+    private struct LegacyState: Codable {
+        var order: [UUID] = []
+        var books: [UUID: Book] = [:]
+        var positions: [UUID: ReadingPosition] = [:]
+        var highlights: [UUID: [Highlight]] = [:]
+    }
+
+    private func writeLegacyLibraryFile() throws {
+        let book = Book(
+            id: legacyBookID,
+            metadata: BookMetadata(title: "Legacy Book", authors: ["Ada Lovelace"]),
+            chapters: [
+                Chapter(id: legacyChapterID, title: "One", order: 0, text: "hello world")
+            ],
+            estimatedTokenCount: 3
+        )
+        let highlight = Highlight(
+            id: legacyHighlightID,
+            bookID: legacyBookID,
+            chapterID: legacyChapterID,
+            range: 0..<5,
+            quotedText: "hello",
+            note: "greeting",
+            createdAt: Date(timeIntervalSince1970: 0)
+        )
+        var state = LegacyState()
+        state.order = [legacyBookID]
+        state.books = [legacyBookID: book]
+        state.positions = [legacyBookID: ReadingPosition(chapterIndex: 1, characterOffset: 42)]
+        state.highlights = [legacyBookID: [highlight]]
+        try JSONEncoder().encode(state).write(to: fileURL)
+
+        // The fixture must not contain any v2 keys — that's the whole point.
+        let raw = try String(contentsOf: fileURL, encoding: .utf8)
+        XCTAssertFalse(raw.contains("bookmarks"))
+        XCTAssertFalse(raw.contains("pdfHighlights"))
+        XCTAssertFalse(raw.contains("bookStates"))
+        XCTAssertFalse(raw.contains("color"))
     }
 
     func testPreV2LibraryFileLoadsIntoFileLibraryStore() throws {
-        try Data(legacyLibraryJSON.utf8).write(to: fileURL)
+        try writeLegacyLibraryFile()
 
         let store = FileLibraryStore(fileURL: fileURL)
 
@@ -135,7 +133,7 @@ final class V2BackwardCompatibilityTests: XCTestCase {
     }
 
     func testAddingBookmarkToPreV2FileKeepsOldHighlightsAfterReload() throws {
-        try Data(legacyLibraryJSON.utf8).write(to: fileURL)
+        try writeLegacyLibraryFile()
 
         let bookmark = Bookmark(
             bookID: legacyBookID,

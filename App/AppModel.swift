@@ -32,9 +32,6 @@ final class AppModel: ObservableObject {
         }
         self.parsers = parsers ?? Self.makeDefaultRegistry()
         self.books = self.store.allBooks()
-        for book in self.books {
-            statesByBook[book.id] = self.store.bookState(for: book.id)
-        }
 
         let credentials = Self.makeCredentialStore()
         self.credentialStore = credentials
@@ -42,6 +39,12 @@ final class AppModel: ObservableObject {
             store: credentials,
             factory: DefaultProviderFactory.factory()
         )
+
+        // All stored properties are initialized above — only now may init
+        // touch self freely (Swift definite-initialization rule).
+        for book in books {
+            statesByBook[book.id] = store.bookState(for: book.id)
+        }
     }
 
     private static func makeCredentialStore() -> any CredentialStore {
