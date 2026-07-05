@@ -200,31 +200,45 @@ struct ReaderView: View {
         let images = model.inlineImages(for: book, chapter: chapter)
         let spans = highlightSpans(for: chapter)
         return VStack(spacing: 0) {
-            if let title = chapter.title {
-                Text(title)
-                    .font(.title3.bold())
-                    .fontDesign(.serif)
-                    .foregroundStyle(style.theme.inkColor)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal)
-                    .padding(.top)
-            }
             if layout == .scroll {
-                SelectableTextView(
-                    text: chapter.text,
-                    highlights: spans,
-                    style: style,
-                    inlineImages: images,
-                    scrollToOffset: $scrollTarget,
-                    onAnnotate: { target, action in
-                        handleAnnotation(in: chapter, target: target, action: action)
+                // Full-bleed paper with a centered max-width column; the
+                // chapter kicker (caps, faint) leads the column.
+                VStack(alignment: .leading, spacing: 0) {
+                    if let title = chapter.title {
+                        // Displayed in caps, but exposed to accessibility
+                        // under the original title so UI tests (and
+                        // VoiceOver) still find e.g. "Chapter One".
+                        Text(title.uppercased())
+                            .font(.system(size: 11))
+                            .kerning(2)
+                            .foregroundStyle(style.theme.faint)
+                            .lineLimit(1)
+                            .accessibilityLabel(title)
+                            .accessibilityIdentifier(title)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.bottom, 26)
                     }
-                )
-                .padding()
+                    SelectableTextView(
+                        text: chapter.text,
+                        highlights: spans,
+                        style: style,
+                        inlineImages: images,
+                        scrollToOffset: $scrollTarget,
+                        onAnnotate: { target, action in
+                            handleAnnotation(in: chapter, target: target, action: action)
+                        }
+                    )
+                }
+                .padding(.horizontal, 24)
+                .padding(.top, 46)
+                .frame(maxWidth: 640)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(style.theme.paper)
                 scrollFooter(for: chapter)
             } else {
-                // Paged modes draw their own footer (page x of y · min left +
-                // page arrows) because pagination happens inside the view.
+                // Paged modes draw their own footer (progress track + page x
+                // of y · min left) because pagination happens inside the
+                // view; the chapter kicker renders on the first page.
                 PagedChapterView(
                     chapter: chapter,
                     layout: layout,
@@ -243,18 +257,37 @@ struct ReaderView: View {
     }
 
     /// Scroll mode has no page anchor, so the estimate covers the whole
-    /// chapter (see docs/DESIGN.md — "in scroll mode base it on chapter start").
-    /// Reads `minutesCache` (refreshed on appear/chapter change) because
+    /// chapter (see docs/DESIGN.md — "in scroll mode base it on chapter start")
+    /// and the progress track fills by position in the book. Reads
+    /// `minutesCache` (refreshed on appear/chapter change) because
     /// word-counting the chapter in body would rescan it on every render.
     private func scrollFooter(for chapter: Chapter) -> some View {
         let minutes = minutesCache?.chapterID == chapter.id
             ? (minutesCache?.minutes ?? 0)
             : 0
-        return Text(minutes > 0 ? "~\(minutes) min left in chapter" : "")
-            .font(.footnote)
-            .foregroundStyle(style.theme.inkColor.opacity(0.55))
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 6)
+        let fraction = book.chapters.isEmpty
+            ? 0
+            : Double(chapterIndex + 1) / Double(book.chapters.count)
+        return HStack(spacing: 14) {
+            ReaderProgressTrack(
+                fraction: fraction,
+                ink: style.theme.inkColor,
+                track: style.theme.line
+            )
+            if minutes > 0 {
+                Text("~\(minutes) min left in chapter")
+                    .font(.system(size: 11))
+                    .foregroundStyle(style.theme.muted)
+                    .monospacedDigit()
+                    .lineLimit(1)
+            }
+        }
+        .padding(.horizontal, 20)
+        .frame(height: 40)
+        .frame(maxWidth: .infinity)
+        .overlay(alignment: .top) {
+            Rectangle().fill(style.theme.line).frame(height: 1)
+        }
     }
 
     private func updateMinutesCache() {
@@ -321,11 +354,20 @@ struct ReaderView: View {
             askButton
         }
         #else
+        // macOS trailing area, Marginalia style: the appearance popover is
+        // replaced by inline design controls — layout segments, an A / A font
+        // stepper, and three theme dots (the `reader.appearance` id rides on
+        // the layout segment container for compatibility).
         ToolbarItemGroup(placement: .primaryAction) {
             if !isPDFOriginal {
                 searchButton
             }
-            appearanceButton
+            layoutSegmentControl
+            fontStepperControl
+            themeDotsControl
+            if model.isPDF(book) {
+                pdfDisplayMenu
+            }
             askButton
             notesButton
         }
@@ -412,6 +454,9 @@ struct ReaderView: View {
         }
     }
 
+    #if os(iOS)
+    /// iOS keeps the Aa popover (the nav bar has no room for inline
+    /// controls); the popover itself is restyled to the Marginalia tokens.
     private var appearanceButton: some View {
         Button { showAppearance = true } label: {
             Label("Appearance", systemImage: "textformat.size")
@@ -429,18 +474,160 @@ struct ReaderView: View {
             )
         }
     }
+    #endif
+
+    #if os(macOS)
+    /// Inline layout segments: quiet text buttons; the selected one gets a
+    /// paper pill. Carries the `reader.appearance` compatibility identifier.
+    private var layoutSegmentControl: some View {
+        HStack(spacing: 2) {
+            layoutSegment("Scroll", .scroll)
+            layoutSegment("Page", .singlePage)
+            layoutSegment("Spread", .doublePage)
+        }
+        .padding(2)
+        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(style.theme.line, lineWidth: 1))
+        .help("Reading layout")
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("reader.appearance")
+        .accessibilityLabel("Appearance")
+    }
+
+    private func layoutSegment(_ label: String, _ value: PageLayout) -> some View {
+        let selected = layout == value
+        return Button { layoutRaw = value.rawValue } label: {
+            Text(label)
+                .font(.system(size: 11.5, weight: .medium))
+                .foregroundStyle(selected ? style.theme.inkColor : style.theme.muted)
+                .padding(.horizontal, 9)
+                .padding(.vertical, 4)
+                .background(
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(selected ? style.theme.paper : .clear)
+                )
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help("\(label) layout")
+        .accessibilityLabel(label)
+        .accessibilityAddTraits(selected ? .isSelected : [])
+    }
+
+    /// Inline A / A font stepper: serif glyphs, hairline divider and border.
+    private var fontStepperControl: some View {
+        HStack(spacing: 0) {
+            Button { adjustFontSize(-1) } label: {
+                Text("A")
+                    .font(.system(size: 11, design: .serif))
+                    .foregroundStyle(style.theme.inkColor)
+                    .padding(.horizontal, 10)
+                    .frame(height: 25)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .disabled(fontSize <= Double(ReaderStyle.fontSizeRange.lowerBound))
+            .help("Smaller text (⌘−)")
+            .accessibilityLabel("Smaller text")
+            .accessibilityIdentifier("appearance.textSmaller")
+
+            Rectangle().fill(style.theme.line).frame(width: 1, height: 25)
+
+            Button { adjustFontSize(+1) } label: {
+                Text("A")
+                    .font(.system(size: 15, design: .serif))
+                    .foregroundStyle(style.theme.inkColor)
+                    .padding(.horizontal, 10)
+                    .frame(height: 25)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .disabled(fontSize >= Double(ReaderStyle.fontSizeRange.upperBound))
+            .help("Larger text (⌘+)")
+            .accessibilityLabel("Larger text")
+            .accessibilityIdentifier("appearance.textLarger")
+        }
+        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(style.theme.line, lineWidth: 1))
+    }
+
+    /// Inline theme dots: 18pt paper swatches with a hairline border; the
+    /// selected one gets an ink ring.
+    private var themeDotsControl: some View {
+        HStack(spacing: 7) {
+            ForEach(ReadingTheme.allCases) { option in
+                themeDot(option)
+            }
+        }
+        .padding(.horizontal, 4)
+    }
+
+    private func themeDot(_ option: ReadingTheme) -> some View {
+        let selected = option == style.theme
+        return Button { themeRaw = option.rawValue } label: {
+            ZStack {
+                Circle()
+                    .fill(option.paper)
+                    .overlay(Circle().strokeBorder(style.theme.line, lineWidth: 1))
+                    .frame(width: 18, height: 18)
+                if selected {
+                    Circle()
+                        .strokeBorder(style.theme.inkColor, lineWidth: 1.5)
+                        .frame(width: 24, height: 24)
+                }
+            }
+            .frame(width: 24, height: 24)
+            .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .help("\(option.displayName) theme")
+        .accessibilityLabel(option.displayName)
+        .accessibilityIdentifier("appearance.theme.\(option.rawValue)")
+        .accessibilityAddTraits(selected ? .isSelected : [])
+    }
+
+    /// PDFs keep their display switch in the appearance area: original pages
+    /// (native PDFKit) or the extracted reading view.
+    private var pdfDisplayMenu: some View {
+        Menu {
+            Picker("PDF display", selection: $pdfShowsOriginal) {
+                Text("Original pages").tag(true)
+                Text("Reading view").tag(false)
+            }
+            .pickerStyle(.inline)
+            .labelsHidden()
+        } label: {
+            Label("PDF display", systemImage: "doc.richtext")
+        }
+        .help("Show the PDF's original pages, or its extracted text with highlights")
+        .accessibilityLabel("PDF display")
+        .accessibilityIdentifier("reader.pdfDisplay")
+    }
+    #endif
 
     private var askButton: some View {
-        Button {
+        let button = Button {
             askSelection = nil // whole-book question
             showAsk = true
         } label: {
+            #if os(macOS)
+            // The one iris moment in the chrome: the ✦ AI mark.
+            Text("\(AppTheme.aiGlyph) Ask")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(style.theme.iris)
+                .padding(.horizontal, 4)
+            #else
             Label("Ask the Book", systemImage: "sparkles")
+            #endif
         }
         .keyboardShortcut("a", modifiers: [.command, .shift])
         .accessibilityIdentifier("reader.ask")
         .accessibilityLabel("Ask the book")
         .help("Ask the book (⇧⌘A)")
+        #if os(macOS)
+        // Plain style so the iris tint survives the toolbar's own styling.
+        return button.buttonStyle(.plain)
+        #else
+        return button
+        #endif
     }
 
     private var notesButton: some View {

@@ -4,6 +4,8 @@ import ReadrKit
 /// In-book search UI (⌘F popover): a query field and a result list scanning
 /// every chapter. ⏎ jumps to the first hit; clicking a row jumps to that hit.
 /// The scan itself is `ReadrKit.BookSearcher`, run off the main actor.
+/// Marginalia styling: elevated surface, paper field, hairlines, ink rows
+/// with serif snippets.
 struct ReaderSearchPopover: View {
     let book: Book
     /// Jump to (chapterIndex, characterOffset). The host closes the popover.
@@ -12,10 +14,21 @@ struct ReaderSearchPopover: View {
     @State private var query = ""
     @State private var results: [BookSearchResult] = []
 
+    /// Matches the reader's persisted theme so the popover sits on the same
+    /// palette as the page.
+    @AppStorage("readingTheme") private var themeRaw = ReadingTheme.paper.rawValue
+    private var theme: ReadingTheme { ReadingTheme(rawValue: themeRaw) ?? .paper }
+
     var body: some View {
-        VStack(spacing: 8) {
+        VStack(spacing: 10) {
             TextField("Find in book", text: $query)
-                .textFieldStyle(.roundedBorder)
+                .textFieldStyle(.plain)
+                .font(.system(size: 12.5))
+                .foregroundStyle(theme.inkColor)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 8)
+                .background(RoundedRectangle(cornerRadius: 8).fill(theme.paper))
+                .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(theme.line, lineWidth: 1))
                 .accessibilityIdentifier("reader.search.field")
                 .onSubmit {
                     if let first = results.first {
@@ -27,37 +40,43 @@ struct ReaderSearchPopover: View {
                 Text(query.trimmingCharacters(in: .whitespaces).isEmpty
                     ? "Search every chapter of this book."
                     : "No matches.")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
+                    .font(.system(size: 11))
+                    .foregroundStyle(theme.muted)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 List(results) { result in
                     Button {
                         onJump(result.chapterIndex, result.characterOffset)
                     } label: {
-                        VStack(alignment: .leading, spacing: 2) {
+                        VStack(alignment: .leading, spacing: 3) {
                             Text(result.chapterTitle ?? "Chapter \(result.chapterIndex + 1)")
-                                .font(.caption.weight(.semibold))
-                                .foregroundStyle(.secondary)
+                                .font(.system(size: 10.5, weight: .semibold))
+                                .foregroundStyle(theme.muted)
                             Text(result.snippet)
-                                .font(.callout)
+                                .font(.system(size: 12.5, design: .serif))
+                                .foregroundStyle(theme.inkColor)
                                 .lineLimit(2)
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
+                    .listRowBackground(Color.clear)
+                    .listRowSeparatorTint(theme.line)
                 }
                 .listStyle(.plain)
+                .scrollContentBackground(.hidden)
                 if results.count >= BookSearcher.resultCap {
                     Text("Showing the first \(BookSearcher.resultCap) matches.")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
+                        .font(.system(size: 10))
+                        .foregroundStyle(theme.faint)
                 }
             }
         }
         .padding(12)
         .frame(minWidth: 320, idealWidth: 360, minHeight: 320, idealHeight: 400)
+        .background(theme.elevated)
+        .presentationBackground(theme.elevated)
         .task(id: query) {
             // Debounce keystrokes — every scan walks the whole book.
             try? await Task.sleep(nanoseconds: 200_000_000)

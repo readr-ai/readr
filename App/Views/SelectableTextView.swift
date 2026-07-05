@@ -44,6 +44,7 @@ enum AnnotationAction: Equatable {
 /// is presentation-agnostic — see AnnotationMenuView).
 private func makeAnnotationMenu(
     for target: AnnotationTarget,
+    theme: ReadingTheme,
     fire: @escaping (AnnotationAction) -> Void
 ) -> AnnotationMenuView {
     let mode: AnnotationMenuView.Mode
@@ -57,6 +58,7 @@ private func makeAnnotationMenu(
     if case .span = target { removeAction = { fire(.remove) } }
     return AnnotationMenuView(
         mode: mode,
+        theme: theme,
         onHighlight: { fire(.highlight($0)) },
         onNote: { fire(.note) },
         onAsk: { fire(.ask) },
@@ -111,11 +113,14 @@ struct SelectableTextView: View {
         )
         .overlay(alignment: .bottom) {
             if let target = barTarget {
-                makeAnnotationMenu(for: target) { action in
+                // Marginalia: an elevated capsule with a hairline border — no
+                // material blur (the menu supplies its own elev background).
+                makeAnnotationMenu(for: target, theme: style.theme) { action in
                     barTarget = nil
                     onAnnotate(target, action)
                 }
-                .background(.ultraThinMaterial, in: Capsule())
+                .clipShape(Capsule())
+                .overlay(Capsule().strokeBorder(style.theme.line, lineWidth: 1))
                 .shadow(color: .black.opacity(0.15), radius: 8, y: 2)
                 .padding(.bottom, 12)
             }
@@ -476,6 +481,7 @@ private struct Representable: NSViewRepresentable {
         coordinator.onAnnotate = onAnnotate
         coordinator.text = text
         coordinator.spans = highlights
+        coordinator.theme = style.theme
         if coordinator.needsRender(
             text: text, spans: highlights, style: style,
             imageOffsets: inlineImages.keys.sorted()
@@ -507,11 +513,15 @@ private struct Representable: NSViewRepresentable {
         DispatchQueue.main.async { clearScrollTarget() }
     }
 
-    func makeCoordinator() -> Coordinator { Coordinator(text: text, onAnnotate: onAnnotate) }
+    func makeCoordinator() -> Coordinator {
+        Coordinator(text: text, theme: style.theme, onAnnotate: onAnnotate)
+    }
 
     final class Coordinator: NSObject, NSTextViewDelegate {
         var text: String
         var spans: [HighlightSpan] = []
+        /// Reading theme of the hosting page, forwarded to the menu.
+        var theme: ReadingTheme
         var onAnnotate: (AnnotationTarget, AnnotationAction) -> Void
         weak var textView: NSTextView?
 
@@ -527,8 +537,13 @@ private struct Representable: NSViewRepresentable {
         private var renderedStyle: ReaderStyle?
         private var renderedImageOffsets: [Int] = []
 
-        init(text: String, onAnnotate: @escaping (AnnotationTarget, AnnotationAction) -> Void) {
+        init(
+            text: String,
+            theme: ReadingTheme,
+            onAnnotate: @escaping (AnnotationTarget, AnnotationAction) -> Void
+        ) {
             self.text = text
+            self.theme = theme
             self.onAnnotate = onAnnotate
         }
 
@@ -622,7 +637,7 @@ private struct Representable: NSViewRepresentable {
             rect.size.width = max(rect.size.width, 1)
             rect.size.height = max(rect.size.height, 1)
 
-            let menu = makeAnnotationMenu(for: target) { [weak self] action in
+            let menu = makeAnnotationMenu(for: target, theme: theme) { [weak self] action in
                 self?.dismissMenu()
                 self?.onAnnotate(target, action)
             }
@@ -639,6 +654,13 @@ private struct Representable: NSViewRepresentable {
                 created.animates = false
                 created.contentViewController = hosting
                 popover = created
+            }
+            // Size the popover to the menu's fitting size — mode changes
+            // (create ↔ edit) change the row's width.
+            if let view = hosting?.view {
+                view.layoutSubtreeIfNeeded()
+                let size = view.fittingSize
+                if size.width > 0, size.height > 0 { popover?.contentSize = size }
             }
             popover?.show(relativeTo: rect, of: textView, preferredEdge: .minY)
         }
