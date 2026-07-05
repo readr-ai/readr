@@ -149,37 +149,32 @@ final class ReadrAppUITests: XCTestCase {
         guard app.staticTexts["Chapter One"].waitForExistence(timeout: 5) else { return }
         snap(app, "02-reader")
 
-        // c. Appearance popover open, then two-page layout.
+        // c. Appearance popover: pick Sepia (popover stays open for live
+        // preview), then "Two pages" — layout choices dismiss the popover, so
+        // the toolbar is immediately tappable again.
         let appearance = button(app, id: "reader.appearance", label: "Appearance")
-        if appearance.waitForExistence(timeout: 3) {
+        if appearance.waitForExistence(timeout: 3), appearance.isHittable {
             appearance.tap()
             _ = app.staticTexts["Sepia"].firstMatch.waitForExistence(timeout: 2)
             snap(app, "03-appearance")
 
-            let twoPagesButton = app.buttons["Two pages"].firstMatch
-            let twoPagesText = app.staticTexts["Two pages"].firstMatch
-            if twoPagesButton.waitForExistence(timeout: 2) {
-                twoPagesButton.tap()
-            } else if twoPagesText.waitForExistence(timeout: 2) {
-                twoPagesText.tap()
+            let sepia = app.buttons["Sepia"].firstMatch
+            if sepia.waitForExistence(timeout: 2), sepia.isHittable { sepia.tap() }
+
+            let twoPages = app.buttons["Two pages"].firstMatch
+            if twoPages.waitForExistence(timeout: 2), twoPages.isHittable {
+                twoPages.tap() // dismisses the popover
             }
             _ = app.staticTexts["Chapter One"].waitForExistence(timeout: 2)
-            snap(app, "04-reader-two-pages")
+            snap(app, "04-reader-two-pages-sepia")
 
-            // Restore scroll + switch to Sepia for the next shot.
-            if appearance.waitForExistence(timeout: 3) {
+            // Back to scroll for the remaining shots (sepia stays).
+            if appearance.waitForExistence(timeout: 3), appearance.isHittable {
                 appearance.tap()
                 let scroll = app.buttons["Scroll"].firstMatch
-                if scroll.waitForExistence(timeout: 2) { scroll.tap() }
-                let sepiaButton = app.buttons["Sepia"].firstMatch
-                let sepiaText = app.staticTexts["Sepia"].firstMatch
-                if sepiaButton.waitForExistence(timeout: 2) {
-                    sepiaButton.tap()
-                } else if sepiaText.waitForExistence(timeout: 2) {
-                    sepiaText.tap()
+                if scroll.waitForExistence(timeout: 2), scroll.isHittable {
+                    scroll.tap() // dismisses the popover
                 }
-                // Close the popover.
-                app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.9)).tap()
             }
             snap(app, "05-reader-sepia")
         }

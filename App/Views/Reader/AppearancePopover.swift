@@ -15,6 +15,7 @@ struct AppearancePopover: View {
     @Binding var fontSize: Double
     var isPDF: Bool = false
     @Binding var pdfShowsOriginal: Bool
+    @Environment(\.dismiss) private var dismiss
 
     private var theme: ReadingTheme { ReadingTheme(rawValue: themeRaw) ?? .paper }
 
@@ -125,7 +126,11 @@ struct AppearancePopover: View {
 
     private func layoutSegment(_ label: String, _ value: PageLayout) -> some View {
         let selected = layoutRaw == value.rawValue
-        return Button { layoutRaw = value.rawValue } label: {
+        // Layout is a one-shot choice; dismissing lets the reader see the
+        // result immediately (and keeps popover-covered toolbar buttons
+        // tappable for the UI screenshot walk). Theme/font stay open so they
+        // preview live.
+        return Button { layoutRaw = value.rawValue; dismiss() } label: {
             Text(label)
                 .font(.system(size: 11.5, weight: .medium))
                 .foregroundStyle(selected ? theme.inkColor : theme.muted)
