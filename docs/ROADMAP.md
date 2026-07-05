@@ -64,6 +64,29 @@ highlights→article) together, per project direction.
 - [ ] SQLite (`sqlite-vec` + FTS5) RAG persistence; PDF article export
 - [ ] Manual passes on a Mac (J1–J7)
 
+## v2.0 — The redesign (in progress; spec: docs/DESIGN.md)
+
+Goal: the best reader app for the Mac — nobody goes back to Apple Books.
+
+- [x] Research: Apple Books teardown, competitive scan, verified Mac patterns
+- [x] App icon + asset catalog (open book + amber spark), accent color
+- [x] Data model: highlight colors, bookmarks, native PDF highlights,
+  book state (continue reading / finished), book deletion
+- [ ] Sidebar shell: Home (Continue Reading), library shelves, Highlights & Notes
+- [ ] Reader chrome: TOC, bookmarks, in-book search, appearance popover,
+  time-left-in-chapter, per-book windows on macOS
+- [ ] Selection popover annotation (5 colors, note, ask, copy) — one gesture
+- [ ] Native PDF annotation (overlay highlights, outline TOC, thumbnails, search)
+- [ ] Notes panel (inspector) + Markdown export + Article studio
+- [ ] UI tests + screenshot verification of every new surface
+
+### Post-v2 (from the research; not scheduled)
+- Reading stats, streaks, shareable wrap-ups; measured reading speed
+- Daily Review (spaced repetition over highlights)
+- Command palette (⌘K); spoiler-scoped ask; "story so far" recap
+- kosync (KOReader) progress-sync interop; Calibre/OPDS import
+- List view + metadata editing; user collections; parallel read (two books)
+
 ## Open questions / decisions to revisit
 - OAuth feasibility for "log in with Claude / ChatGPT" vs. API keys only.
 - SwiftData vs. GRDB for persistence.
