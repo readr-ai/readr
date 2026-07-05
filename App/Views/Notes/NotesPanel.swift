@@ -11,21 +11,24 @@ struct NotesPanel: View {
     var onJumpHighlight: ((Highlight) -> Void)? = nil
     var onJumpPDF: ((PDFHighlight) -> Void)? = nil
 
+    @AppStorage("readingTheme") private var themeRaw = ReadingTheme.paper.rawValue
+    private var theme: ReadingTheme { ReadingTheme(rawValue: themeRaw) ?? .paper }
+
     private var annotationCount: Int {
         model.highlights(for: book).count + model.pdfHighlights(for: book).count
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .firstTextBaseline, spacing: 6) {
+        VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 3) {
                 Text("Notes")
-                    .font(.title3.bold())
+                    .font(.system(size: 20, weight: .semibold, design: .serif))
+                    .foregroundStyle(theme.inkColor)
                 if annotationCount > 0 {
-                    Text("\(annotationCount)")
-                        .font(.subheadline.monospacedDigit())
-                        .foregroundStyle(.secondary)
+                    Text(annotationCount == 1 ? "1 annotation" : "\(annotationCount) annotations")
+                        .font(.system(size: 12).monospacedDigit())
+                        .foregroundStyle(theme.muted)
                 }
-                Spacer()
             }
             NotesHeaderActions(book: book)
             AnnotationListView(
@@ -35,15 +38,20 @@ struct NotesPanel: View {
             )
         }
         .padding([.horizontal, .top], 12)
+        .background(theme.background)
     }
 }
 
-/// The "Create Article" CTA + Markdown export menu, shared by the Notes panel
+/// The "Compose article" CTA + Markdown export menu, shared by the Notes panel
 /// and the library "Highlights & Notes" review so both surfaces offer the same
-/// two exits for annotations.
+/// two exits for annotations. The CTA is the design's ink pill with the ✦ AI
+/// glyph; Export stays a quiet hairline-bordered button.
 struct NotesHeaderActions: View {
     @EnvironmentObject private var model: AppModel
     let book: Book
+
+    @AppStorage("readingTheme") private var themeRaw = ReadingTheme.paper.rawValue
+    private var theme: ReadingTheme { ReadingTheme(rawValue: themeRaw) ?? .paper }
 
     @State private var showStudio = false
 
@@ -61,13 +69,22 @@ struct NotesHeaderActions: View {
             Button {
                 showStudio = true
             } label: {
-                Label("Create Article", systemImage: "sparkles")
-                    .frame(maxWidth: .infinity)
+                HStack(spacing: 7) {
+                    Text(AppTheme.aiGlyph)
+                    Text("Compose article")
+                }
+                .font(.system(size: 12.5, weight: .semibold))
+                .foregroundStyle(theme.background)
+                .padding(.vertical, 9)
+                .padding(.horizontal, 15)
+                .frame(maxWidth: .infinity)
+                .background(theme.inkColor, in: RoundedRectangle(cornerRadius: 9))
+                .opacity(hasAnnotations ? 1 : 0.45)
             }
-            .buttonStyle(.borderedProminent)
-            .tint(AppTheme.accent)
+            .buttonStyle(.plain)
             .disabled(!hasAnnotations)
             .accessibilityIdentifier("notes.createArticle")
+            .accessibilityLabel("Create Article")
             .help("Compose an article from these highlights with AI")
 
             Menu {
@@ -81,7 +98,15 @@ struct NotesHeaderActions: View {
                 }
             } label: {
                 Label("Export", systemImage: "square.and.arrow.up")
+                    .font(.system(size: 12.5, weight: .medium))
+                    .foregroundStyle(theme.muted)
+                    .padding(.vertical, 9)
+                    .padding(.horizontal, 12)
+                    .overlay(RoundedRectangle(cornerRadius: 9).strokeBorder(theme.line, lineWidth: 1))
+                    .contentShape(Rectangle())
             }
+            .menuStyle(.button)
+            .buttonStyle(.plain)
             .disabled(markdown == nil)
             .accessibilityIdentifier("notes.exportMarkdown")
             .help("Export these highlights and notes as Markdown")

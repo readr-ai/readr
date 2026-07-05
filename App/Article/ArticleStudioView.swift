@@ -1,16 +1,20 @@
 import SwiftUI
 import ReadrKit
 
-/// The Article studio (docs/DESIGN.md): pick highlights (all pre-checked,
-/// color-filterable) → optional guidance → Compose (streams) → editable
-/// Markdown → Copy / Share / Export `.md`. Entry points: the Notes panel CTA,
-/// the library "Highlights & Notes" section, and the book context menu.
+/// The Article studio — the design's Compose screen (docs/DESIGN.md): pick
+/// highlights (all pre-checked, color-filterable) → optional direction →
+/// Compose (streams onto the page) → editable draft → Copy / Share / export
+/// `.md`. Entry points: the Notes panel CTA, the library "Highlights & Notes"
+/// section, and the book context menu.
 struct ArticleStudioView: View {
     @EnvironmentObject private var model: AppModel
     let book: Book
 
     @StateObject private var article: ArticleViewModel
     @Environment(\.dismiss) private var dismiss
+
+    @AppStorage("readingTheme") private var themeRaw = ReadingTheme.paper.rawValue
+    private var theme: ReadingTheme { ReadingTheme(rawValue: themeRaw) ?? .paper }
 
     /// Picker state. Selection is per annotation id; the color chips narrow
     /// both what's LISTED and what COMPOSES, so the article never quietly
@@ -21,6 +25,10 @@ struct ArticleStudioView: View {
     @State private var guidance = ""
     @State private var showExporter = false
     @State private var showProviders = false
+
+    /// The design's direction placeholder — one line, tone/angle/length.
+    private static let directionPlaceholder =
+        "Optional direction — tone, angle, length… e.g. \u{201C}make it personal, 500 words\u{201D}"
 
     init(book: Book) {
         self.book = book
@@ -46,6 +54,7 @@ struct ArticleStudioView: View {
     var body: some View {
         NavigationStack {
             content
+                .background(theme.background)
                 .navigationTitle(article.markdown.isEmpty ? "Article Studio" : article.title)
                 #if os(iOS)
                 .navigationBarTitleDisplayMode(.inline)
@@ -81,15 +90,20 @@ struct ArticleStudioView: View {
     private var content: some View {
         if article.isComposing {
             // While streaming, the text stays read-only so user edits can't
-            // interleave with (or be wiped by) incoming deltas.
+            // interleave with (or be wiped by) incoming deltas. It streams
+            // straight onto the page: serif on paper, 640pt measure.
             ScrollView {
                 Text(article.markdown.isEmpty ? "Composing your article…" : article.markdown)
-                    .font(.body)
-                    .foregroundStyle(article.markdown.isEmpty ? .secondary : .primary)
+                    .font(.system(size: 15.5, design: .serif))
+                    .lineSpacing(11)
+                    .foregroundStyle(article.markdown.isEmpty ? theme.muted : theme.inkColor)
                     .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding()
+                    .frame(maxWidth: 640, alignment: .leading)
+                    .frame(maxWidth: .infinity)
+                    .padding(.horizontal, 28)
+                    .padding(.vertical, 44)
             }
+            .background(theme.paper)
         } else if !article.markdown.isEmpty {
             editor
         } else if model.activeProvider() == nil {
@@ -110,71 +124,123 @@ struct ArticleStudioView: View {
         ToolbarItem(placement: .cancellationAction) {
             Button("Done") { dismiss() }
         }
+        ToolbarItem(placement: .principal) {
+            HStack(spacing: 6) {
+                Text(AppTheme.aiGlyph)
+                    .foregroundStyle(theme.iris)
+                Text("New article")
+                    .foregroundStyle(theme.inkColor)
+            }
+            .font(.system(size: 12.5, weight: .semibold))
+            .accessibilityAddTraits(.isHeader)
+        }
         if !article.isComposing && !article.markdown.isEmpty {
             ToolbarItemGroup(placement: .primaryAction) {
                 Button {
                     startCompose()
                 } label: {
-                    Label("Recompose", systemImage: "arrow.clockwise")
+                    quietAction("↻ Regenerate")
                 }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Regenerate")
                 .help("Compose again from the same highlights (replaces this text)")
-                Button {
-                    Pasteboard.copy(article.markdown)
-                } label: {
-                    Label("Copy", systemImage: "doc.on.doc")
-                }
-                .help("Copy the article as Markdown")
-                ShareLink(item: article.markdown)
                 Button {
                     showExporter = true
                 } label: {
-                    Label("Export .md", systemImage: "square.and.arrow.down")
+                    quietAction("Markdown")
                 }
+                .buttonStyle(.plain)
                 .help("Save the article as a Markdown file")
+                Button {
+                    Pasteboard.copy(article.markdown)
+                } label: {
+                    quietAction("Copy")
+                }
+                .buttonStyle(.plain)
+                .help("Copy the article as Markdown")
+                ShareLink(item: article.markdown) {
+                    quietAction("Share…")
+                }
+                .buttonStyle(.plain)
             }
         }
+    }
+
+    /// Quiet hairline-bordered action chrome for the top bar.
+    private func quietAction(_ label: String) -> some View {
+        Text(label)
+            .font(.system(size: 11.5, weight: .medium))
+            .foregroundStyle(theme.muted)
+            .padding(.vertical, 5)
+            .padding(.horizontal, 11)
+            .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(theme.line, lineWidth: 1))
+            .contentShape(Rectangle())
     }
 
     // MARK: Picker
 
     private var picker: some View {
         VStack(alignment: .leading, spacing: 12) {
-            VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: 3) {
                 Text("Create an article from your notes")
-                    .font(.title3.bold())
-                    .fontDesign(.serif)
+                    .font(.system(size: 18, weight: .semibold, design: .serif))
+                    .foregroundStyle(theme.inkColor)
                 Text(book.metadata.title)
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
+                    .font(.system(size: 12.5))
+                    .foregroundStyle(theme.muted)
             }
 
             HStack(spacing: 12) {
                 HighlightColorChips(active: $activeColors)
                 Spacer()
                 Text("\(composeSelection.count) of \(visibleItems.count)")
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(.secondary)
-                Button("All") { selectedIDs.formUnion(visibleItems.map(\.id)) }
-                    .buttonStyle(.plain)
-                    .font(.caption)
-                    .foregroundStyle(AppTheme.accent)
-                Button("None") { selectedIDs.subtract(visibleItems.map(\.id)) }
-                    .buttonStyle(.plain)
-                    .font(.caption)
-                    .foregroundStyle(AppTheme.accent)
+                    .font(.system(size: 11).monospacedDigit())
+                    .foregroundStyle(theme.faint)
+                Button {
+                    selectedIDs.formUnion(visibleItems.map(\.id))
+                } label: {
+                    Text("All")
+                        .font(.system(size: 11))
+                        .underline()
+                        .foregroundStyle(theme.muted)
+                }
+                .buttonStyle(.plain)
+                Button {
+                    selectedIDs.subtract(visibleItems.map(\.id))
+                } label: {
+                    Text("None")
+                        .font(.system(size: 11))
+                        .underline()
+                        .foregroundStyle(theme.muted)
+                }
+                .buttonStyle(.plain)
             }
 
             List {
                 ForEach(visibleItems) { item in
                     pickerRow(item)
+                        .listRowSeparator(.hidden)
+                        .listRowBackground(Color.clear)
+                        .listRowInsets(EdgeInsets(top: 5, leading: 0, bottom: 5, trailing: 0))
                 }
             }
             .listStyle(.plain)
+            .scrollContentBackground(.hidden)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-            TextField("What should the article emphasize? (optional)", text: $guidance, axis: .vertical)
-                .textFieldStyle(.roundedBorder)
-                .lineLimit(1...3)
+            HStack(spacing: 10) {
+                Text(AppTheme.aiGlyph)
+                    .font(.system(size: 12))
+                    .foregroundStyle(theme.iris)
+                TextField(Self.directionPlaceholder, text: $guidance)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 12))
+                    .foregroundStyle(theme.inkColor)
+                    .padding(.vertical, 8)
+                    .padding(.horizontal, 11)
+                    .background(theme.paper, in: RoundedRectangle(cornerRadius: 9))
+                    .overlay(RoundedRectangle(cornerRadius: 9).strokeBorder(theme.line, lineWidth: 1))
+            }
 
             if let error = article.errorMessage {
                 Text(error)
@@ -183,18 +249,27 @@ struct ArticleStudioView: View {
             }
 
             Button(action: startCompose) {
-                Label("Compose", systemImage: "sparkles")
-                    .frame(maxWidth: .infinity)
+                HStack(spacing: 7) {
+                    Text(AppTheme.aiGlyph)
+                    Text("Compose")
+                }
+                .font(.system(size: 12.5, weight: .semibold))
+                .foregroundStyle(theme.background)
+                .padding(.vertical, 10)
+                .frame(maxWidth: .infinity)
+                .background(theme.inkColor, in: RoundedRectangle(cornerRadius: 9))
+                .opacity(composeSelection.isEmpty ? 0.45 : 1)
             }
-            .buttonStyle(.borderedProminent)
-            .tint(AppTheme.accent)
-            .controlSize(.large)
+            .buttonStyle(.plain)
             .disabled(composeSelection.isEmpty)
             .accessibilityIdentifier("article.compose")
+            .accessibilityLabel("Compose")
         }
         .padding()
     }
 
+    /// A highlight card (marker spine, serif quote, ❋ note) with a leading
+    /// checkbox — the studio's pickable version of the notes-list card.
     private func pickerRow(_ item: AnnotationItem) -> some View {
         let isSelected = selectedIDs.contains(item.id)
         return Button {
@@ -204,33 +279,37 @@ struct ArticleStudioView: View {
                 selectedIDs.insert(item.id)
             }
         } label: {
-            HStack(alignment: .top, spacing: 10) {
+            HStack(alignment: .top, spacing: 12) {
                 Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
-                    .foregroundStyle(isSelected ? AppTheme.accent : Color.secondary)
-                    .padding(.top, 1)
-                Circle()
+                    .foregroundStyle(isSelected ? theme.inkColor : theme.faint)
+                    .padding(.top, 2)
+                RoundedRectangle(cornerRadius: 1.5)
                     .fill(ReadingTheme.markerSwatch(item.color))
-                    .frame(width: 9, height: 9)
-                    .padding(.top, 5)
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(item.quotedText)
-                        .font(.callout)
-                        .fontDesign(.serif)
-                        .italic()
+                    .frame(width: 3)
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("\u{201C}\(item.quotedText)\u{201D}")
+                        .font(.system(size: 14.5, design: .serif))
+                        .lineSpacing(5)
+                        .foregroundStyle(theme.inkColor)
                         .lineLimit(3)
                         .multilineTextAlignment(.leading)
+                        .accessibilityLabel(Text(item.quotedText))
                     if let note = item.note, !note.isEmpty {
-                        Text(note)
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
+                        (Text(AppTheme.noteGlyph).foregroundColor(theme.iris)
+                            + Text(" ")
+                            + Text(note).foregroundColor(theme.muted))
+                            .font(.system(size: 12.5))
                             .lineLimit(2)
                     }
                     Text(item.locator(in: book))
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
+                        .font(.system(size: 11))
+                        .foregroundStyle(theme.faint)
                 }
                 Spacer(minLength: 0)
             }
+            .padding(14)
+            .background(theme.paper, in: RoundedRectangle(cornerRadius: 12))
+            .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(theme.line, lineWidth: 1))
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -239,11 +318,19 @@ struct ArticleStudioView: View {
 
     // MARK: Editor
 
+    /// Editable draft on the page: the ✦ direction row up top (rewrite with
+    /// new guidance), then a chrome-less serif editor on paper.
     private var editor: some View {
         VStack(spacing: 0) {
+            directionRow
             TextEditor(text: $article.markdown)
-                .font(.body)
-                .padding()
+                .font(.system(size: 15.5, design: .serif))
+                .scrollContentBackground(.hidden)
+                .foregroundStyle(theme.inkColor)
+                .padding(.horizontal, 22)
+                .padding(.top, 18)
+                .frame(maxWidth: 640)
+                .frame(maxWidth: .infinity)
             if let error = article.errorMessage {
                 Text(error)
                     .font(.footnote)
@@ -251,6 +338,42 @@ struct ArticleStudioView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding([.horizontal, .bottom])
             }
+        }
+        .background(theme.paper)
+    }
+
+    /// ✦ + optional direction + Rewrite — the existing guidance field and
+    /// Recompose action wearing the design's row.
+    private var directionRow: some View {
+        HStack(spacing: 10) {
+            Text(AppTheme.aiGlyph)
+                .font(.system(size: 12))
+                .foregroundStyle(theme.iris)
+            TextField(Self.directionPlaceholder, text: $guidance)
+                .textFieldStyle(.plain)
+                .font(.system(size: 12))
+                .foregroundStyle(theme.inkColor)
+                .padding(.vertical, 8)
+                .padding(.horizontal, 11)
+                .background(theme.paper, in: RoundedRectangle(cornerRadius: 9))
+                .overlay(RoundedRectangle(cornerRadius: 9).strokeBorder(theme.line, lineWidth: 1))
+                .onSubmit(startCompose)
+            Button(action: startCompose) {
+                Text("Rewrite")
+                    .font(.system(size: 11.5, weight: .semibold))
+                    .foregroundStyle(theme.background)
+                    .padding(.vertical, 7)
+                    .padding(.horizontal, 14)
+                    .background(theme.inkColor, in: RoundedRectangle(cornerRadius: 8))
+            }
+            .buttonStyle(.plain)
+            .help("Compose again with this direction (replaces this text)")
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .background(theme.background)
+        .overlay(alignment: .bottom) {
+            Rectangle().fill(theme.line).frame(height: 1)
         }
     }
 
@@ -262,9 +385,17 @@ struct ArticleStudioView: View {
         } description: {
             Text("Add an API key, sign in, or pick a local model to compose articles from your highlights.")
         } actions: {
-            Button("Open AI Providers") { showProviders = true }
-                .buttonStyle(.borderedProminent)
-                .tint(AppTheme.accent)
+            Button {
+                showProviders = true
+            } label: {
+                Text("Open AI Providers")
+                    .font(.system(size: 12.5, weight: .semibold))
+                    .foregroundStyle(theme.background)
+                    .padding(.vertical, 9)
+                    .padding(.horizontal, 16)
+                    .background(theme.inkColor, in: RoundedRectangle(cornerRadius: 9))
+            }
+            .buttonStyle(.plain)
         }
         .sheet(isPresented: $showProviders) {
             ProviderSettingsView(app: model)

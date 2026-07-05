@@ -108,24 +108,34 @@ enum Pasteboard {
 
 /// Horizontal row of color-dot toggle chips — "color is meaning", so review
 /// filters by it (docs/DESIGN.md). All colors are on by default; tapping a dot
-/// toggles that color in/out of the active set.
+/// toggles that color in/out of the active set. Styled like the annotation
+/// menu's dots: 19pt swatches with an ink ring on the selected ones.
 struct HighlightColorChips: View {
     @Binding var active: Set<HighlightColor>
 
+    @AppStorage("readingTheme") private var themeRaw = ReadingTheme.paper.rawValue
+    private var theme: ReadingTheme { ReadingTheme(rawValue: themeRaw) ?? .paper }
+
     var body: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 8) {
             ForEach(HighlightColor.allCases, id: \.rawValue) { color in
                 let isOn = active.contains(color)
                 Button {
                     if isOn { active.remove(color) } else { active.insert(color) }
                 } label: {
-                    Circle()
-                        .fill(ReadingTheme.markerSwatch(color))
-                        .frame(width: 16, height: 16)
-                        .opacity(isOn ? 1 : 0.25)
-                        .overlay(
-                            Circle().strokeBorder(.primary.opacity(isOn ? 0.3 : 0), lineWidth: 1)
-                        )
+                    ZStack {
+                        Circle()
+                            .fill(ReadingTheme.markerSwatch(color))
+                            .overlay(Circle().strokeBorder(Color.black.opacity(0.12), lineWidth: 1))
+                            .frame(width: 19, height: 19)
+                            .opacity(isOn ? 1 : 0.3)
+                        if isOn {
+                            Circle()
+                                .strokeBorder(theme.inkColor.opacity(0.65), lineWidth: 1.5)
+                                .frame(width: 25, height: 25)
+                        }
+                    }
+                    .frame(width: 25, height: 25)
                 }
                 .buttonStyle(.plain)
                 .help("Show \(color.displayName.lowercased()) highlights")
@@ -141,12 +151,16 @@ struct HighlightColorChips: View {
 /// Filterable reading-order list of a book's annotations, shared by the Notes
 /// panel (reader inspector) and the library "Highlights & Notes" review. Jump
 /// callbacks are optional — the library review passes none because there is no
-/// open reader to jump into.
+/// open reader to jump into. Rows are the Marginalia highlight cards: paper
+/// field, hairline border, a marker-colored spine, serif quote, ❋ note line.
 struct AnnotationListView: View {
     @EnvironmentObject private var model: AppModel
     let book: Book
     var onJumpHighlight: ((Highlight) -> Void)? = nil
     var onJumpPDF: ((PDFHighlight) -> Void)? = nil
+
+    @AppStorage("readingTheme") private var themeRaw = ReadingTheme.paper.rawValue
+    private var theme: ReadingTheme { ReadingTheme(rawValue: themeRaw) ?? .paper }
 
     @State private var activeColors = Set(HighlightColor.allCases)
     @State private var searchText = ""
@@ -175,7 +189,7 @@ struct AnnotationListView: View {
                 Text("Select any passage while reading and pick a color — it appears here instantly.")
             }
         } else {
-            VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: 10) {
                 HighlightColorChips(active: $activeColors)
                 searchField
                 if filteredItems.isEmpty {
@@ -183,7 +197,7 @@ struct AnnotationListView: View {
                     // controls visible so the reader can widen them again.
                     Text("No matching highlights")
                         .font(.callout)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(theme.muted)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
                     list
@@ -200,19 +214,26 @@ struct AnnotationListView: View {
     private var searchField: some View {
         HStack(spacing: 6) {
             Image(systemName: "magnifyingglass")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+                .font(.system(size: 11))
+                .foregroundStyle(theme.faint)
             TextField("Search highlights", text: $searchText)
                 .textFieldStyle(.plain)
+                .font(.system(size: 12.5))
+                .foregroundStyle(theme.inkColor)
         }
-        .padding(6)
-        .background(.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 6))
+        .padding(.vertical, 7)
+        .padding(.horizontal, 10)
+        .background(theme.paper, in: RoundedRectangle(cornerRadius: 8))
+        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(theme.line, lineWidth: 1))
     }
 
     private var list: some View {
         List {
             ForEach(filteredItems) { item in
-                row(for: item)
+                card(for: item)
+                    .listRowSeparator(.hidden)
+                    .listRowBackground(Color.clear)
+                    .listRowInsets(EdgeInsets(top: 5, leading: 0, bottom: 5, trailing: 0))
                     .contextMenu { contextMenu(for: item) }
                     .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                         Button(role: .destructive) {
@@ -225,55 +246,64 @@ struct AnnotationListView: View {
                         } label: {
                             Label("Edit Note", systemImage: "note.text")
                         }
-                        .tint(AppTheme.accent)
+                        .tint(theme.muted)
                     }
             }
         }
         .listStyle(.plain)
+        .scrollContentBackground(.hidden)
     }
 
-    // MARK: Rows
+    // MARK: Cards
 
-    @ViewBuilder
-    private func row(for item: AnnotationItem) -> some View {
-        if canJump(to: item) {
-            Button {
-                jump(to: item)
-            } label: {
-                rowContent(item).contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .help("Jump to this passage in the book")
-        } else {
-            rowContent(item)
-        }
-    }
-
-    private func rowContent(_ item: AnnotationItem) -> some View {
-        HStack(alignment: .top, spacing: 8) {
-            Circle()
+    /// One Marginalia highlight card. The quote is typographically quoted for
+    /// display but keeps its raw text as the accessibility label so it remains
+    /// findable as its own static text (the UI tests rely on this).
+    private func card(for item: AnnotationItem) -> some View {
+        HStack(alignment: .top, spacing: 14) {
+            RoundedRectangle(cornerRadius: 1.5)
                 .fill(ReadingTheme.markerSwatch(item.color))
-                .frame(width: 10, height: 10)
-                .padding(.top, 4)
-            VStack(alignment: .leading, spacing: 3) {
-                Text(item.quotedText)
-                    .font(.callout)
-                    .fontDesign(.serif)
-                    .italic()
-                    .lineLimit(4)
+                .frame(width: 3)
+            VStack(alignment: .leading, spacing: 0) {
+                Text("\u{201C}\(item.quotedText)\u{201D}")
+                    .font(.system(size: 14.5, design: .serif))
+                    .lineSpacing(6)
+                    .foregroundStyle(theme.inkColor)
                     .multilineTextAlignment(.leading)
+                    .accessibilityLabel(Text(item.quotedText))
                 if let note = item.note, !note.isEmpty {
-                    Text(note)
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
+                    (Text(AppTheme.noteGlyph).foregroundColor(theme.iris)
+                        + Text(" ")
+                        + Text(note).foregroundColor(theme.muted))
+                        .font(.system(size: 12.5))
+                        .lineSpacing(4)
+                        .padding(.top, 8)
                 }
-                Text(item.locator(in: book))
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
+                HStack(alignment: .firstTextBaseline, spacing: 10) {
+                    Text(item.locator(in: book))
+                        .font(.system(size: 11))
+                        .foregroundStyle(theme.faint)
+                        .lineLimit(1)
+                    Spacer(minLength: 0)
+                    if canJump(to: item) {
+                        Button {
+                            jump(to: item)
+                        } label: {
+                            Text("Show in book")
+                                .font(.system(size: 11))
+                                .underline()
+                                .foregroundStyle(theme.muted)
+                        }
+                        .buttonStyle(.plain)
+                        .help("Jump to this passage in the book")
+                    }
+                }
+                .padding(.top, 10)
             }
-            Spacer(minLength: 0)
         }
-        .padding(.vertical, 2)
+        .padding(EdgeInsets(top: 16, leading: 16, bottom: 16, trailing: 18))
+        .background(theme.paper, in: RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(theme.line, lineWidth: 1))
     }
 
     private func canJump(to item: AnnotationItem) -> Bool {
@@ -363,6 +393,9 @@ private struct NoteEditSheet: View {
     let item: AnnotationItem
     var onSave: (String) -> Void
 
+    @AppStorage("readingTheme") private var themeRaw = ReadingTheme.paper.rawValue
+    private var theme: ReadingTheme { ReadingTheme(rawValue: themeRaw) ?? .paper }
+
     @State private var text: String
     @Environment(\.dismiss) private var dismiss
 
@@ -375,17 +408,23 @@ private struct NoteEditSheet: View {
     var body: some View {
         NavigationStack {
             VStack(alignment: .leading, spacing: 10) {
-                Text(item.quotedText)
-                    .font(.callout)
-                    .fontDesign(.serif)
+                Text("\u{201C}\(item.quotedText)\u{201D}")
+                    .font(.system(size: 12, design: .serif))
                     .italic()
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(theme.muted)
                     .lineLimit(3)
+                    .accessibilityLabel(Text(item.quotedText))
                 TextEditor(text: $text)
-                    .font(.body)
+                    .font(.system(size: 12.5))
+                    .scrollContentBackground(.hidden)
+                    .foregroundStyle(theme.inkColor)
+                    .padding(6)
                     .frame(minHeight: 120)
+                    .background(theme.paper, in: RoundedRectangle(cornerRadius: 8))
+                    .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(theme.line, lineWidth: 1))
             }
             .padding()
+            .background(theme.elevated)
             .navigationTitle("Note")
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)

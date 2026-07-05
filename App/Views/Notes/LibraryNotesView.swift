@@ -3,7 +3,7 @@ import ReadrKit
 
 /// "Highlights & Notes" — the library-wide review home (docs/DESIGN.md):
 /// every annotated book in a picker, its annotations full-window beside it,
-/// with the same Create Article + Export header as the in-reader Notes panel.
+/// with the same Compose article + Export header as the in-reader Notes panel.
 /// This screen exists so annotations are reviewable without opening a book.
 struct LibraryNotesView: View {
     @EnvironmentObject private var model: AppModel
@@ -11,6 +11,9 @@ struct LibraryNotesView: View {
     #if os(iOS)
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     #endif
+
+    @AppStorage("readingTheme") private var themeRaw = ReadingTheme.paper.rawValue
+    private var theme: ReadingTheme { ReadingTheme(rawValue: themeRaw) ?? .paper }
 
     init() {}
 
@@ -44,6 +47,7 @@ struct LibraryNotesView: View {
                 #endif
             }
         }
+        .background(theme.background)
         .navigationTitle("Highlights & Notes")
     }
 
@@ -66,7 +70,10 @@ struct LibraryNotesView: View {
                 .padding(8)
             }
             .frame(width: 250)
-            Divider()
+            .background(theme.background)
+            Rectangle()
+                .fill(theme.line)
+                .frame(width: 1)
             if let book = selectedBook {
                 detail(for: book)
                     // Reset the list's filter/search state per book.
@@ -92,7 +99,9 @@ struct LibraryNotesView: View {
                 .padding(.horizontal)
                 .padding(.vertical, 8)
             }
-            Divider()
+            Rectangle()
+                .fill(theme.line)
+                .frame(height: 1)
             if let book = selectedBook {
                 detail(for: book)
                     .id(book.id)
@@ -102,17 +111,27 @@ struct LibraryNotesView: View {
 
     // MARK: Detail (shared list + actions header)
 
+    /// Group-header treatment from the design: serif book title + faint author
+    /// on one baseline, hairline underline beneath.
     private func detail(for book: Book) -> some View {
         VStack(alignment: .leading, spacing: 12) {
-            VStack(alignment: .leading, spacing: 2) {
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
                 Text(book.metadata.title)
-                    .font(.title3.bold())
-                    .fontDesign(.serif)
+                    .font(.system(size: 16, weight: .semibold, design: .serif))
+                    .foregroundStyle(theme.inkColor)
                 if !book.metadata.authors.isEmpty {
                     Text(book.metadata.authors.joined(separator: ", "))
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
+                        .font(.system(size: 11))
+                        .foregroundStyle(theme.faint)
                 }
+                Spacer(minLength: 0)
+                Text(annotationLabel(for: book))
+                    .font(.system(size: 11))
+                    .foregroundStyle(theme.faint)
+            }
+            .padding(.bottom, 8)
+            .overlay(alignment: .bottom) {
+                Rectangle().fill(theme.line).frame(height: 1)
             }
             NotesHeaderActions(book: book)
             // Review-only surface: no reader window to jump into, so no
@@ -121,6 +140,7 @@ struct LibraryNotesView: View {
         }
         .padding()
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .background(theme.background)
     }
 
     // MARK: Picker rows
@@ -130,20 +150,25 @@ struct LibraryNotesView: View {
             cover(for: book, width: 28)
             VStack(alignment: .leading, spacing: 2) {
                 Text(book.metadata.title)
-                    .font(.callout.weight(.medium))
+                    .font(.system(size: 13, weight: .semibold, design: .serif))
+                    .foregroundStyle(theme.inkColor)
                     .lineLimit(2)
                     .multilineTextAlignment(.leading)
                 Text(annotationLabel(for: book))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .font(.system(size: 11))
+                    .foregroundStyle(theme.faint)
             }
             Spacer(minLength: 0)
         }
         .padding(8)
         .contentShape(Rectangle())
         .background(
-            isSelected ? AppTheme.accent.opacity(0.15) : Color.clear,
+            isSelected ? theme.paper : Color.clear,
             in: RoundedRectangle(cornerRadius: 8)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .strokeBorder(isSelected ? theme.line : Color.clear, lineWidth: 1)
         )
     }
 
@@ -152,17 +177,18 @@ struct LibraryNotesView: View {
             cover(for: book, width: 44)
                 .overlay(
                     RoundedRectangle(cornerRadius: 3)
-                        .strokeBorder(isSelected ? AppTheme.accent : .clear, lineWidth: 2)
+                        .strokeBorder(isSelected ? theme.inkColor.opacity(0.6) : .clear, lineWidth: 2)
                 )
             Text(book.metadata.title)
-                .font(.caption2)
+                .font(.system(size: 11, design: .serif))
+                .foregroundStyle(isSelected ? theme.inkColor : theme.muted)
                 .lineLimit(1)
                 .frame(width: 64)
         }
     }
 
-    /// Cover thumbnail: real artwork when available, else the deterministic
-    /// gradient placeholder used across the app.
+    /// Cover thumbnail: real artwork when available, else the flat Marginalia
+    /// tint placeholder used across the app.
     @ViewBuilder
     private func cover(for book: Book, width: CGFloat) -> some View {
         Group {
@@ -173,16 +199,13 @@ struct LibraryNotesView: View {
                 Image(nsImage: image).resizable()
                 #endif
             } else {
-                LinearGradient(
-                    colors: AppTheme.coverGradient(for: book.metadata.title),
-                    startPoint: .top,
-                    endPoint: .bottom
-                )
-                .overlay(
-                    Text(String(book.metadata.title.prefix(1)))
-                        .font(.system(size: width * 0.45, design: .serif))
-                        .foregroundStyle(.white.opacity(0.85))
-                )
+                let tint = AppTheme.coverTint(for: book.metadata.title)
+                tint.field
+                    .overlay(
+                        Text(String(book.metadata.title.prefix(1)))
+                            .font(.system(size: width * 0.45, design: .serif))
+                            .foregroundStyle(tint.ink.opacity(0.85))
+                    )
             }
         }
         .aspectRatio(2 / 3, contentMode: .fill)
