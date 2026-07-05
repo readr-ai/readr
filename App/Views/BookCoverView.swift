@@ -29,12 +29,24 @@ struct BookCoverView: View {
                 .aspectRatio(2.0 / 3.0, contentMode: .fit)
                 .frame(width: width)
                 .overlay(coverContent)
+                .overlay(sheen)
                 .clipShape(RoundedRectangle(cornerRadius: AppTheme.coverRadius, style: .continuous))
                 .overlay(
                     RoundedRectangle(cornerRadius: AppTheme.coverRadius, style: .continuous)
                         .strokeBorder(Color.black.opacity(0.08), lineWidth: 0.5)
                 )
         )
+    }
+
+    /// A faint diagonal gloss laid over every jacket (artwork and placeholders
+    /// alike) — it reads as a printed cover instead of a flat rectangle.
+    private var sheen: some View {
+        LinearGradient(
+            colors: [Color.white.opacity(0.10), .clear, Color.black.opacity(0.06)],
+            startPoint: .topLeading,
+            endPoint: .bottomTrailing
+        )
+        .allowsHitTesting(false)
     }
 
     @ViewBuilder
@@ -59,6 +71,13 @@ struct BookCoverView: View {
                 startPoint: .topLeading,
                 endPoint: .bottomTrailing
             )
+            // A darker sliver plus a light seam along the binding edge sells
+            // the "book jacket" illusion on generated covers.
+            HStack(spacing: 0) {
+                Color.black.opacity(0.20).frame(width: 3)
+                Color.white.opacity(0.10).frame(width: 1)
+                Color.clear
+            }
             VStack(alignment: .leading, spacing: 8) {
                 Text(book.metadata.title)
                     .font(.title3.weight(.semibold))

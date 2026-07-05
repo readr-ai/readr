@@ -25,6 +25,7 @@ final class AppModel: ObservableObject {
         if store == nil, ProcessInfo.processInfo.arguments.contains("-uiTestSeed") {
             let seeded = InMemoryLibraryStore()
             for book in Self.sampleBooks { try? seeded.add(book) }
+            Self.seedFixtureState(into: seeded)
             self.store = seeded
         } else {
             self.store = store ?? Self.makeDefaultStore()
@@ -83,6 +84,82 @@ final class AppModel: ObservableObject {
         )
         return [sample, voyage, letters]
     }()
+
+    /// Layers lifecycle state and annotations over `sampleBooks` so seeded
+    /// runs exercise the whole v2 surface: Home gets a Continue Reading card
+    /// (saved position + `lastOpenedAt` on "Sample Book"), the Finished shelf
+    /// has an entry, Recently Added has a fresh import, and the notes screens
+    /// have colored highlights to show. UI tests and CI screenshots both
+    /// launch with `-uiTestSeed`, so this is exactly what they see.
+    private static func seedFixtureState(into store: InMemoryLibraryStore) {
+        let now = Date()
+        let books = sampleBooks
+        guard books.count >= 3 else { return }
+        let sample = books[0]
+        let voyage = books[1]
+        let letters = books[2]
+
+        // "Sample Book" is mid-read: halfway down chapter one, opened just
+        // now — it leads Home's Continue Reading row with a visible progress
+        // bar and a minutes-left estimate.
+        if let chapter = sample.chapters.first {
+            try? store.savePosition(
+                ReadingPosition(chapterIndex: 0, characterOffset: chapter.text.count / 2),
+                for: sample.id
+            )
+            try? store.saveBookState(
+                BookState(addedAt: now.addingTimeInterval(-3 * 86_400), lastOpenedAt: now),
+                for: sample.id
+            )
+
+            // A few colored highlights (one with a note) so the Notes panel,
+            // Highlights & Notes review, and Article Studio have real content.
+            let marks: [(phrase: String, color: HighlightColor, note: String?)] = [
+                ("It was a bright cold day in April", .yellow, nil),
+                ("the clocks were striking thirteen", .blue,
+                 "Something is off from the very first line."),
+                ("a swirl of gritty dust", .green, nil),
+            ]
+            for (index, mark) in marks.enumerated() {
+                guard let range = characterRange(of: mark.phrase, in: chapter.text) else { continue }
+                try? store.addHighlight(Highlight(
+                    bookID: sample.id,
+                    chapterID: chapter.id,
+                    range: range,
+                    quotedText: mark.phrase,
+                    note: mark.note,
+                    createdAt: now.addingTimeInterval(Double(index - 3) * 60),
+                    color: mark.color
+                ))
+            }
+        }
+
+        // "A Voyage North" is a fresh import (leads Recently Added) …
+        try? store.saveBookState(
+            BookState(addedAt: now.addingTimeInterval(-3_600)),
+            for: voyage.id
+        )
+        // … and "Letters on Design" is finished, populating the Finished
+        // shelf and the checkmark badge (finished books stay out of
+        // Continue Reading even though they were opened).
+        try? store.saveBookState(
+            BookState(
+                addedAt: now.addingTimeInterval(-14 * 86_400),
+                lastOpenedAt: now.addingTimeInterval(-7 * 86_400),
+                finishedAt: now.addingTimeInterval(-6 * 86_400)
+            ),
+            for: letters.id
+        )
+    }
+
+    /// Character-offset range of `phrase` in `text`. Highlights address
+    /// chapter text by character offsets (matching the reader's
+    /// `Array(chapter.text)` indexing), not by `String.Index`.
+    private static func characterRange(of phrase: String, in text: String) -> Range<Int>? {
+        guard let match = text.range(of: phrase) else { return nil }
+        let lower = text.distance(from: text.startIndex, to: match.lowerBound)
+        return lower..<(lower + phrase.count)
+    }
 
     // MARK: Defaults
 
