@@ -10,6 +10,57 @@ public enum XHTMLTextExtractor {
         "h1", "h2", "h3", "h4", "h5", "h6",
     ]
 
+    /// The placeholder each `<img>` becomes in extracted text: U+FFFC OBJECT
+    /// REPLACEMENT CHARACTER — the same character `NSAttributedString` uses for
+    /// attachments, so renderers can attach the image in place and every other
+    /// layer (highlights, pagination) just sees one ordinary character.
+    public static let imagePlaceholder: Character = "\u{FFFC}"
+
+    /// An inline image reference found in a content document, in document order.
+    public struct InlineImageRef: Equatable, Sendable {
+        /// The raw `src` attribute (relative to the document; not yet resolved).
+        public var src: String
+        public var alt: String?
+
+        public init(src: String, alt: String? = nil) {
+            self.src = src
+            self.alt = alt
+        }
+    }
+
+    /// Like `text(from:)`, but each `<img>` becomes `imagePlaceholder` in the
+    /// text, and the images' `src`/`alt` are returned in document order — the
+    /// k-th placeholder in the text corresponds to `images[k]`.
+    public static func textAndImages(from html: String) -> (text: String, images: [InlineImageRef]) {
+        var images: [InlineImageRef] = []
+        var s = ""
+        var remainder = Substring(html)
+        // Replace every <img ...> with the placeholder, collecting srcs in order.
+        while let match = remainder.range(of: "<img\\b[^>]*>", options: [.regularExpression, .caseInsensitive]) {
+            s += remainder[remainder.startIndex..<match.lowerBound]
+            let tag = String(remainder[match])
+            if let src = attribute("src", in: tag), !src.isEmpty {
+                images.append(InlineImageRef(src: src, alt: attribute("alt", in: tag)))
+                s.append(imagePlaceholder)
+            }
+            remainder = remainder[match.upperBound...]
+        }
+        s += remainder
+        return (text(from: s), images)
+    }
+
+    /// Value of an HTML attribute inside a single tag string.
+    static func attribute(_ name: String, in tag: String) -> String? {
+        guard let range = tag.range(
+            of: "\(name)\\s*=\\s*(\"[^\"]*\"|'[^']*')",
+            options: [.regularExpression, .caseInsensitive]
+        ) else { return nil }
+        let pair = tag[range]
+        guard let quoteStart = pair.firstIndex(where: { $0 == "\"" || $0 == "'" }) else { return nil }
+        let value = pair[pair.index(after: quoteStart)..<pair.index(before: pair.endIndex)]
+        return decodeEntities(String(value))
+    }
+
     /// Plain text with paragraph breaks preserved.
     public static func text(from html: String) -> String {
         var s = html

@@ -8,6 +8,7 @@ struct LibraryView: View {
     @EnvironmentObject private var model: AppModel
     @State private var isImporting = false
     @State private var showSettings = false
+    @State private var query = ""
 
     /// Formats Readr can currently import. EPUB/PDF are accepted here and will be
     /// handled by the Readium parser once that M1 increment lands.
@@ -23,6 +24,7 @@ struct LibraryView: View {
         NavigationStack {
             content
                 .navigationTitle("Library")
+                .searchable(text: $query, prompt: "Title or author")
                 .toolbar {
                     // Both directly visible: .secondaryAction collapses into an
                     // overflow menu on iOS, hiding the settings gear.
@@ -78,6 +80,8 @@ struct LibraryView: View {
                     systemImage: "books.vertical",
                     description: Text("Drag a book here, or tap Import — EPUB, PDF, or text.")
                 )
+            } else if filteredBooks.isEmpty {
+                ContentUnavailableView.search(text: query)
             } else {
                 bookshelf
             }
@@ -93,10 +97,23 @@ struct LibraryView: View {
         }
     }
 
+    /// Books matching the search query, case-insensitively against title and
+    /// authors; all books when the query is empty.
+    private var filteredBooks: [Book] {
+        let trimmed = query.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return model.books }
+        return model.books.filter { book in
+            book.metadata.title.localizedCaseInsensitiveContains(trimmed)
+                || book.metadata.authors.contains {
+                    $0.localizedCaseInsensitiveContains(trimmed)
+                }
+        }
+    }
+
     private var bookshelf: some View {
         ScrollView {
             LazyVGrid(columns: Self.gridColumns, spacing: 28) {
-                ForEach(model.books) { book in
+                ForEach(filteredBooks) { book in
                     bookCell(for: book)
                 }
             }

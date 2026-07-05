@@ -16,6 +16,9 @@ struct SelectableTextView: View {
     /// Character ranges to paint as highlights.
     let highlightRanges: [Range<Int>]
     var style = ReaderStyle()
+    /// Inline images keyed by the character offset of their U+FFFC placeholder
+    /// in `text`.
+    var inlineImages: [Int: PlatformImage] = [:]
     /// Called with the selected character range (empty selection ⇒ not called).
     let onSelect: (Range<Int>) -> Void
 
@@ -24,6 +27,7 @@ struct SelectableTextView: View {
             text: text,
             highlightRanges: highlightRanges,
             style: style,
+            inlineImages: inlineImages,
             onSelect: onSelect
         )
     }
@@ -51,7 +55,8 @@ enum TextRangeConvert {
     static func attributedString(
         _ text: String,
         highlightRanges: [Range<Int>],
-        style: ReaderStyle
+        style: ReaderStyle,
+        inlineImages: [Int: PlatformImage] = [:]
     ) -> NSAttributedString {
         let attributed = NSMutableAttributedString(string: text)
         let full = NSRange(text.startIndex..<text.endIndex, in: text)
@@ -69,6 +74,25 @@ enum TextRangeConvert {
                 attributed.addAttribute(.backgroundColor, value: style.theme.highlight, range: ns)
             }
         }
+
+        for (offset, image) in inlineImages.sorted(by: { $0.key < $1.key }) {
+            guard let ns = nsRange(from: offset..<(offset + 1), in: text),
+                  let placeholder = Range(ns, in: text),
+                  text[placeholder] == "\u{FFFC}"
+            else { continue }
+            let attachment = NSTextAttachment()
+            attachment.image = image
+            let size = image.size
+            if size.width > 0, size.height > 0 {
+                // Cap width so oversized figures don't blow out the column;
+                // preserve the aspect ratio.
+                let maxWidth: CGFloat = 500
+                let width = min(maxWidth, size.width)
+                let height = width * size.height / size.width
+                attachment.bounds = CGRect(x: 0, y: 0, width: width, height: height)
+            }
+            attributed.addAttribute(.attachment, value: attachment, range: ns)
+        }
         return attributed
     }
 }
@@ -80,6 +104,7 @@ private struct Representable: UIViewRepresentable {
     let text: String
     let highlightRanges: [Range<Int>]
     let style: ReaderStyle
+    let inlineImages: [Int: PlatformImage]
     let onSelect: (Range<Int>) -> Void
 
     func makeUIView(context: Context) -> UITextView {
@@ -98,9 +123,12 @@ private struct Representable: UIViewRepresentable {
         context.coordinator.text = text
         // Only rebuild the attributed string when the content actually changed —
         // reassigning it resets the user's selection and re-fires the delegate.
-        guard context.coordinator.needsRender(text: text, ranges: highlightRanges, style: style) else { return }
+        guard context.coordinator.needsRender(
+            text: text, ranges: highlightRanges, style: style,
+            imageOffsets: inlineImages.keys.sorted()
+        ) else { return }
         view.attributedText = TextRangeConvert.attributedString(
-            text, highlightRanges: highlightRanges, style: style
+            text, highlightRanges: highlightRanges, style: style, inlineImages: inlineImages
         )
     }
 
@@ -112,12 +140,15 @@ private struct Representable: UIViewRepresentable {
         private var renderedText: String?
         private var renderedRanges: [Range<Int>] = []
         private var renderedStyle: ReaderStyle?
+        private var renderedImageOffsets: [Int] = []
         init(text: String, onSelect: @escaping (Range<Int>) -> Void) {
             self.text = text; self.onSelect = onSelect
         }
-        func needsRender(text: String, ranges: [Range<Int>], style: ReaderStyle) -> Bool {
-            guard renderedText == text, renderedRanges == ranges, renderedStyle == style else {
+        func needsRender(text: String, ranges: [Range<Int>], style: ReaderStyle, imageOffsets: [Int]) -> Bool {
+            guard renderedText == text, renderedRanges == ranges, renderedStyle == style,
+                  renderedImageOffsets == imageOffsets else {
                 renderedText = text; renderedRanges = ranges; renderedStyle = style
+                renderedImageOffsets = imageOffsets
                 return true
             }
             return false
@@ -134,6 +165,7 @@ private struct Representable: NSViewRepresentable {
     let text: String
     let highlightRanges: [Range<Int>]
     let style: ReaderStyle
+    let inlineImages: [Int: PlatformImage]
     let onSelect: (Range<Int>) -> Void
 
     func makeNSView(context: Context) -> NSScrollView {
@@ -151,9 +183,14 @@ private struct Representable: NSViewRepresentable {
         guard let textView = scroll.documentView as? NSTextView else { return }
         context.coordinator.onSelect = onSelect
         context.coordinator.text = text
-        guard context.coordinator.needsRender(text: text, ranges: highlightRanges, style: style) else { return }
+        guard context.coordinator.needsRender(
+            text: text, ranges: highlightRanges, style: style,
+            imageOffsets: inlineImages.keys.sorted()
+        ) else { return }
         textView.textStorage?.setAttributedString(
-            TextRangeConvert.attributedString(text, highlightRanges: highlightRanges, style: style)
+            TextRangeConvert.attributedString(
+                text, highlightRanges: highlightRanges, style: style, inlineImages: inlineImages
+            )
         )
     }
 
@@ -165,12 +202,15 @@ private struct Representable: NSViewRepresentable {
         private var renderedText: String?
         private var renderedRanges: [Range<Int>] = []
         private var renderedStyle: ReaderStyle?
+        private var renderedImageOffsets: [Int] = []
         init(text: String, onSelect: @escaping (Range<Int>) -> Void) {
             self.text = text; self.onSelect = onSelect
         }
-        func needsRender(text: String, ranges: [Range<Int>], style: ReaderStyle) -> Bool {
-            guard renderedText == text, renderedRanges == ranges, renderedStyle == style else {
+        func needsRender(text: String, ranges: [Range<Int>], style: ReaderStyle, imageOffsets: [Int]) -> Bool {
+            guard renderedText == text, renderedRanges == ranges, renderedStyle == style,
+                  renderedImageOffsets == imageOffsets else {
                 renderedText = text; renderedRanges = ranges; renderedStyle = style
+                renderedImageOffsets = imageOffsets
                 return true
             }
             return false

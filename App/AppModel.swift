@@ -198,6 +198,43 @@ final class AppModel: ObservableObject {
         return FileManager.default.fileExists(atPath: url.path) ? url : nil
     }
 
+    // MARK: Inline images
+
+    /// Decoded inline chapter images, keyed by their character offset in the
+    /// chapter text. Cached per archive entry so re-renders (page turns, theme
+    /// changes) don't re-open the ZIP or re-decode bytes.
+    private let inlineImageCache = NSCache<NSString, PlatformImage>()
+
+    func inlineImages(for book: Book, chapter: Chapter) -> [Int: PlatformImage] {
+        guard let images = chapter.images, !images.isEmpty else { return [:] }
+        var result: [Int: PlatformImage] = [:]
+        for image in images {
+            let key = "\(book.id)/\(image.archivePath)" as NSString
+            if let cached = inlineImageCache.object(forKey: key) {
+                result[image.offset] = cached
+                continue
+            }
+            guard let src = sourceURL(for: book),
+                  let data = Self.loadArchiveImageData(bookURL: src, path: image.archivePath),
+                  let decoded = PlatformImage(data: data)
+            else { continue }
+            inlineImageCache.setObject(decoded, forKey: key)
+            result[image.offset] = decoded
+        }
+        return result
+    }
+
+    /// Bytes of one entry inside the book's retained source archive (EPUB),
+    /// or nil when the archive can't be opened or the entry is missing.
+    nonisolated private static func loadArchiveImageData(bookURL: URL, path: String) -> Data? {
+        #if canImport(ZIPFoundation)
+        guard let container = try? ZipEPUBContainer(url: bookURL) else { return nil }
+        return try? container.data(at: path)
+        #else
+        return nil
+        #endif
+    }
+
     /// First-page thumbnail for PDFs (nil for other formats).
     nonisolated private static func pdfCoverThumbnail(for url: URL) -> Data? {
         #if canImport(PDFKit)

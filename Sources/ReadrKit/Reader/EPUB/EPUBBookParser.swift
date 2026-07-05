@@ -29,10 +29,17 @@ public struct EPUBBookParser {
             let href = Self.resolve(base: baseDir, href: item.href)
             guard let data = try? container.data(at: href),
                   let html = String(data: data, encoding: .utf8) else { continue }
-            let text = XHTMLTextExtractor.text(from: html)
+            let (text, imageRefs) = XHTMLTextExtractor.textAndImages(from: html)
             guard !text.isEmpty else { continue }
             let title = XHTMLTextExtractor.firstHeading(from: html)
-            chapters.append(Chapter(title: title, order: chapters.count, text: text))
+            // Image srcs are relative to the content document, not the OPF.
+            let images = Self.chapterImages(
+                in: text, refs: imageRefs, documentDir: Self.directory(of: href)
+            )
+            chapters.append(Chapter(
+                title: title, order: chapters.count, text: text,
+                images: images.isEmpty ? nil : images
+            ))
         }
         guard !chapters.isEmpty else {
             throw BookParserError.corrupted("no readable content in the spine")
@@ -54,6 +61,32 @@ public struct EPUBBookParser {
             estimatedTokenCount: estimateTokens(fullText),
             coverImageData: Self.coverImageData(opf: opf, baseDir: baseDir, container: container)
         )
+    }
+
+    // MARK: - Inline images
+
+    /// Pair the k-th U+FFFC placeholder in `text` with the k-th extracted image
+    /// ref, resolving each src against the content document's directory.
+    static func chapterImages(
+        in text: String,
+        refs: [XHTMLTextExtractor.InlineImageRef],
+        documentDir: String
+    ) -> [ChapterImage] {
+        guard !refs.isEmpty else { return [] }
+        var images: [ChapterImage] = []
+        var refIndex = 0
+        for (offset, character) in text.enumerated() {
+            guard character == XHTMLTextExtractor.imagePlaceholder else { continue }
+            guard refIndex < refs.count else { break }
+            let ref = refs[refIndex]
+            refIndex += 1
+            images.append(ChapterImage(
+                offset: offset,
+                archivePath: resolve(base: documentDir, href: ref.src),
+                alt: ref.alt
+            ))
+        }
+        return images
     }
 
     // MARK: - Cover image

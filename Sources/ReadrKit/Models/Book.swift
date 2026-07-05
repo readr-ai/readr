@@ -78,12 +78,39 @@ public struct Chapter: Identifiable, Hashable, Sendable, Codable {
     public var title: String?
     public var order: Int
     public var text: String
+    /// Inline images, each anchored to a U+FFFC placeholder in `text`.
+    /// Optional so libraries persisted before this field still decode.
+    public var images: [ChapterImage]?
 
-    public init(id: UUID = UUID(), title: String?, order: Int, text: String) {
+    public init(
+        id: UUID = UUID(),
+        title: String?,
+        order: Int,
+        text: String,
+        images: [ChapterImage]? = nil
+    ) {
         self.id = id
         self.title = title
         self.order = order
         self.text = text
+        self.images = images
+    }
+}
+
+/// An inline image within a chapter: where it sits in the text and where its
+/// bytes live inside the book's retained source archive.
+public struct ChapterImage: Hashable, Sendable, Codable {
+    /// Character offset of the U+FFFC placeholder in `Chapter.text`.
+    public var offset: Int
+    /// Entry path inside the source archive (already resolved, e.g.
+    /// `OEBPS/images/fig1.jpg`).
+    public var archivePath: String
+    public var alt: String?
+
+    public init(offset: Int, archivePath: String, alt: String? = nil) {
+        self.offset = offset
+        self.archivePath = archivePath
+        self.alt = alt
     }
 }
 

@@ -69,6 +69,7 @@ struct ReaderView: View {
                 // Aa menu offers "Extracted text" for that.
                 PDFReaderView(url: pdfURL)
             } else if let chapter {
+                let images = model.inlineImages(for: book, chapter: chapter)
                 VStack(spacing: 0) {
                     if let title = chapter.title {
                         Text(title)
@@ -84,6 +85,7 @@ struct ReaderView: View {
                             text: chapter.text,
                             highlightRanges: chapterHighlights,
                             style: style,
+                            inlineImages: images,
                             onSelect: { selectedRange = $0 }
                         )
                         .padding()
@@ -93,6 +95,7 @@ struct ReaderView: View {
                             layout: layout,
                             style: style,
                             highlightRanges: chapterHighlights,
+                            inlineImages: images,
                             onSelect: { selectedRange = $0 }
                         )
                     }

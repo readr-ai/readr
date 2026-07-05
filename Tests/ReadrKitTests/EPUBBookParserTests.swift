@@ -213,4 +213,46 @@ final class EPUBBookParserTests: XCTestCase {
         let book = try parser.parse(container: makeContainer(), fallbackTitle: "x")
         XCTAssertNil(book.coverImageData)
     }
+
+    // MARK: - Inline images
+
+    func testChapterImagesGetOffsetsAndDocumentRelativePaths() throws {
+        let ch1 = """
+        <html><body><h1>One</h1><p>Look:</p>\
+        <img src="../images/fig%201.jpg" alt="Fig"/><p>Done.</p></body></html>
+        """
+        let entries: [String: Data] = [
+            "META-INF/container.xml": Data("""
+            <?xml version="1.0"?>
+            <container xmlns="urn:oasis:names:tc:opendocument:xmlns:container" version="1.0">
+              <rootfiles>
+                <rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/>
+              </rootfiles>
+            </container>
+            """.utf8),
+            "OEBPS/content.opf": Data("""
+            <?xml version="1.0"?>
+            <package xmlns="http://www.idpf.org/2007/opf" version="3.0">
+              <metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>Imgs</dc:title></metadata>
+              <manifest><item id="c1" href="text/ch1.xhtml" media-type="application/xhtml+xml"/></manifest>
+              <spine><itemref idref="c1"/></spine>
+            </package>
+            """.utf8),
+            "OEBPS/text/ch1.xhtml": Data(ch1.utf8),
+        ]
+        let book = try parser.parse(
+            container: InMemoryEPUBContainer(entries: entries), fallbackTitle: "x"
+        )
+
+        let chapter = try XCTUnwrap(book.chapters.first)
+        let images = try XCTUnwrap(chapter.images)
+        XCTAssertEqual(images.count, 1)
+        // Resolved against the DOCUMENT's directory (OEBPS/text), with ../ and
+        // percent-encoding handled.
+        XCTAssertEqual(images[0].archivePath, "OEBPS/images/fig 1.jpg")
+        XCTAssertEqual(images[0].alt, "Fig")
+        // The offset points at the placeholder character in the chapter text.
+        let chars = Array(chapter.text)
+        XCTAssertEqual(chars[images[0].offset], XHTMLTextExtractor.imagePlaceholder)
+    }
 }

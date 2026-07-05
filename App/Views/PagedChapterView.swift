@@ -20,6 +20,8 @@ struct PagedChapterView: View {
     var style: ReaderStyle = ReaderStyle()
     /// Highlight ranges in chapter coordinates.
     let highlightRanges: [Range<Int>]
+    /// Inline images keyed by character offset in **chapter** coordinates.
+    var inlineImages: [Int: PlatformImage] = [:]
     /// Selection callback in chapter coordinates.
     let onSelect: (Range<Int>) -> Void
 
@@ -126,6 +128,12 @@ struct PagedChapterView: View {
 
     @ViewBuilder
     private func pageView(_ page: Page) -> some View {
+        // Images whose placeholder falls on this page, shifted into page
+        // coordinates (same textStartOffset origin as highlights below).
+        let origin = page.textStartOffset
+        let pageImages = Dictionary(uniqueKeysWithValues: inlineImages.compactMap { offset, image in
+            (offset >= origin && offset < origin + page.text.count) ? (offset - origin, image) : nil
+        })
         SelectableTextView(
             text: page.text,
             highlightRanges: highlightRanges.compactMap { range in
@@ -133,13 +141,13 @@ struct PagedChapterView: View {
                 // shift into page coordinates. The origin is textStartOffset,
                 // NOT range.lowerBound — folded boundary whitespace is inside
                 // the range but not the text.
-                let origin = page.textStartOffset
                 let lower = max(range.lowerBound, origin)
                 let upper = min(range.upperBound, origin + page.text.count)
                 guard lower < upper else { return nil }
                 return (lower - origin)..<(upper - origin)
             },
             style: style,
+            inlineImages: pageImages,
             onSelect: { pageRange in
                 // Shift back into chapter coordinates (text origin, see above).
                 let offset = page.textStartOffset
