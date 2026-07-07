@@ -36,10 +36,33 @@ struct LibraryGridView: View {
     /// Book awaiting delete confirmation.
     @State private var bookPendingDelete: Book?
 
-    /// Design grid: minmax(158px, 1fr) with 26px column gaps.
-    private static let columns = [
-        GridItem(.adaptive(minimum: 158, maximum: 220), spacing: 26)
-    ]
+    #if os(iOS)
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    #endif
+
+    /// Compact width (iPhone portrait): tighter gutters and a smaller cover
+    /// minimum so the shelf shows two columns instead of one giant jacket.
+    private var isCompact: Bool {
+        #if os(iOS)
+        horizontalSizeClass == .compact
+        #else
+        false
+        #endif
+    }
+
+    /// Design grid: minmax(158px, 1fr) with 26px column gaps. On a 393pt
+    /// phone, 36pt gutters leave 321pt — two 158pt columns plus the gap need
+    /// 342pt, so the adaptive grid collapsed to a single full-width jacket
+    /// (seen in the CI gallery). Compact trims the minimum and gutters so
+    /// two covers fit.
+    private var columns: [GridItem] {
+        isCompact
+            ? [GridItem(.adaptive(minimum: 140, maximum: 200), spacing: 20)]
+            : [GridItem(.adaptive(minimum: 158, maximum: 220), spacing: 26)]
+    }
+
+    /// Horizontal inset shared by the header row and the grid.
+    private var horizontalInset: CGFloat { isCompact ? 20 : 36 }
 
     var body: some View {
         main
@@ -108,7 +131,7 @@ struct LibraryGridView: View {
                 theme: theme
             )
         }
-        .padding(.horizontal, 36)
+        .padding(.horizontal, horizontalInset)
         .padding(.top, 26)
         .padding(.bottom, 20)
     }
@@ -139,12 +162,12 @@ struct LibraryGridView: View {
 
     private var grid: some View {
         ScrollView {
-            LazyVGrid(columns: Self.columns, spacing: 30) {
+            LazyVGrid(columns: columns, spacing: 30) {
                 ForEach(sortedBooks) { book in
                     cell(for: book)
                 }
             }
-            .padding(.horizontal, 36)
+            .padding(.horizontal, horizontalInset)
             .padding(.top, 6)
             .padding(.bottom, 36)
         }
