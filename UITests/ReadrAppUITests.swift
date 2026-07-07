@@ -10,9 +10,13 @@ final class ReadrAppUITests: XCTestCase {
         continueAfterFailure = false
     }
 
-    private func launchSeeded() -> XCUIApplication {
+    private func launchSeeded(stubLLM: Bool = false) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchArguments += ["-uiTestSeed"]
+        // Canned local provider (screenshot walk's second pass only) so the
+        // Ask flow can be captured end-to-end; the first pass stays
+        // provider-less to keep the guidance empty states in the gallery.
+        if stubLLM { app.launchArguments += ["-uiTestStubLLM"] }
         app.launch()
         return app
     }
@@ -293,7 +297,7 @@ final class ReadrAppUITests: XCTestCase {
         // (these shots never appeared in published galleries). A relaunch
         // lands on Home deterministically.
         app.terminate()
-        let app2 = launchSeeded()
+        let app2 = launchSeeded(stubLLM: true)
         _ = app2.staticTexts["Sample Book"].firstMatch.waitForExistence(timeout: 10)
 
         // The AI-providers gear lives on Home's toolbar — capture before
@@ -326,6 +330,48 @@ final class ReadrAppUITests: XCTestCase {
             allBooks.tap()
             _ = app2.staticTexts["Sample Book"].firstMatch.waitForExistence(timeout: 3)
             snap(app2, "14-library-grid")
+        }
+
+        // l. Native PDF reader: the seeded "Field Notes" PDF opens in
+        // PDFKit's original-pages mode (PDF journeys were the one class the
+        // text fixtures couldn't reach).
+        let pdfBook = app2.staticTexts["Field Notes"].firstMatch
+        if pdfBook.waitForExistence(timeout: 3), pdfBook.isHittable {
+            pdfBook.tap()
+            // PDFKit renders asynchronously; give the first page a beat.
+            _ = app2.navigationBars.firstMatch.waitForExistence(timeout: 5)
+            sleep(2)
+            snap(app2, "15-pdf-reader")
+            // The back button carries the previous screen's title; prefer it
+            // over firstMatch, which can land on the disabled chapter chevron.
+            let labeled = app2.navigationBars.buttons["All Books"].firstMatch
+            let back = labeled.exists ? labeled : app2.navigationBars.buttons.firstMatch
+            if back.waitForExistence(timeout: 3) { back.tap() }
+        }
+
+        // m. Ask with the stubbed provider: open Sample Book, ask a suggested
+        // question, and capture the streamed answer UI.
+        let sample = app2.staticTexts["Sample Book"].firstMatch
+        if sample.waitForExistence(timeout: 3), sample.isHittable {
+            sample.tap()
+            let ask2 = button(app2, id: "reader.ask", label: "Ask the book")
+            if ask2.waitForExistence(timeout: 5), ask2.isHittable {
+                ask2.tap()
+                // Suggestion chips insert text without needing the keyboard.
+                let suggestion = app2.buttons["Summarize this book"].firstMatch
+                if suggestion.waitForExistence(timeout: 3) { suggestion.tap() }
+                let send = app2.buttons["ask.send"].firstMatch
+                if send.waitForExistence(timeout: 2), send.isEnabled {
+                    send.tap()
+                    // The stub streams word-by-word; wait for its tail phrase.
+                    _ = app2.staticTexts.containing(
+                        NSPredicate(format: "label CONTAINS %@", "tone of decay")
+                    ).firstMatch.waitForExistence(timeout: 15)
+                }
+                snap(app2, "16-ask-answer")
+                let done = app2.navigationBars.buttons["Done"].firstMatch
+                if done.waitForExistence(timeout: 2) { done.tap() }
+            }
         }
     }
 }

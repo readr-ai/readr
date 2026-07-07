@@ -129,6 +129,8 @@ struct AskPanelView: View {
                 }
                 .buttonStyle(.plain)
                 .disabled(vm.isStreaming || question.trimmingCharacters(in: .whitespaces).isEmpty)
+                .accessibilityLabel("Send")
+                .accessibilityIdentifier("ask.send")
             }
 
             // Suggested questions get first-time users past the blank field;

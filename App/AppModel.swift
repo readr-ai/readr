@@ -1,5 +1,7 @@
 import Foundation
 import ReadrKit
+import CoreGraphics
+import CoreText
 
 /// App-level state for M1: the library, import, reading position, and
 /// highlights. AI features (ask, article) attach to this in later milestones.
@@ -26,6 +28,7 @@ final class AppModel: ObservableObject {
             let seeded = InMemoryLibraryStore()
             for book in Self.sampleBooks { try? seeded.add(book) }
             Self.seedFixtureState(into: seeded)
+            Self.seedFixturePDF(into: seeded)
             self.store = seeded
         } else {
             self.store = store ?? Self.makeDefaultStore()
@@ -159,6 +162,62 @@ final class AppModel: ObservableObject {
             ),
             for: letters.id
         )
+    }
+
+    /// Seeded PDF fixture: renders a real two-page PDF into the books
+    /// directory and registers a matching book, so UI tests and the CI
+    /// screenshot walk cover the native PDF reader (J1/J2 for PDFs) — the
+    /// only journey class the text-only fixtures couldn't reach. The library
+    /// treats it exactly like an imported PDF: `sourceFilename` resolves via
+    /// `sourceURL(for:)` and `isPDF` keys off the extension.
+    private static func seedFixturePDF(into store: InMemoryLibraryStore) {
+        let pageOne = """
+        Field notes are a promise to your future self: what you saw, what \
+        you doubted, and what you decided while the light was still good.
+        """
+        let pageTwo = """
+        Read them back a season later and the gaps speak loudest — the \
+        questions you forgot to ask are the ones worth a second trip.
+        """
+        guard let dir = try? booksDirectory() else { return }
+        let url = dir.appendingPathComponent("field-notes.pdf")
+
+        var mediaBox = CGRect(x: 0, y: 0, width: 612, height: 792)
+        guard let context = CGContext(url as CFURL, mediaBox: &mediaBox, nil) else { return }
+        for text in [pageOne, pageTwo] {
+            context.beginPDFPage(nil)
+            let attributed = NSAttributedString(
+                string: text,
+                attributes: [
+                    .font: CTFontCreateWithName("TimesNewRomanPSMT" as CFString, 16, nil)
+                ]
+            )
+            let framesetter = CTFramesetterCreateWithAttributedString(attributed)
+            let frame = CTFramesetterCreateFrame(
+                framesetter,
+                CFRange(location: 0, length: 0),
+                CGPath(rect: mediaBox.insetBy(dx: 72, dy: 72), transform: nil),
+                nil
+            )
+            CTFrameDraw(frame, context)
+            context.endPDFPage()
+        }
+        context.closePDF()
+
+        let book = Book(
+            metadata: BookMetadata(title: "Field Notes", authors: ["R. Calder"]),
+            chapters: [
+                Chapter(title: "Field Notes", order: 0, text: pageOne + "\n\n" + pageTwo)
+            ],
+            estimatedTokenCount: 80,
+            sourceFilename: "field-notes.pdf"
+        )
+        try? store.add(book)
+        // Freshest import: leads Recently Added (a PDF card on Home) and
+        // takes the grid's top slot, where the walk can reach it without
+        // scrolling — stateless books sort to the end of `recentlyAdded`,
+        // which would push the PDF below the fold on a phone.
+        try? store.saveBookState(BookState(addedAt: Date()), for: book.id)
     }
 
     /// Character-offset range of `phrase` in `text`. Highlights address
@@ -528,8 +587,13 @@ final class AppModel: ObservableObject {
     }
 
     /// The active LLM provider, or nil if none is configured.
+    /// `-uiTestStubLLM` (CI screenshot walk only) substitutes a canned local
+    /// provider so the Ask flow can be exercised deterministically offline.
     func activeProvider() -> LLMProvider? {
-        try? providerManager.activeProvider()
+        if ProcessInfo.processInfo.arguments.contains("-uiTestStubLLM") {
+            return UITestStubProvider()
+        }
+        return try? providerManager.activeProvider()
     }
 
     /// Build the retrieval index for a book if it hasn't been built yet. Cheap to
