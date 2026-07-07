@@ -372,6 +372,29 @@ final class ReadrAppUITests: XCTestCase {
                 let done = app2.navigationBars.buttons["Done"].firstMatch
                 if done.waitForExistence(timeout: 2) { done.tap() }
             }
+
+            // n. Article studio composing with the stubbed provider — the
+            // last CI-reachable journey (J6): highlights → Compose → the
+            // streamed draft in the Markdown editor.
+            let notes2 = button(app2, id: "reader.notes", label: "Highlights")
+            if notes2.waitForExistence(timeout: 3), notes2.isHittable {
+                notes2.tap()
+                let create = app2.buttons["notes.createArticle"].firstMatch
+                if create.waitForExistence(timeout: 3), create.isHittable {
+                    create.tap()
+                    let compose = app2.buttons["article.compose"].firstMatch
+                    if compose.waitForExistence(timeout: 3), compose.isHittable {
+                        compose.tap()
+                        // The draft streams into the editor; wait for the
+                        // editor to appear, then let the stream finish.
+                        _ = app2.textViews.firstMatch.waitForExistence(timeout: 10)
+                        sleep(4)
+                    }
+                    snap(app2, "17-article-compose")
+                    let done = app2.navigationBars.buttons["Done"].firstMatch
+                    if done.waitForExistence(timeout: 2) { done.tap() }
+                }
+            }
         }
     }
 }
