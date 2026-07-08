@@ -79,7 +79,9 @@ final class ReadrAppUITests: XCTestCase {
         let bookCell = app.staticTexts["Sample Book"].firstMatch
         XCTAssertTrue(bookCell.waitForExistence(timeout: 10))
         bookCell.tap()
-        XCTAssertTrue(app.staticTexts["Chapter One"].waitForExistence(timeout: 5))
+        // 10s, not 5: the suite's first test pays the simulator's cold-start
+        // cost — run #28973952628 saw the reader take >5s to first paint.
+        XCTAssertTrue(app.staticTexts["Chapter One"].waitForExistence(timeout: 10))
 
         let notesButton = button(app, id: "reader.notes", label: "Highlights")
         XCTAssertTrue(notesButton.waitForExistence(timeout: 5))
@@ -106,7 +108,9 @@ final class ReadrAppUITests: XCTestCase {
         let bookCell = app.staticTexts["Sample Book"].firstMatch
         XCTAssertTrue(bookCell.waitForExistence(timeout: 10))
         bookCell.tap()
-        XCTAssertTrue(app.staticTexts["Chapter One"].waitForExistence(timeout: 5))
+        // 10s, not 5: the suite's first test pays the simulator's cold-start
+        // cost — run #28973952628 saw the reader take >5s to first paint.
+        XCTAssertTrue(app.staticTexts["Chapter One"].waitForExistence(timeout: 10))
 
         let notesButton = button(app, id: "reader.notes", label: "Highlights")
         XCTAssertTrue(notesButton.waitForExistence(timeout: 5))

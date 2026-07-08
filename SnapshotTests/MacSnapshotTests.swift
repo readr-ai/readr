@@ -123,6 +123,21 @@ final class MacSnapshotTests: XCTestCase {
         )
     }
 
+    func testScrollReaderPaper() {
+        snapshot(
+            VStack(spacing: 0) {
+                ScrollReadingColumn(
+                    chapter: sampleChapter,
+                    style: ReaderStyle(theme: .paper, fontSize: 18),
+                    highlights: sampleSpans
+                )
+            }
+            .background(ReadingTheme.paper.background),
+            size: CGSize(width: 1100, height: 760),
+            name: "m08-scroll-paper"
+        )
+    }
+
     // MARK: - Chrome & panels
 
     func testAppearancePopover() {
