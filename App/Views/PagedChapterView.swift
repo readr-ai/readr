@@ -8,8 +8,8 @@ import AppKit
 #endif
 
 /// The Marginalia footer progress track: a 2pt hairline with an ink fill at
-/// the given fraction. Shared by the scroll footer (ReaderView) and the paged
-/// footer below.
+/// the given fraction. Used by the scroll-mode footer in ReaderView; paged
+/// mode dropped its footer for a full-bleed page, so it no longer draws one.
 struct ReaderProgressTrack: View {
     /// 0...1 fraction read.
     let fraction: Double
@@ -36,10 +36,13 @@ struct ReaderProgressTrack: View {
 /// reflow on window resize. Text selection still reports **chapter**
 /// coordinates, so highlights and Ask work identically to scroll mode.
 ///
-/// Marginalia: the page(s) render on a centered paper card (hairline border,
-/// radius 10, soft shadow) over the chrome background; a 1pt spine separates
-/// facing pages; circular ‹ › buttons float outside the card; the 40pt footer
-/// carries a hairline progress track and "Page x of y · ~N min left".
+/// Marginalia (Apple-Books-on-Mac surface): the paper IS the window — the
+/// whole surface is `theme.paper`, no card. The text column is capped at a
+/// font-relative measure and centered, so extra window width becomes symmetric
+/// paper margin. A subtle hairline is the spine between facing pages. Chrome is
+/// unobtrusive overlay: a small muted page label centered at the bottom, and
+/// full-height edge strips carrying a bare ‹ › chevron (fading in on hover on
+/// macOS, always shown on iOS).
 struct PagedChapterView: View {
     let chapter: Chapter
     let layout: PageLayout
@@ -70,14 +73,17 @@ struct PagedChapterView: View {
 
     @State private var cache = PaginationCache()
     @FocusState private var focused: Bool
+    /// macOS only: the pointer is over the reading surface, so the quiet
+    /// page-turn chevrons fade in (Apple Books). Never set on iOS (no hover).
+    @State private var hoveringSurface = false
     #if os(iOS)
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     #endif
 
-    /// Compact width (iPhone portrait): trim the arrow gutters and page insets
-    /// so the reading column isn't crowded out by chrome — on a phone the
-    /// wide default gutters read as oversized margins. Read from the
-    /// environment so every embedder gets the right chrome automatically.
+    /// Compact width (iPhone portrait): tighten the literary page insets so the
+    /// reading column isn't crowded out — on a phone the wide regular-width
+    /// margins would swallow the text. Read from the environment so every
+    /// embedder gets the right chrome automatically.
     private var isCompact: Bool {
         #if os(iOS)
         horizontalSizeClass == .compact
@@ -86,22 +92,38 @@ struct PagedChapterView: View {
         #endif
     }
 
-    // Chrome metrics (`capacity(for:)` reads these same properties, so the
-    // estimate always matches what the body renders).
-    /// Horizontal gutter reserved outside the card for the floating arrows.
-    /// Narrower on compact widths so the arrows don't eat a quarter of a
-    /// phone — but always wide enough to contain the 34pt buttons at their
-    /// inset, so they never overlap the card or steal its taps.
-    private var arrowGutter: CGFloat { isCompact ? 40 : 52 }
-    /// Interior padding of each page on the card.
+    // Chrome metrics (`capacity(for:)` reads these same instance properties, so
+    // the estimate always matches what the body renders).
+    /// Text columns per spread — drives both the measure cap and capacity.
+    private var columns: CGFloat { layout == .doublePage ? 2 : 1 }
+    /// ~40 em, like `ScrollReadingColumn` (avg serif glyph ≈ 0.5 em ⇒ ~75–80
+    /// chars/line). Sharing the em count keeps paged and scroll lines the same
+    /// length at any text size.
+    private static let measureEms: CGFloat = 40
+    /// Per-column width cap: 40 em of text plus the interior side insets. On a
+    /// window wider than the cap the block is centered and the surplus becomes
+    /// symmetric paper margin; narrower, columns shrink to fit (see capacity).
+    private var measure: CGFloat {
+        style.fontSize * Self.measureEms + pageInsets.leading + pageInsets.trailing
+    }
+    /// Interior page margins. Regular widths get generous, literary margins
+    /// (the paper fills the window, so the text can breathe); compact stays
+    /// close to the pre-full-bleed insets so a phone column isn't starved.
     private var pageInsets: EdgeInsets {
         isCompact
-            ? EdgeInsets(top: 28, leading: 20, bottom: 22, trailing: 20)
-            : EdgeInsets(top: 34, leading: 28, bottom: 26, trailing: 28)
+            ? EdgeInsets(top: 28, leading: 22, bottom: 22, trailing: 22)
+            : EdgeInsets(top: 44, leading: 56, bottom: 40, trailing: 56)
     }
-    /// Inset of the floating arrows from the view edge (they sit in the gutter).
-    private var arrowInset: CGFloat { isCompact ? 3 : 9 }
-    private static let footerHeight: CGFloat = 40
+    /// Reserved band at the bottom for the muted page label, kept clear of the
+    /// text (added to the page's bottom padding and to the capacity estimate)
+    /// so the overlay never sits on a line.
+    private var labelAllowance: CGFloat { isCompact ? 24 : 28 }
+    /// First-page kicker (running head) reservation: the 11pt caps title plus
+    /// its 22pt bottom padding, rounded up.
+    private static let kickerAllowance: CGFloat = 36
+    /// Full-height edge hit strip for the page-turn chevron (Apple-Books
+    /// edge-tap). Narrower on a phone so it doesn't cover the column's edge.
+    private var arrowStripWidth: CGFloat { isCompact ? 40 : 56 }
 
     /// Memoizes the last pagination so page turns/selection don't re-scan the
     /// whole chapter on every body evaluation. Reference type on purpose:
@@ -122,32 +144,33 @@ struct PagedChapterView: View {
             let start = startIndex(in: pages)
             let visible = visiblePages(from: start, in: pages)
 
-            VStack(spacing: 0) {
-                ZStack {
-                    pageCard(visible: visible)
-                        .padding(.horizontal, arrowGutter)
-                        .padding(.vertical, 18)
+            ZStack {
+                // The paper is the window — one full-bleed surface; the text
+                // column centers within it and the margins are the same paper.
+                style.theme.paper
 
-                    HStack {
-                        turnButton(
-                            glyph: "\u{2039}", direction: -1, in: pages,
-                            disabled: start == 0 && !canOverflowBackward,
-                            help: "Previous page (←)", label: "Previous page"
-                        )
-                        Spacer()
-                        turnButton(
-                            glyph: "\u{203A}", direction: +1, in: pages,
-                            disabled: (pages.isEmpty
-                                || start + layout.pagesPerSpread >= pages.count)
-                                && !canOverflowForward,
-                            help: "Next page (→)", label: "Next page"
-                        )
-                    }
-                    .padding(.horizontal, arrowInset)
+                pageColumns(visible: visible)
+
+                // Full-height edge strips carry a bare chevron (no card, so no
+                // filled circle). On macOS they fade in on hover; on iOS the
+                // gutter has no hover, so they stay visible as before.
+                HStack {
+                    turnButton(
+                        glyph: "\u{2039}", direction: -1, in: pages,
+                        disabled: start == 0 && !canOverflowBackward,
+                        help: "Previous page (←)", label: "Previous page"
+                    )
+                    Spacer()
+                    turnButton(
+                        glyph: "\u{203A}", direction: +1, in: pages,
+                        disabled: (pages.isEmpty
+                            || start + layout.pagesPerSpread >= pages.count)
+                            && !canOverflowForward,
+                        help: "Next page (→)", label: "Next page"
+                    )
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-                footer(start: start, pages: pages)
+                pageLabel(start: start, pages: pages)
             }
             .contentShape(Rectangle())
             .focusable()
@@ -155,6 +178,9 @@ struct PagedChapterView: View {
             .onKeyPress(.rightArrow) { turnPage(+1, in: pages); return .handled }
             .onKeyPress(.leftArrow) { turnPage(-1, in: pages); return .handled }
             .onAppear { focused = true }
+            #if os(macOS)
+            .onHover { hoveringSurface = $0 }
+            #endif
             .modifier(SwipeToTurn { direction in turnPage(direction, in: pages) })
         }
     }
@@ -197,25 +223,30 @@ struct PagedChapterView: View {
 
     /// Conservative characters-per-page estimate from geometry + the reader
     /// style's font size, so pages reflow when the user changes text size.
-    /// Subtracts the card chrome: arrow gutters, page insets, footer, and a
-    /// first-page kicker allowance — read from the same instance properties
-    /// the body renders with, so the two can't drift apart.
+    /// Read from the SAME instance properties the body renders with — the
+    /// measure cap, page insets, bottom label band, and first-page kicker — so
+    /// the estimate can't drift from the laid-out page.
     private func capacity(for size: CGSize) -> Int {
         let pointSize = style.fontSize
-        let columns = layout == .doublePage ? 2.0 : 1.0
-        let horizontalChrome = arrowGutter * 2
-            + (pageInsets.leading + pageInsets.trailing) * columns
-        let pageWidth = max(1, (size.width - horizontalChrome) / columns)
-        // 18+18 card margin, insets, footer, and ~36 kicker allowance.
-        let verticalChrome = 36 + pageInsets.top + pageInsets.bottom + Self.footerHeight + 36
+        // Per-column text width: the body caps each column at `measure` and
+        // centers the block; a window narrower than the cap shrinks the columns
+        // to `size.width / columns` (there is no gutter to subtract — the arrow
+        // strips overlay the paper). Then remove the interior side insets.
+        let columnWidth = min(measure, size.width / columns)
+        let textWidth = max(1, columnWidth - (pageInsets.leading + pageInsets.trailing))
+        // Height minus the top/bottom insets, the reserved bottom label band,
+        // and the first-page kicker allowance — every vertical term the body
+        // consumes before text.
+        let verticalChrome = pageInsets.top + pageInsets.bottom
+            + labelAllowance + Self.kickerAllowance
         let pageHeight = max(1, size.height - verticalChrome)
-        let charsPerLine = pageWidth / (pointSize * 0.55)
+        let charsPerLine = textWidth / (pointSize * 0.55)
         // Line box ≈ the font's natural line height (~1.2 em) plus the extra
         // leading the paragraph style adds (`ReaderStyle.lineSpacing`). The
         // old 1.45 magic factor ignored that leading and over-packed pages:
         // on phone widths a charsPerLine underestimate happened to cancel it,
         // but on desktop page widths the estimate is accurate and pages ran
-        // one line past the card (caught by the m01–m03 macOS snapshots).
+        // one line past the page (caught by the m01–m03 macOS snapshots).
         let lines = pageHeight / (pointSize * 1.2 + style.lineSpacing)
         // 0.85 safety factor (covers paragraph spacing, ~0.6 em per break)
         // so a page never overflows its frame.
@@ -253,11 +284,13 @@ struct PagedChapterView: View {
         anchorOffset = pages[next].range.lowerBound
     }
 
-    // MARK: - Card & pages
+    // MARK: - Columns & pages
 
-    /// The paper card: page(s) on `theme.paper`, hairline border, radius 10,
-    /// soft shadow; a 1pt spine hairline between facing pages.
-    private func pageCard(visible: [Page]) -> some View {
+    /// The centered text column(s): each column caps at `measure` and the whole
+    /// block is centered, so surplus window width becomes symmetric paper
+    /// margin (the surface behind is already `theme.paper`). A subtle hairline
+    /// is the spine between facing pages.
+    private func pageColumns(visible: [Page]) -> some View {
         HStack(alignment: .top, spacing: 0) {
             ForEach(Array(visible.enumerated()), id: \.offset) { item in
                 pageView(item.element, showsKicker: item.offset == 0)
@@ -272,14 +305,16 @@ struct PagedChapterView: View {
                 Color.clear.frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
-        .background(style.theme.paper)
-        .clipShape(RoundedRectangle(cornerRadius: 10))
-        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(style.theme.line, lineWidth: 1))
-        .shadow(color: .black.opacity(0.10), radius: 14, y: 6)
+        // Cap the block at one measure per column; the outer infinite frame
+        // then centers it, leaving equal paper margins on a wide window.
+        .frame(maxWidth: measure * columns)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
+    /// Facing-page gutter: a hairline at reduced opacity. Full-bleed paper has
+    /// no card edge for a hard 1pt rule to sit against, so it stays quiet.
     private var spine: some View {
-        Rectangle().fill(style.theme.line).frame(width: 1)
+        Rectangle().fill(style.theme.line.opacity(0.5)).frame(width: 1)
     }
 
     @ViewBuilder
@@ -335,9 +370,12 @@ struct PagedChapterView: View {
             )
         }
         .padding(pageInsets)
+        // Reserve the bottom label band so a full page's last line never runs
+        // under the muted page label (capacity subtracts the same allowance).
+        .padding(.bottom, labelAllowance)
         // Top-aligned: the text view sizes to its content now, and the frame's
         // default .center would float an underfull page (chapter ends, the
-        // paginator's 0.85 safety slack) to the middle of the card.
+        // paginator's 0.85 safety slack) to the middle of the page.
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
@@ -361,24 +399,21 @@ struct PagedChapterView: View {
 
     // MARK: - Chrome
 
-    /// Circular floating page-turn button (elev fill, hairline border),
-    /// vertically centered beside the card. Same actions the footer arrows
-    /// used to run.
+    /// Bare page-turn chevron on a full-height edge strip (no card ⇒ no filled
+    /// circle). The hit area is the whole strip (Apple Books edge-tap). On
+    /// macOS the glyph is hidden until the pointer is over the surface, then
+    /// fades in; disabled arrows stay consistently dimmed. iOS keeps them
+    /// visible (no hover). Actions, `.help`, labels, and disabled logic are
+    /// unchanged.
     private func turnButton(
         glyph: String, direction: Int, in pages: [Page],
         disabled: Bool, help: String, label: String
     ) -> some View {
         Button { turnPage(direction, in: pages) } label: {
             Text(glyph)
-                .font(.system(size: 15))
-                .foregroundStyle(style.theme.inkColor)
-                .frame(width: 34, height: 34)
-                .background(Circle().fill(style.theme.elevated))
-                .overlay(Circle().strokeBorder(style.theme.line, lineWidth: 1))
-                // The visible control is a 34pt circle, but the hit area is
-                // the full-height gutter strip beside the card (Apple Books
-                // edge-tap) — a 34pt circle is a needlessly hard target,
-                // especially one-handed on a phone.
+                .font(.system(size: 22))
+                .foregroundStyle(style.theme.faint)
+                .frame(width: arrowStripWidth)
                 .frame(maxHeight: .infinity)
                 .contentShape(Rectangle())
         }
@@ -386,44 +421,50 @@ struct PagedChapterView: View {
         .help(help)
         .accessibilityLabel(label)
         .disabled(disabled)
-        .opacity(disabled ? 0.35 : 1)
+        .opacity(arrowOpacity(disabled: disabled))
+        #if os(macOS)
+        .animation(.easeInOut(duration: 0.15), value: hoveringSurface)
+        #endif
     }
 
-    /// 40pt footer: hairline progress track (ink fill at the pages-read
-    /// fraction) + right-aligned "Page x of y · ~N min left in chapter".
+    /// Chevron opacity: disabled arrows sit at 0.35 (consistently dimmed),
+    /// live ones at full. On macOS the whole thing hides (0) until the pointer
+    /// enters the surface, so at rest the page reads uncluttered.
+    private func arrowOpacity(disabled: Bool) -> Double {
+        let base = disabled ? 0.35 : 1.0
+        #if os(macOS)
+        return hoveringSurface ? base : 0
+        #else
+        return base
+        #endif
+    }
+
+    /// Small muted page label, centered in the reserved bottom band. Same text
+    /// logic as the old footer ("Page x of y" / "Pages x–y of N" + "· ~N min
+    /// left"), minus the progress track. Non-interactive so it never eats an
+    /// edge-strip tap.
     @ViewBuilder
-    private func footer(start: Int, pages: [Page]) -> some View {
-        let last = pages.isEmpty ? 0 : min(start + layout.pagesPerSpread, pages.count)
-        let fraction = pages.isEmpty ? 0 : Double(last) / Double(pages.count)
-        HStack(spacing: 14) {
-            ReaderProgressTrack(
-                fraction: fraction,
-                ink: style.theme.inkColor,
-                track: style.theme.line
-            )
-            if !pages.isEmpty {
-                let pageText = layout == .doublePage && last - start > 1
-                    ? "Pages \(start + 1)–\(last) of \(pages.count)"
-                    : "Page \(start + 1) of \(pages.count)"
-                // "min left" from the top of the visible spread — the same
-                // anchor the parent persists. Cached per pagination; scanning
-                // chapter.text here would run on every body evaluation.
-                let minutes = minutesLeft(fromPage: start)
-                // Compact drops "in chapter" — the full phrase truncates to
-                // "~1 min left in ch…" beside the progress track on a phone.
-                let suffix = isCompact ? "min left" : "min left in chapter"
-                Text(minutes > 0 ? "\(pageText) · ~\(minutes) \(suffix)" : pageText)
-                    .font(.system(size: 11))
-                    .foregroundStyle(style.theme.muted)
-                    .monospacedDigit()
-                    .lineLimit(1)
-            }
-        }
-        .padding(.horizontal, 20)
-        .frame(height: Self.footerHeight)
-        .frame(maxWidth: .infinity)
-        .overlay(alignment: .top) {
-            Rectangle().fill(style.theme.line).frame(height: 1)
+    private func pageLabel(start: Int, pages: [Page]) -> some View {
+        if !pages.isEmpty {
+            let last = min(start + layout.pagesPerSpread, pages.count)
+            let pageText = layout == .doublePage && last - start > 1
+                ? "Pages \(start + 1)–\(last) of \(pages.count)"
+                : "Page \(start + 1) of \(pages.count)"
+            // "min left" from the top of the visible spread — the same anchor
+            // the parent persists. Cached per pagination; scanning chapter.text
+            // here would run on every body evaluation.
+            let minutes = minutesLeft(fromPage: start)
+            // Compact drops "in chapter" so the phrase fits a phone width.
+            let suffix = isCompact ? "min left" : "min left in chapter"
+            Text(minutes > 0 ? "\(pageText) · ~\(minutes) \(suffix)" : pageText)
+                .font(.system(size: 11))
+                .foregroundStyle(style.theme.muted)
+                .monospacedDigit()
+                .lineLimit(1)
+                .frame(maxWidth: .infinity)
+                .frame(height: labelAllowance)
+                .frame(maxHeight: .infinity, alignment: .bottom)
+                .allowsHitTesting(false)
         }
     }
 }

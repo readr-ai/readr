@@ -268,8 +268,11 @@ struct ReaderView: View {
                 )
             }
         }
-        // The theme owns the entire surface, footer included.
-        .background(style.theme.background.ignoresSafeArea())
+        // The theme owns the entire surface. Scroll mode floats a centered
+        // paper column over the deeper chrome `background` (its footer sits on
+        // it too); paged mode is full-bleed paper — the page IS the window — so
+        // the surface behind it must be `paper`, not the chrome color.
+        .background((layout == .scroll ? style.theme.background : style.theme.paper).ignoresSafeArea())
     }
 
     /// Scroll mode has no page anchor, so the estimate covers the whole
