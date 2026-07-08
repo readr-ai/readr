@@ -511,7 +511,12 @@ private struct Representable: NSViewRepresentable {
         textView.drawsBackground = false
         textView.isVerticallyResizable = true
         textView.isHorizontallyResizable = false
-        textView.autoresizingMask = [.width]
+        // No autoresizing: it derives the document view's width from the
+        // *change* in the clip view's size, so a text view attached before
+        // the clip view reaches its real width ends up permanently wider —
+        // wrapping past the visible edge (the clipped m01–m03/m08 renders).
+        // The clip-view frame observer below syncs the width directly instead.
+        textView.autoresizingMask = []
         textView.minSize = .zero
         textView.maxSize = NSSize(
             width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude
@@ -539,6 +544,12 @@ private struct Representable: NSViewRepresentable {
         // A scroll moves the anchored text out from under the popover.
         scroll.contentView.postsBoundsChangedNotifications = true
         context.coordinator.observeScroll(of: scroll.contentView)
+        // Keep the wrap width locked to the visible width on every clip-view
+        // resize (window resize, inspector toggle, the initial layout pass).
+        // Synchronous on purpose: the offscreen snapshot renderer lays out and
+        // captures in one pass, so an async sync would miss the frame.
+        scroll.contentView.postsFrameChangedNotifications = true
+        context.coordinator.observeFrame(of: scroll.contentView)
         return scroll
     }
 
@@ -636,6 +647,7 @@ private struct Representable: NSViewRepresentable {
         private var hosting: NSHostingController<AnnotationMenuView>?
         private var keyboardDebounce: Timer?
         private var scrollObserver: NSObjectProtocol?
+        private var frameObserver: NSObjectProtocol?
 
         private var renderedText: String?
         private var renderedSpans: [HighlightSpan] = []
@@ -656,6 +668,9 @@ private struct Representable: NSViewRepresentable {
             keyboardDebounce?.invalidate()
             if let scrollObserver {
                 NotificationCenter.default.removeObserver(scrollObserver)
+            }
+            if let frameObserver {
+                NotificationCenter.default.removeObserver(frameObserver)
             }
             popover?.close()
         }
@@ -678,6 +693,23 @@ private struct Representable: NSViewRepresentable {
                 forName: NSView.boundsDidChangeNotification, object: contentView, queue: .main
             ) { [weak self] _ in
                 self?.dismissMenu()
+            }
+        }
+
+        /// Clip view resized → pin the document view's wrap width to it.
+        /// `queue: nil` runs the block synchronously on the posting (main)
+        /// thread, so a single offscreen layout pass sees the synced width.
+        func observeFrame(of contentView: NSClipView) {
+            frameObserver = NotificationCenter.default.addObserver(
+                forName: NSView.frameDidChangeNotification, object: contentView, queue: nil
+            ) { [weak self] note in
+                guard let self, let textView = self.textView,
+                      let clip = note.object as? NSClipView else { return }
+                let width = clip.bounds.width
+                guard width > 0, abs(textView.frame.width - width) > 0.5 else { return }
+                textView.setFrameSize(
+                    NSSize(width: width, height: textView.frame.height)
+                )
             }
         }
 
