@@ -520,6 +520,15 @@ private struct Representable: NSViewRepresentable {
         textView.textContainer?.containerSize = NSSize(
             width: 100, height: CGFloat.greatestFiniteMagnitude
         )
+        if !allowsInternalScrolling {
+            // Paged mode: the text view's width comes from `sizeThatFits`
+            // pinning it to the proposed page column — autoresizing alone
+            // leaves it at a stale width (the clip view was smaller when the
+            // document view was attached), so lines wrap wider than the page
+            // and clip at the card edge. Drop the 5pt line padding to match
+            // the iOS paged path and the paginator's width assumption.
+            textView.textContainer?.lineFragmentPadding = 0
+        }
         textView.delegate = context.coordinator
         textView.onMouseUp = { [weak coordinator = context.coordinator] in
             coordinator?.handleMouseUp()
@@ -556,6 +565,40 @@ private struct Representable: NSViewRepresentable {
         performPendingScroll(on: textView)
     }
 
+    /// Paged mode: honor the width SwiftUI proposes so the text wraps to the
+    /// page column, and report the height the laid-out text actually needs —
+    /// the AppKit analogue of the iOS `sizeThatFits` above. Without it the
+    /// scroll view just fills the page frame and the document view keeps
+    /// whatever width autoresizing left it, wrapping wider than the visible
+    /// page. The fitted height is cached on the coordinator (keyed by width,
+    /// invalidated with the render cache) — forcing a full layout on every
+    /// sizing pass is far too heavy.
+    func sizeThatFits(
+        _ proposal: ProposedViewSize, nsView: NSScrollView, context: Context
+    ) -> CGSize? {
+        guard !allowsInternalScrolling,
+              let width = proposal.width, width > 0, width.isFinite,
+              let textView = nsView.documentView as? NSTextView,
+              let container = textView.textContainer,
+              let layoutManager = textView.layoutManager
+        else { return nil }
+        let coordinator = context.coordinator
+        if coordinator.fittedWidth != width {
+            // Pin the wrap width; widthTracksTextView mirrors it into the
+            // container, but set both so the measurement below can't race a
+            // pending autoresize.
+            textView.setFrameSize(NSSize(width: width, height: textView.frame.height))
+            container.containerSize = NSSize(
+                width: width, height: CGFloat.greatestFiniteMagnitude
+            )
+            layoutManager.ensureLayout(for: container)
+            coordinator.fittedHeight = ceil(layoutManager.usedRect(for: container).height)
+            coordinator.fittedWidth = width
+        }
+        let maxHeight = proposal.height ?? .infinity
+        return CGSize(width: width, height: min(coordinator.fittedHeight, maxHeight))
+    }
+
     /// Programmatic jump (search hit / bookmark / notes panel): scroll the
     /// target offset into view, then clear the host's binding on the next
     /// runloop turn — writing SwiftUI state synchronously from update* is
@@ -582,6 +625,10 @@ private struct Representable: NSViewRepresentable {
         var theme: ReadingTheme
         var onAnnotate: (AnnotationTarget, AnnotationAction) -> Void
         weak var textView: NSTextView?
+        /// `sizeThatFits` cache (paged mode): the fitted height for the last
+        /// proposed width. Invalidated whenever the rendered content changes.
+        var fittedWidth: CGFloat = -1
+        var fittedHeight: CGFloat = 0
 
         /// The popover + hosting controller are created once and reused; only
         /// the root view (mode + callbacks) changes per presentation.
@@ -620,6 +667,7 @@ private struct Representable: NSViewRepresentable {
                   renderedImageOffsets == imageOffsets else {
                 renderedText = text; renderedSpans = spans; renderedStyle = style
                 renderedImageOffsets = imageOffsets
+                fittedWidth = -1 // content changed — the cached height is stale
                 return true
             }
             return false

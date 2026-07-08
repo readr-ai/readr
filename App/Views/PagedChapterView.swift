@@ -210,8 +210,15 @@ struct PagedChapterView: View {
         let verticalChrome = 36 + pageInsets.top + pageInsets.bottom + Self.footerHeight + 36
         let pageHeight = max(1, size.height - verticalChrome)
         let charsPerLine = pageWidth / (pointSize * 0.55)
-        let lines = pageHeight / (pointSize * 1.45)
-        // 0.85 safety factor so a page never overflows its frame.
+        // Line box ≈ the font's natural line height (~1.2 em) plus the extra
+        // leading the paragraph style adds (`ReaderStyle.lineSpacing`). The
+        // old 1.45 magic factor ignored that leading and over-packed pages:
+        // on phone widths a charsPerLine underestimate happened to cancel it,
+        // but on desktop page widths the estimate is accurate and pages ran
+        // one line past the card (caught by the m01–m03 macOS snapshots).
+        let lines = pageHeight / (pointSize * 1.2 + style.lineSpacing)
+        // 0.85 safety factor (covers paragraph spacing, ~0.6 em per break)
+        // so a page never overflows its frame.
         return max(30, Int(charsPerLine * lines * 0.85))
     }
 
