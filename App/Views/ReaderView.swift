@@ -913,7 +913,7 @@ struct ReaderView: View {
 /// the chapter kicker (caps, faint) leading it. Extracted from ReaderView so
 /// the macOS snapshot suite can render the real scroll layout (m08).
 ///
-/// The column width is a font-relative measure — about 75 characters per line
+/// The column width is a font-relative measure — about 80 characters per line
 /// at any text size — rather than a fixed point cap: a fixed 640pt read as
 /// oversized margins on desktop windows, and it stranded large text at a
 /// cramped character count. Phone widths are narrower than the measure, so
@@ -956,7 +956,7 @@ struct ScrollReadingColumn: View {
         }
         .padding(.horizontal, 24)
         .padding(.top, 46)
-        // ~75 characters per line: measure = 40 em (avg glyph ≈ 0.5 em for the
+        // ~80 characters per line: measure = 40 em (avg glyph ≈ 0.5 em for the
         // serif content font) + the 48pt of column padding above.
         .frame(maxWidth: style.fontSize * 40 + 48)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
