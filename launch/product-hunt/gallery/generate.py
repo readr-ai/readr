@@ -318,7 +318,7 @@ def annotate():
     bot_bb = gray.crop((0, 90, m05.width, m05.height)).getbbox()
     bars = [m05.crop((top_bb[0], top_bb[1], top_bb[2], top_bb[3])),
             m05.crop((bot_bb[0], bot_bb[1] + 90, bot_bb[2], bot_bb[3] + 90))]
-    positions = [(620, 528), (700, 622)]
+    positions = [(620, 528), (700, 642)]
     for bar, pos in zip(bars, positions):
         s = 1.55
         bar = bar.resize((int(bar.width * s), int(bar.height * s)), Image.LANCZOS)
