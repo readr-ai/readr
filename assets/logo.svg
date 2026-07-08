@@ -1,0 +1,65 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <!-- Readr logo — open book + spark. Deep indigo around the Iris accent (#5B57C7), paper-cream pages, amber spark. -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#26225C"/>
+      <stop offset="1" stop-color="#131130"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.5" cy="0.42" r="0.55">
+      <stop offset="0" stop-color="#938EE9" stop-opacity="0.16"/>
+      <stop offset="1" stop-color="#938EE9" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="page" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFFEF9"/>
+      <stop offset="1" stop-color="#EAE4D2"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="1024" height="1024" rx="180" fill="url(#bg)"/>
+  <rect width="1024" height="1024" rx="180" fill="url(#glow)"/>
+
+  <!-- fanned under-pages (iris accents) -->
+  <g>
+    <path fill="#5B57C7" opacity="0.55" d="M512 512
+      C 452 472, 382 460, 296 476
+      L 296 682
+      C 382 666, 452 678, 512 716
+      C 572 678, 642 666, 728 682
+      L 728 476
+      C 642 460, 572 472, 512 512 Z"/>
+    <path fill="#938EE9" opacity="0.9" d="M512 492
+      C 452 452, 382 440, 296 456
+      L 296 662
+      C 382 646, 452 658, 512 696
+      C 572 658, 642 646, 728 662
+      L 728 456
+      C 642 440, 572 452, 512 492 Z"/>
+  </g>
+
+  <!-- pages -->
+  <path fill="url(#page)" d="M506 470
+    C 448 432, 380 420, 296 436
+    L 296 640
+    C 380 624, 448 636, 506 674 Z"/>
+  <path fill="url(#page)" d="M518 470
+    C 576 432, 644 420, 728 436
+    L 728 640
+    C 644 624, 576 636, 518 674 Z"/>
+
+  <!-- sparks -->
+  <path fill="#E9BA4F" d="M552 262
+    C 557 324, 568 335, 630 340
+    C 568 345, 557 356, 552 418
+    C 547 356, 536 345, 474 340
+    C 536 335, 547 324, 552 262 Z"/>
+  <path fill="#E9BA4F" d="M418 232
+    C 421 268, 428 275, 464 278
+    C 428 281, 421 288, 418 324
+    C 415 288, 408 281, 372 278
+    C 408 275, 415 268, 418 232 Z"/>
+  <path fill="#E9BA4F" opacity="0.85" d="M632 194
+    C 634 218, 638 222, 662 224
+    C 638 226, 634 230, 632 254
+    C 630 230, 626 226, 602 224
+    C 626 222, 630 218, 632 194 Z"/>
+</svg>
