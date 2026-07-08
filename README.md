@@ -40,10 +40,10 @@ and notes can also be auto-composed into a shareable article.
   with full book context and **source citations**.
 - ✍️ **Highlights → article**: auto-compose your highlights and notes into an
   editable, exportable Markdown article (streams in live).
-- 🔌 **Bring your own LLM**: paste an **Anthropic** or **OpenAI** API key, sign
-  in with a ChatGPT subscription, or run a **local LLM** (Ollama) fully offline.
-- 🔒 Privacy-first: no telemetry; local mode is proven zero-egress by tests;
-  keys live only in the Keychain.
+- 🔌 **Bring your own LLM**: paste an **Anthropic** or **OpenAI** API key, or
+  run a **local LLM** (Ollama) fully offline.
+- 🔒 Privacy-first: no telemetry or analytics code at all; local mode talks
+  only to your local Ollama server; keys live only in the Keychain.
 
 ## Screenshots
 
@@ -52,7 +52,7 @@ and notes can also be auto-composed into a shareable article.
 | ![Dark mode and sepia paged reading](docs/screenshots/reader-dark-sepia.png) | ![Notes panel with Compose article, and the appearance sheet](docs/screenshots/notes-appearance.png) |
 | Paged reading in dark and sepia themes | Highlights & notes with **Compose article**; themes and layouts |
 | ![Library grid and AI provider settings](docs/screenshots/library-providers.png) | ![macOS library grid](docs/screenshots/mac-library.png) ![macOS notes panel](docs/screenshots/mac-notes-panel.png) |
-| Your library; connect Claude, ChatGPT, or a local model | The same library and notes panel, native on macOS |
+| Your library; connect Claude, OpenAI, or a local model | The same library and notes panel, native on macOS |
 
 ## How book context works
 
@@ -66,8 +66,10 @@ always stays on-device. Full rationale and citations in
 - **SwiftUI** multiplatform app (iOS 17+ / macOS 14+).
 - **`ReadrKit`** — platform-agnostic Swift Package with the core logic (parsing,
   context router, RAG, LLM providers, article composer).
-- **Readium Swift toolkit** for EPUB/PDF rendering & annotations.
-- **SQLite** (`sqlite-vec` + FTS5) for the on-device RAG index.
+- Custom EPUB/text parsing in `ReadrKit`; **PDFKit** for native PDF rendering
+  and markup on device.
+- In-memory hybrid retrieval (BM25 + on-device embeddings) built per book on
+  open; SQLite persistence is on the roadmap.
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
@@ -77,7 +79,8 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
   expected behaviour, as testable acceptance criteria.
 - [docs/DEVELOPMENT-PLAN.md](docs/DEVELOPMENT-PLAN.md) — test-first milestone
   plan (tests written before code, verified against journeys after).
-- [docs/AUTH.md](docs/AUTH.md) — how "sign in with Claude/ChatGPT", BYO key, and
+- [docs/AUTH.md](docs/AUTH.md) — how BYO keys, subscription OAuth (designed,
+  currently disabled pending end-to-end verification), and
   local models work (OAuth+PKCE, modeled on Muesli).
 - [docs/CONTEXT-STRATEGY.md](docs/CONTEXT-STRATEGY.md) — the adaptive
   whole-book-vs-retrieval decision.

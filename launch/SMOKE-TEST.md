@@ -29,40 +29,25 @@ If the app won't launch at all after Open Anyway → launch blocker, stop here.
 
 Repeat step 1 with an OpenAI key (`sk-…`). Same expectations.
 
-## 3. Sign in with ChatGPT — HIGHEST RISK (5 min)
+## 3. Sign in with ChatGPT — now DISABLED for launch
 
-This flow reuses the Codex CLI OAuth client
-(`app_EMoamEEZ73f0CkXaXp7hrann`, loopback `127.0.0.1:1455/auth/callback` —
-`Sources/ReadrKit/Auth/OAuthClient.swift:26`). It has **never been run**.
-Three distinct failure points; note which one you hit:
+The production-readiness audit found this flow structurally unlikely to work
+(the borrowed Codex-client token is sent as a Bearer to
+`api.openai.com/v1/chat/completions`, and no token-refresh path is wired up),
+so the "Sign in with subscription" button is **hidden as of the launch branch**
+(`SettingsModel.oauthConfig(for:)` returns `nil` for `.openAI`). Verify the
+button is absent from the OpenAI card; API keys + local models are the launch
+story.
 
-1. Settings → OpenAI → "Sign in with subscription".
-2. **Browser opens** to auth.openai.com and shows a real login page (not
-   `invalid_client` / `redirect_uri mismatch`).
-3. **Redirect lands**: after login, the browser shows the app's "you can close
-   this tab" page and the app UI flips to signed-in (loopback server + token
-   exchange worked).
-4. **Token actually works**: Ask a question in a book. A Codex-scoped token may
-   be rejected by the plain API endpoint even if sign-in "succeeded" — this is
-   the step most likely to fail.
-
-### If step 3 fails at any point
-
-Do NOT launch with the button visible. One-line fix: return `nil` for
-`.openAI` in `SettingsModel.oauthConfig(for:)`
-(`App/Settings/SettingsModel.swift:78`) — the "Sign in with subscription"
-button disappears (`supportsOAuth` gates it), API-key path is untouched. Then
-remove "sign in with a ChatGPT subscription" from README + PH listing copy.
-
-### Even if it works — a decision to make
-
-Borrowing OpenAI's first-party client ID is the same Terms-of-Service category
-the project explicitly rejected for Anthropic
-(`Sources/ReadrKit/Auth/OAuthClient.swift:34-42`). A PH commenter can spot the
-client ID in the source. Either own it publicly ("Codex-pattern sign-in, may
-break") or ship API-key-only and re-add OAuth when there's a registered
-client. Consistency argument: Anthropic OAuth was cut on exactly these
-grounds.
+To test the flow later, return `.openAI` from `oauthConfig(for:)` and check
+three points in order: browser reaches a real login page (not
+`invalid_client`), the loopback redirect lands and the app flips to signed-in,
+and a question in a book actually streams an answer (a Codex-scoped token may
+be rejected by the API even after a "successful" sign-in). Before re-enabling
+permanently, also note the borrowed client ID is the same ToS category the
+project rejected for Anthropic (`Sources/ReadrKit/Auth/OAuthClient.swift:34`)
+— it needs a properly registered client and refresh wiring
+(`OAuthClient.refresh` currently has no call sites).
 
 ## 4. Local / Ollama (3 min)
 
@@ -72,17 +57,19 @@ grounds.
 4. Expected: streamed answer with Wi-Fi off (the zero-egress claim in the
    README, verified live).
 
-## 5. Token refresh (only if step 3 passed)
+## 5. Relaunch persistence (new fix — verify it)
 
-OAuth expiry wiring is listed as unfinished in ROADMAP M2. If ChatGPT sign-in
-works, expect the session to die silently after the access token expires
-(~hours). Acceptable for launch if disclosed; note it in the FAQ reply.
+The launch branch fixes the active provider not surviving relaunch. After
+step 1: quit Readr fully (⌘Q) and reopen it. Open a book and Ask — the answer
+must stream without revisiting Settings. Also confirm the saved key made its
+provider active *immediately* after Save in step 1 (no manual model-picker
+touch needed).
 
 ## Outcome matrix
 
 | Result | Launch posture |
 | --- | --- |
-| 1, 2, 4 pass; 3 fails | Hide the OAuth button (one-liner above), launch. Listing says: API keys + local. |
+| 1, 2, 4, 5 pass | Launch. Listing says: API keys + local (OAuth already hidden). |
 | 1 or 2 fail | Launch blocker — the headline feature doesn't work. Debug before launching. |
 | 4 fails | Remove "fully offline" claims from listing before launch. |
-| All pass | Launch as written; disclose token-expiry caveat. |
+| 5 fails | Launch blocker — first-run users will think Ask is broken. |

@@ -37,10 +37,21 @@ final class SettingsModel: ObservableObject {
         guard !trimmed.isEmpty else { return }
         do {
             try store.save(.apiKey(trimmed), for: kind)
+            activateIfNeeded(kind)
             refresh()
         } catch {
             errorMessage = "Couldn't save the key: \(error.localizedDescription)"
         }
+    }
+
+    /// A just-connected provider becomes the active one (keeping an existing
+    /// model choice for the same kind) — the user's next step is asking the
+    /// book, not hunting for a second dropdown.
+    private func activateIfNeeded(_ kind: ProviderInfo.Kind) {
+        if manager.selection?.kind != kind {
+            manager.setActive(kind: kind)
+        }
+        activeSelection = manager.selection
     }
 
     func signIn(_ kind: ProviderInfo.Kind) async {
@@ -50,6 +61,7 @@ final class SettingsModel: ObservableObject {
         do {
             let credentials = try await OAuthCoordinator().signIn(config: config)
             try store.save(credentials, for: kind)
+            activateIfNeeded(kind)
             refresh()
         } catch AuthError.userCancelled {
             // user backed out — no error to show
@@ -75,7 +87,13 @@ final class SettingsModel: ObservableObject {
 
     static func oauthConfig(for kind: ProviderInfo.Kind) -> OAuthProviderConfig? {
         switch kind {
-        case .openAI: return .openAI
+        // OpenAI subscription OAuth is hidden until it's verified end-to-end:
+        // the flow borrows the Codex CLI's client registration and its tokens
+        // are not expected to authenticate against api.openai.com, and no
+        // token-refresh path is wired up yet (`OAuthClient.refresh` has no
+        // call sites). Re-enable by returning `.openAI` once both are fixed —
+        // the sign-in button reappears automatically (see `supportsOAuth`).
+        case .openAI: return nil
         // Anthropic subscription OAuth is intentionally NOT offered: Anthropic's
         // Consumer Terms prohibit using Free/Pro/Max OAuth tokens in third-party
         // apps. Use an Anthropic API key instead. See docs/AUTH.md.

@@ -59,8 +59,8 @@ Fallbacks if a topic is unavailable in the picker: `Mac`, `Productivity`,
 - Download (macOS app): https://github.com/readr-ai/readr/releases (v2.6.0)
 
 **Pricing:** Free. Open source under MIT. No accounts, no tiers, no trials. AI
-features use your own API key, your ChatGPT subscription, or a free local model
-via Ollama — Readr itself never charges and never proxies your traffic.
+features use your own API key or a free local model via Ollama — Readr itself
+never charges and never proxies your traffic.
 
 **Thumbnail suggestion:** the app icon (open book + amber spark) on a plain
 background at 240×240. If you use a GIF, make frame one the static icon.
@@ -71,7 +71,7 @@ background at 240×240. If you use a GIF, make frame one the static icon.
    citation chips — the hero shot.
 2. Two-page facing layout on macOS — the "it's a real reader" shot.
 3. Highlights composing into the Markdown article editor.
-4. Provider settings showing Anthropic / OpenAI / ChatGPT sign-in / Ollama —
+4. Provider settings showing Anthropic / OpenAI / Ollama —
    the bring-your-own-LLM shot.
 5. A PDF open in the reader (Apple Books can't even open a PDF on macOS).
 
@@ -93,10 +93,10 @@ background at 240×240. If you use a GIF, make frame one the static icon.
 > the model whole (with prompt caching); big ones use hybrid retrieval. Your
 > highlights and notes can also be composed into an editable Markdown article.
 >
-> On the AI: you bring your own. Paste an Anthropic or OpenAI key, sign in with
-> a ChatGPT subscription, or point it at local Ollama and stay fully offline.
-> No telemetry, keys live in the Keychain, and the local mode is proven
-> zero-egress by tests, not by promises.
+> On the AI: you bring your own. Paste an Anthropic or OpenAI key, or point it
+> at local Ollama and stay fully offline. No telemetry — there's no analytics
+> code in the app at all — keys live in the Keychain, and local mode only ever
+> talks to your local Ollama server.
 >
 > Honest caveats: the macOS download is ad-hoc signed but not notarized yet (no
 > Apple Developer ID), so there's a one-time "Open Anyway" step — the README
@@ -172,8 +172,9 @@ background at 240×240. If you use a GIF, make frame one the static icon.
 **"Is my book sent to the AI provider?"**
 > Only if you choose a hosted provider, and then only to the provider you
 > configured with your own key — Readr has no server of its own and no
-> telemetry. In local (Ollama) mode nothing leaves the device at all, and
-> that's enforced by automated zero-egress tests, not just policy.
+> telemetry. In local (Ollama) mode the app only ever talks to your local
+> Ollama server — there is no analytics or phone-home code in the app at all
+> (it's open source; check for yourself).
 
 ---
 
@@ -198,11 +199,11 @@ background at 240×240. If you use a GIF, make frame one the static icon.
 > big ones use hybrid retrieval. You never leave the page.
 
 **Tweet 3**
-> The AI is yours, not ours: paste an Anthropic/OpenAI key, sign in with your
-> ChatGPT subscription, or run Ollama and stay fully offline.
+> The AI is yours, not ours: paste an Anthropic/OpenAI key, or run Ollama and
+> stay fully offline.
 >
-> No telemetry. Keys in the Keychain. Local mode is proven zero-egress by
-> tests. MIT licensed.
+> No telemetry — no analytics code at all. Keys in the Keychain. Local mode
+> only talks to your local Ollama server. MIT licensed.
 
 **Tweet 4**
 > Honest fine print: DRM-free books only, the macOS build isn't notarized yet
@@ -227,11 +228,11 @@ background at 240×240. If you use a GIF, make frame one the static icon.
 >
 > Two decisions we care about:
 >
-> 1. Bring your own AI. Use your Anthropic or OpenAI key, your ChatGPT
-> subscription, or a local model via Ollama — fully offline if you want.
-> 2. Privacy by construction. No telemetry, no Readr server, keys stored only
-> in the Keychain, and the local mode is verified zero-egress by automated
-> tests.
+> 1. Bring your own AI. Use your Anthropic or OpenAI key, or a local model via
+> Ollama — fully offline if you want.
+> 2. Privacy by construction. No telemetry or analytics code, no Readr server,
+> keys stored only in the Keychain, and local mode only talks to your local
+> Ollama server.
 >
 > It's early: the macOS download isn't notarized yet (a one-time "Open Anyway"
 > step), and iOS currently means building from source. The code is public and

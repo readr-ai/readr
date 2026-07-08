@@ -73,13 +73,16 @@ public struct AdaptiveContextStrategy: ContextStrategy {
         let fitsWholeBook = !provider.isLocal && book.estimatedTokenCount <= budget
 
         if fitsWholeBook {
-            // Tier 1: full text as a cacheable prefix; question carries the anchor.
+            // Tier 1: the full text always rides along; question carries the
+            // anchor. Providers that support prompt caching cache the prefix,
+            // the rest send it as a plain system message — either way the
+            // answer must be grounded in the book.
             let request = ChatRequest(
                 messages: [
                     .init(role: .system, content: Self.systemPrompt),
                     .init(role: .user, content: anchor + "\n\nQuestion: " + question),
                 ],
-                cacheableSystemPrefix: provider.supportsPromptCaching ? book.fullText : nil,
+                cacheableSystemPrefix: book.fullText,
                 maxOutputTokens: 1024
             )
             return AssembledContext(tier: .wholeBook, request: request)
