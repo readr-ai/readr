@@ -275,7 +275,10 @@ struct LibraryGridView: View {
 
     /// The jacket plus its overlays: PDF/Finished badges and the macOS hover
     /// treatment — a quiet 3pt lift with a slightly deeper shadow (the
-    /// design's translateY(-3), .18s ease).
+    /// design's translateY(-3), .18s ease). The iPad pointer equivalent lives
+    /// inside BookCoverView (`.hoverEffect(.lift)`, iOS-only), so the jacket
+    /// gets the same raised-cover affordance under a trackpad pointer —
+    /// don't add a second cell-level `.hoverEffect` here or the two stack.
     private func cover(for book: Book) -> some View {
         let isHovered = hoveredBookID == book.id
         return BookCoverView(book: book, coverImage: model.coverImage(for: book))

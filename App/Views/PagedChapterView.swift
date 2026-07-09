@@ -180,6 +180,17 @@ struct PagedChapterView: View {
                 pageLabel(start: start, pages: pages)
             }
             .contentShape(Rectangle())
+            // Hardware-keyboard ←/→ page turns, shared by macOS and iPadOS
+            // (`.onKeyPress` is iOS 17+/macOS 14+, the deployment floor).
+            // One unconditional handler on purpose — this IS the reader's
+            // arrow-key handling on macOS too (MacTrackpadSwipeCatcher below
+            // only consumes trackpad scroll phases, never key events), so an
+            // `#if os(iOS)` gate here would drop macOS arrow keys, not avoid
+            // double-handling. `.focusable()` sits on the page container so
+            // presses arrive; the embedded text views still take first
+            // responder for selection when touched, so this doesn't fight
+            // text selection or VoiceOver. Both keys route through the same
+            // `turnPage` the edge-strip chevrons and swipes call.
             .focusable()
             .focused($focused)
             .onKeyPress(.rightArrow) { turnPage(+1, in: pages); return .handled }

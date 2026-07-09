@@ -25,7 +25,7 @@ struct BookCoverView: View {
     var width: CGFloat?
 
     var body: some View {
-        AppTheme.coverShadow(
+        let jacket = AppTheme.coverShadow(
             Color.clear
                 .aspectRatio(2.0 / 3.0, contentMode: .fit)
                 .frame(width: width)
@@ -37,6 +37,25 @@ struct BookCoverView: View {
                         .strokeBorder(Color.black.opacity(0.08), lineWidth: 0.5)
                 )
         )
+        #if os(iOS)
+        // iPad trackpad/mouse affordance: the jacket lifts under the pointer.
+        // Every BookCoverView call site is a tappable plain-style button (the
+        // library grid cell, Home's Continue Reading and Recently Added
+        // cards), so the effect never lands on a non-interactive cover.
+        // `.hoverEffect` is UIKit-backed — unavailable on macOS SwiftUI,
+        // where LibraryGridView draws its own hover lift — and inert on
+        // touch-only iPhones, so no idiom gate is needed. The content shape
+        // keeps the effect hugging the jacket's own corner radius instead of
+        // the default system rounding.
+        return jacket
+            .contentShape(
+                .hoverEffect,
+                RoundedRectangle(cornerRadius: AppTheme.coverRadius, style: .continuous)
+            )
+            .hoverEffect(.lift)
+        #else
+        return jacket
+        #endif
     }
 
     /// A faint diagonal gloss over real artwork so it reads as a printed

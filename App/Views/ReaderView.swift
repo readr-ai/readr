@@ -64,6 +64,14 @@ struct ReaderView: View {
 
     #if os(iOS)
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+
+    /// Regular width (iPad full screen / wide multitasking): the nav bar has
+    /// room for the full reader chrome, so the iPhone bottom bar — a
+    /// workaround for the compact nav bar collapsing trailing items past two
+    /// (see `toolbarContent`) — steps aside and everything rides up top,
+    /// macOS-style. `nil` (undetermined) falls back to the compact
+    /// arrangement, as does an iPad squeezed to compact in Split View.
+    private var isRegularWidth: Bool { horizontalSizeClass == .regular }
     #endif
 
     private var layout: PageLayout {
@@ -349,28 +357,50 @@ struct ReaderView: View {
                 tocButton
                 bookmarksMenu
             }
+            #else
+            // iPad regular width: contents/bookmarks join the chevrons up
+            // top, like macOS; compact keeps them in the bottom bar below.
+            if isRegularWidth, !isPDFOriginal {
+                tocButton
+                bookmarksMenu
+            }
             #endif
         }
         // Lesson from v1 (twice-observed in CI): the iPhone nav bar silently
         // collapses trailing items past TWO — and a secondaryAction group's
-        // "…" button itself counts as one. So iOS gets exactly Appearance +
-        // Notes up top (UI tests tap `reader.notes` directly) and everything
-        // else lives in the bottom bar, Apple-Books style. macOS has room.
+        // "…" button itself counts as one. So COMPACT iOS gets exactly
+        // Appearance + Notes up top (UI tests tap `reader.notes` directly)
+        // and everything else lives in the bottom bar, Apple-Books style.
+        // Regular width (iPad) has nav-bar room like macOS, so it drops the
+        // phone bottom bar and carries the full chrome up top — same
+        // buttons, same accessibility identifiers, different placement (the
+        // UI tests look items up by id, never by bar).
         #if os(iOS)
-        ToolbarItemGroup(placement: .primaryAction) {
-            appearanceButton
-            notesButton
-        }
-        ToolbarItemGroup(placement: .bottomBar) {
-            if !isPDFOriginal {
-                tocButton
-                bookmarksMenu
-                Spacer()
-                searchButton
-            } else {
-                Spacer()
+        if isRegularWidth {
+            ToolbarItemGroup(placement: .primaryAction) {
+                if !isPDFOriginal {
+                    searchButton
+                }
+                appearanceButton
+                askButton
+                notesButton
             }
-            askButton
+        } else {
+            ToolbarItemGroup(placement: .primaryAction) {
+                appearanceButton
+                notesButton
+            }
+            ToolbarItemGroup(placement: .bottomBar) {
+                if !isPDFOriginal {
+                    tocButton
+                    bookmarksMenu
+                    Spacer()
+                    searchButton
+                } else {
+                    Spacer()
+                }
+                askButton
+            }
         }
         #else
         // macOS trailing area, Marginalia style: the appearance popover is
