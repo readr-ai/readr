@@ -285,6 +285,14 @@ final class PDFReaderController: NSObject, ObservableObject {
         }
     }
 
+    /// The single definition of "there is a selection worth acting on" —
+    /// shared by the menu presentation and the keyboard shortcuts so the two
+    /// paths can't diverge on what counts as selected.
+    private static func hasText(_ selection: PDFSelection) -> Bool {
+        !(selection.string ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
     private func selectionDidSettle() {
         if suppressSelectionMenu {
             suppressSelectionMenu = false
@@ -292,8 +300,7 @@ final class PDFReaderController: NSObject, ObservableObject {
         }
         guard let pdfView,
               let selection = pdfView.currentSelection,
-              let text = selection.string,
-              !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+              Self.hasText(selection)
         else {
             // Selection cleared (click elsewhere, Escape): tear the menu down.
             if activeMenu == .create { dismissMenu() }
@@ -355,25 +362,15 @@ final class PDFReaderController: NSObject, ObservableObject {
                     self?.createHighlightsFromPendingSelection(color: color)
                 },
                 onNote: { [weak self] in
-                    guard let self else { return }
-                    // Note implies a highlight (Apple Books behavior): create
-                    // it with the last-used color first, then edit its note.
-                    let created = self.createHighlightsFromPendingSelection(color: self.lastUsedColor)
-                    self.pendingNoteIsNew = true
-                    self.pendingNote = created.first
+                    self?.noteCurrentSelection()
                 },
                 onAsk: { [weak self] in
                     guard let self else { return }
-                    guard let selection = self.pendingSelection else {
+                    if let built = self.askCurrentSelection() {
+                        self.onAsk?(built)
+                    } else {
                         self.dismissMenu()
-                        return
                     }
-                    let built = self.askSelection(
-                        quoted: selection.string ?? "",
-                        page: selection.pages.first
-                    )
-                    self.finishSelectionAction()
-                    self.onAsk?(built)
                 },
                 onCopy: { [weak self] in
                     guard let self else { return }
@@ -476,15 +473,13 @@ final class PDFReaderController: NSObject, ObservableObject {
         dismissMenu()
     }
 
-    // MARK: Keyboard shortcuts
+    // MARK: Selection actions (annotation menu + keyboard shortcuts)
 
-    /// The selection a keyboard shortcut should act on: the live PDFView
-    /// selection (the shortcut can fire before the menu's debounce settles),
-    /// falling back to the one the menu captured when it appeared.
+    /// The selection an action should act on: the live PDFView selection (a
+    /// keyboard shortcut can fire before the menu's debounce settles), falling
+    /// back to the one the menu captured when it appeared.
     private func committedSelection() -> PDFSelection? {
-        if let current = pdfView?.currentSelection,
-           let text = current.string,
-           !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        if let current = pdfView?.currentSelection, Self.hasText(current) {
             return current
         }
         return pendingSelection
@@ -492,15 +487,18 @@ final class PDFReaderController: NSObject, ObservableObject {
 
     /// ⇧⌘H: highlight the current selection in the last-used color — the
     /// keyboard equivalent of the menu's color dots. No-op without a selection.
-    func highlightSelectionFromKeyboard() {
+    func highlightCurrentSelection() {
         guard let selection = committedSelection() else { return }
         pendingSelection = selection
         createHighlightsFromPendingSelection(color: lastUsedColor)
     }
 
-    /// ⇧⌘M: highlight the current selection and open its note editor — the
-    /// keyboard equivalent of the menu's Note. No-op without a selection.
-    func noteSelectionFromKeyboard() {
+    /// Highlight the current selection and open its note editor — the menu's
+    /// Note action and the ⇧⌘M shortcut. No-op without a selection.
+    /// Note implies a highlight (Apple Books behavior): it's created in the
+    /// last-used color first, and `pendingNoteIsNew` tells the sheet that
+    /// cancelling must undo exactly that highlight.
+    func noteCurrentSelection() {
         guard let selection = committedSelection() else { return }
         pendingSelection = selection
         guard let created = createHighlightsFromPendingSelection(
@@ -510,12 +508,15 @@ final class PDFReaderController: NSObject, ObservableObject {
         pendingNote = created
     }
 
-    /// ⇧⌘A: the Ask `Selection` for the current PDF selection, or nil when
-    /// nothing is selected so the caller can fall back to a whole-book ask.
-    func askSelectionFromKeyboard() -> Selection? {
+    /// The Ask `Selection` for the current PDF selection — the menu's ✦ Ask
+    /// and the ⇧⌘A shortcut. Nil when nothing is selected, so the caller can
+    /// fall back to a whole-book ask. Dismisses the menu but KEEPS the PDF
+    /// selection (like the text reader), so cancelling the Ask sheet leaves
+    /// the selection usable for a follow-up highlight or note.
+    func askCurrentSelection() -> Selection? {
         guard let selection = committedSelection() else { return nil }
         let built = askSelection(quoted: selection.string ?? "", page: selection.pages.first)
-        finishSelectionAction()
+        dismissMenu()
         return built
     }
 

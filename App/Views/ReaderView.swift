@@ -29,6 +29,12 @@ struct ReaderView: View {
     /// (⇧⌘H highlight, ⇧⌘M note, and the selection-aware ⇧⌘A ask) — the
     /// selection itself lives inside the platform text views.
     @State private var currentSelection: Range<Int>?
+    /// Published by PDFReaderView while the native PDF surface is mounted, so
+    /// the shortcuts and the toolbar Ask can reach the PDFKit selection (it
+    /// lives in the surface's private controller). This view owns EVERY
+    /// annotation-shortcut registration and dispatches per mode — a single
+    /// owner, so no mode can register a duplicate key equivalent.
+    @State private var pdfAnnotationActions: PDFAnnotationActions?
     @State private var showAsk = false
     @State private var showNotes = false
     @State private var showTOC = false
@@ -193,15 +199,16 @@ struct ReaderView: View {
                 // The selection's range belongs to the old chapter. The text
                 // views also report nil when their content is replaced, but
                 // that arrives async — clear eagerly so a shortcut can't race
-                // it and annotate the wrong range.
+                // it and annotate the wrong range. (Surface teardown — layout
+                // switch, PDF display toggle — needs no clear here: the text
+                // views report nil from onDisappear.)
                 currentSelection = nil
             }
-            // Rebuilt reading surfaces (scroll ↔ paged, PDF original ↔ reading
-            // view) take the live selection down with them without a final
-            // nil report — drop the mirrored state with them.
-            .onChange(of: layoutRaw) { _, _ in currentSelection = nil }
-            .onChange(of: pdfShowsOriginal) { _, _ in currentSelection = nil }
             .onChange(of: pagedAnchor) { _, newValue in
+                // A page turn replaces the visible text: the collapse report
+                // arrives async, so clear eagerly — same race as a chapter
+                // turn, just within one chapter.
+                currentSelection = nil
                 // Page turns come in bursts and every save rewrites the whole
                 // library JSON — debounce offset-only saves. Chapter changes
                 // and onDisappear flush immediately.
@@ -229,7 +236,7 @@ struct ReaderView: View {
                         askSelection = selection
                         showAsk = true
                     },
-                    onAskBook: askTheBook
+                    annotationActions: $pdfAnnotationActions
                 )
             } else if let chapter {
                 readingSurface(for: chapter)
@@ -681,32 +688,28 @@ struct ReaderView: View {
             Label("Ask the Book", systemImage: "sparkles")
             #endif
         }
+        .keyboardShortcut("a", modifiers: [.command, .shift])
         .accessibilityIdentifier("reader.ask")
         .accessibilityLabel("Ask the book")
         .help("Ask the book (⇧⌘A) — asks about the selection when text is selected")
-        // In native PDF mode the PDF surface registers ⇧⌘A itself (its
-        // selection lives in PDFKit); registering it here too would make the
-        // key equivalent ambiguous.
-        let shortcutted = Group {
-            if isPDFOriginal {
-                button
-            } else {
-                button.keyboardShortcut("a", modifiers: [.command, .shift])
-            }
-        }
         #if os(macOS)
         // Plain style so the iris tint survives the toolbar's own styling.
-        return shortcutted.buttonStyle(.plain)
+        return button.buttonStyle(.plain)
         #else
-        return shortcutted
+        return button
         #endif
     }
 
-    /// Ask (toolbar button or ⇧⌘A): scoped to the current text selection when
+    /// Ask (toolbar button or ⇧⌘A): scoped to the current selection when
     /// there is one — the keyboard mirror of the selection menu's ✦ Ask —
-    /// otherwise a whole-book question.
+    /// otherwise a whole-book question. The Ask panel shows the quoted
+    /// passage, so the scope is always visible. Reaches the text surfaces'
+    /// selection via `currentSelection` and the PDF surface's via its
+    /// published actions.
     private func askTheBook() {
-        if !isPDFOriginal, let chapter, let selected = currentSelection {
+        if isPDFOriginal {
+            askSelection = pdfAnnotationActions?.askSelection()
+        } else if let chapter, let selected = currentSelection {
             askSelection = model.makeSelection(in: chapter, range: selected)
         } else {
             askSelection = nil // whole-book question
@@ -737,38 +740,38 @@ struct ReaderView: View {
             Button("Smaller text") { adjustFontSize(-1) }
                 .keyboardShortcut("-", modifiers: .command)
         }
-        .opacity(0)
-        .frame(width: 0, height: 0)
-        .accessibilityHidden(true)
+        .shortcutOnly()
     }
 
     /// Invisible buttons carrying the annotation shortcuts: ⇧⌘H highlights the
     /// current selection (last-used marker color), ⇧⌘M highlights it and opens
     /// the note editor — the keyboard equivalents of the selection menu's
-    /// color dots and Note. No-ops without a selection. Absent in native PDF
-    /// mode, where PDFReaderView registers the same keys against the PDF
-    /// selection (duplicate key equivalents are ambiguous).
+    /// color dots and Note. No-ops without a selection. In native PDF mode
+    /// they dispatch to the PDF surface's published actions; either way this
+    /// view is the keys' only registration point.
     private var hiddenAnnotationShortcuts: some View {
         Group {
-            if !isPDFOriginal {
-                Button("Highlight selection") {
-                    guard let chapter, let selected = currentSelection else { return }
+            Button("Highlight selection") {
+                if isPDFOriginal {
+                    pdfAnnotationActions?.highlightSelection()
+                } else if let chapter, let selected = currentSelection {
                     handleAnnotation(
                         in: chapter, target: .selection(selected),
                         action: .highlight(lastHighlightColor)
                     )
                 }
-                .keyboardShortcut("h", modifiers: [.command, .shift])
-                Button("Add note to selection") {
-                    guard let chapter, let selected = currentSelection else { return }
+            }
+            .keyboardShortcut("h", modifiers: [.command, .shift])
+            Button("Add note to selection") {
+                if isPDFOriginal {
+                    pdfAnnotationActions?.noteSelection()
+                } else if let chapter, let selected = currentSelection {
                     handleAnnotation(in: chapter, target: .selection(selected), action: .note)
                 }
-                .keyboardShortcut("m", modifiers: [.command, .shift])
             }
+            .keyboardShortcut("m", modifiers: [.command, .shift])
         }
-        .opacity(0)
-        .frame(width: 0, height: 0)
-        .accessibilityHidden(true)
+        .shortcutOnly()
     }
 
     private func adjustFontSize(_ delta: Double) {
@@ -977,6 +980,20 @@ struct ReaderView: View {
         else { return "" }
         // prefix clamps to the text's end, matching the old upper-bound clamp.
         return String(text[lower...].prefix(range.upperBound - lowerOffset))
+    }
+}
+
+// MARK: - Shortcut-only buttons
+
+private extension View {
+    /// Container treatment for Buttons that exist only to register keyboard
+    /// shortcuts: invisible and zero-size but still installed — `opacity(0)`
+    /// keeps key equivalents live where `.hidden()` would not — and out of
+    /// the accessibility tree (the visible controls carry the labels).
+    func shortcutOnly() -> some View {
+        opacity(0)
+            .frame(width: 0, height: 0)
+            .accessibilityHidden(true)
     }
 }
 

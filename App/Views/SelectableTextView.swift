@@ -136,6 +136,11 @@ struct SelectableTextView: View {
                 .padding(.bottom, 12)
             }
         }
+        // Unmounting (layout switch, PDF display toggle, spread shrinking)
+        // takes the live selection down with the text view, and the delegate
+        // never fires a final collapse — report it here so the host's
+        // mirrored state can't outlive the surface.
+        .onDisappear { onSelectionChange(nil) }
     }
     #else
     var body: some View {
@@ -152,8 +157,39 @@ struct SelectableTextView: View {
             onAnnotate: onAnnotate,
             onSelectionChange: onSelectionChange
         )
+        // See the iOS body: a torn-down surface must not leave the host's
+        // mirrored selection state stale.
+        .onDisappear { onSelectionChange(nil) }
     }
     #endif
+}
+
+// MARK: - Selection reporting
+
+/// Funnels committed-selection reports from a platform coordinator to the
+/// host: deduped (a drag's continuous delegate callbacks must not spam SwiftUI
+/// state) and dispatched async (the selection can collapse inside
+/// `updateUIView`/`updateNSView` when the attributed string is replaced, and a
+/// synchronous SwiftUI state write there is undefined behavior). One shared
+/// implementation so the two coordinators can't drift on these semantics.
+final class SelectionReporter {
+    /// Re-pointed on every update pass so reports reach the current closure.
+    var callback: (Range<Int>?) -> Void
+    private var lastReported: Range<Int>?
+
+    init(_ callback: @escaping (Range<Int>?) -> Void) {
+        self.callback = callback
+    }
+
+    func report(_ range: Range<Int>?) {
+        // Dedupe only nil→nil (caret moves fire a collapse on every click).
+        // A repeat of the same non-nil range must still be delivered: the
+        // host mirrors many reporters into one slot, so another surface (the
+        // facing page of a spread) may have reset it since we last reported.
+        if range == nil, lastReported == nil { return }
+        lastReported = range
+        DispatchQueue.main.async { [weak self] in self?.callback(range) }
+    }
 }
 
 // MARK: - Range conversion helpers
@@ -306,7 +342,7 @@ private struct Representable: UIViewRepresentable {
     func updateUIView(_ view: UITextView, context: Context) {
         let coordinator = context.coordinator
         coordinator.onTarget = onTarget
-        coordinator.onSelectionChange = onSelectionChange
+        coordinator.selectionReporter.callback = onSelectionChange
         coordinator.text = text
         coordinator.spans = highlights
         // Only rebuild the attributed string when the content actually changed —
@@ -371,7 +407,7 @@ private struct Representable: UIViewRepresentable {
         var text: String
         var spans: [HighlightSpan] = []
         var onTarget: (AnnotationTarget?) -> Void
-        var onSelectionChange: (Range<Int>?) -> Void
+        let selectionReporter: SelectionReporter
         weak var textView: UITextView?
         /// `sizeThatFits` cache (paged mode): the fitted height for the last
         /// proposed width. Invalidated whenever the rendered content changes.
@@ -380,7 +416,6 @@ private struct Representable: UIViewRepresentable {
 
         private var debounce: Timer?
         private var barVisible = false
-        private var lastReportedSelection: Range<Int>?
         private var renderedText: String?
         private var renderedSpans: [HighlightSpan] = []
         private var renderedStyle: ReaderStyle?
@@ -393,17 +428,7 @@ private struct Representable: UIViewRepresentable {
         ) {
             self.text = text
             self.onTarget = onTarget
-            self.onSelectionChange = onSelectionChange
-        }
-
-        /// Deduped so a drag's continuous callbacks don't spam SwiftUI state,
-        /// and dispatched async because the selection can collapse inside
-        /// `updateUIView` (attributedText reassignment) — writing SwiftUI
-        /// state synchronously there is undefined behavior.
-        private func reportSelection(_ range: Range<Int>?) {
-            guard range != lastReportedSelection else { return }
-            lastReportedSelection = range
-            DispatchQueue.main.async { [weak self] in self?.onSelectionChange(range) }
+            self.selectionReporter = SelectionReporter(onSelectionChange)
         }
 
         deinit { debounce?.invalidate() }
@@ -443,14 +468,21 @@ private struct Representable: UIViewRepresentable {
         }
 
         // Selection handles fire continuously while dragging; debounce so the
-        // bar appears once the selection is committed.
+        // bar appears once the selection is committed. The host's selection
+        // mirror is updated immediately, though — a hardware-keyboard
+        // shortcut right after the last handle move must see the range the
+        // user sees, not the one from before the 0.4s settle (downstream
+        // re-renders are cheap: the render/pagination caches all hit).
         func textViewDidChangeSelection(_ textView: UITextView) {
             debounce?.invalidate()
             let selected = textView.selectedRange
             guard selected.length > 0 else {
-                reportSelection(nil)
+                selectionReporter.report(nil)
                 hideBar()
                 return
+            }
+            if let range = TextRangeConvert.characterRange(from: selected, in: text) {
+                selectionReporter.report(range)
             }
             debounce = Timer.scheduledTimer(withTimeInterval: 0.4, repeats: false) { [weak self] _ in
                 guard let self, let view = self.textView else { return }
@@ -458,7 +490,6 @@ private struct Representable: UIViewRepresentable {
                 guard current.length > 0,
                       let range = TextRangeConvert.characterRange(from: current, in: self.text)
                 else { return }
-                self.reportSelection(range)
                 self.show(.selection(range))
             }
         }
@@ -590,7 +621,7 @@ private struct Representable: NSViewRepresentable {
         guard let textView = scroll.documentView as? NSTextView else { return }
         let coordinator = context.coordinator
         coordinator.onAnnotate = onAnnotate
-        coordinator.onSelectionChange = onSelectionChange
+        coordinator.selectionReporter.callback = onSelectionChange
         coordinator.text = text
         coordinator.spans = highlights
         coordinator.theme = style.theme
@@ -672,7 +703,7 @@ private struct Representable: NSViewRepresentable {
         /// Reading theme of the hosting page, forwarded to the menu.
         var theme: ReadingTheme
         var onAnnotate: (AnnotationTarget, AnnotationAction) -> Void
-        var onSelectionChange: (Range<Int>?) -> Void
+        let selectionReporter: SelectionReporter
         weak var textView: NSTextView?
         /// `sizeThatFits` cache (paged mode): the fitted height for the last
         /// proposed width. Invalidated whenever the rendered content changes.
@@ -686,7 +717,6 @@ private struct Representable: NSViewRepresentable {
         private var keyboardDebounce: Timer?
         private var scrollObserver: NSObjectProtocol?
         private var frameObserver: NSObjectProtocol?
-        private var lastReportedSelection: Range<Int>?
 
         private var renderedText: String?
         private var renderedSpans: [HighlightSpan] = []
@@ -702,17 +732,7 @@ private struct Representable: NSViewRepresentable {
             self.text = text
             self.theme = theme
             self.onAnnotate = onAnnotate
-            self.onSelectionChange = onSelectionChange
-        }
-
-        /// Deduped so a drag's continuous delegate callbacks don't spam
-        /// SwiftUI state, and dispatched async because the selection collapses
-        /// inside `updateNSView` (setAttributedString) — writing SwiftUI state
-        /// synchronously there is undefined behavior.
-        private func reportSelection(_ range: Range<Int>?) {
-            guard range != lastReportedSelection else { return }
-            lastReportedSelection = range
-            DispatchQueue.main.async { [weak self] in self?.onSelectionChange(range) }
+            self.selectionReporter = SelectionReporter(onSelectionChange)
         }
 
         deinit {
@@ -779,7 +799,7 @@ private struct Representable: NSViewRepresentable {
             if selected.length > 0 {
                 guard let range = TextRangeConvert.characterRange(from: selected, in: text)
                 else { return }
-                reportSelection(range)
+                selectionReporter.report(range)
                 present(target: .selection(range), anchor: selected)
             } else if let offset = TextRangeConvert.characterOffset(
                 fromUTF16Location: selected.location, in: text
@@ -798,12 +818,21 @@ private struct Representable: NSViewRepresentable {
             keyboardDebounce?.invalidate()
             guard selected.length > 0 else {
                 // Selection collapsed — the menu no longer has a subject.
-                reportSelection(nil)
+                selectionReporter.report(nil)
                 dismissMenu()
                 return
             }
-            // Keyboard-extended selections (⇧→, ⇧⌘→, …) never see a mouseUp;
-            // present once the selection has settled. Skipped while a mouse
+            // Keyboard-extended selections (⇧→, ⇧⌘→, …) must reach the host
+            // NOW, not after the menu's settle delay — a shortcut pressed
+            // mid-extension would otherwise act on the previous, narrower
+            // range. Mouse drags stay off this path (they'd report every
+            // pixel); mouseUp reports those.
+            if NSEvent.pressedMouseButtons == 0,
+               let range = TextRangeConvert.characterRange(from: selected, in: text) {
+                selectionReporter.report(range)
+            }
+            // Keyboard-extended selections never see a mouseUp; present the
+            // menu once the selection has settled. Skipped while a mouse
             // drag is in flight — mouseUp handles that path immediately.
             keyboardDebounce = Timer.scheduledTimer(
                 withTimeInterval: 0.4, repeats: false
@@ -814,7 +843,7 @@ private struct Representable: NSViewRepresentable {
                 guard current.length > 0,
                       let range = TextRangeConvert.characterRange(from: current, in: self.text)
                 else { return }
-                self.reportSelection(range)
+                self.selectionReporter.report(range)
                 self.present(target: .selection(range), anchor: current)
             }
         }

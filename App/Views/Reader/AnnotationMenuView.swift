@@ -28,6 +28,17 @@ struct AnnotationMenuView: View {
     /// Only shown in edit mode.
     var onRemove: (() -> Void)?
 
+    /// The keyboard shortcuts act on the live text selection, so their hints
+    /// are only truthful in create mode — an edit menu (clicked highlight,
+    /// no selection) must not advertise keys that would no-op there.
+    private var isCreate: Bool { mode == .create }
+
+    /// Create mode advertises ⇧⌘M; edit mode names the action plainly.
+    private var noteHelp: String {
+        if mode.hasNote { return "Edit note" }
+        return isCreate ? "Add a note (⇧⌘M)" : "Add a note"
+    }
+
     var body: some View {
         HStack(spacing: 8) {
             ForEach(ReadingTheme.pickerColors, id: \.self) { color in
@@ -54,7 +65,7 @@ struct AnnotationMenuView: View {
             }
             .buttonStyle(.plain)
             .foregroundStyle(theme.inkColor)
-            .help(mode.hasNote ? "Edit note" : "Add a note (⇧⌘M)")
+            .help(noteHelp)
             .accessibilityLabel(mode.hasNote ? "Edit Note" : "Note")
             .accessibilityIdentifier("annotation.note")
 
@@ -64,7 +75,9 @@ struct AnnotationMenuView: View {
             }
             .buttonStyle(.plain)
             .foregroundStyle(theme.iris)
-            .help("Ask the book about this passage (⇧⌘A)")
+            .help(isCreate
+                ? "Ask the book about this passage (⇧⌘A)"
+                : "Ask the book about this passage")
             .accessibilityLabel("Ask")
             .accessibilityIdentifier("annotation.ask")
 
@@ -101,7 +114,9 @@ struct AnnotationMenuView: View {
             .frame(width: 25, height: 25)
         }
         .buttonStyle(.plain)
-        .help("Highlight \(color.displayName) (⇧⌘H uses the last-used color)")
+        .help(isCreate
+            ? "Highlight \(color.displayName) (⇧⌘H uses the last-used color)"
+            : "Highlight \(color.displayName)")
         .accessibilityLabel("Highlight \(color.displayName)")
         .accessibilityIdentifier("annotation.color.\(color.rawValue)")
     }
