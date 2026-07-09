@@ -237,7 +237,7 @@ final class ReadrFlowUITests: XCTestCase {
         hit.tap() // jumps and closes
 
         XCTAssertTrue(
-            field.waitForNonExistence(withTimeout: 5),
+            field.waitForNonExistence(timeout: 5),
             "Tapping a result should close the search UI"
         )
         // The first hit is in chapter one — the reader shows it again.
