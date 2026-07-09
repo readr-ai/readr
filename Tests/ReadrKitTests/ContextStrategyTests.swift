@@ -11,12 +11,12 @@ final class ContextStrategyTests: XCTestCase {
         )
     }
 
-    private func provider(budget: Int, isLocal: Bool) -> ProviderInfo {
+    private func provider(budget: Int, isLocal: Bool, caching: Bool? = nil) -> ProviderInfo {
         ProviderInfo(
             kind: isLocal ? .local : .anthropic,
             modelID: "test",
             contextBudget: budget,
-            supportsPromptCaching: !isLocal,
+            supportsPromptCaching: caching ?? !isLocal,
             isLocal: isLocal
         )
     }
@@ -87,6 +87,36 @@ final class ContextStrategyTests: XCTestCase {
         let snippet = try XCTUnwrap(result.citations.first?.quotedText)
         XCTAssertLessThanOrEqual(snippet.count, 161) // up to maxLength + ellipsis
         XCTAssertTrue(snippet.hasSuffix("…"))
+    }
+
+    /// The whole-book tier must carry the full text for EVERY remote provider —
+    /// prompt caching is an optimization, not a precondition. A non-caching
+    /// provider that received no book text would answer ungrounded (and
+    /// hallucinate) while still reporting the whole-book tier.
+    func testWholeBookTierCarriesFullTextWithoutPromptCaching() async throws {
+        let book = makeBook(tokenCount: 1_000)
+        let strategy = AdaptiveContextStrategy(index: StubIndex())
+        let result = try await strategy.assembleContext(
+            for: "What happens?",
+            in: book,
+            selection: nil,
+            provider: provider(budget: 200_000, isLocal: false, caching: false)
+        )
+        XCTAssertEqual(result.tier, .wholeBook)
+        XCTAssertEqual(result.request.cacheableSystemPrefix, book.fullText)
+    }
+
+    func testWholeBookTierCarriesFullTextWithPromptCaching() async throws {
+        let book = makeBook(tokenCount: 1_000)
+        let strategy = AdaptiveContextStrategy(index: StubIndex())
+        let result = try await strategy.assembleContext(
+            for: "What happens?",
+            in: book,
+            selection: nil,
+            provider: provider(budget: 200_000, isLocal: false, caching: true)
+        )
+        XCTAssertEqual(result.tier, .wholeBook)
+        XCTAssertEqual(result.request.cacheableSystemPrefix, book.fullText)
     }
 
     func testLocalProviderAlwaysUsesRetrieval() async throws {

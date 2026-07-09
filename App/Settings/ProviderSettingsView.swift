@@ -36,9 +36,8 @@ struct ProviderSettingsView: View {
                         .font(.system(size: 11.5))
                         .lineSpacing(4)
                         .foregroundStyle(theme.faint)
-                    Text("API keys and tokens are stored in your device Keychain. "
-                         + "Signing in with a Claude/ChatGPT subscription is optional and "
-                         + "may be subject to the provider's terms. Local models stay on-device.")
+                    Text("API keys are stored in your device Keychain. "
+                         + "Local models stay on-device.")
                         .font(.system(size: 11.5))
                         .lineSpacing(4)
                         .foregroundStyle(theme.faint)

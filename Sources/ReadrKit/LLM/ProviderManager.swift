@@ -37,7 +37,11 @@ public final class ProviderManager: @unchecked Sendable {
     private let lock = NSLock()
     private let store: CredentialStore
     private let factory: ProviderFactory
+    private let defaults: UserDefaults?
     private var _selection: ProviderSelection?
+
+    /// UserDefaults key under which the active selection is persisted.
+    static let selectionDefaultsKey = "readr.activeProviderSelection"
 
     /// The active selection, or nil if nothing has been chosen yet.
     public var selection: ProviderSelection? {
@@ -45,14 +49,21 @@ public final class ProviderManager: @unchecked Sendable {
         return _selection
     }
 
+    /// - Parameters:
+    ///   - selection: an explicit starting selection; takes precedence over
+    ///     anything persisted in `defaults`.
+    ///   - defaults: when non-nil, the active selection is restored from and
+    ///     persisted to this store, so it survives relaunch.
     public init(
         store: CredentialStore,
         factory: @escaping ProviderFactory,
-        selection: ProviderSelection? = nil
+        selection: ProviderSelection? = nil,
+        persistingIn defaults: UserDefaults? = nil
     ) {
         self.store = store
         self.factory = factory
-        self._selection = selection
+        self.defaults = defaults
+        self._selection = selection ?? Self.loadSelection(from: defaults)
     }
 
     // MARK: - Selection
@@ -61,8 +72,22 @@ public final class ProviderManager: @unchecked Sendable {
     /// for `kind` is used.
     public func setActive(kind: ProviderInfo.Kind, modelID: String? = nil) {
         let resolvedModelID = modelID ?? ProviderCatalog.defaultModel(for: kind).modelID
+        let selection = ProviderSelection(kind: kind, modelID: resolvedModelID)
         lock.lock(); defer { lock.unlock() }
-        _selection = ProviderSelection(kind: kind, modelID: resolvedModelID)
+        _selection = selection
+        Self.save(selection, to: defaults)
+    }
+
+    // MARK: - Selection persistence
+
+    private static func loadSelection(from defaults: UserDefaults?) -> ProviderSelection? {
+        guard let data = defaults?.data(forKey: selectionDefaultsKey) else { return nil }
+        return try? JSONDecoder().decode(ProviderSelection.self, from: data)
+    }
+
+    private static func save(_ selection: ProviderSelection, to defaults: UserDefaults?) {
+        guard let defaults, let data = try? JSONEncoder().encode(selection) else { return }
+        defaults.set(data, forKey: selectionDefaultsKey)
     }
 
     // MARK: - Configuration

@@ -1,7 +1,22 @@
 # Readr
 
+[![CI](https://github.com/readr-ai/readr/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/readr-ai/readr/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Platforms](https://img.shields.io/badge/platforms-macOS%2014%2B%20%7C%20iOS%2017%2B-lightgrey.svg)](#architecture)
+[![Swift](https://img.shields.io/badge/Swift-5.9-orange.svg)](Package.swift)
+
 An AI-powered, native **macOS & iOS** ebook reader — think Apple Books, but you can
 ask the book questions and turn your highlights into articles. Open source (MIT).
+
+![Readr: reading with highlights, and asking the book a question with cited sources](docs/screenshots/hero-reader-ask.png)
+
+<p align="center">
+  <a href="https://github.com/readr-ai/readr/releases/latest"><b>⬇️&nbsp;&nbsp;Download for macOS</b></a>
+  &nbsp;·&nbsp;
+  <a href="#installing-macos">Install notes (Gatekeeper)</a>
+  &nbsp;·&nbsp;
+  <a href="#building-from-source">Build from source</a>
+</p>
 
 > Status: **feature-complete core, pre-1.0.** All features below are implemented,
 > unit/integration tested, and CI builds the app for macOS + iOS and runs the
@@ -25,10 +40,19 @@ and notes can also be auto-composed into a shareable article.
   with full book context and **source citations**.
 - ✍️ **Highlights → article**: auto-compose your highlights and notes into an
   editable, exportable Markdown article (streams in live).
-- 🔌 **Bring your own LLM**: paste an **Anthropic** or **OpenAI** API key, sign
-  in with a ChatGPT subscription, or run a **local LLM** (Ollama) fully offline.
-- 🔒 Privacy-first: no telemetry; local mode is proven zero-egress by tests;
-  keys live only in the Keychain.
+- 🔌 **Bring your own LLM**: paste an **Anthropic** or **OpenAI** API key, or
+  run a **local LLM** (Ollama) fully offline.
+- 🔒 Privacy-first: no telemetry or analytics code at all; local mode talks
+  only to your local Ollama server; keys live only in the Keychain.
+
+## Screenshots
+
+| | |
+|:---:|:---:|
+| ![Dark mode and sepia paged reading](docs/screenshots/reader-dark-sepia.png) | ![Notes panel with Compose article, and the appearance sheet](docs/screenshots/notes-appearance.png) |
+| Paged reading in dark and sepia themes | Highlights & notes with **Compose article**; themes and layouts |
+| ![Library grid and AI provider settings](docs/screenshots/library-providers.png) | ![macOS library grid](docs/screenshots/mac-library.png) ![macOS notes panel](docs/screenshots/mac-notes-panel.png) |
+| Your library; connect Claude, OpenAI, or a local model | The same library and notes panel, native on macOS |
 
 ## How book context works
 
@@ -42,8 +66,10 @@ always stays on-device. Full rationale and citations in
 - **SwiftUI** multiplatform app (iOS 17+ / macOS 14+).
 - **`ReadrKit`** — platform-agnostic Swift Package with the core logic (parsing,
   context router, RAG, LLM providers, article composer).
-- **Readium Swift toolkit** for EPUB/PDF rendering & annotations.
-- **SQLite** (`sqlite-vec` + FTS5) for the on-device RAG index.
+- Custom EPUB/text parsing in `ReadrKit`; **PDFKit** for native PDF rendering
+  and markup on device.
+- In-memory hybrid retrieval (BM25 + on-device embeddings) built per book on
+  open; SQLite persistence is on the roadmap.
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
@@ -53,17 +79,20 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
   expected behaviour, as testable acceptance criteria.
 - [docs/DEVELOPMENT-PLAN.md](docs/DEVELOPMENT-PLAN.md) — test-first milestone
   plan (tests written before code, verified against journeys after).
-- [docs/AUTH.md](docs/AUTH.md) — how "sign in with Claude/ChatGPT", BYO key, and
-  local models work (OAuth+PKCE, modeled on Muesli).
+- [docs/AUTH.md](docs/AUTH.md) — how BYO keys and local models work, plus the
+  subscription-OAuth design (currently disabled pending end-to-end
+  verification).
 - [docs/CONTEXT-STRATEGY.md](docs/CONTEXT-STRATEGY.md) — the adaptive
   whole-book-vs-retrieval decision.
 - [docs/ROADMAP.md](docs/ROADMAP.md) — milestone checklist.
 
 ## Installing (macOS)
 
-Grab `Readr.app` from the latest [GitHub Release](../../releases) (built by CI).
-The app is ad-hoc signed but **not notarized** (no Apple Developer ID yet), so
-macOS shows a one-time *"Apple could not verify…"* warning. To open it:
+Grab `Readr.app` from the
+[latest GitHub Release](https://github.com/readr-ai/readr/releases/latest)
+(built by CI). The app is ad-hoc signed but **not notarized** (no Apple
+Developer ID yet), so macOS shows a one-time *"Apple could not verify…"*
+warning. To open it:
 
 - **macOS 15 (Sequoia) or newer**: launch it once and click **Done**, then go to
   **System Settings → Privacy & Security**, find *"Readr" was blocked…*, and

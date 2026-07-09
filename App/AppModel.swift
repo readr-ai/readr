@@ -40,7 +40,8 @@ final class AppModel: ObservableObject {
         self.credentialStore = credentials
         self.providerManager = ProviderManager(
             store: credentials,
-            factory: DefaultProviderFactory.factory()
+            factory: DefaultProviderFactory.factory(),
+            persistingIn: .standard
         )
 
         // All stored properties are initialized above — only now may init

@@ -169,4 +169,72 @@ final class ProviderManagerTests: XCTestCase {
         let decoded = try JSONDecoder().decode(ProviderSelection.self, from: data)
         XCTAssertEqual(decoded, selection)
     }
+
+    // MARK: - Selection persistence
+
+    /// An isolated defaults suite per test, cleaned up afterwards.
+    private func makeDefaults() throws -> UserDefaults {
+        let suite = "ProviderManagerTests-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        addTeardownBlock { defaults.removePersistentDomain(forName: suite) }
+        return defaults
+    }
+
+    func testSetActivePersistsSelectionAcrossManagers() throws {
+        let defaults = try makeDefaults()
+        let store = FakeCredentialStore()
+        let factory = CapturingFactory()
+
+        let first = ProviderManager(
+            store: store, factory: factory.make, persistingIn: defaults
+        )
+        first.setActive(kind: .anthropic, modelID: "claude-x")
+
+        // A relaunch constructs a fresh manager over the same defaults.
+        let second = ProviderManager(
+            store: store, factory: factory.make, persistingIn: defaults
+        )
+        XCTAssertEqual(
+            second.selection,
+            ProviderSelection(kind: .anthropic, modelID: "claude-x")
+        )
+    }
+
+    func testExplicitSelectionBeatsPersistedOne() throws {
+        let defaults = try makeDefaults()
+        let store = FakeCredentialStore()
+        let factory = CapturingFactory()
+
+        ProviderManager(store: store, factory: factory.make, persistingIn: defaults)
+            .setActive(kind: .openAI)
+
+        let explicit = ProviderSelection(kind: .local, modelID: "llama3")
+        let manager = ProviderManager(
+            store: store, factory: factory.make,
+            selection: explicit, persistingIn: defaults
+        )
+        XCTAssertEqual(manager.selection, explicit)
+    }
+
+    func testNoDefaultsMeansNoPersistence() {
+        let store = FakeCredentialStore()
+        let factory = CapturingFactory()
+        let manager = makeManager(store: store, factory: factory)
+        manager.setActive(kind: .anthropic)
+
+        let fresh = makeManager(store: store, factory: factory)
+        XCTAssertNil(fresh.selection)
+    }
+
+    func testCorruptPersistedSelectionIsIgnored() throws {
+        let defaults = try makeDefaults()
+        defaults.set(Data("not json".utf8), forKey: ProviderManager.selectionDefaultsKey)
+
+        let manager = ProviderManager(
+            store: FakeCredentialStore(),
+            factory: CapturingFactory().make,
+            persistingIn: defaults
+        )
+        XCTAssertNil(manager.selection)
+    }
 }

@@ -5,7 +5,20 @@ name: Release
 #  - manual dispatch with a version input (the tag is then created by the
 #    release action at the dispatched commit) — needed because some git
 #    proxies can't push tags.
-# The binary is unsigned pre-1.0; users right-click -> Open on first launch.
+#
+# Signing: if the five APPLE_* / MACOS_* secrets below are configured, the app
+# is Developer-ID signed, notarized, and stapled (no Gatekeeper warning).
+# Without them it falls back to an ad-hoc signature and the release notes
+# carry the "Open Anyway" instructions.
+#
+# Secrets for notarized builds (Settings → Secrets and variables → Actions):
+#   MACOS_CERT_P12      base64 of a "Developer ID Application" .p12 export
+#                       (base64 -i cert.p12 | pbcopy)
+#   MACOS_CERT_PASSWORD password of that .p12
+#   APPLE_ID            Apple ID email of the developer account
+#   APPLE_TEAM_ID       10-char team ID (developer.apple.com → Membership)
+#   APPLE_APP_PASSWORD  app-specific password (account.apple.com → Sign-In and
+#                       Security → App-Specific Passwords)
 on:
   push:
     tags: ["v*"]
@@ -25,6 +38,7 @@ jobs:
     runs-on: macos-15
     env:
       VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.version || github.ref_name }}
+      HAS_SIGNING: ${{ secrets.MACOS_CERT_P12 != '' && 'true' || 'false' }}
     steps:
       - uses: actions/checkout@v4
       - name: Install XcodeGen
@@ -43,7 +57,8 @@ jobs:
           -skipPackagePluginValidation
           CODE_SIGNING_ALLOWED=NO
       - name: Ad-hoc sign the app
-        # No Developer ID in CI, so sign ad-hoc: Apple Silicon requires at
+        if: env.HAS_SIGNING == 'false'
+        # No Developer ID configured, so sign ad-hoc: Apple Silicon requires at
         # least an ad-hoc signature, and a consistent bundle-wide signature
         # avoids "damaged app" errors. Users still see the one-time Gatekeeper
         # prompt until the app is notarized with a real Developer ID.
@@ -51,11 +66,57 @@ jobs:
           cd build/Build/Products/Release
           codesign --force --deep --sign - Readr.app
           codesign --verify --deep --strict Readr.app
+      - name: Import Developer ID certificate
+        if: env.HAS_SIGNING == 'true'
+        env:
+          MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+        run: |
+          KEYCHAIN_PASSWORD="$(uuidgen)"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+          echo "$MACOS_CERT_P12" | base64 --decode > cert.p12
+          security import cert.p12 -k build.keychain -P "$MACOS_CERT_PASSWORD" \
+            -T /usr/bin/codesign
+          rm cert.p12
+          security set-key-partition-list -S apple-tool:,apple: \
+            -s -k "$KEYCHAIN_PASSWORD" build.keychain
+      - name: Sign, notarize & staple
+        if: env.HAS_SIGNING == 'true'
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: |
+          cd build/Build/Products/Release
+          IDENTITY=$(security find-identity -v -p codesigning build.keychain \
+            | awk -F'"' '/Developer ID Application/ {print $2; exit}')
+          echo "Signing as: $IDENTITY"
+          codesign --force --deep --options runtime --timestamp \
+            --sign "$IDENTITY" Readr.app
+          codesign --verify --deep --strict Readr.app
+          ditto -c -k --sequesterRsrc --keepParent Readr.app notarize.zip
+          xcrun notarytool submit notarize.zip \
+            --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" \
+            --password "$APPLE_APP_PASSWORD" --wait
+          xcrun stapler staple Readr.app
+          rm notarize.zip
       - name: Zip the app
         run: |
           cd build/Build/Products/Release
           ditto -c -k --sequesterRsrc --keepParent Readr.app "Readr-macOS-${VERSION}.zip"
-      - name: Create GitHub release
+      - name: Create GitHub release (notarized)
+        if: env.HAS_SIGNING == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.VERSION }}
+          files: build/Build/Products/Release/Readr-macOS-*.zip
+          generate_release_notes: true
+          body: |
+            Signed and notarized — download, unzip, drag to Applications, open.
+      - name: Create GitHub release (unsigned)
+        if: env.HAS_SIGNING == 'false'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.VERSION }}

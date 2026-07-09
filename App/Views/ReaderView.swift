@@ -223,39 +223,16 @@ struct ReaderView: View {
         let spans = highlightSpans(for: chapter)
         return VStack(spacing: 0) {
             if layout == .scroll {
-                // Full-bleed paper with a centered max-width column; the
-                // chapter kicker (caps, faint) leads the column.
-                VStack(alignment: .leading, spacing: 0) {
-                    if let title = chapter.title {
-                        // Displayed in caps, but exposed to accessibility
-                        // under the original title so UI tests (and
-                        // VoiceOver) still find e.g. "Chapter One".
-                        Text(title.uppercased())
-                            .font(.system(size: 11))
-                            .kerning(2)
-                            .foregroundStyle(style.theme.faint)
-                            .lineLimit(1)
-                            .accessibilityLabel(title)
-                            .accessibilityIdentifier(title)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(.bottom, 26)
+                ScrollReadingColumn(
+                    chapter: chapter,
+                    style: style,
+                    highlights: spans,
+                    inlineImages: images,
+                    scrollTarget: $scrollTarget,
+                    onAnnotate: { target, action in
+                        handleAnnotation(in: chapter, target: target, action: action)
                     }
-                    SelectableTextView(
-                        text: chapter.text,
-                        highlights: spans,
-                        style: style,
-                        inlineImages: images,
-                        scrollToOffset: $scrollTarget,
-                        onAnnotate: { target, action in
-                            handleAnnotation(in: chapter, target: target, action: action)
-                        }
-                    )
-                }
-                .padding(.horizontal, 24)
-                .padding(.top, 46)
-                .frame(maxWidth: 640)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background(style.theme.paper)
+                )
                 scrollFooter(for: chapter)
             } else {
                 // Paged modes draw their own footer (progress track + page x
@@ -291,8 +268,11 @@ struct ReaderView: View {
                 )
             }
         }
-        // The theme owns the entire surface, footer included.
-        .background(style.theme.background.ignoresSafeArea())
+        // The theme owns the entire surface. Scroll mode floats a centered
+        // paper column over the deeper chrome `background` (its footer sits on
+        // it too); paged mode is full-bleed paper — the page IS the window — so
+        // the surface behind it must be `paper`, not the chrome color.
+        .background((layout == .scroll ? style.theme.background : style.theme.paper).ignoresSafeArea())
     }
 
     /// Scroll mode has no page anchor, so the estimate covers the whole
@@ -927,5 +907,62 @@ struct ReaderView: View {
         else { return "" }
         // prefix clamps to the text's end, matching the old upper-bound clamp.
         return String(text[lower...].prefix(range.upperBound - lowerOffset))
+    }
+}
+
+// MARK: - Scroll-mode reading column
+
+/// Scroll mode's reading surface: full-bleed paper with a centered column and
+/// the chapter kicker (caps, faint) leading it. Extracted from ReaderView so
+/// the macOS snapshot suite can render the real scroll layout (m08).
+///
+/// The column width is a font-relative measure — about 80 characters per line
+/// at any text size — rather than a fixed point cap: a fixed 640pt read as
+/// oversized margins on desktop windows, and it stranded large text at a
+/// cramped character count. Phone widths are narrower than the measure, so
+/// compact layouts are unaffected.
+struct ScrollReadingColumn: View {
+    let chapter: Chapter
+    let style: ReaderStyle
+    /// Highlights in chapter coordinates.
+    let highlights: [HighlightSpan]
+    /// Inline images keyed by character offset in chapter coordinates.
+    var inlineImages: [Int: PlatformImage] = [:]
+    /// Programmatic jump target (see SelectableTextView.scrollToOffset).
+    var scrollTarget: Binding<Int?>? = nil
+    var onAnnotate: (AnnotationTarget, AnnotationAction) -> Void = { _, _ in }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            if let title = chapter.title {
+                // Displayed in caps, but exposed to accessibility under the
+                // original title so UI tests (and VoiceOver) still find e.g.
+                // "Chapter One".
+                Text(title.uppercased())
+                    .font(.system(size: 11))
+                    .kerning(2)
+                    .foregroundStyle(style.theme.faint)
+                    .lineLimit(1)
+                    .accessibilityLabel(title)
+                    .accessibilityIdentifier(title)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.bottom, 26)
+            }
+            SelectableTextView(
+                text: chapter.text,
+                highlights: highlights,
+                style: style,
+                inlineImages: inlineImages,
+                scrollToOffset: scrollTarget,
+                onAnnotate: onAnnotate
+            )
+        }
+        .padding(.horizontal, 24)
+        .padding(.top, 46)
+        // ~80 characters per line: measure = 40 em (avg glyph ≈ 0.5 em for the
+        // serif content font) + the 48pt of column padding above.
+        .frame(maxWidth: style.fontSize * 40 + 48)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(style.theme.paper)
     }
 }
