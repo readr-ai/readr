@@ -214,8 +214,12 @@ All new fields optional/additive so existing `library.json` files decode.
 ## Keyboard shortcuts
 
 ⌘I import · ⌘F find in book · ⌘D toggle bookmark · ⌘⇧N notes panel ·
-⌘⇧A ask · ←/→ page turn · ⌘+/⌘− text size. Every toolbar control has a
-`.help()` tooltip that names its shortcut.
+⌘⇧A ask (about the selection when text is selected, else the whole book) ·
+⌘⇧H highlight the selection (last-used marker color) · ⌘⇧M highlight the
+selection and open its note editor · ←/→ page turn · ⌘+/⌘− text size.
+The annotation shortcuts work in both the text reader and the native PDF
+reader. Every toolbar control has a `.help()` tooltip that names its
+shortcut.
 
 ## Out of scope for v2.0 (tracked in ROADMAP)
 

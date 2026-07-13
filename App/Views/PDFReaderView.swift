@@ -1,6 +1,23 @@
 import SwiftUI
 import ReadrKit
 
+/// The native PDF surface's selection-dependent annotation actions, published
+/// up to the host reader while the surface is mounted (nil otherwise). The
+/// host owns every annotation keyboard shortcut registration — a single
+/// registration point, because two surfaces registering the same key
+/// equivalent is ambiguous — and dispatches through these when the PDF is up.
+struct PDFAnnotationActions {
+    /// Highlight the current PDF selection (last-used marker color). No-op
+    /// when nothing is selected.
+    var highlightSelection: () -> Void
+    /// Highlight the current PDF selection and open its note editor. No-op
+    /// when nothing is selected.
+    var noteSelection: () -> Void
+    /// The Ask `Selection` for the current PDF selection; nil ⇒ nothing
+    /// selected (callers fall back to a whole-book ask).
+    var askSelection: () -> Selection?
+}
+
 #if canImport(PDFKit)
 import PDFKit
 
@@ -18,6 +35,10 @@ struct PDFReaderView: View {
     let book: Book
     let url: URL
     var onAsk: (Selection) -> Void
+    /// Published while this surface is mounted so the host's shortcuts and
+    /// toolbar Ask reach the PDF selection (it lives in `controller`, private
+    /// to this view).
+    @Binding var annotationActions: PDFAnnotationActions?
 
     @EnvironmentObject private var model: AppModel
     @StateObject private var controller = PDFReaderController()
@@ -37,9 +58,20 @@ struct PDFReaderView: View {
                 )
                 .environmentObject(model)
             }
-            // Flush the debounced position save so closing the reader
-            // mid-scroll can't drop the last page turn.
-            .onDisappear { controller.flushPosition() }
+            .onAppear {
+                annotationActions = PDFAnnotationActions(
+                    highlightSelection: { controller.highlightCurrentSelection() },
+                    noteSelection: { controller.noteCurrentSelection() },
+                    askSelection: { controller.askCurrentSelection() }
+                )
+            }
+            .onDisappear {
+                // Flush the debounced position save so closing the reader
+                // mid-scroll can't drop the last page turn, and take the
+                // published actions down with the surface.
+                controller.flushPosition()
+                annotationActions = nil
+            }
     }
 
     // MARK: Layout
@@ -268,6 +300,7 @@ struct PDFReaderView: View {
     let book: Book
     let url: URL
     var onAsk: (Selection) -> Void
+    @Binding var annotationActions: PDFAnnotationActions?
 
     var body: some View {
         ContentUnavailableView("PDF rendering unavailable", systemImage: "doc.richtext")

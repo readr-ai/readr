@@ -61,6 +61,9 @@ struct PagedChapterView: View {
     @Binding var anchorOffset: Int
     /// Annotation-menu actions, reported in chapter coordinates.
     var onAnnotate: (AnnotationTarget, AnnotationAction) -> Void = { _, _ in }
+    /// The committed selection, reported in chapter coordinates (nil ⇒ none) —
+    /// feeds the host's selection-dependent keyboard shortcuts.
+    var onSelectionChange: (Range<Int>?) -> Void = { _ in }
     /// Whether a turn past the first/last page has somewhere to go (the
     /// parent has an adjacent chapter). Keeps the arrows live at the edges.
     var canOverflowBackward = false
@@ -384,6 +387,11 @@ struct PagedChapterView: View {
                 allowsInternalScrolling: false,
                 onAnnotate: { target, action in
                     onAnnotate(chapterTarget(from: target, origin: origin), action)
+                },
+                onSelectionChange: { range in
+                    onSelectionChange(range.map {
+                        ($0.lowerBound + origin)..<($0.upperBound + origin)
+                    })
                 }
             )
         }
