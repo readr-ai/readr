@@ -13,15 +13,16 @@ ask the book questions and turn your highlights into articles. Open source (MIT)
 <p align="center">
   <a href="https://github.com/readr-ai/readr/releases/latest"><b>⬇️&nbsp;&nbsp;Download for macOS</b></a>
   &nbsp;·&nbsp;
-  <a href="#installing-macos">Install notes (Gatekeeper)</a>
+  <a href="#ios--ipad-beta-testflight">iPhone &amp; iPad beta (TestFlight)</a>
   &nbsp;·&nbsp;
   <a href="#building-from-source">Build from source</a>
 </p>
 
 > Status: **feature-complete core, pre-1.0.** All features below are implemented,
-> unit/integration tested, and CI builds the app for macOS + iOS and runs the
-> UI-test suite on a simulator. Remaining pre-1.0 work (real-provider smoke
-> tests, richer EPUB styling) is tracked in [docs/ROADMAP.md](docs/ROADMAP.md).
+> unit/integration tested, and CI builds, signs, and ships the app: notarized
+> macOS releases and iPhone/iPad TestFlight builds. CI runs the UI-test suite
+> on iPhone **and iPad** simulators. Remaining pre-1.0 work is tracked in
+> [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ## Why
 
@@ -90,17 +91,24 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 Grab `Readr.app` from the
 [latest GitHub Release](https://github.com/readr-ai/readr/releases/latest)
-(built by CI). The app is ad-hoc signed but **not notarized** (no Apple
-Developer ID yet), so macOS shows a one-time *"Apple could not verify…"*
-warning. To open it:
+(built by CI). From **v2.9.0** releases are **Developer-ID signed and
+notarized** — download, unzip, drag to Applications, open. No security
+warnings.
 
-- **macOS 15 (Sequoia) or newer**: launch it once and click **Done**, then go to
-  **System Settings → Privacy & Security**, find *"Readr" was blocked…*, and
-  click **Open Anyway**.
-- **macOS 13/14**: right-click `Readr.app` → **Open** → **Open**.
-- **Terminal**: `xattr -d com.apple.quarantine /Applications/Readr.app`
+(Releases *older* than v2.9.0 were unsigned and need a one-time
+right-click → **Open**, or **System Settings → Privacy & Security → Open
+Anyway** on macOS 15+.)
 
-Or build from source below — locally built apps don't get quarantined.
+## iOS & iPad beta (TestFlight)
+
+Readr for iPhone and iPad is in beta on TestFlight.
+
+<!-- TODO(launch): replace this note with the public TestFlight join link
+     (https://testflight.apple.com/join/…) once Beta App Review approves. -->
+The public TestFlight link is going live with the current beta review — check
+back shortly, or watch the [releases page](https://github.com/readr-ai/readr/releases)
+for the announcement. You can also [build from source](#building-from-source)
+with Xcode.
 
 ## Building from source
 
@@ -123,3 +131,4 @@ swift test
 
 This is an open-source project — contributions welcome. See
 [CONTRIBUTING.md](CONTRIBUTING.md). Licensed under [MIT](LICENSE).
+Privacy: Readr collects nothing — see [PRIVACY.md](PRIVACY.md).

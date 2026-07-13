@@ -93,6 +93,29 @@ final class ReadrAppUITests: XCTestCase {
         )
     }
 
+    // Launch-friction guard: a first-run user must be able to get from the
+    // key field to the provider's key console without hunting for the URL.
+    // SwiftUI `Link` surfaces as a link or a button depending on platform,
+    // so accept either element type.
+    func testProviderSettingsLinksToAPIKeyConsoles() {
+        let app = launchSeeded()
+        let settingsButton = button(app, id: "library.settings", label: "AI providers")
+        XCTAssertTrue(settingsButton.waitForExistence(timeout: 10))
+        settingsButton.tap()
+
+        XCTAssertTrue(
+            app.staticTexts["AI Providers"].waitForExistence(timeout: 5)
+            || app.navigationBars["AI Providers"].waitForExistence(timeout: 5)
+        )
+        for slug in ["anthropic", "openai"] {
+            let id = "settings.getKey.\(slug)"
+            let present = app.links[id].firstMatch.waitForExistence(timeout: 5)
+                || app.buttons[id].firstMatch.exists
+                || app.otherElements[id].firstMatch.exists
+            XCTAssertTrue(present, "Missing get-a-key link for \(slug)")
+        }
+    }
+
     // J3 — the Notes panel opens from the reader and shows the seeded
     // highlights (quoted text + the Create Article entry point).
     func testNotesPanelShowsSeededHighlights() {

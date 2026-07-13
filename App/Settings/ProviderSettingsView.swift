@@ -109,6 +109,16 @@ struct ProviderSettingsView: View {
 
             if kind != .local {
                 APIKeyField(kind: kind, theme: theme) { model.saveAPIKey($0, for: kind) }
+                // First-run users stall at the key field with no idea where
+                // keys come from — link straight to the provider's console.
+                if let console = keyConsole(for: kind) {
+                    Link(destination: console.url) {
+                        Label("Get an API key", systemImage: "arrow.up.right.square")
+                            .font(.system(size: 11.5))
+                            .foregroundStyle(theme.muted)
+                    }
+                    .accessibilityIdentifier("settings.getKey.\(console.slug)")
+                }
                 if model.supportsOAuth(kind) {
                     Button {
                         Task { await model.signIn(kind) }
@@ -152,6 +162,19 @@ struct ProviderSettingsView: View {
             .padding(.vertical, 2)
             .padding(.horizontal, 7)
             .overlay(Capsule().strokeBorder(theme.line, lineWidth: 1))
+    }
+
+    /// The provider console where a key is created, or nil for kinds that
+    /// don't use keys.
+    private func keyConsole(for kind: ProviderInfo.Kind) -> (url: URL, slug: String)? {
+        switch kind {
+        case .anthropic:
+            return (URL(string: "https://console.anthropic.com/settings/keys")!, "anthropic")
+        case .openAI:
+            return (URL(string: "https://platform.openai.com/api-keys")!, "openai")
+        case .local:
+            return nil
+        }
     }
 
     private func title(for kind: ProviderInfo.Kind) -> String {

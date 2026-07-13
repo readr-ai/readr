@@ -27,11 +27,29 @@ public final class ProviderManager: @unchecked Sendable {
     public typealias ProviderFactory =
         @Sendable (ProviderInfo, Credentials?) throws -> LLMProvider
 
-    public enum ProviderError: Error, Equatable {
+    public enum ProviderError: Error, Equatable, LocalizedError {
         /// The selected kind requires credentials and none are stored.
         case notConfigured(ProviderInfo.Kind)
         /// A local selection produced a non-local provider — a wiring bug.
         case localMismatch
+
+        // Rendered verbatim in error alerts, so both cases read as a sentence
+        // that names the fix.
+        public var errorDescription: String? {
+            switch self {
+            case .notConfigured(let kind):
+                switch kind {
+                case .anthropic:
+                    return "Claude (Anthropic) isn't connected. Add an API key in Settings → AI Providers."
+                case .openAI:
+                    return "ChatGPT (OpenAI) isn't connected. Add an API key in Settings → AI Providers."
+                case .local:
+                    return "The local model isn't available. Make sure Ollama is running on this device."
+                }
+            case .localMismatch:
+                return "The local model is misconfigured. Re-select a model in Settings → AI Providers."
+            }
+        }
     }
 
     private let lock = NSLock()

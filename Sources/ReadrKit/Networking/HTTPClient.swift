@@ -46,6 +46,37 @@ public enum HTTPError: Error, Sendable, Equatable {
     case nonHTTPResponse
 }
 
+/// These errors render verbatim in the Ask panel and Article Studio, so each
+/// case maps to a sentence a reader can act on rather than Foundation's
+/// generic "The operation couldn't be completed".
+extension HTTPError: LocalizedError {
+    public var errorDescription: String? {
+        switch self {
+        case .status(let code, let body):
+            var message: String
+            switch code {
+            case 401, 403:
+                message = "The provider rejected your API key (HTTP \(code)). Check the key in Settings → AI Providers."
+            case 429:
+                message = "The provider rate-limited this request (HTTP 429). Wait a moment and try again."
+            case 400, 413:
+                message = "The provider rejected the request (HTTP \(code)) — the book or question may be too large for this model."
+            case 500...:
+                message = "The provider had trouble responding (HTTP \(code)). Try again shortly."
+            default:
+                message = "The provider returned HTTP \(code)."
+            }
+            let detail = body.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !detail.isEmpty {
+                message += " Details: \(detail.prefix(200))"
+            }
+            return message
+        case .nonHTTPResponse:
+            return "Unexpected response from the provider — check your network connection and try again."
+        }
+    }
+}
+
 /// `URLSession`-backed transport.
 public struct URLSessionHTTPClient: HTTPClient {
     private let session: URLSession

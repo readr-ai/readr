@@ -98,7 +98,7 @@ Goal: the best reader app for the Mac — nobody goes back to Apple Books.
 - kosync (KOReader) progress-sync interop; Calibre/OPDS import
 - List view + metadata editing; user collections; parallel read (two books)
 
-## M6–M8 — iPhone & iPad: TestFlight beta (in progress)
+## M6–M8 — iPhone & iPad: TestFlight beta (shipped; device walks pending)
 
 The iOS UI already exists (multiplatform target, iPhone-simulator UITests in
 CI); these milestones make it shippable on real devices. Spec:
@@ -111,26 +111,29 @@ docs/DEVELOPMENT-PLAN.md §M6–M8.
 - [x] CI: iPad-simulator UITest lane + `generic/platform=iOS` device build
 - [x] `.github/workflows/testflight.yml` — archive with cloud signing (App
   Store Connect API key) and upload straight to TestFlight
-- [ ] One-time App Store Connect setup (bundle ID, app record, API key,
-  GitHub secrets) — see the workflow header for the exact secret names
+- [x] One-time App Store Connect setup (bundle ID `com.readrai.app`, app
+  record, API key, GitHub secrets) — see the workflow header for secret names
+- [x] First upload live: v2.8.0 accepted by App Store Connect (unsigned
+  archive + sign-at-export + Xcode 26 recipe proven on `main`)
 - [ ] Exit gate: TestFlight install verified on a physical iPhone and iPad
   (import, read, highlight, BYOK ask)
 
 ### M7 — iOS platform correctness
-- [ ] Files-app handler: `CFBundleDocumentTypes` + open-in-place +
+- [x] Files-app handler: `CFBundleDocumentTypes` + open-in-place +
   `.onOpenURL` import (UITest via `-uiTestOpenURL` fixture)
-- [ ] OAuth on iOS: in-process SFSafariViewController presentation (external
-  Safari suspends the app and kills the loopback redirect); re-enable
-  `supportsOAuth` and flip the M6 UITest
-- [ ] Hide the Local provider row on iOS (loopback Ollama is a dead end
+- [x] OAuth on iOS: in-process SFSafariViewController presentation (external
+  Safari suspends the app and kills the loopback redirect) — plumbing landed;
+  re-enabling `supportsOAuth` (and flipping the M6 UITest) stays gated on a
+  manual on-device verification of the flow
+- [x] Hide the Local provider row on iOS (loopback Ollama is a dead end
   on-device; LAN host + ATS exception is a fast-follow)
 
 ### M8 — iPad experience
-- [ ] Size-class audit of `#if os(iOS)` branches (`os()` = capability,
+- [x] Size-class audit of `#if os(iOS)` branches (`os()` = capability,
   `horizontalSizeClass` = layout); iPad UITests (split view, double-page,
   hardware-keyboard page turns)
-- [ ] Pointer `.hoverEffect`s; arrow-key page turns via `.onKeyPress`
-- [ ] iPad screenshots in the `ci-screenshots` flow
+- [x] Pointer `.hoverEffect`s; arrow-key page turns via `.onKeyPress`
+- [x] iPad screenshots in the `ci-screenshots` flow
 - [ ] Deferred: multi-window / Stage Manager (macOS per-book WindowGroup is
   the template); iCloud sync (seam: `LibraryStore` behind
   `AppModel.makeDefaultStore()`)

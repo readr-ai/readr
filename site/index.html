@@ -253,7 +253,9 @@
       <a class="btn btn-primary" href="https://github.com/readr-ai/readr/releases/latest">Download for macOS</a>
       <a class="btn btn-secondary" href="https://github.com/readr-ai/readr">View on GitHub</a>
     </div>
-    <p class="cta-meta">MIT licensed · macOS 14+ · on iOS, <a href="https://github.com/readr-ai/readr#building-from-source">build from source</a></p>
+    <!-- TODO(launch): once Beta App Review approves, point this at the
+         public https://testflight.apple.com/join/… link. -->
+    <p class="cta-meta">MIT licensed · macOS 14+ · <a href="https://github.com/readr-ai/readr#ios--ipad-beta-testflight">iPhone &amp; iPad beta via TestFlight</a></p>
     <div class="hero-art">
       <div class="window">
         <div class="titlebar"><span></span><span></span><span></span><em>Readr — Library</em></div>
@@ -385,16 +387,18 @@
     <div class="wrap">
       <p class="eyebrow">Get Readr</p>
       <h2>Start asking your books.</h2>
-      <p>Grab the latest macOS build, or clone the repo and build for iOS with Xcode.</p>
+      <p>Grab the latest macOS build, or join the iPhone &amp; iPad beta on TestFlight.</p>
       <div class="cta-row">
         <a class="btn btn-primary" href="https://github.com/readr-ai/readr/releases/latest">Download for macOS</a>
+        <!-- TODO(launch): once Beta App Review approves, point this at the
+             public https://testflight.apple.com/join/… link. -->
+        <a class="btn btn-secondary" href="https://github.com/readr-ai/readr#ios--ipad-beta-testflight">iPhone &amp; iPad beta</a>
         <a class="btn btn-secondary" href="https://github.com/readr-ai/readr">View on GitHub</a>
       </div>
       <div class="footnote">
-        <strong>An honest note about the first launch:</strong> Readr is ad-hoc signed but not
-        yet notarized (no Apple Developer ID yet), so macOS shows a one-time warning —
-        just right-click <code>Readr.app</code> → <strong>Open</strong>. On macOS 15+, allow it under
-        System Settings → Privacy &amp; Security. Locally built copies aren't quarantined at all.
+        <strong>Signed and notarized:</strong> download, unzip, drag <code>Readr.app</code> to
+        Applications, and open — no security warnings. (Releases before v2.9.0 were
+        unsigned and needed a right-click → Open; that's over.)
       </div>
     </div>
   </section>
@@ -403,7 +407,8 @@
 <footer>
   <div class="wrap">
     <p>Free &amp; open source under the <a href="https://github.com/readr-ai/readr/blob/main/LICENSE">MIT License</a>
-    · <a href="https://github.com/readr-ai/readr">github.com/readr-ai/readr</a></p>
+    · <a href="https://github.com/readr-ai/readr">github.com/readr-ai/readr</a>
+    · <a href="privacy.html">Privacy</a></p>
     <p class="colophon">Made for people who argue with their books.</p>
   </div>
 </footer>

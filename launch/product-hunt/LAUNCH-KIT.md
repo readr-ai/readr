@@ -1,7 +1,15 @@
 # Readr — Product Hunt launch kit
 
-Prepared 2026-07-08 for the v2.6.0 release. Everything below sticks to what is
-actually shipped (see `README.md` and `docs/ROADMAP.md`); nothing is invented.
+Prepared 2026-07-08 for v2.6.0; **revised 2026-07-13 for the v2.9.0 launch**:
+the macOS download is now Developer-ID signed + notarized (no Gatekeeper
+warning) and iPhone/iPad ship as a public TestFlight beta — the old "not
+notarized / build iOS from source" caveats are gone. Everything below sticks
+to what is actually shipped (see `README.md` and `docs/ROADMAP.md`); nothing
+is invented.
+
+> **Placeholder to fill on launch morning:** `TESTFLIGHT_JOIN_URL` — the
+> public `https://testflight.apple.com/join/…` link (exists once Beta App
+> Review approves the external group). Search-and-replace it below.
 
 **Verified Product Hunt specs (checked July 2026):**
 
@@ -55,8 +63,10 @@ Fallbacks if a topic is unavailable in the picker: `Mac`, `Productivity`,
 
 **Links:**
 
-- Website / repo: https://github.com/readr-ai/readr
-- Download (macOS app): https://github.com/readr-ai/readr/releases (v2.6.0)
+- Website: https://readr-ai.github.io/readr/ (repo: https://github.com/readr-ai/readr)
+- Download (macOS, signed + notarized): https://github.com/readr-ai/readr/releases (v2.9.0)
+- iPhone & iPad beta (TestFlight): TESTFLIGHT_JOIN_URL
+- Privacy policy: https://readr-ai.github.io/readr/privacy.html
 
 **Pricing:** Free. Open source under MIT. No accounts, no tiers, no trials. AI
 features use your own API key or a free local model via Ollama — Readr itself
@@ -98,10 +108,10 @@ background at 240×240. If you use a GIF, make frame one the static icon.
 > code in the app at all — keys live in the Keychain, and local mode only ever
 > talks to your local Ollama server.
 >
-> Honest caveats: the macOS download is ad-hoc signed but not notarized yet (no
-> Apple Developer ID), so there's a one-time "Open Anyway" step — the README
-> walks you through it. DRM-free books only. And iOS currently means building
-> from source; no TestFlight yet. macOS is where it shines today.
+> It runs everywhere I read: the macOS download is signed and notarized (no
+> security warnings — download, open, read), and iPhone + iPad are in public
+> beta on TestFlight (TESTFLIGHT_JOIN_URL). One honest caveat: DRM-free books
+> only — it opens your EPUBs, PDFs and Markdown, not Kindle purchases.
 >
 > Question for you: when you hit something confusing mid-book, what do you
 > actually do — push through, search the web, or ask an AI? I'd love to know
@@ -113,12 +123,10 @@ background at 240×240. If you use a GIF, make frame one the static icon.
 
 ## 3. FAQ / prepared replies
 
-**"Why isn't the macOS build notarized?"**
-> Fair question — it needs an Apple Developer ID ($99/yr) and I haven't set one
-> up yet. The app is ad-hoc signed and built by public CI, so you can audit
-> exactly what's in it, or build it from source yourself (locally built apps
-> don't get quarantined at all). Notarization is on the list; until then it's a
-> one-time right-click → Open (or Privacy & Security → Open Anyway on Sequoia).
+**"Is the macOS build signed/notarized?"**
+> Yes — releases are Developer-ID signed and notarized by Apple, built by
+> public CI (you can audit exactly what goes into every build in the repo's
+> Actions). Download, unzip, drag to Applications, open. No warnings.
 
 **"Windows / Linux version?"**
 > Not planned right now. Readr is deliberately native SwiftUI, and a lot of the
@@ -129,10 +137,11 @@ background at 240×240. If you use a GIF, make frame one the static icon.
 > take that on. It's MIT, PRs welcome.
 
 **"App Store or TestFlight for iOS?"**
-> Not yet. The iOS app exists and CI runs the UI-test suite on a simulator, but
-> shipping a build requires the same Apple Developer account as notarization.
-> Today iOS means cloning the repo and running the Xcode scheme. TestFlight is
-> the obvious next step once the developer account exists.
+> TestFlight today, App Store next. The iPhone & iPad beta is open to everyone:
+> TESTFLIGHT_JOIN_URL (install the TestFlight app, tap the link). CI runs the
+> full UI-test suite on iPhone and iPad simulators on every PR, and uploads
+> every release build to TestFlight automatically. App Store submission is the
+> fast-follow once beta feedback settles.
 
 **"Which local models work?"**
 > Anything Ollama serves — Readr talks to Ollama's local API over loopback and
@@ -206,8 +215,10 @@ background at 240×240. If you use a GIF, make frame one the static icon.
 > only talks to your local Ollama server. MIT licensed.
 
 **Tweet 4**
-> Honest fine print: DRM-free books only, the macOS build isn't notarized yet
-> (one-time "Open Anyway"), and iOS is build-from-source for now.
+> Get it: signed + notarized macOS download, and a public iPhone & iPad beta
+> on TestFlight → TESTFLIGHT_JOIN_URL
+>
+> Fine print: DRM-free books only.
 >
 > Repo: https://github.com/readr-ai/readr
 > If you read with an AI on the side, we'd love your feedback on PH today.
@@ -234,9 +245,9 @@ background at 240×240. If you use a GIF, make frame one the static icon.
 > keys stored only in the Keychain, and local mode only talks to your local
 > Ollama server.
 >
-> It's early: the macOS download isn't notarized yet (a one-time "Open Anyway"
-> step), and iOS currently means building from source. The code is public and
-> contributions are welcome.
+> The macOS download is signed and notarized, and the iPhone & iPad beta is
+> open to everyone on TestFlight: TESTFLIGHT_JOIN_URL. DRM-free books only.
+> The code is public and contributions are welcome.
 >
 > We'd genuinely value your feedback and questions on Product Hunt today:
 > [PH link]
@@ -259,9 +270,14 @@ background at 240×240. If you use a GIF, make frame one the static icon.
 
 ### Before launch (maker-only, manual)
 
-- [ ] Cut and publish the **v2.6.0 GitHub release** with the `Readr.app`
-      artefact; check the release notes mention the Gatekeeper "Open Anyway"
-      steps (they're also in the README).
+- [ ] Confirm the **v2.9.0 GitHub release** is live with the signed +
+      notarized `Readr.app` zip (release body should say "Signed and
+      notarized" — the CI takes the signing path automatically once the
+      `MACOS_*`/`APPLE_*` secrets are set).
+- [ ] Confirm the **TestFlight public link** is approved and live; replace
+      every `TESTFLIGHT_JOIN_URL` in this kit, the README, and
+      `site/index.html` with the real
+      `https://testflight.apple.com/join/…` URL.
 - [ ] GitHub repo polish (only the maker can do this):
   - [ ] Repo **description** set (mirror the PH tagline).
   - [ ] Repo **topics** added: `ebook-reader`, `epub`, `pdf`, `swift`,
@@ -279,8 +295,11 @@ background at 240×240. If you use a GIF, make frame one the static icon.
 - [ ] Draft queued and ready to paste: maker first comment (section 2), tweet
       thread, LinkedIn post.
 - [ ] Smoke-test the download path on a clean Mac: download from Releases,
-      walk the "Open Anyway" dance exactly as the README describes, open an
-      EPUB, ask a question. Fix the README if reality differs.
+      unzip, open — it must launch with **no** Gatekeeper warning — then open
+      an EPUB, highlight, and ask a question with a real API key. Fix the
+      README if reality differs.
+- [ ] Smoke-test the TestFlight path on an iPhone or iPad that isn't on the
+      dev team: tap the join link, install, import an EPUB, ask a question.
 
 ### Launch day (12:01 am PT onwards)
 
@@ -296,15 +315,57 @@ background at 240×240. If you use a GIF, make frame one the static icon.
       until midnight PT. Use the FAQ replies in section 3 as raw material, but
       personalise each one.
 - [ ] Watch GitHub too: issues and stars will spike; label and thank quickly.
-      The most likely bug reports are Gatekeeper confusion and unusual
-      EPUBs/PDFs failing to parse — triage those fast.
-- [ ] If someone hits the notarization warning and is put off, reply with the
-      three unblock options from the README (Sequoia settings path,
-      right-click → Open, or `xattr -d com.apple.quarantine`).
+      The most likely bug reports are unusual EPUBs/PDFs failing to parse and
+      API-key confusion (wrong key type, org without credits) — triage those
+      fast. The in-app "Get an API key" links and the actionable error
+      messages should absorb most key issues.
+- [ ] Watch TestFlight feedback (ASC → TestFlight → Feedback) — beta testers
+      can send screenshots + notes straight from the app.
 
 ### After launch day
 
 - [ ] Thank commenters; follow up on every unresolved question.
 - [ ] Convert recurring PH questions into README/FAQ updates and GitHub issues.
-- [ ] Write down what you'd change; a "Ship a notarized build" issue is
-      probably the top ask — link people to it.
+- [ ] Write down what you'd change; an "App Store release" issue is probably
+      the top ask — link people to it.
+
+---
+
+## 6. App Store Connect beta pack (paste into ASC → TestFlight)
+
+One-time setup that unlocks the **public TestFlight link** (external testers
+require Beta App Review for the first build):
+
+1. **TestFlight → Test Information** — fill these fields:
+
+   - **Beta App Description** (paste):
+
+     > Readr is a native ebook reader for DRM-free EPUB, PDF, and
+     > text/Markdown files — with an AI twist: select any passage and ask the
+     > book a question, and the answer streams in with citations grounded in
+     > the whole book. Your highlights and notes can be composed into an
+     > editable Markdown article. Bring your own AI: paste an Anthropic or
+     > OpenAI API key in Settings → AI Providers (the app links you to the
+     > key consoles). No account, no telemetry — books and notes stay on your
+     > device and keys live in the Keychain.
+     >
+     > What to test: import an EPUB or PDF (Files app or the in-app
+     > importer), read in the paged layouts, make highlights, open the Notes
+     > panel, and — with your own API key — ask the book a question and
+     > compose an article from your highlights. We'd love feedback on iPad
+     > split-view and rotation.
+
+   - **Feedback Email**: your address (e.g. the account email).
+   - **Privacy Policy URL**: `https://readr-ai.github.io/readr/privacy.html`
+     (live once the launch PR merges and Pages redeploys).
+
+2. **TestFlight → Internal Testing** — install the build yourself first and
+   walk: import EPUB → read → highlight → ask with a real key (iPhone + iPad).
+
+3. **TestFlight → External Testing** — create a group ("Public Beta"), toggle
+   **Enable Public Link**, add the v2.9.0 build. Adding the first build
+   submits it to **Beta App Review** automatically (typically 24–48 h).
+   Export-compliance is pre-answered (`ITSAppUsesNonExemptEncryption: false`).
+
+4. When approved, copy the public link and replace `TESTFLIGHT_JOIN_URL`
+   everywhere (this kit, README, `site/index.html`).
