@@ -28,7 +28,16 @@ struct ReaderView: View {
     /// reading surfaces. Drives the selection-dependent keyboard shortcuts
     /// (⇧⌘H highlight, ⇧⌘M note, and the selection-aware ⇧⌘A ask) — the
     /// selection itself lives inside the platform text views.
-    @State private var currentSelection: Range<Int>?
+    ///
+    /// Held in a render-inert box, NOT as observed `Range<Int>?` state:
+    /// nothing rendered reads it (only the shortcut/Ask actions do), and the
+    /// surfaces report on every selection change — mid-gesture. An observed
+    /// write there re-renders the whole reader while the long-press is still
+    /// down, which broke the press → annotation-bar → highlight flow on iOS
+    /// (testHighlightFromSelectionAppearsInNotesPanel, red on the merge of
+    /// the shortcuts PR). The box keeps the shortcuts' view of the selection
+    /// current without ever invalidating the view tree.
+    @State private var currentSelection = SelectionMirror()
     /// Published by PDFReaderView while the native PDF surface is mounted, so
     /// the shortcuts and the toolbar Ask can reach the PDFKit selection (it
     /// lives in the surface's private controller). This view owns EVERY
@@ -210,13 +219,13 @@ struct ReaderView: View {
                 // it and annotate the wrong range. (Surface teardown — layout
                 // switch, PDF display toggle — needs no clear here: the text
                 // views report nil from onDisappear.)
-                currentSelection = nil
+                currentSelection.value = nil
             }
             .onChange(of: pagedAnchor) { _, newValue in
                 // A page turn replaces the visible text: the collapse report
                 // arrives async, so clear eagerly — same race as a chapter
                 // turn, just within one chapter.
-                currentSelection = nil
+                currentSelection.value = nil
                 // Page turns come in bursts and every save rewrites the whole
                 // library JSON — debounce offset-only saves. Chapter changes
                 // and onDisappear flush immediately.
@@ -268,7 +277,7 @@ struct ReaderView: View {
                     onAnnotate: { target, action in
                         handleAnnotation(in: chapter, target: target, action: action)
                     },
-                    onSelectionChange: { currentSelection = $0 }
+                    onSelectionChange: { currentSelection.value = $0 }
                 )
                 scrollFooter(for: chapter)
             } else {
@@ -285,7 +294,7 @@ struct ReaderView: View {
                     onAnnotate: { target, action in
                         handleAnnotation(in: chapter, target: target, action: action)
                     },
-                    onSelectionChange: { currentSelection = $0 },
+                    onSelectionChange: { currentSelection.value = $0 },
                     canOverflowBackward: chapterIndex > 0,
                     canOverflowForward: chapterIndex < book.chapters.count - 1,
                     onOverflow: { direction in
@@ -739,7 +748,7 @@ struct ReaderView: View {
     private func askTheBook() {
         if isPDFOriginal {
             askSelection = pdfAnnotationActions?.askSelection()
-        } else if let chapter, let selected = currentSelection {
+        } else if let chapter, let selected = currentSelection.value {
             askSelection = model.makeSelection(in: chapter, range: selected)
         } else {
             askSelection = nil // whole-book question
@@ -784,7 +793,7 @@ struct ReaderView: View {
             Button("Highlight selection") {
                 if isPDFOriginal {
                     pdfAnnotationActions?.highlightSelection()
-                } else if let chapter, let selected = currentSelection {
+                } else if let chapter, let selected = currentSelection.value {
                     handleAnnotation(
                         in: chapter, target: .selection(selected),
                         action: .highlight(lastHighlightColor)
@@ -795,7 +804,7 @@ struct ReaderView: View {
             Button("Add note to selection") {
                 if isPDFOriginal {
                     pdfAnnotationActions?.noteSelection()
-                } else if let chapter, let selected = currentSelection {
+                } else if let chapter, let selected = currentSelection.value {
                     handleAnnotation(in: chapter, target: .selection(selected), action: .note)
                 }
             }
@@ -1011,6 +1020,18 @@ struct ReaderView: View {
         // prefix clamps to the text's end, matching the old upper-bound clamp.
         return String(text[lower...].prefix(range.upperBound - lowerOffset))
     }
+}
+
+// MARK: - Selection mirror
+
+/// Render-inert holder for the reading surfaces' committed selection. A plain
+/// class in a `@State` slot: SwiftUI keeps the instance stable across body
+/// re-evaluations, but writes to `value` do not invalidate any view — which
+/// is the point. Selection reports arrive on every delegate callback,
+/// including mid-gesture, and must never re-render the reader out from under
+/// an in-flight touch (see the `currentSelection` doc in `ReaderView`).
+final class SelectionMirror {
+    var value: Range<Int>?
 }
 
 // MARK: - Shortcut-only buttons

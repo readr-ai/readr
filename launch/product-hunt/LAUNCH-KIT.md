@@ -1,6 +1,6 @@
 # Readr — Product Hunt launch kit
 
-Prepared 2026-07-08 for v2.6.0; **revised 2026-07-13 for the v2.9.0 launch**:
+Prepared 2026-07-08 for v2.6.0; **revised 2026-07-13 for the v2.9.1 launch**:
 the macOS download is now Developer-ID signed + notarized (no Gatekeeper
 warning) and iPhone/iPad ship as a public TestFlight beta — the old "not
 notarized / build iOS from source" caveats are gone. Everything below sticks
@@ -64,7 +64,7 @@ Fallbacks if a topic is unavailable in the picker: `Mac`, `Productivity`,
 **Links:**
 
 - Website: https://readr-ai.github.io/readr/ (repo: https://github.com/readr-ai/readr)
-- Download (macOS, signed + notarized): https://github.com/readr-ai/readr/releases (v2.9.0)
+- Download (macOS, signed + notarized): https://github.com/readr-ai/readr/releases (v2.9.1)
 - iPhone & iPad beta (TestFlight): TESTFLIGHT_JOIN_URL
 - Privacy policy: https://readr-ai.github.io/readr/privacy.html
 
@@ -270,7 +270,7 @@ background at 240×240. If you use a GIF, make frame one the static icon.
 
 ### Before launch (maker-only, manual)
 
-- [ ] Confirm the **v2.9.0 GitHub release** is live with the signed +
+- [ ] Confirm the **v2.9.1 GitHub release** is live with the signed +
       notarized `Readr.app` zip (release body should say "Signed and
       notarized" — the CI takes the signing path automatically once the
       `MACOS_*`/`APPLE_*` secrets are set).
@@ -363,7 +363,7 @@ require Beta App Review for the first build):
    walk: import EPUB → read → highlight → ask with a real key (iPhone + iPad).
 
 3. **TestFlight → External Testing** — create a group ("Public Beta"), toggle
-   **Enable Public Link**, add the v2.9.0 build. Adding the first build
+   **Enable Public Link**, add the v2.9.1 build. Adding the first build
    submits it to **Beta App Review** automatically (typically 24–48 h).
    Export-compliance is pre-answered (`ITSAppUsesNonExemptEncryption: false`).
 

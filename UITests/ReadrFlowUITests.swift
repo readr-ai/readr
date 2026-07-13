@@ -294,24 +294,48 @@ final class ReadrFlowUITests: XCTestCase {
         let text = app.textViews.firstMatch
         XCTAssertTrue(text.waitForExistence(timeout: 5), "The reading surface should be present")
 
-        // Long-press the middle of the column: selects the word under the
-        // press; the app's 0.4s selection debounce then shows the bar. The
-        // seeded highlights sit at the chapter top, so the center press hits
-        // plain text (a tap on an existing span would open the edit bar,
-        // which carries the same color dots anyway).
-        text.press(forDuration: 1.2)
-
-        var yellow = button(app, id: "annotation.color.yellow", label: "Highlight Yellow")
-        if !yellow.waitForExistence(timeout: 5) {
-            // Fallback gesture: double-tap also selects a word on iOS.
-            text.doubleTap()
-            yellow = button(app, id: "annotation.color.yellow", label: "Highlight Yellow")
-            _ = yellow.waitForExistence(timeout: 5)
+        // Long-press selects the word under the press; the app's 0.4s
+        // selection debounce then shows the bar. The press point is PROBED:
+        // where the seeded spans render depends on the restored scroll
+        // position and per-boot font metrics, and a press that lands on a
+        // span raises the EDIT bar — same color dots plus Remove — whose
+        // yellow recolors instead of creating. That's correct product
+        // behavior but the wrong test subject, and blind center presses hit
+        // it on some CI simulator boots (runs #98/#100/#101). Probe a few
+        // column positions and only tap yellow under a CREATE-mode bar
+        // (no Remove button).
+        let yellow = button(app, id: "annotation.color.yellow", label: "Highlight Yellow")
+        let remove = button(app, id: "annotation.remove", label: "Remove highlight")
+        var barIsCreateMode = false
+        // Probes stay in the upper ~3/4 of the column: the bar is anchored to
+        // the view's bottom, and pressing through it would tap its buttons
+        // (Remove on an edit bar would change the seeded count itself).
+        for dy in [0.5, 0.65, 0.3, 0.42] {
+            let point = text.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: dy))
+            point.press(forDuration: 1.2)
+            if !yellow.waitForExistence(timeout: 5) {
+                // Fallback gesture: double-tap also selects a word on iOS.
+                point.doubleTap()
+                _ = yellow.waitForExistence(timeout: 5)
+            }
+            if yellow.exists && !remove.exists {
+                barIsCreateMode = true
+                break
+            }
+            if yellow.exists {
+                // Edit bar for a seeded span. Collapse the selection with a
+                // plain tap near the top so the bar hides before the next
+                // probe presses.
+                text.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.06)).tap()
+                _ = yellow.waitForNonExistence(timeout: 3)
+            }
         }
-        guard yellow.exists else {
+        guard barIsCreateMode else {
             throw XCTSkip(
-                "Neither long-press nor double-tap raised the annotation bar — "
-                    + "text selection isn't reliably automatable on this simulator"
+                "No create-mode annotation bar at any probed press point — "
+                    + "either word selection isn't automatable on this simulator "
+                    + "boot or every probe landed on a seeded span. The create "
+                    + "pipeline is asserted whenever the gesture lands."
             )
         }
         yellow.tap()
