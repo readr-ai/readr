@@ -75,6 +75,21 @@ jobs:
           fi
       - uses: actions/checkout@v4
         if: env.HAS_ASC_KEY == 'true'
+      # App Store Connect refuses uploads built with an SDK older than iOS 26
+      # (Apple's annual SDK floor, effective April 2026), but the image's
+      # default Xcode is 16.4 / iOS 18.5 SDK. Pin the newest Xcode 26.x; fail
+      # with the available list if the image doesn't carry one.
+      - name: Select Xcode 26
+        if: env.HAS_ASC_KEY == 'true'
+        run: |
+          ls -d /Applications/Xcode*.app || true
+          XCODE=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -1)
+          if [ -z "$XCODE" ]; then
+            echo "::error::No Xcode 26.x on this runner image (see listing above) — move this job to a newer macos image."
+            exit 1
+          fi
+          sudo xcode-select -s "$XCODE"
+          xcodebuild -version
       - name: Install XcodeGen
         if: env.HAS_ASC_KEY == 'true'
         run: brew install xcodegen
