@@ -112,6 +112,9 @@ final class PDFReaderController: NSObject, ObservableObject {
         view.autoScales = true
         view.displayMode = .singlePageContinuous
         view.displayDirection = .vertical
+        // Sharper page tiles at rest — the default interpolation left pages
+        // caught mid-tiling looking soft (seen in the CI walk's page 2).
+        view.interpolationQuality = .high
 
         NotificationCenter.default.addObserver(
             self, selector: #selector(selectionDidChange(_:)),

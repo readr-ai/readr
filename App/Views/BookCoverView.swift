@@ -9,8 +9,14 @@ import AppKit
 
 /// A book jacket in the Marginalia style: real cover art when the book
 /// carries it, otherwise a flat tinted placeholder jacket (title-keyed muted
-/// field, short top rule, serif title, small-caps author). Always 2:3, with
-/// the shared cover radius/shadow.
+/// field, short top rule, serif title, small-caps author), with the shared
+/// cover radius/shadow.
+///
+/// Real artwork keeps its own aspect ratio (clamped to a sane book range) —
+/// forcing every cover into 2:3 cropped off titles and edges, nothing like a
+/// real shelf. Placeholders stay 2:3. Shelves that need uniform cells wrap
+/// this in `BookCoverSlot`, which bottom-aligns jackets in a fixed 2:3 slot
+/// (Apple-Books-style: books standing on a shelf).
 ///
 /// The cover is treated as decorative for accessibility — the surrounding cell
 /// supplies the book's title/author as text, so the jacket's painted text is
@@ -21,13 +27,23 @@ struct BookCoverView: View {
     /// caches decodes) — decoding `Data` per render made shelf scrolling hitch.
     var coverImage: PlatformImage?
     /// Optional fixed width; when nil the container (e.g. a grid cell)
-    /// determines the width and the height follows from the 2:3 aspect.
+    /// determines the width and the height follows from the aspect ratio.
     var width: CGFloat?
+
+    /// Width/height. Real art within 0.55…1.0 renders uncropped; anything
+    /// beyond clamps (a hair of fill-crop) so a banner or strip "cover" can't
+    /// wreck the shelf. Placeholders are the classic 2:3.
+    private var aspect: CGFloat {
+        if let coverImage, coverImage.size.width > 0, coverImage.size.height > 0 {
+            return min(max(coverImage.size.width / coverImage.size.height, 0.55), 1.0)
+        }
+        return 2.0 / 3.0
+    }
 
     var body: some View {
         let jacket = AppTheme.coverShadow(
             Color.clear
-                .aspectRatio(2.0 / 3.0, contentMode: .fit)
+                .aspectRatio(aspect, contentMode: .fit)
                 .frame(width: width)
                 .overlay(coverContent)
                 .overlay(sheen)
@@ -56,6 +72,27 @@ struct BookCoverView: View {
         #else
         return jacket
         #endif
+    }
+
+    /// A fixed-proportion 2:3 shelf slot with the jacket resting on its
+    /// bottom edge. Grids and shelf rows use this so every cell is the same
+    /// size while covers keep their true shapes — bottoms aligned, like books
+    /// standing on a shelf (the Apple Books grid convention). A cover wider
+    /// than 2:3 fits the slot's width and leaves air above; a (clamped)
+    /// narrower one fits the height.
+    struct Slot: View {
+        let book: Book
+        var coverImage: PlatformImage?
+        var width: CGFloat?
+
+        var body: some View {
+            Color.clear
+                .aspectRatio(2.0 / 3.0, contentMode: .fit)
+                .frame(width: width)
+                .overlay(alignment: .bottom) {
+                    BookCoverView(book: book, coverImage: coverImage)
+                }
+        }
     }
 
     /// A faint diagonal gloss over real artwork so it reads as a printed

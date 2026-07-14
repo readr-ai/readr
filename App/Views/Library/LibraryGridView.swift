@@ -110,7 +110,15 @@ struct LibraryGridView: View {
             }
         }
         .background(theme.background)
+        // iOS: the serif in-content header IS the screen title (HomeView does
+        // the same) — a second centered nav-bar copy 90pt above it read as a
+        // duplicate. The bar itself stays for back/toolbar. macOS keeps the
+        // window title for Mission Control and the Window menu.
+        #if os(iOS)
+        .navigationTitle("")
+        #else
         .navigationTitle(title)
+        #endif
     }
 
     // MARK: Header
@@ -281,28 +289,36 @@ struct LibraryGridView: View {
     /// don't add a second cell-level `.hoverEffect` here or the two stack.
     private func cover(for book: Book) -> some View {
         let isHovered = hoveredBookID == book.id
-        return BookCoverView(book: book, coverImage: model.coverImage(for: book))
-            .overlay(alignment: .topLeading) {
-                if model.isPDF(book) {
-                    Text("PDF")
-                        .font(.caption2.weight(.bold))
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(Capsule().fill(Color.black.opacity(0.55)))
-                        .padding(6)
-                }
-            }
-            .overlay(alignment: .topTrailing) {
-                if model.bookState(for: book)?.isFinished == true {
-                    Image(systemName: "checkmark.circle.fill")
-                        .symbolRenderingMode(.palette)
-                        .foregroundStyle(.white, .green)
-                        .font(.title3)
-                        .shadow(color: .black.opacity(0.35), radius: 2, x: 0, y: 1)
-                        .padding(6)
-                        .accessibilityLabel("Finished")
-                }
+        // Uniform 2:3 slot per cell, jacket bottom-aligned inside (covers keep
+        // their true aspect — see BookCoverView.Slot). Badges hug the jacket,
+        // not the slot, so they never float in the empty air above a short
+        // cover.
+        return Color.clear
+            .aspectRatio(2.0 / 3.0, contentMode: .fit)
+            .overlay(alignment: .bottom) {
+                BookCoverView(book: book, coverImage: model.coverImage(for: book))
+                    .overlay(alignment: .topLeading) {
+                        if model.isPDF(book) {
+                            Text("PDF")
+                                .font(.caption2.weight(.bold))
+                                .foregroundStyle(.white)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2)
+                                .background(Capsule().fill(Color.black.opacity(0.55)))
+                                .padding(6)
+                        }
+                    }
+                    .overlay(alignment: .topTrailing) {
+                        if model.bookState(for: book)?.isFinished == true {
+                            Image(systemName: "checkmark.circle.fill")
+                                .symbolRenderingMode(.palette)
+                                .foregroundStyle(.white, .green)
+                                .font(.title3)
+                                .shadow(color: .black.opacity(0.35), radius: 2, x: 0, y: 1)
+                                .padding(6)
+                                .accessibilityLabel("Finished")
+                        }
+                    }
             }
             .offset(y: isHovered ? -3 : 0)
             .shadow(color: .black.opacity(isHovered ? 0.20 : 0.0), radius: 14, x: 0, y: 10)

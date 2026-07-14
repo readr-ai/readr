@@ -70,6 +70,12 @@ struct ReaderView: View {
     /// Persisted appearance: reading theme (Paper/Sepia/Night) and text size.
     @AppStorage("readingTheme") private var themeRaw = ReadingTheme.paper.rawValue
     @AppStorage("readingFontSize") private var fontSize = 18.0
+    /// Persisted typography: body typeface, line-spacing preset, and
+    /// justification (the Apple-Books-style text controls).
+    @AppStorage("readingFont") private var fontRaw = ReaderFont.newYork.rawValue
+    @AppStorage("readingLineSpacing") private var lineSpacingRaw
+        = ReaderLineSpacing.normal.rawValue
+    @AppStorage("readingJustified") private var isJustified = true
     /// PDFs: show the original pages (native PDFKit) or the extracted text
     /// (which keeps text-mode highlights and layouts available).
     @AppStorage("pdfShowsOriginal") private var pdfShowsOriginal = true
@@ -85,6 +91,13 @@ struct ReaderView: View {
     #if os(iOS)
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
 
+    /// Apple-Books-style distraction-free reading: a tap on the middle of the
+    /// page hides ALL chrome (nav bar, bottom bar, status bar), another tap
+    /// brings it back. Taps near the column's left/right edges turn pages in
+    /// paged mode instead (see PagedChapterView). Starts visible so a reader
+    /// opening a book sees where the controls live.
+    @State private var showChrome = true
+
     /// Regular width (iPad full screen / wide multitasking): the nav bar has
     /// room for the full reader chrome, so the iPhone bottom bar — a
     /// workaround for the compact nav bar collapsing trailing items past two
@@ -97,10 +110,11 @@ struct ReaderView: View {
     private var layout: PageLayout {
         let stored = PageLayout(rawValue: layoutRaw) ?? .scroll
         #if os(iOS)
-        // A facing-page spread on a compact phone yields one-word columns
-        // (seen in the CI screenshots) — render single pages there while
-        // keeping the stored preference for iPad/macOS widths.
-        if stored == .doublePage, horizontalSizeClass == .compact {
+        // iOS offers single page + scroll only (like Apple Books on iPhone):
+        // a facing-page spread doesn't make sense on a handheld screen, so a
+        // stored doublePage preference (e.g. synced defaults from a Mac)
+        // renders as single pages. The Appearance popover hides the segment.
+        if stored == .doublePage {
             return .singlePage
         }
         #endif
@@ -115,7 +129,10 @@ struct ReaderView: View {
             fontSize: min(
                 max(CGFloat(fontSize), ReaderStyle.fontSizeRange.lowerBound),
                 ReaderStyle.fontSizeRange.upperBound
-            )
+            ),
+            font: ReaderFont(rawValue: fontRaw) ?? .newYork,
+            spacing: ReaderLineSpacing(rawValue: lineSpacingRaw) ?? .normal,
+            isJustified: isJustified
         )
     }
 
@@ -141,6 +158,15 @@ struct ReaderView: View {
             .navigationBarTitleDisplayMode(.inline)
             #endif
             .toolbar { toolbarContent }
+            #if os(iOS)
+            // The tap-to-hide chrome (Apple Books): everything disappears —
+            // including the status bar — leaving just the page and its quiet
+            // page label. Sheets and popovers anchor to toolbar buttons, so
+            // they're reachable only while chrome is shown, as in Books.
+            .toolbar(showChrome ? .visible : .hidden, for: .navigationBar)
+            .toolbar(showChrome ? .visible : .hidden, for: .bottomBar)
+            .statusBarHidden(!showChrome)
+            #endif
             .background(hiddenFontShortcuts)
             .background(hiddenAnnotationShortcuts)
             .sheet(isPresented: $showAsk) {
@@ -277,7 +303,8 @@ struct ReaderView: View {
                     onAnnotate: { target, action in
                         handleAnnotation(in: chapter, target: target, action: action)
                     },
-                    onSelectionChange: { currentSelection.value = $0 }
+                    onSelectionChange: { currentSelection.value = $0 },
+                    onChromeToggle: toggleChrome
                 )
                 // Scroll mode has no pages, but a horizontal flick still
                 // crosses chapters — the paged layouts flow across chapter
@@ -306,6 +333,7 @@ struct ReaderView: View {
                         handleAnnotation(in: chapter, target: target, action: action)
                     },
                     onSelectionChange: { currentSelection.value = $0 },
+                    onChromeToggle: toggleChrome,
                     canOverflowBackward: chapterIndex > 0,
                     canOverflowForward: chapterIndex < book.chapters.count - 1,
                     onOverflow: { direction in
@@ -331,6 +359,15 @@ struct ReaderView: View {
         // it too); paged mode is full-bleed paper — the page IS the window — so
         // the surface behind it must be `paper`, not the chrome color.
         .background((layout == .scroll ? style.theme.background : style.theme.paper).ignoresSafeArea())
+    }
+
+    /// iOS only: flips the chrome in/out (the reading surfaces report clean
+    /// middle-of-the-page taps here). No-op on macOS, where chrome lives in
+    /// the window toolbar and never hides.
+    private func toggleChrome() {
+        #if os(iOS)
+        withAnimation(.easeInOut(duration: 0.2)) { showChrome.toggle() }
+        #endif
     }
 
     /// Scroll mode has no page anchor, so the estimate covers the whole
@@ -386,6 +423,12 @@ struct ReaderView: View {
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
         ToolbarItemGroup(placement: .navigation) {
+            // Chapter chevrons are a macOS-only affordance. On iOS they read
+            // as mystery buttons pinned over the page (nothing like Apple
+            // Books) — touch navigation is swiping/edge-tapping through pages
+            // (paged mode flows across chapter walls), the horizontal flick
+            // in scroll mode, and the Contents list.
+            #if os(macOS)
             Button { jump(toChapter: chapterIndex - 1) } label: {
                 Image(systemName: "chevron.left")
             }
@@ -402,14 +445,13 @@ struct ReaderView: View {
             .help("Next chapter")
             .disabled(chapterIndex >= book.chapters.count - 1 || isPDFOriginal)
 
-            #if os(macOS)
             if !isPDFOriginal {
                 tocButton
                 bookmarksMenu
             }
             #else
-            // iPad regular width: contents/bookmarks join the chevrons up
-            // top, like macOS; compact keeps them in the bottom bar below.
+            // iPad regular width: contents/bookmarks ride up top, macOS-style;
+            // compact keeps them in the bottom bar below.
             if isRegularWidth, !isPDFOriginal {
                 tocButton
                 bookmarksMenu
@@ -513,7 +555,14 @@ struct ReaderView: View {
                 .listStyle(.plain)
                 .scrollContentBackground(.hidden)
             }
-            .frame(minWidth: 260, idealWidth: 300, minHeight: 280, idealHeight: 360)
+            // Height hugs the chapter list (header + ~34pt rows) instead of a
+            // fixed ideal — a two-chapter book in an iPad popover was ~60%
+            // dead cream below the rows. Long books cap where scrolling
+            // takes over; iPhone's sheet detents below override this anyway.
+            .frame(
+                minWidth: 260, idealWidth: 300,
+                idealHeight: min(420, 64 + CGFloat(book.chapters.count) * 34)
+            )
             .background(style.theme.elevated)
             #if os(iOS)
             .presentationDetents([.medium, .large])
@@ -592,6 +641,9 @@ struct ReaderView: View {
                 themeRaw: $themeRaw,
                 layoutRaw: $layoutRaw,
                 fontSize: $fontSize,
+                fontRaw: $fontRaw,
+                lineSpacingRaw: $lineSpacingRaw,
+                isJustified: $isJustified,
                 isPDF: model.isPDF(book),
                 pdfShowsOriginal: $pdfShowsOriginal
             )
@@ -1113,6 +1165,9 @@ struct ScrollReadingColumn: View {
     /// The committed selection in chapter coordinates (nil ⇒ none) — feeds the
     /// host's selection-dependent keyboard shortcuts.
     var onSelectionChange: (Range<Int>?) -> Void = { _ in }
+    /// A clean tap on the page (no selection, no annotation bar): the host
+    /// toggles its chrome, Apple-Books-style. iOS only; nil ⇒ ignored.
+    var onChromeToggle: (() -> Void)? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -1137,14 +1192,19 @@ struct ScrollReadingColumn: View {
                 inlineImages: inlineImages,
                 scrollToOffset: scrollTarget,
                 onAnnotate: onAnnotate,
-                onSelectionChange: onSelectionChange
+                onSelectionChange: onSelectionChange,
+                // Scroll mode has no page-turn zones — any clean page tap
+                // just toggles the chrome.
+                onPageTap: { _, _ in onChromeToggle?() }
             )
         }
         .padding(.horizontal, 24)
         .padding(.top, 46)
-        // ~80 characters per line: measure = 40 em (avg glyph ≈ 0.5 em for the
-        // serif content font) + the 48pt of column padding above.
-        .frame(maxWidth: style.fontSize * 40 + 48)
+        // ~65–70 characters per line: measure = 33 em (avg glyph ≈ 0.5 em for
+        // the serif content font) + the 48pt of column padding above — the
+        // book measure Apple Books holds on wide panes (PagedChapterView
+        // shares the same em count).
+        .frame(maxWidth: style.fontSize * 33 + 48)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(style.theme.paper)
     }

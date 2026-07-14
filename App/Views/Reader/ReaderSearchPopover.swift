@@ -52,7 +52,7 @@ struct ReaderSearchPopover: View {
                             Text(result.chapterTitle ?? "Chapter \(result.chapterIndex + 1)")
                                 .font(.system(size: 10.5, weight: .semibold))
                                 .foregroundStyle(theme.muted)
-                            Text(result.snippet)
+                            Text(emphasized(result.snippet))
                                 .font(.system(size: 12.5, design: .serif))
                                 .foregroundStyle(theme.inkColor)
                                 .lineLimit(2)
@@ -87,6 +87,22 @@ struct ReaderSearchPopover: View {
             if Task.isCancelled { return }
             results = found
         }
+    }
+
+    /// The snippet with the matched term emphasized (bold + iris), so a list
+    /// of similar excerpts is scannable — matching Apple Books' bolded hits.
+    /// Case/diacritic-insensitive, mirroring `BookSearcher`'s matching.
+    private func emphasized(_ snippet: String) -> AttributedString {
+        var attributed = AttributedString(snippet)
+        let needle = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !needle.isEmpty,
+           let range = attributed.range(
+               of: needle, options: [.caseInsensitive, .diacriticInsensitive]
+           ) {
+            attributed[range].font = .system(size: 12.5, design: .serif).bold()
+            attributed[range].foregroundColor = theme.iris
+        }
+        return attributed
     }
 
     /// Runs the whole-book scan off the main actor: a non-isolated async

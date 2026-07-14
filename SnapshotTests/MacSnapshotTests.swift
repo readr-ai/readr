@@ -146,10 +146,13 @@ final class MacSnapshotTests: XCTestCase {
                 themeRaw: .constant(ReadingTheme.paper.rawValue),
                 layoutRaw: .constant(PageLayout.singlePage.rawValue),
                 fontSize: .constant(18),
+                fontRaw: .constant(ReaderFont.newYork.rawValue),
+                lineSpacingRaw: .constant(ReaderLineSpacing.normal.rawValue),
+                isJustified: .constant(true),
                 isPDF: true,
                 pdfShowsOriginal: .constant(true)
             ),
-            size: CGSize(width: 320, height: 360),
+            size: CGSize(width: 320, height: 520),
             name: "m04-appearance-popover"
         )
     }

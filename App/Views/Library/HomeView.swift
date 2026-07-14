@@ -290,9 +290,13 @@ private struct ContinueReadingCard: View {
     var body: some View {
         Button(action: action) {
             VStack(alignment: .leading, spacing: 8) {
-                BookCoverView(book: book, coverImage: coverImage, width: 140)
+                // Same slot width as Recently Added — the two shelves must
+                // read as ONE bookshelf (mismatched jacket sizes looked like
+                // a layout bug), and the slot bottom-aligns covers of any
+                // aspect (see BookCoverView.Slot).
+                BookCoverView.Slot(book: book, coverImage: coverImage, width: 150)
                 Text(book.metadata.title)
-                    .font(.system(size: 13.5, weight: .semibold, design: .serif))
+                    .font(.system(size: 13, weight: .semibold, design: .serif))
                     .foregroundStyle(theme.inkColor)
                     .multilineTextAlignment(.leading)
                     .lineLimit(2)
@@ -307,10 +311,13 @@ private struct ContinueReadingCard: View {
                     isFinished: false,
                     theme: theme
                 )
-                HStack(spacing: 10) {
+                HStack(spacing: 8) {
                     Text("Continue")
                         .font(.system(size: 12, weight: .semibold))
                         .foregroundStyle(theme.background)
+                        // Never wraps ("Contin/ue" on the 150pt card — seen
+                        // in the CI gallery); the minutes text yields instead.
+                        .fixedSize()
                         .padding(.horizontal, 14)
                         .padding(.vertical, 6)
                         .background(Capsule().fill(theme.inkColor))
@@ -318,11 +325,13 @@ private struct ContinueReadingCard: View {
                         Text("~\(minutesLeft) min left")
                             .font(.system(size: 11))
                             .foregroundStyle(theme.faint)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.7)
                     }
                 }
                 .padding(.top, 2)
             }
-            .frame(width: 190, alignment: .leading)
+            .frame(width: 150, alignment: .leading)
         }
         .buttonStyle(.plain)
         .accessibilityLabel(book.metadata.title)
@@ -339,9 +348,11 @@ private struct RecentlyAddedCard: View {
     var body: some View {
         Button(action: action) {
             VStack(alignment: .leading, spacing: 8) {
-                BookCoverView(book: book, coverImage: coverImage, width: 120)
+                // Matches the Continue Reading slot exactly — one shelf, one
+                // jacket size (see the note there).
+                BookCoverView.Slot(book: book, coverImage: coverImage, width: 150)
                 Text(book.metadata.title)
-                    .font(.system(size: 12.5, weight: .semibold, design: .serif))
+                    .font(.system(size: 13, weight: .semibold, design: .serif))
                     .foregroundStyle(theme.inkColor)
                     .multilineTextAlignment(.leading)
                     .lineLimit(2)
@@ -352,7 +363,7 @@ private struct RecentlyAddedCard: View {
                         .lineLimit(1)
                 }
             }
-            .frame(width: 120, alignment: .leading)
+            .frame(width: 150, alignment: .leading)
         }
         .buttonStyle(.plain)
         .accessibilityLabel(book.metadata.title)

@@ -103,6 +103,12 @@ struct SelectableTextView: View {
     /// shortcuts (⇧⌘H highlight, ⇧⌘M note) — the selection itself lives only
     /// in the platform text view.
     var onSelectionChange: (Range<Int>?) -> Void = { _ in }
+    /// iOS: a clean tap on the page — one that hit no highlight, dismissed no
+    /// annotation bar, and collapsed no selection. Reports the tap's location
+    /// and the text view's size so hosts can carve Apple-Books tap zones
+    /// (the column's outer quarters turn pages, the middle toggles chrome).
+    /// Delivered after a short settle window (see handleTap). Unused on macOS.
+    var onPageTap: ((CGPoint, CGSize) -> Void)? = nil
 
     #if canImport(UIKit)
     /// The target the floating bar is showing for (nil ⇒ bar hidden).
@@ -120,7 +126,8 @@ struct SelectableTextView: View {
             clearScrollTarget: { scrollToOffset?.wrappedValue = nil },
             allowsInternalScrolling: allowsInternalScrolling,
             onTarget: { barTarget = $0 },
-            onSelectionChange: onSelectionChange
+            onSelectionChange: onSelectionChange,
+            onPageTap: onPageTap
         )
         .overlay(alignment: .bottom) {
             if let target = barTarget {
@@ -230,7 +237,13 @@ enum TextRangeConvert {
 
         let paragraph = NSMutableParagraphStyle()
         paragraph.lineSpacing = style.lineSpacing
-        paragraph.paragraphSpacing = style.fontSize * 0.6
+        paragraph.paragraphSpacing = style.paragraphSpacing
+        if style.isJustified {
+            // Book-style justification needs hyphenation or long words tear
+            // rivers into narrow phone columns (Apple Books does the same).
+            paragraph.alignment = .justified
+            paragraph.hyphenationFactor = 0.9
+        }
 
         attributed.addAttribute(.font, value: style.contentFont, range: full)
         attributed.addAttribute(.foregroundColor, value: style.theme.ink, range: full)
@@ -260,20 +273,75 @@ enum TextRangeConvert {
                   let placeholder = Range(ns, in: text),
                   text[placeholder] == "\u{FFFC}"
             else { continue }
-            let attachment = NSTextAttachment()
+            let attachment = ColumnFittingAttachment()
             attachment.image = image
-            let size = image.size
-            if size.width > 0, size.height > 0 {
-                // Cap width so oversized figures don't blow out the column;
-                // preserve the aspect ratio.
-                let maxWidth: CGFloat = 500
-                let width = min(maxWidth, size.width)
-                let height = width * size.height / size.width
-                attachment.bounds = CGRect(x: 0, y: 0, width: width, height: height)
-            }
+            attachment.maxHeight = style.maxImageHeight
             attributed.addAttribute(.attachment, value: attachment, range: ns)
         }
         return attributed
+    }
+}
+
+/// A text attachment that sizes its image to the column it's laid out in:
+/// width fits the line fragment (so a figure can never spill past the text
+/// edge — the fixed 500pt cap it replaces clipped charts on phone columns),
+/// aspect ratio preserved, and an optional height cap so paged mode can
+/// guarantee no image exceeds a page. Sizing happens per layout pass, so the
+/// same attributed string renders correctly at any width — which also keeps
+/// `LayoutPaginator`'s measurement identical to the live page.
+///
+/// BOTH layout engines are overridden: `LayoutPaginator` and `NSTextView`
+/// measure through TextKit 1 (`NSLayoutManager` asks the four-argument
+/// method), while the live iOS `UITextView` runs TextKit 2 on this target's
+/// iOS 17 floor and asks the `location:`-based method instead — overriding
+/// only TK1 would render native-size images on the one platform this fix is
+/// for. Both funnel into one sizing function so the engines cannot drift.
+final class ColumnFittingAttachment: NSTextAttachment {
+    /// Page-height cap (paged mode); nil ⇒ only the width constrains.
+    var maxHeight: CGFloat?
+
+    /// The shared sizing rule: fit the proposed line-fragment width (never
+    /// upscaling), preserve aspect, honor the page-height cap.
+    private func fittedBounds(proposedWidth: CGFloat) -> CGRect? {
+        guard let image, image.size.width > 0, image.size.height > 0 else { return nil }
+        let native = image.size
+        var width = proposedWidth > 0 ? min(native.width, proposedWidth) : native.width
+        var height = width * native.height / native.width
+        if let maxHeight, maxHeight > 0, height > maxHeight {
+            height = maxHeight
+            width = height * native.width / native.height
+        }
+        return CGRect(x: 0, y: 0, width: width, height: height)
+    }
+
+    // TextKit 1 (NSLayoutManager): the paginator's measurement pass, macOS
+    // NSTextView, and any TK1-compatibility fallback.
+    override func attachmentBounds(
+        for textContainer: NSTextContainer?,
+        proposedLineFragment lineFrag: CGRect,
+        glyphPosition position: CGPoint,
+        characterIndex charIndex: Int
+    ) -> CGRect {
+        fittedBounds(proposedWidth: lineFrag.width)
+            ?? super.attachmentBounds(
+                for: textContainer, proposedLineFragment: lineFrag,
+                glyphPosition: position, characterIndex: charIndex
+            )
+    }
+
+    // TextKit 2 (NSTextLayoutManager): the live iOS UITextView.
+    override func attachmentBounds(
+        for attributes: [NSAttributedString.Key: Any],
+        location: any NSTextLocation,
+        textContainer: NSTextContainer?,
+        proposedLineFragment: CGRect,
+        position: CGPoint
+    ) -> CGRect {
+        fittedBounds(proposedWidth: proposedLineFragment.width)
+            ?? super.attachmentBounds(
+                for: attributes, location: location, textContainer: textContainer,
+                proposedLineFragment: proposedLineFragment, position: position
+            )
     }
 }
 
@@ -303,6 +371,8 @@ private struct Representable: UIViewRepresentable {
     let onTarget: (AnnotationTarget?) -> Void
     /// Reports the committed selection (see SelectableTextView).
     let onSelectionChange: (Range<Int>?) -> Void
+    /// Reports a clean page tap (see SelectableTextView).
+    let onPageTap: ((CGPoint, CGSize) -> Void)?
 
     func makeUIView(context: Context) -> UITextView {
         let view = AnnotatingUITextView()
@@ -343,6 +413,7 @@ private struct Representable: UIViewRepresentable {
         let coordinator = context.coordinator
         coordinator.onTarget = onTarget
         coordinator.selectionReporter.callback = onSelectionChange
+        coordinator.onPageTap = onPageTap
         coordinator.text = text
         coordinator.spans = highlights
         // Only rebuild the attributed string when the content actually changed —
@@ -407,6 +478,7 @@ private struct Representable: UIViewRepresentable {
         var text: String
         var spans: [HighlightSpan] = []
         var onTarget: (AnnotationTarget?) -> Void
+        var onPageTap: ((CGPoint, CGSize) -> Void)?
         let selectionReporter: SelectionReporter
         weak var textView: UITextView?
         /// `sizeThatFits` cache (paged mode): the fitted height for the last
@@ -503,17 +575,39 @@ private struct Representable: UIViewRepresentable {
             guard let view = textView,
                   let position = view.closestPosition(to: gesture.location(in: view))
             else { return }
+            let location = gesture.location(in: view)
+            let size = view.bounds.size
+            // Captured NOW: a tap whose job is dismissing something (the
+            // annotation bar, or collapsing a selection) must not also fire
+            // the page-tap action — the system collapses the selection and
+            // the delegate hides the bar before the async hop below lands.
+            let wasDismissal = barVisible || view.selectedRange.length > 0
             let utf16 = view.offset(from: view.beginningOfDocument, to: position)
             // The tap also collapses the selection, whose delegate callback
             // hides the bar — resolve the tapped span after that settles.
             DispatchQueue.main.async { [weak self] in
-                guard let self,
-                      let offset = TextRangeConvert.characterOffset(
-                          fromUTF16Location: utf16, in: self.text
-                      ),
-                      let span = self.spans.first(where: { $0.range.contains(offset) })
-                else { return }
-                self.show(.span(span))
+                guard let self else { return }
+                if let offset = TextRangeConvert.characterOffset(
+                       fromUTF16Location: utf16, in: self.text
+                   ),
+                   let span = self.spans.first(where: { $0.range.contains(offset) }) {
+                    self.show(.span(span))
+                    return
+                }
+                // A clean tap on plain page text: hand it to the host
+                // (page-turn zones / chrome toggle, Apple-Books-style).
+                guard !wasDismissal else { return }
+                // Settle before firing: the first tap of a double-tap word
+                // selection also lands here, and its second tap arrives
+                // 100–350ms later — acting immediately would toggle chrome
+                // (or worse, turn the page out from under the selection).
+                // After the settle window, a real double-tap has produced a
+                // selection (or the bar), and the tap wasn't clean after all.
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+                    guard let self, !self.barVisible,
+                          (self.textView?.selectedRange.length ?? 0) == 0 else { return }
+                    self.onPageTap?(location, size)
+                }
             }
         }
 

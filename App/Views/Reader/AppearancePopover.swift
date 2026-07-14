@@ -17,6 +17,9 @@ struct AppearancePopover: View {
     @Binding var themeRaw: String
     @Binding var layoutRaw: String
     @Binding var fontSize: Double
+    @Binding var fontRaw: String
+    @Binding var lineSpacingRaw: String
+    @Binding var isJustified: Bool
     var isPDF: Bool = false
     @Binding var pdfShowsOriginal: Bool
     @Environment(\.dismiss) private var dismiss
@@ -55,6 +58,15 @@ struct AppearancePopover: View {
                             themeDot(option)
                         }
                     }
+                }
+            }
+
+            section("Font") { fontRow }
+
+            section("Spacing") {
+                VStack(alignment: .leading, spacing: 10) {
+                    spacingPicker
+                    justifyToggle
                 }
             }
 
@@ -171,13 +183,129 @@ struct AppearancePopover: View {
         .accessibilityAddTraits(selected ? .isSelected : [])
     }
 
+    // MARK: - Font & spacing (the Apple-Books text controls)
+
+    /// Typeface menu: the current face's name in its own face, with a menu of
+    /// every option (system menus render in the system font, so the row label
+    /// is where the face previews).
+    private var fontRow: some View {
+        Menu {
+            Picker("Font", selection: $fontRaw) {
+                ForEach(ReaderFont.allCases) { option in
+                    Text(option.displayName).tag(option.rawValue)
+                }
+            }
+            .pickerStyle(.inline)
+            .labelsHidden()
+        } label: {
+            HStack {
+                Text(currentFont.displayName)
+                    .font(previewFont(for: currentFont))
+                    .foregroundStyle(theme.inkColor)
+                Spacer()
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(theme.muted)
+            }
+            .padding(.horizontal, 12)
+            .frame(height: 34)
+            .contentShape(Rectangle())
+        }
+        .menuStyle(.button)
+        .buttonStyle(.plain)
+        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(theme.line, lineWidth: 1))
+        .help("Reading typeface")
+        .accessibilityLabel("Font")
+        .accessibilityIdentifier("appearance.font")
+    }
+
+    private var currentFont: ReaderFont {
+        ReaderFont(rawValue: fontRaw) ?? .newYork
+    }
+
+    /// A 15pt preview of the face, matching `ReaderStyle.contentFont`'s
+    /// resolution (named family, or the system serif/sans designs).
+    private func previewFont(for font: ReaderFont) -> Font {
+        switch font {
+        case .newYork: return .system(size: 15, design: .serif)
+        case .sanFrancisco: return .system(size: 15)
+        case .charter: return .custom("Charter", size: 15)
+        case .georgia: return .custom("Georgia", size: 15)
+        case .palatino: return .custom("Palatino", size: 15)
+        }
+    }
+
+    /// Line-spacing presets (Compact / Normal / Relaxed), same segment
+    /// treatment as the layout picker.
+    private var spacingPicker: some View {
+        HStack(spacing: 2) {
+            ForEach(ReaderLineSpacing.allCases) { option in
+                spacingSegment(option)
+            }
+        }
+        .padding(2)
+        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(theme.line, lineWidth: 1))
+        .help("Line spacing")
+    }
+
+    private func spacingSegment(_ option: ReaderLineSpacing) -> some View {
+        let selected = lineSpacingRaw == option.rawValue
+        return Button { lineSpacingRaw = option.rawValue } label: {
+            segmentLabel(option.displayName, selected: selected)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("\(option.displayName) line spacing")
+        .accessibilityIdentifier("appearance.spacing.\(option.rawValue)")
+        .accessibilityAddTraits(selected ? .isSelected : [])
+    }
+
+    /// Shared segment chip. The selected state must read at a glance — a
+    /// paper-on-elevated fill alone was a few percent off the control
+    /// background (invisible on sepia), so the active chip adds a hairline
+    /// ring, a semibold label, and a whisper of lift.
+    private func segmentLabel(_ label: String, selected: Bool) -> some View {
+        Text(label)
+            .font(.system(size: 11.5, weight: selected ? .semibold : .medium))
+            .foregroundStyle(selected ? theme.inkColor : theme.muted)
+            .lineLimit(1)
+            .padding(.vertical, 5)
+            .frame(maxWidth: .infinity)
+            .background(
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(selected ? theme.paper : .clear)
+                    .shadow(color: .black.opacity(selected ? 0.10 : 0), radius: 2, y: 1)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 6)
+                    .strokeBorder(selected ? theme.line : .clear, lineWidth: 1)
+            )
+            .contentShape(Rectangle())
+    }
+
+    private var justifyToggle: some View {
+        Toggle(isOn: $isJustified) {
+            Text("Justify text")
+                .font(.system(size: 13))
+                .foregroundStyle(theme.inkColor)
+        }
+        .toggleStyle(.switch)
+        .controlSize(.mini)
+        .tint(theme.iris)
+        .help("Book-style full justification with hyphenation")
+        .accessibilityIdentifier("appearance.justify")
+    }
+
     // MARK: - Layout segments
 
     private var layoutPicker: some View {
         HStack(spacing: 2) {
             layoutSegment("Scroll", .scroll)
             layoutSegment("Single page", .singlePage)
+            // A facing-page spread on a handheld screen makes no sense (and
+            // Apple Books offers none) — iOS keeps single page + scroll.
+            #if os(macOS)
             layoutSegment("Two pages", .doublePage)
+            #endif
         }
         .padding(2)
         .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(theme.line, lineWidth: 1))
@@ -191,17 +319,7 @@ struct AppearancePopover: View {
         // tappable for the UI screenshot walk). Theme/font stay open so they
         // preview live.
         return Button { layoutRaw = value.rawValue; dismiss() } label: {
-            Text(label)
-                .font(.system(size: 11.5, weight: .medium))
-                .foregroundStyle(selected ? theme.inkColor : theme.muted)
-                .lineLimit(1)
-                .padding(.vertical, 5)
-                .frame(maxWidth: .infinity)
-                .background(
-                    RoundedRectangle(cornerRadius: 6)
-                        .fill(selected ? theme.paper : .clear)
-                )
-                .contentShape(Rectangle())
+            segmentLabel(label, selected: selected)
         }
         .buttonStyle(.plain)
         .accessibilityLabel(label)

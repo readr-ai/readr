@@ -35,7 +35,10 @@ final class ReadrAppUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Sample Book"].firstMatch.waitForExistence(timeout: 5))
     }
 
-    // J1/J2 — open a seeded book and navigate chapters.
+    // J1/J2 — open a seeded book and navigate chapters. iOS has no chapter
+    // chevrons (Apple Books-style: swipe or the Contents list) — this drives
+    // the Contents path; the swipe path is covered by
+    // ReadrFlowUITests.testScrollModeSwipeCrossesChapters.
     func testOpenSeededBookAndNavigateChapters() {
         let app = launchSeeded()
 
@@ -44,7 +47,12 @@ final class ReadrAppUITests: XCTestCase {
         bookCell.tap()
 
         XCTAssertTrue(app.staticTexts["Chapter One"].waitForExistence(timeout: 5))
-        app.buttons["nextChapter"].firstMatch.tap()
+        let toc = app.buttons["reader.toc"].firstMatch
+        XCTAssertTrue(toc.waitForExistence(timeout: 5))
+        toc.tap()
+        let chapterTwo = app.buttons["Chapter Two"].firstMatch
+        XCTAssertTrue(chapterTwo.waitForExistence(timeout: 5))
+        chapterTwo.tap()
         XCTAssertTrue(app.staticTexts["Chapter Two"].waitForExistence(timeout: 5))
     }
 
@@ -204,8 +212,9 @@ final class ReadrAppUITests: XCTestCase {
         snap(app, "02-reader")
 
         // c. Appearance popover: pick Sepia (popover stays open for live
-        // preview), then "Two pages" — layout choices dismiss the popover, so
-        // the toolbar is immediately tappable again.
+        // preview), then "Single page" — layout choices dismiss the popover,
+        // so the toolbar is immediately tappable again. (iOS offers no
+        // facing-page spread, Apple-Books-style.)
         let appearance = button(app, id: "reader.appearance", label: "Appearance")
         if appearance.waitForExistence(timeout: 3), appearance.isHittable {
             appearance.tap()
@@ -215,12 +224,12 @@ final class ReadrAppUITests: XCTestCase {
             let sepia = app.buttons["Sepia"].firstMatch
             if sepia.waitForExistence(timeout: 2), sepia.isHittable { sepia.tap() }
 
-            let twoPages = app.buttons["Two pages"].firstMatch
-            if twoPages.waitForExistence(timeout: 2), twoPages.isHittable {
-                twoPages.tap() // dismisses the popover
+            let singlePageSepia = app.buttons["Single page"].firstMatch
+            if singlePageSepia.waitForExistence(timeout: 2), singlePageSepia.isHittable {
+                singlePageSepia.tap() // dismisses the popover
             }
             _ = app.staticTexts["Chapter One"].waitForExistence(timeout: 2)
-            snap(app, "04-reader-two-pages-sepia")
+            snap(app, "04-reader-page-sepia")
 
             // Back to scroll for the remaining shots (sepia stays).
             if appearance.waitForExistence(timeout: 3), appearance.isHittable {

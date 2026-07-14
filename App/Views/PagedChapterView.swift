@@ -64,6 +64,10 @@ struct PagedChapterView: View {
     /// The committed selection, reported in chapter coordinates (nil ⇒ none) —
     /// feeds the host's selection-dependent keyboard shortcuts.
     var onSelectionChange: (Range<Int>?) -> Void = { _ in }
+    /// A clean tap on the middle of the page (iOS): the parent toggles its
+    /// chrome, Apple-Books-style. Taps on the column's outer quarters turn
+    /// pages instead (see pageView), as do the margin strips.
+    var onChromeToggle: (() -> Void)? = nil
     /// Whether a turn past the first/last page has somewhere to go (the
     /// parent has an adjacent chapter). Keeps the arrows live at the edges.
     var canOverflowBackward = false
@@ -99,10 +103,12 @@ struct PagedChapterView: View {
     // the estimate always matches what the body renders).
     /// Text columns per spread — drives both the measure cap and capacity.
     private var columns: CGFloat { layout == .doublePage ? 2 : 1 }
-    /// ~40 em, like `ScrollReadingColumn` (avg serif glyph ≈ 0.5 em ⇒ ~75–80
-    /// chars/line). Sharing the em count keeps paged and scroll lines the same
+    /// ~33 em, like `ScrollReadingColumn` — ≈65–70 characters per line for
+    /// the serif content font, the book-typography measure Apple Books holds
+    /// on iPad (40 em ran to ~95+ characters in wide panes, the reviewed
+    /// gap). Sharing the em count keeps paged and scroll lines the same
     /// length at any text size.
-    private static let measureEms: CGFloat = 40
+    private static let measureEms: CGFloat = 33
     /// Per-column width cap: 40 em of text plus the interior side insets. On a
     /// window wider than the cap the block is centered and the surplus becomes
     /// symmetric paper margin; narrower, columns shrink to fit (see capacity).
@@ -110,18 +116,20 @@ struct PagedChapterView: View {
         style.fontSize * Self.measureEms + pageInsets.leading + pageInsets.trailing
     }
     /// Interior page margins. Regular widths get generous, literary margins
-    /// (the paper fills the window, so the text can breathe); compact stays
-    /// tighter so a phone column isn't starved. Invariant: the leading/trailing
+    /// (the paper fills the window, so the text can breathe); compact matches
+    /// the book-reader convention (~24pt on a phone — Apple Books/Readium
+    /// territory) so the column isn't starved. Invariant: the leading/trailing
     /// inset is >= `arrowStripWidth` on BOTH size classes, so the full-height
     /// edge strip lands entirely in the margin and never overlaps the text
     /// column — otherwise the strip's button swallows selection-handle drags
     /// and long-press-to-annotate over the first/last glyphs of every line
     /// (the strips z-order above the column and the paper fills the window, so
-    /// on a phone the column reaches the window edge). Regular already matches
-    /// (56 == 56); compact matches at 40.
+    /// on a phone the column reaches the window edge). Regular matches at 56;
+    /// compact at 24 (narrow strips are fine — taps on the column's outer
+    /// quarters also turn pages, see pageView).
     private var pageInsets: EdgeInsets {
         isCompact
-            ? EdgeInsets(top: 28, leading: 40, bottom: 22, trailing: 40)
+            ? EdgeInsets(top: 28, leading: 24, bottom: 22, trailing: 24)
             : EdgeInsets(top: 44, leading: 56, bottom: 40, trailing: 56)
     }
     /// Reserved band at the bottom for the muted page label, kept clear of the
@@ -133,7 +141,7 @@ struct PagedChapterView: View {
     private static let kickerAllowance: CGFloat = 36
     /// Full-height edge hit strip for the page-turn chevron (Apple-Books
     /// edge-tap). Narrower on a phone so it doesn't cover the column's edge.
-    private var arrowStripWidth: CGFloat { isCompact ? 40 : 56 }
+    private var arrowStripWidth: CGFloat { isCompact ? 24 : 56 }
 
     /// Memoizes the last pagination so page turns/selection don't re-scan the
     /// whole chapter on every body evaluation. Reference type on purpose:
@@ -159,9 +167,12 @@ struct PagedChapterView: View {
             ZStack {
                 // The paper is the window — one full-bleed surface; the text
                 // column centers within it and the margins are the same paper.
+                // Taps that land on bare paper (top margin, bottom band) are
+                // clean page taps: toggle the chrome, like the column middle.
                 style.theme.paper
+                    .onTapGesture { onChromeToggle?() }
 
-                pageColumns(visible: visible)
+                pageColumns(visible: visible, in: pages, size: geo.size)
 
                 // Full-height edge strips carry a bare chevron (no card, so no
                 // filled circle). On macOS they fade in on hover; on iOS the
@@ -210,6 +221,20 @@ struct PagedChapterView: View {
 
     // MARK: - Pages
 
+    /// The style pages MEASURE and RENDER with — the shared appearance plus
+    /// an image-height cap at the page's text height, so no inline figure can
+    /// ever exceed a page (which would defeat measurement and force the
+    /// estimate fallback). One derivation used by both the paginator and the
+    /// live page views, so they can never disagree.
+    private func renderStyle(for size: CGSize) -> ReaderStyle {
+        var adjusted = style
+        let pageHeight = max(
+            1, size.height - (pageInsets.top + pageInsets.bottom) - labelAllowance
+        )
+        adjusted.maxImageHeight = max(1, pageHeight - Self.kickerAllowance - 4)
+        return adjusted
+    }
+
     private func paginate(for size: CGSize) -> [Page] {
         // The page's TEXT area, from the same terms the body renders with:
         // column width capped at the measure minus interior side insets;
@@ -222,7 +247,10 @@ struct PagedChapterView: View {
         )
         let hasKicker = chapter.title != nil
 
+        // Every input that changes layout must be in the key: geometry, size,
+        // typeface, leading, justification, layout, kicker, and image set.
         let key = "\(Int(textWidth))x\(Int(pageHeight))|\(style.fontSize)|"
+            + "\(style.font.rawValue)|\(style.spacing.rawValue)|\(style.isJustified)|"
             + "\(layout.rawValue)|\(hasKicker)|\(inlineImages.keys.sorted())"
         if cache.chapterID == chapter.id, cache.key == key {
             return cache.pages
@@ -234,7 +262,7 @@ struct PagedChapterView: View {
         // absorbs sub-point engine differences between the measurement pass
         // and the live text view — a hair under-full is invisible; one line
         // over would clip.
-        let paginator = LayoutPaginator(style: style, inlineImages: inlineImages)
+        let paginator = LayoutPaginator(style: renderStyle(for: size), inlineImages: inlineImages)
         var pages = paginator.paginate(chapter.text) { index in
             // The kicker renders on each spread's FIRST page (every page in
             // single-page layout; even indices in double, since spreads
@@ -347,10 +375,13 @@ struct PagedChapterView: View {
     /// block is centered, so surplus window width becomes symmetric paper
     /// margin (the surface behind is already `theme.paper`). A subtle hairline
     /// is the spine between facing pages.
-    private func pageColumns(visible: [Page]) -> some View {
+    private func pageColumns(visible: [Page], in pages: [Page], size: CGSize) -> some View {
         HStack(alignment: .top, spacing: 0) {
             ForEach(Array(visible.enumerated()), id: \.offset) { item in
-                pageView(item.element, showsKicker: item.offset == 0)
+                pageView(
+                    item.element, showsKicker: item.offset == 0,
+                    in: pages, style: renderStyle(for: size)
+                )
                 if layout == .doublePage, item.offset == 0, visible.count > 1 {
                     spine
                 }
@@ -375,7 +406,9 @@ struct PagedChapterView: View {
     }
 
     @ViewBuilder
-    private func pageView(_ page: Page, showsKicker: Bool) -> some View {
+    private func pageView(
+        _ page: Page, showsKicker: Bool, in pages: [Page], style: ReaderStyle
+    ) -> some View {
         // Images whose placeholder falls on this page, shifted into page
         // coordinates (same textStartOffset origin as highlights below).
         let origin = page.textStartOffset
@@ -428,6 +461,18 @@ struct PagedChapterView: View {
                     onSelectionChange(range.map {
                         ($0.lowerBound + origin)..<($0.upperBound + origin)
                     })
+                },
+                // Apple-Books tap zones over the column itself: the outer
+                // quarters page back/forward (the narrow margin strips alone
+                // would be a mean touch target), the middle toggles chrome.
+                onPageTap: { location, size in
+                    if location.x < size.width * 0.25 {
+                        turnPage(-1, in: pages)
+                    } else if location.x > size.width * 0.75 {
+                        turnPage(+1, in: pages)
+                    } else {
+                        onChromeToggle?()
+                    }
                 }
             )
         }
@@ -461,45 +506,49 @@ struct PagedChapterView: View {
 
     // MARK: - Chrome
 
-    /// Bare page-turn chevron on a full-height edge strip (no card ⇒ no filled
-    /// circle). The hit area is the whole strip (Apple Books edge-tap). On
-    /// macOS the glyph is hidden until the pointer is over the surface, then
-    /// fades in; disabled arrows stay consistently dimmed. iOS keeps them
-    /// visible (no hover). Actions, `.help`, labels, and disabled logic are
-    /// unchanged.
+    /// Full-height edge strip that turns pages (Apple Books edge-tap). On
+    /// macOS it carries a bare chevron that fades in when the pointer is over
+    /// the surface (disabled arrows stay dimmed). On iOS the strip is an
+    /// INVISIBLE tap zone — Apple Books pins no chevrons over the page; the
+    /// affordance is the platform convention itself (tap the margin, or the
+    /// column's outer quarters, to turn). VoiceOver still gets the labeled
+    /// button either way.
     private func turnButton(
         glyph: String, direction: Int, in pages: [Page],
         disabled: Bool, help: String, label: String
     ) -> some View {
         Button { turnPage(direction, in: pages) } label: {
-            Text(glyph)
-                .font(.system(size: 22))
-                .foregroundStyle(style.theme.faint)
-                .frame(width: arrowStripWidth)
-                .frame(maxHeight: .infinity)
-                .contentShape(Rectangle())
+            Group {
+                #if os(macOS)
+                Text(glyph)
+                    .font(.system(size: 22))
+                    .foregroundStyle(style.theme.faint)
+                    .opacity(arrowOpacity(disabled: disabled))
+                #else
+                Color.clear
+                #endif
+            }
+            .frame(width: arrowStripWidth)
+            .frame(maxHeight: .infinity)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .help(help)
         .accessibilityLabel(label)
         .disabled(disabled)
-        .opacity(arrowOpacity(disabled: disabled))
         #if os(macOS)
         .animation(.easeInOut(duration: 0.15), value: hoveringSurface)
         #endif
     }
 
+    #if os(macOS)
     /// Chevron opacity: disabled arrows sit at 0.35 (consistently dimmed),
-    /// live ones at full. On macOS the whole thing hides (0) until the pointer
-    /// enters the surface, so at rest the page reads uncluttered.
+    /// live ones at full — and everything hides (0) until the pointer enters
+    /// the surface, so at rest the page reads uncluttered.
     private func arrowOpacity(disabled: Bool) -> Double {
-        let base = disabled ? 0.35 : 1.0
-        #if os(macOS)
-        return hoveringSurface ? base : 0
-        #else
-        return base
-        #endif
+        hoveringSurface ? (disabled ? 0.35 : 1.0) : 0
     }
+    #endif
 
     /// Small muted page label, centered in the reserved bottom band. Same text
     /// logic as the old footer ("Page x of y" / "Pages x–y of N" + "· ~N min

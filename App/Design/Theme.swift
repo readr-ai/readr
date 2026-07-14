@@ -237,20 +237,89 @@ enum ReadingTheme: String, CaseIterable, Codable, Identifiable {
     static let pickerColors: [ReadrKit.HighlightColor] = [.yellow, .green, .blue, .pink]
 }
 
+/// The reader's body typefaces, Apple-Books-style: a short curated list of
+/// faces that ship on every iOS/macOS device (no bundling). Raw values are
+/// persisted in @AppStorage — don't rename cases.
+enum ReaderFont: String, CaseIterable, Codable, Identifiable {
+    case newYork, charter, georgia, palatino, sanFrancisco
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .newYork: return "New York"
+        case .charter: return "Charter"
+        case .georgia: return "Georgia"
+        case .palatino: return "Palatino"
+        case .sanFrancisco: return "San Francisco"
+        }
+    }
+
+    /// The installed family name to instantiate, or nil for the system font
+    /// paths (New York via the serif design descriptor, SF directly).
+    fileprivate var familyName: String? {
+        switch self {
+        case .newYork, .sanFrancisco: return nil
+        case .charter: return "Charter"
+        case .georgia: return "Georgia"
+        case .palatino: return "Palatino"
+        }
+    }
+}
+
+/// Line-height presets (the extra leading above the glyph box, as a fraction
+/// of the font size). The system serif's natural line box is ~1.2 em, so
+/// these land at ~1.3×/1.45×/1.7× overall — "normal" matches the comfortable
+/// book default (Apple Books sits around 1.4×); the old hard-coded 0.52
+/// (1.7×) is what read as "too far apart" and survives as `.relaxed` for
+/// readers who liked it. Raw values are persisted — don't rename cases.
+enum ReaderLineSpacing: String, CaseIterable, Codable, Identifiable {
+    case compact, normal, relaxed
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .compact: return "Compact"
+        case .normal: return "Normal"
+        case .relaxed: return "Relaxed"
+        }
+    }
+
+    var multiplier: CGFloat {
+        switch self {
+        case .compact: return 0.10
+        case .normal: return 0.24
+        case .relaxed: return 0.52
+        }
+    }
+}
+
 /// Everything the text renderer needs to draw a page of a book.
 struct ReaderStyle: Equatable {
     var theme: ReadingTheme = .paper
     var fontSize: CGFloat = 18
-    var usesSerif = true
+    var font: ReaderFont = .newYork
+    var spacing: ReaderLineSpacing = .normal
+    /// Book-style full justification (with hyphenation) — the Apple Books
+    /// default. Off ⇒ natural (ragged-right) alignment.
+    var isJustified = true
+    /// Cap for inline image height (paged mode sets it to the page's text
+    /// height so a figure can never exceed a page and break pagination).
+    /// nil ⇒ uncapped (scroll mode, where the column just grows).
+    var maxImageHeight: CGFloat? = nil
 
     static let fontSizeRange: ClosedRange<CGFloat> = 13...30
 
     var contentFont: PlatformFont {
-        if usesSerif {
+        let system = PlatformFont.systemFont(ofSize: fontSize)
+        if let family = font.familyName,
+           let named = Self.resolveFont(family: family, size: fontSize) {
+            return named
+        }
+        if font == .newYork {
             // New York via the system serif design; falls back to the system
-            // font if the descriptor can't be realized. (Literata, the design
-            // reference face, needs bundling — tracked in ROADMAP.)
-            let system = PlatformFont.systemFont(ofSize: fontSize)
+            // font if the descriptor can't be realized.
             if let descriptor = system.fontDescriptor.withDesign(.serif) {
                 #if canImport(UIKit)
                 return PlatformFont(descriptor: descriptor, size: fontSize)
@@ -258,12 +327,35 @@ struct ReaderStyle: Equatable {
                 return PlatformFont(descriptor: descriptor, size: fontSize) ?? system
                 #endif
             }
-            return system
         }
-        return PlatformFont.systemFont(ofSize: fontSize)
+        return system
     }
 
-    /// The design page sets line-height 1.74 — lineSpacing is the extra above
-    /// the glyph height.
-    var lineSpacing: CGFloat { fontSize * 0.52 }
+    /// Family-name font resolution. UIFont(name:) accepts family names;
+    /// NSFont(name:) wants a face name, so macOS goes through a family
+    /// descriptor — verifying the result (an unknown family silently
+    /// resolves to Helvetica, which must fall through to the system font
+    /// instead of masquerading as the picked face).
+    private static func resolveFont(family: String, size: CGFloat) -> PlatformFont? {
+        #if canImport(UIKit)
+        if let direct = UIFont(name: family, size: size) { return direct }
+        let descriptor = UIFontDescriptor(fontAttributes: [.family: family])
+        let resolved = UIFont(descriptor: descriptor, size: size)
+        return resolved.familyName == family ? resolved : nil
+        #else
+        if let direct = NSFont(name: family, size: size) { return direct }
+        let descriptor = NSFontDescriptor(fontAttributes: [.family: family])
+        guard let resolved = NSFont(descriptor: descriptor, size: size),
+              resolved.familyName == family else { return nil }
+        return resolved
+        #endif
+    }
+
+    /// Extra leading above the glyph box, from the spacing preset.
+    var lineSpacing: CGFloat { fontSize * spacing.multiplier }
+
+    /// Space between paragraphs (chapter text separates them with a single
+    /// newline). ~0.35 em: a visible break without the airy blank-line look —
+    /// the book convention Apple Books renders for most EPUBs.
+    var paragraphSpacing: CGFloat { fontSize * 0.35 }
 }

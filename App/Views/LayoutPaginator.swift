@@ -128,11 +128,26 @@ struct LayoutPaginator {
             }
             end = min(max(end, textStart + 1), n)
 
-            // Trailing boundary whitespace belongs to the NEXT page's range
-            // (its leading fold): rendered page text must not end in
-            // newlines, which would draw a phantom empty line. Never trim
-            // below one visible character.
             if end < n {
+                // Hyphenation (on by default with justified text) can land
+                // the measured break MID-WORD: the layout hyphenated the
+                // page's bottom line, but the rendered slice ends there — no
+                // hyphen glyph, just "beauti" / next page "ful". Fold the
+                // fragment onto the next page by backing up to the last break
+                // opportunity. Explicit hyphens/dashes are legitimate break
+                // points; a page that is one giant unbroken word keeps the
+                // measured cut (progress guarantee).
+                if !chars[end].isWhitespace, !chars[end - 1].isWhitespace,
+                   chars[end - 1] != "-", chars[end - 1] != "\u{2010}",
+                   chars[end - 1] != "\u{00AD}" {
+                    var back = end
+                    while back > textStart, !chars[back - 1].isWhitespace { back -= 1 }
+                    if back > textStart { end = back }
+                }
+                // Trailing boundary whitespace belongs to the NEXT page's
+                // range (its leading fold): rendered page text must not end
+                // in newlines, which would draw a phantom empty line. Never
+                // trim below one visible character.
                 while end > textStart + 1, chars[end - 1].isWhitespace { end -= 1 }
             }
 

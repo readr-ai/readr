@@ -46,6 +46,10 @@ struct ProviderSettingsView: View {
                         .foregroundStyle(theme.faint)
                 }
                 .padding(20)
+                // Extra bottom air: on iPad's shorter form sheet the last
+                // privacy line rested exactly on the fold, reading as a
+                // mid-glyph clip (CI walk) rather than scrollable content.
+                .padding(.bottom, 28)
                 .frame(maxWidth: 560, alignment: .leading)
                 .frame(maxWidth: .infinity)
             }

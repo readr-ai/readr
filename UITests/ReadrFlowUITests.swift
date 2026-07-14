@@ -67,8 +67,8 @@ final class ReadrFlowUITests: XCTestCase {
     }
 
     /// Picks a reading layout via the Appearance popover ("Scroll" /
-    /// "Single page" / "Two pages"). Layout segments dismiss the popover
-    /// themselves. Best-effort: used for setup/restore, not as an assertion.
+    /// "Single page"). Layout segments dismiss the popover themselves.
+    /// Best-effort: used for setup/restore, not as an assertion.
     private func selectLayout(_ app: XCUIApplication, _ label: String) {
         let appearance = button(app, id: "reader.appearance", label: "Appearance")
         guard appearance.waitForExistence(timeout: 5), appearance.isHittable else { return }
@@ -368,7 +368,15 @@ final class ReadrFlowUITests: XCTestCase {
 
         // The seed creates exactly 3 highlights on Sample Book; ours is #4.
         let notes = button(app, id: "reader.notes", label: "Highlights")
-        XCTAssertTrue(notes.waitForExistence(timeout: 5))
+        var notesReady = notes.waitForExistence(timeout: 5)
+        if !notesReady {
+            // The double-tap fallback's first tap can read as a clean page
+            // tap and hide the chrome (Apple-Books tap-to-hide) — one center
+            // tap brings it back.
+            text.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+            notesReady = notes.waitForExistence(timeout: 5)
+        }
+        XCTAssertTrue(notesReady)
         notes.tap()
         // On iPhone the center long-press reliably lands on plain text → a 4th
         // highlight is created, so ASSERT it (a real pipeline regression fails
@@ -482,12 +490,12 @@ final class ReadrFlowUITests: XCTestCase {
         }
     }
 
-    // MARK: - iPad: double-page layout
+    // MARK: - iOS layouts: single page + scroll only (Apple Books parity)
 
-    // The Appearance popover offers "Two pages" on both idioms; on iPad the
-    // spread actually renders, while compact iPhone widths coerce the stored
-    // preference to single pages (see ReaderView.layout).
-    func testAppearanceOffersTwoPagesLayout() {
+    // iOS offers no facing-page spread (it makes no sense on a handheld
+    // screen; Apple Books has none) — the Appearance popover shows exactly
+    // Scroll and Single page, and Single page renders the paged surface.
+    func testAppearanceOffersSinglePageAndScrollOnly() {
         let app = launchSeeded()
         openSampleBook(app)
 
@@ -495,36 +503,110 @@ final class ReadrFlowUITests: XCTestCase {
         XCTAssertTrue(appearance.waitForExistence(timeout: 5))
         appearance.tap()
 
-        let twoPages = button(app, id: "appearance.layout.doublePage", label: "Two pages")
+        let singlePage = button(app, id: "appearance.layout.singlePage", label: "Single page")
         XCTAssertTrue(
-            twoPages.waitForExistence(timeout: 5),
-            "Appearance should offer the Two pages layout"
+            singlePage.waitForExistence(timeout: 5),
+            "Appearance should offer the Single page layout"
         )
-        XCTAssertTrue(twoPages.isEnabled, "Two pages should be selectable")
-        twoPages.tap() // dismisses the popover and switches layout
+        XCTAssertFalse(
+            app.buttons["appearance.layout.doublePage"].firstMatch.exists
+                || app.buttons["Two pages"].firstMatch.exists,
+            "iOS must not offer a facing-page spread"
+        )
+        singlePage.tap() // dismisses the popover and switches layout
 
-        // Paged mode's bottom label: "Pages x–y of N" on a real spread,
-        // "Page x of N" when only one page exists/fits.
+        // Paged mode's bottom label — and never the spread's "Pages x–y".
         let pageLabel = app.staticTexts.matching(
             NSPredicate(format: "label BEGINSWITH 'Page'")
         ).firstMatch
         XCTAssertTrue(
             pageLabel.waitForExistence(timeout: 5),
-            "Choosing Two pages should switch the reader into paged mode"
+            "Choosing Single page should switch the reader into paged mode"
         )
-        if !isPad {
-            // iPhone: the stored doublePage preference must render as single
-            // pages (never "Pages x–y") — a facing spread on a compact width
-            // yields one-word columns.
-            XCTAssertFalse(
-                pageLabel.label.hasPrefix("Pages"),
-                "Compact width must coerce the two-page spread to single pages"
-            )
-        }
+        XCTAssertFalse(
+            pageLabel.label.hasPrefix("Pages"),
+            "iOS must render single pages, never a facing spread"
+        )
 
         // Restore scroll so the persisted layout doesn't leak into other
         // tests (AppStorage survives relaunches on the same simulator).
         selectLayout(app, "Scroll")
+    }
+
+    // MARK: - Typography controls (Apple Books parity)
+
+    // The Appearance popover carries the Books-style text controls: a font
+    // menu, line-spacing presets, and the justification toggle.
+    func testAppearanceOffersFontSpacingAndJustification() {
+        let app = launchSeeded()
+        openSampleBook(app)
+
+        let appearance = button(app, id: "reader.appearance", label: "Appearance")
+        XCTAssertTrue(appearance.waitForExistence(timeout: 5))
+        appearance.tap()
+
+        let fontMenu = button(app, id: "appearance.font", label: "Font")
+        XCTAssertTrue(
+            fontMenu.waitForExistence(timeout: 5),
+            "Appearance should offer the reading typeface menu"
+        )
+
+        for spacing in ["compact", "normal", "relaxed"] {
+            XCTAssertTrue(
+                app.buttons["appearance.spacing.\(spacing)"].firstMatch.exists,
+                "Appearance should offer the \(spacing) line-spacing preset"
+            )
+        }
+
+        let justify = app.switches["appearance.justify"].firstMatch
+        XCTAssertTrue(
+            justify.exists || app.switches["Justify text"].firstMatch.exists,
+            "Appearance should offer the justification toggle"
+        )
+
+        // Live-preview controls: picking a spacing preset keeps the popover
+        // open and the reader intact.
+        app.buttons["appearance.spacing.relaxed"].firstMatch.tap()
+        XCTAssertTrue(fontMenu.exists, "Spacing presets should preview live")
+        app.buttons["appearance.spacing.normal"].firstMatch.tap() // restore
+    }
+
+    // MARK: - Distraction-free chrome (Apple Books parity)
+
+    // A tap on the middle of the page hides all reader chrome; another tap
+    // brings it back. Chapter Two is the tap target — Chapter One's seeded
+    // highlights would turn a center tap into an edit-bar tap.
+    func testTapTogglesReaderChrome() {
+        let app = launchSeeded()
+        openSampleBook(app)
+
+        // Move to a highlight-free page first.
+        let toc = button(app, id: "reader.toc", label: "Table of contents")
+        XCTAssertTrue(toc.waitForExistence(timeout: 5))
+        toc.tap()
+        let chapterTwo = app.buttons["Chapter Two"].firstMatch
+        XCTAssertTrue(chapterTwo.waitForExistence(timeout: 5))
+        chapterTwo.tap()
+        XCTAssertTrue(app.staticTexts["Chapter Two"].waitForExistence(timeout: 5))
+
+        let appearance = button(app, id: "reader.appearance", label: "Appearance")
+        XCTAssertTrue(appearance.waitForExistence(timeout: 5), "Chrome starts visible")
+
+        // Tap the middle of the reading column → chrome hides.
+        let surface = app.textViews.firstMatch
+        XCTAssertTrue(surface.waitForExistence(timeout: 5))
+        surface.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+        XCTAssertTrue(
+            app.buttons["reader.appearance"].firstMatch.waitForNonExistence(timeout: 5),
+            "A page tap must hide the reader chrome"
+        )
+
+        // Tap again → chrome returns.
+        surface.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+        XCTAssertTrue(
+            appearance.waitForExistence(timeout: 5),
+            "A second page tap must bring the chrome back"
+        )
     }
 
     // MARK: - Hardware keyboard page turn (pairs with Lane B)

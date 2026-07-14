@@ -137,6 +137,16 @@ docs/DEVELOPMENT-PLAN.md §M6–M8.
 - [ ] Deferred: multi-window / Stage Manager (macOS per-book WindowGroup is
   the template); iCloud sync (seam: `LibraryStore` behind
   `AppModel.makeDefaultStore()`)
+- [ ] Deferred: macOS UI for the reader typography controls (font /
+  line-spacing / justification live in the iOS Appearance popover; macOS
+  renders the shared defaults but its inline toolbar has no pickers yet)
+- [ ] Deferred (UX review, Jul 2026): unify sheet-header grammar (Ask /
+  Article Studio / Notes / Settings each style their title+Done
+  differently — one shared header component; touches UITest hooks so it
+  needs its own pass); one typeface for AI output (ask answers are sans,
+  composed articles serif); dedupe/label ask source chips; note-indicator
+  underline parity across themes; PDF chrome parity with the EPUB reader
+  toolbar
 
 ## Open questions / decisions to revisit
 - OAuth feasibility for "log in with Claude / ChatGPT" vs. API keys only.
