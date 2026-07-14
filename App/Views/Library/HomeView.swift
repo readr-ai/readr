@@ -315,6 +315,9 @@ private struct ContinueReadingCard: View {
                     Text("Continue")
                         .font(.system(size: 12, weight: .semibold))
                         .foregroundStyle(theme.background)
+                        // Never wraps ("Contin/ue" on the 150pt card — seen
+                        // in the CI gallery); the minutes text yields instead.
+                        .fixedSize()
                         .padding(.horizontal, 14)
                         .padding(.vertical, 6)
                         .background(Capsule().fill(theme.inkColor))
@@ -323,7 +326,7 @@ private struct ContinueReadingCard: View {
                             .font(.system(size: 11))
                             .foregroundStyle(theme.faint)
                             .lineLimit(1)
-                            .minimumScaleFactor(0.85)
+                            .minimumScaleFactor(0.7)
                     }
                 }
                 .padding(.top, 2)
