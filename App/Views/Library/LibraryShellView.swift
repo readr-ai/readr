@@ -68,6 +68,19 @@ struct LibraryShellView: View {
         } message: {
             Text(model.importError ?? "")
         }
+        // Informational sibling of the import-failure alert: the import
+        // worked, but the book needs a caveat (fixed-layout shown as text).
+        .alert(
+            "About this book",
+            isPresented: Binding(
+                get: { model.importNotice != nil },
+                set: { if !$0 { model.importNotice = nil } }
+            )
+        ) {
+            Button("OK", role: .cancel) { model.importNotice = nil }
+        } message: {
+            Text(model.importNotice ?? "")
+        }
     }
 
     // MARK: Sidebar

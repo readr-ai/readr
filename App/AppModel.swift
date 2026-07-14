@@ -13,6 +13,10 @@ final class AppModel: ObservableObject {
     @Published private(set) var bookmarksByBook: [UUID: [Bookmark]] = [:]
     @Published private(set) var statesByBook: [UUID: BookState] = [:]
     @Published var importError: String?
+    /// Informational notice from the last import (e.g. a fixed-layout book
+    /// that will be shown as extracted text). Same alert-binding pattern as
+    /// `importError`, but the import itself succeeded.
+    @Published var importNotice: String?
 
     private let store: any LibraryStore
     private let parsers: BookParserRegistry
@@ -324,6 +328,13 @@ final class AppModel: ObservableObject {
             try? store.saveBookState(state, for: book.id)
             statesByBook[book.id] = state
             books = store.allBooks()
+            if book.metadata.isFixedLayout == true {
+                importNotice = """
+                “\(book.metadata.title)” is a fixed-layout book. Readr shows it \
+                as extracted text for now — fixed-layout rendering is on the \
+                roadmap.
+                """
+            }
         } catch let error as BookParserError {
             importError = Self.message(for: error)
         } catch {

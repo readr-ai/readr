@@ -45,19 +45,27 @@ public struct BookMetadata: Hashable, Sendable, Codable {
     public var publisher: String?
     /// Table of contents, always injected as part of the query anchor.
     public var tableOfContents: [TOCEntry]
+    /// True when the EPUB declares pre-paginated (fixed) layout —
+    /// `rendition:layout` in the OPF or the legacy Apple display options.
+    /// Readr extracts such books as text; the flag lets the app say so.
+    /// Optional so libraries persisted before this field still decode;
+    /// nil means reflowable.
+    public var isFixedLayout: Bool?
 
     public init(
         title: String,
         authors: [String] = [],
         language: String? = nil,
         publisher: String? = nil,
-        tableOfContents: [TOCEntry] = []
+        tableOfContents: [TOCEntry] = [],
+        isFixedLayout: Bool? = nil
     ) {
         self.title = title
         self.authors = authors
         self.language = language
         self.publisher = publisher
         self.tableOfContents = tableOfContents
+        self.isFixedLayout = isFixedLayout
     }
 }
 

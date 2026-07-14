@@ -11,7 +11,9 @@ public enum XHTMLTextExtractor {
     ]
 
     /// Container tags whose entire contents are non-content and get dropped.
-    private static let nonContentTags = ["script", "style", "head"]
+    /// `rt`/`rp` hold ruby phonetic annotations — keeping them would duplicate
+    /// the annotated base text in the extracted prose.
+    private static let nonContentTags = ["script", "style", "head", "rt", "rp"]
 
     /// The placeholder each `<img>` becomes in extracted text: U+FFFC OBJECT
     /// REPLACEMENT CHARACTER — the same character `NSAttributedString` uses for
@@ -84,6 +86,11 @@ public enum XHTMLTextExtractor {
         for tag in nonContentTags {
             s = remove(tag: tag, in: s)
         }
+        // Table cells: a space between cells keeps rows readable once the
+        // markup is gone ("Name Age" instead of "NameAge"); `tr` below turns
+        // each row into its own line.
+        s = s.replacingOccurrences(
+            of: "</t[dh]\\s*>", with: " ", options: [.regularExpression, .caseInsensitive])
         // Turn block-level boundaries into newlines.
         for tag in blockTags {
             s = s.replacingOccurrences(
@@ -122,40 +129,38 @@ public enum XHTMLTextExtractor {
         )
     }
 
+    /// Decodes HTML character references — named and numeric — in one
+    /// left-to-right pass. Single-pass matters for two reasons: it's linear on
+    /// very large chapters (one scan, not one per entity), and it makes
+    /// double-escaping correct by construction — `&amp;lt;` decodes the
+    /// `&amp;` and then treats the following `lt;` as literal text, yielding
+    /// `&lt;` rather than `<`. Unknown references are left intact.
     static func decodeEntities(_ s: String) -> String {
-        var out = s
-        // All entities except `&amp;`. These can be applied in any order.
-        let named = ["&lt;": "<", "&gt;": ">", "&quot;": "\"",
-                     "&apos;": "'", "&#39;": "'", "&nbsp;": " ", "&mdash;": "—",
-                     "&ndash;": "–", "&hellip;": "…", "&rsquo;": "’", "&lsquo;": "‘",
-                     "&ldquo;": "“", "&rdquo;": "”"]
-        for (entity, replacement) in named {
-            out = out.replacingOccurrences(of: entity, with: replacement)
-        }
-        // Numeric entities: &#123; and &#x1F600;
-        out = replaceNumericEntities(out)
-        // `&amp;` MUST be decoded last so escaped sequences like `&amp;lt;` decode
-        // to the literal text `&lt;` rather than being double-decoded to `<`.
-        out = out.replacingOccurrences(of: "&amp;", with: "&")
-        return out
-    }
-
-    private static func replaceNumericEntities(_ s: String) -> String {
-        guard let regex = try? NSRegularExpression(pattern: "&#(x?[0-9A-Fa-f]+);") else { return s }
+        guard s.contains("&"),
+              let regex = try? NSRegularExpression(
+                  pattern: "&(#[0-9]+|#[xX][0-9A-Fa-f]+|[A-Za-z][A-Za-z0-9]*);"
+              ) else { return s }
         let ns = s as NSString
         var result = ""
         var last = 0
         for match in regex.matches(in: s, range: NSRange(location: 0, length: ns.length)) {
             result += ns.substring(with: NSRange(location: last, length: match.range.location - last))
             let token = ns.substring(with: match.range(at: 1))
-            let scalarValue: UInt32?
-            if token.hasPrefix("x") || token.hasPrefix("X") {
-                scalarValue = UInt32(token.dropFirst(), radix: 16)
-            } else {
-                scalarValue = UInt32(token, radix: 10)
-            }
-            if let value = scalarValue, let scalar = Unicode.Scalar(value) {
-                result += String(scalar)
+            if token.hasPrefix("#") {
+                let digits = token.dropFirst()
+                let scalarValue: UInt32?
+                if digits.hasPrefix("x") || digits.hasPrefix("X") {
+                    scalarValue = UInt32(digits.dropFirst(), radix: 16)
+                } else {
+                    scalarValue = UInt32(digits, radix: 10)
+                }
+                if let value = scalarValue, let scalar = Unicode.Scalar(value) {
+                    result += String(scalar)
+                } else {
+                    result += ns.substring(with: match.range)
+                }
+            } else if let replacement = namedEntities[token] {
+                result += replacement
             } else {
                 result += ns.substring(with: match.range)
             }
@@ -164,4 +169,57 @@ public enum XHTMLTextExtractor {
         result += ns.substring(with: NSRange(location: last, length: ns.length - last))
         return result
     }
+
+    /// Named HTML entities seen in real EPUBs: the XML five, Latin-1
+    /// (typography, symbols, accented letters), and the common HTML 4
+    /// typographic set. Zero-width/soft-hyphen entities map to "" and the
+    /// space-like entities to a plain space — extracted text is plain prose,
+    /// so invisible layout characters only get in the way of search and
+    /// highlighting.
+    private static let namedEntities: [String: String] = [
+        // XML core
+        "amp": "&", "lt": "<", "gt": ">", "quot": "\"", "apos": "'",
+        // Spaces and invisibles
+        "nbsp": " ", "ensp": " ", "emsp": " ", "thinsp": " ",
+        "shy": "", "zwnj": "", "zwj": "",
+        // Dashes, quotes, ellipsis
+        "mdash": "—", "ndash": "–", "hellip": "…",
+        "lsquo": "‘", "rsquo": "’", "ldquo": "“", "rdquo": "”",
+        "sbquo": "‚", "bdquo": "„", "prime": "′", "Prime": "″",
+        "lsaquo": "‹", "rsaquo": "›", "laquo": "«", "raquo": "»",
+        // Symbols and punctuation
+        "copy": "©", "reg": "®", "trade": "™", "deg": "°", "plusmn": "±",
+        "times": "×", "divide": "÷", "minus": "−", "middot": "·",
+        "bull": "•", "dagger": "†", "Dagger": "‡", "permil": "‰",
+        "sect": "§", "para": "¶", "micro": "µ", "not": "¬",
+        "cent": "¢", "pound": "£", "yen": "¥", "euro": "€", "curren": "¤",
+        "frac12": "½", "frac14": "¼", "frac34": "¾",
+        "sup1": "¹", "sup2": "²", "sup3": "³", "ordf": "ª", "ordm": "º",
+        "iexcl": "¡", "iquest": "¿", "brvbar": "¦", "uml": "¨",
+        "acute": "´", "cedil": "¸", "macr": "¯", "fnof": "ƒ",
+        "oline": "‾", "frasl": "⁄", "infin": "∞", "ne": "≠", "le": "≤",
+        "ge": "≥", "larr": "←", "rarr": "→", "uarr": "↑", "darr": "↓",
+        "harr": "↔",
+        // Latin-1 letters, uppercase
+        "Agrave": "À", "Aacute": "Á", "Acirc": "Â", "Atilde": "Ã",
+        "Auml": "Ä", "Aring": "Å", "AElig": "Æ", "Ccedil": "Ç",
+        "Egrave": "È", "Eacute": "É", "Ecirc": "Ê", "Euml": "Ë",
+        "Igrave": "Ì", "Iacute": "Í", "Icirc": "Î", "Iuml": "Ï",
+        "ETH": "Ð", "Ntilde": "Ñ", "Ograve": "Ò", "Oacute": "Ó",
+        "Ocirc": "Ô", "Otilde": "Õ", "Ouml": "Ö", "Oslash": "Ø",
+        "Ugrave": "Ù", "Uacute": "Ú", "Ucirc": "Û", "Uuml": "Ü",
+        "Yacute": "Ý", "THORN": "Þ",
+        // Latin-1 letters, lowercase
+        "szlig": "ß", "agrave": "à", "aacute": "á", "acirc": "â",
+        "atilde": "ã", "auml": "ä", "aring": "å", "aelig": "æ",
+        "ccedil": "ç", "egrave": "è", "eacute": "é", "ecirc": "ê",
+        "euml": "ë", "igrave": "ì", "iacute": "í", "icirc": "î",
+        "iuml": "ï", "eth": "ð", "ntilde": "ñ", "ograve": "ò",
+        "oacute": "ó", "ocirc": "ô", "otilde": "õ", "ouml": "ö",
+        "oslash": "ø", "ugrave": "ù", "uacute": "ú", "ucirc": "û",
+        "uuml": "ü", "yacute": "ý", "thorn": "þ", "yuml": "ÿ",
+        // Ligatures and modifiers
+        "OElig": "Œ", "oelig": "œ", "Scaron": "Š", "scaron": "š",
+        "Yuml": "Ÿ", "circ": "ˆ", "tilde": "˜",
+    ]
 }
