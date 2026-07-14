@@ -178,6 +178,31 @@ final class ReaderTypographyTests: XCTestCase {
         XCTAssertEqual(size.height, 60, accuracy: 0.5)
     }
 
+    /// The live iOS UITextView lays out through TextKit 2, which asks the
+    /// `location:`-based attachmentBounds — NOT the TextKit 1 method the
+    /// paginator uses. Both overrides must apply the same fitting rule, or
+    /// iOS renders native-size images while measurement assumed fitted ones.
+    func testTextKit2LayoutPathAppliesTheSameFitting() throws {
+        var style = ReaderStyle()
+        style.maxImageHeight = 400
+        let attributed = TextRangeConvert.attributedString(
+            "\u{FFFC}", highlights: [], style: style,
+            inlineImages: [0: solidImage(width: 1200, height: 900)]
+        )
+        let attachment = try XCTUnwrap(
+            attributed.attribute(.attachment, at: 0, effectiveRange: nil)
+                as? NSTextAttachment
+        )
+        let location = NSTextContentStorage().documentRange.location
+        let bounds = attachment.attachmentBounds(
+            for: [:], location: location, textContainer: nil,
+            proposedLineFragment: CGRect(x: 0, y: 0, width: 320, height: 1000),
+            position: .zero
+        )
+        XCTAssertLessThanOrEqual(bounds.width, 320.5, "TK2 must fit the column too")
+        XCTAssertLessThanOrEqual(bounds.height, 400.5, "TK2 must honor the page cap too")
+    }
+
     /// The pagination regression behind the cap: an image taller than the
     /// page used to make `LayoutPaginator` bail to the estimate fallback.
     /// With the page-height cap the paginator must cover the chapter with

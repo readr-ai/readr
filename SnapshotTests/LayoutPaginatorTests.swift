@@ -142,6 +142,26 @@ final class LayoutPaginatorTests: XCTestCase {
         }
     }
 
+    /// Hyphenation (on by default with justified text) hyphenates the bottom
+    /// line of a measured page — the break must fold the word fragment onto
+    /// the next page, never render "beauti" / "ful" across a page turn.
+    func testPagesNeverBreakMidWord() {
+        let text = makeText()
+        let chars = Array(text)
+        for page in paginate(text).dropLast() {
+            let end = page.range.upperBound
+            guard end < chars.count else { continue }
+            let brokeMidWord = !chars[end].isWhitespace
+                && !chars[end - 1].isWhitespace
+                && chars[end - 1] != "-"
+            XCTAssertFalse(
+                brokeMidWord,
+                "Page break splits a word: …\(String(chars[max(0, end - 12)..<end]))"
+                    + "|\(String(chars[end..<min(chars.count, end + 12)]))…"
+            )
+        }
+    }
+
     // MARK: - Variable container sizes (kicker band)
 
     func testPerPageContainerSizesAreHonored() {
