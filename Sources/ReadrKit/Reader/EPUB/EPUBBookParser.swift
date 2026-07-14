@@ -9,7 +9,8 @@ public struct EPUBBookParser {
     public init() {}
 
     public func parse(container: EPUBContainer, fallbackTitle: String) throws -> Book {
-        if container.entryExists("META-INF/encryption.xml") {
+        if container.entryExists("META-INF/encryption.xml"),
+           Self.declaresDRM(encryptionXML: try? container.data(at: "META-INF/encryption.xml")) {
             throw BookParserError.drmProtected
         }
         guard let containerData = try? container.data(at: "META-INF/container.xml"),
@@ -86,6 +87,41 @@ public struct EPUBBookParser {
             estimatedTokenCount: estimateTokens(fullText),
             coverImageData: Self.coverImageData(opf: opf, baseDir: baseDir, container: container)
         )
+    }
+
+    // MARK: - DRM vs font obfuscation
+
+    /// Algorithms that only obfuscate embedded fonts — not DRM. Standard
+    /// InDesign/publisher exports declare these in encryption.xml, and the
+    /// book text itself is fully readable.
+    private static let fontObfuscationAlgorithms: Set<String> = [
+        "http://www.idpf.org/2008/embedding",
+        "http://ns.adobe.com/pdf/enc#RC",
+    ]
+
+    /// True when encryption.xml declares actual DRM. An encryption.xml whose
+    /// every declared algorithm is font obfuscation is not DRM; anything
+    /// else — unreadable XML, no algorithms, or an unknown algorithm —
+    /// conservatively counts as DRM.
+    static func declaresDRM(encryptionXML data: Data?) -> Bool {
+        guard let data, let xml = decodeText(data) else { return true }
+        var algorithms: [String] = []
+        var remainder = Substring(xml)
+        while let match = remainder.range(
+            of: "\\bAlgorithm\\s*=\\s*[\"'][^\"']*[\"']",
+            options: [.regularExpression, .caseInsensitive]
+        ) {
+            let declaration = remainder[match]
+            remainder = remainder[match.upperBound...]
+            guard let quote = declaration.firstIndex(where: { $0 == "\"" || $0 == "'" }) else {
+                continue
+            }
+            algorithms.append(String(
+                declaration[declaration.index(after: quote)..<declaration.index(before: declaration.endIndex)]
+            ))
+        }
+        guard !algorithms.isEmpty else { return true }
+        return !algorithms.allSatisfy { fontObfuscationAlgorithms.contains($0) }
     }
 
     // MARK: - Text decoding

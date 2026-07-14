@@ -216,6 +216,85 @@ final class EPUBConformanceTests: XCTestCase {
         XCTAssertEqual(book.chapters[0].order, 0)
     }
 
+    // MARK: - encryption.xml: DRM vs font obfuscation
+
+    /// Professionally produced EPUBs (InDesign exports) often carry an
+    /// encryption.xml that only declares obfuscated embedded fonts — that is
+    /// NOT DRM and the book must open.
+    func testFontObfuscationOnlyEncryptionXMLIsNotTreatedAsDRM() throws {
+        let encryption = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <encryption xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+          <enc:EncryptedData xmlns:enc="http://www.w3.org/2001/04/xmlenc#">
+            <enc:EncryptionMethod Algorithm="http://www.idpf.org/2008/embedding"/>
+            <enc:CipherData><enc:CipherReference URI="OEBPS/fonts/Custom.otf"/></enc:CipherData>
+          </enc:EncryptedData>
+          <enc:EncryptedData xmlns:enc="http://www.w3.org/2001/04/xmlenc#">
+            <enc:EncryptionMethod Algorithm="http://ns.adobe.com/pdf/enc#RC"/>
+            <enc:CipherData><enc:CipherReference URI="OEBPS/fonts/Other.ttf"/></enc:CipherData>
+          </enc:EncryptedData>
+        </encryption>
+        """
+        let opf = makeOPF(
+            manifest: #"<item id="c1" href="ch1.xhtml" media-type="application/xhtml+xml"/>"#,
+            spine: #"<itemref idref="c1"/>"#
+        )
+        let book = try parser.parse(
+            container: container(opf: opf, entries: [
+                "OEBPS/ch1.xhtml": chapterOne,
+                "META-INF/encryption.xml": encryption,
+            ]),
+            fallbackTitle: "x"
+        )
+        XCTAssertEqual(book.chapters.count, 1)
+    }
+
+    func testRealDRMEncryptionXMLIsStillRejected() {
+        let encryption = """
+        <?xml version="1.0"?>
+        <encryption xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+          <enc:EncryptedData xmlns:enc="http://www.w3.org/2001/04/xmlenc#">
+            <enc:EncryptionMethod Algorithm="http://www.w3.org/2001/04/xmlenc#aes128-cbc"/>
+            <enc:CipherData><enc:CipherReference URI="OEBPS/ch1.xhtml"/></enc:CipherData>
+          </enc:EncryptedData>
+        </encryption>
+        """
+        let opf = makeOPF(
+            manifest: #"<item id="c1" href="ch1.xhtml" media-type="application/xhtml+xml"/>"#,
+            spine: #"<itemref idref="c1"/>"#
+        )
+        XCTAssertThrowsError(try parser.parse(
+            container: container(opf: opf, entries: [
+                "OEBPS/ch1.xhtml": chapterOne,
+                "META-INF/encryption.xml": encryption,
+            ]),
+            fallbackTitle: "x"
+        )) { error in
+            guard case BookParserError.drmProtected = error else {
+                return XCTFail("expected .drmProtected, got \(error)")
+            }
+        }
+    }
+
+    func testUnreadableEncryptionXMLStaysConservativelyDRM() {
+        // No declared algorithms at all — keep the conservative rejection.
+        let opf = makeOPF(
+            manifest: #"<item id="c1" href="ch1.xhtml" media-type="application/xhtml+xml"/>"#,
+            spine: #"<itemref idref="c1"/>"#
+        )
+        XCTAssertThrowsError(try parser.parse(
+            container: container(opf: opf, entries: [
+                "OEBPS/ch1.xhtml": chapterOne,
+                "META-INF/encryption.xml": "<encryption/>",
+            ]),
+            fallbackTitle: "x"
+        )) { error in
+            guard case BookParserError.drmProtected = error else {
+                return XCTFail("expected .drmProtected, got \(error)")
+            }
+        }
+    }
+
     // MARK: - Metadata
 
     func testTitleEntitiesDecodeAndMultipleCreatorsCollect() throws {
