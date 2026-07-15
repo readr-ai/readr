@@ -262,7 +262,10 @@ final class ReadrFlowUITests: XCTestCase {
             "Searching 'questions' should list a matching result row"
         )
 
-        // Return submits the field → jump to the first hit (page 2).
+        // Return submits the field → jump to the first hit (page 2). onSubmit
+        // runs the search synchronously before jumping, so the jump is
+        // deterministic even if the 250ms debounce hasn't fired yet — the wait
+        // above is just to observe the debounced row, not a precondition for ⏎.
         field.typeText("\n")
 
         let indicator = app.staticTexts["pdf.pageIndicator"].firstMatch

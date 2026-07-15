@@ -33,8 +33,16 @@ struct PDFSearchView: View {
                 .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(theme.line, lineWidth: 1))
                 .focused($fieldFocused)
                 .onSubmit {
-                    // ⏎ jumps to the first hit, matching the text reader.
-                    if let first = results.first {
+                    // ⏎ jumps to the first hit, matching the text reader. Run the
+                    // search synchronously here rather than relying on `results`,
+                    // which is only refreshed by the 250ms-debounced `.task(id:)`.
+                    // If the user types and immediately presses Return, that
+                    // debounce hasn't fired yet, so `results` would be empty/stale;
+                    // searching inline makes the jump deterministic regardless of
+                    // debounce timing.
+                    let matches = controller.search(query)
+                    results = matches
+                    if let first = matches.first {
                         controller.jump(to: first)
                     }
                 }
