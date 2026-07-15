@@ -89,9 +89,11 @@ struct ReaderSearchPopover: View {
         }
     }
 
-    /// The snippet with the matched term emphasized (bold + iris), so a list
+    /// The snippet with the matched term emphasized (bold in ink), so a list
     /// of similar excerpts is scannable — matching Apple Books' bolded hits.
     /// Case/diacritic-insensitive, mirroring `BookSearcher`'s matching.
+    /// R6/D1: an in-book search hit is generic chrome, so emphasis is bold
+    /// ink — Iris stays reserved for AI moments.
     private func emphasized(_ snippet: String) -> AttributedString {
         var attributed = AttributedString(snippet)
         let needle = query.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -100,7 +102,7 @@ struct ReaderSearchPopover: View {
                of: needle, options: [.caseInsensitive, .diacriticInsensitive]
            ) {
             attributed[range].font = .system(size: 12.5, design: .serif).bold()
-            attributed[range].foregroundColor = theme.iris
+            attributed[range].foregroundColor = theme.inkColor
         }
         return attributed
     }

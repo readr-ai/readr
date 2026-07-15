@@ -46,7 +46,7 @@ struct AnnotationMenuView: View {
             }
             if case .edit = mode, let onRemove {
                 Button(action: onRemove) {
-                    Text("✕").font(.system(size: 12))
+                    Text("✕").font(.system(size: 12)).annotationTouchTarget()
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(theme.faint)
@@ -62,6 +62,7 @@ struct AnnotationMenuView: View {
             Button(action: onNote) {
                 Text(mode.hasNote ? "Edit Note" : "Note")
                     .font(.system(size: 12, weight: .medium))
+                    .annotationTouchTarget()
             }
             .buttonStyle(.plain)
             .foregroundStyle(theme.inkColor)
@@ -72,6 +73,7 @@ struct AnnotationMenuView: View {
             Button(action: onAsk) {
                 Text("\(AppTheme.aiGlyph) Ask")
                     .font(.system(size: 12, weight: .semibold))
+                    .annotationTouchTarget()
             }
             .buttonStyle(.plain)
             .foregroundStyle(theme.iris)
@@ -84,6 +86,7 @@ struct AnnotationMenuView: View {
             Button(action: onCopy) {
                 Image(systemName: "doc.on.doc")
                     .font(.system(size: 11))
+                    .annotationTouchTarget()
             }
             .buttonStyle(.plain)
             .foregroundStyle(theme.muted)
@@ -111,7 +114,10 @@ struct AnnotationMenuView: View {
                         .frame(width: 25, height: 25)
                 }
             }
+            // R5: keep the 25pt visual dot but grow the tappable area to
+            // ≥44×44 on touch (Apple HIG); macOS keeps the compact target.
             .frame(width: 25, height: 25)
+            .annotationTouchTarget()
         }
         .buttonStyle(.plain)
         .help(isCreate

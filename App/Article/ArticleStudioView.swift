@@ -106,14 +106,21 @@ struct ArticleStudioView: View {
             .background(theme.paper)
         } else if !article.markdown.isEmpty {
             editor
+        } else if allItems.isEmpty {
+            // R7: the studio is reachable with zero highlights (the Create
+            // Article CTA is always enabled) — this is tappable guidance, not
+            // a dead end. Copy matches the create-article-empty mockup.
+            // Checked before the no-provider case so opening the studio from an
+            // un-highlighted book always lands on this guidance (there's
+            // nothing to compose regardless of the provider).
+            ContentUnavailableView {
+                Label("Highlight something first", systemImage: "highlighter")
+            } description: {
+                Text("The studio turns your highlights into an article. Open the book, select a passage, and pick a color — it lands here instantly.")
+            }
+            .accessibilityIdentifier("article.noHighlights")
         } else if model.activeProvider() == nil {
             noProvider
-        } else if allItems.isEmpty {
-            ContentUnavailableView {
-                Label("No highlights yet", systemImage: "highlighter")
-            } description: {
-                Text("Highlight passages in the book first — the studio turns them into an article.")
-            }
         } else {
             picker
         }
@@ -295,7 +302,9 @@ struct ArticleStudioView: View {
                         .multilineTextAlignment(.leading)
                         .accessibilityLabel(Text(item.quotedText))
                     if let note = item.note, !note.isEmpty {
-                        (Text(AppTheme.noteGlyph).foregroundColor(theme.iris)
+                        // R6/D1: ❋ note marker is generic chrome — muted, not
+                        // Iris (which stays reserved for AI moments).
+                        (Text(AppTheme.noteGlyph).foregroundColor(theme.muted)
                             + Text(" ")
                             + Text(note).foregroundColor(theme.muted))
                             .font(.system(size: 12.5))

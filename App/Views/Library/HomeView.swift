@@ -168,6 +168,17 @@ struct HomeView: View {
 
     // MARK: Empty state
 
+    /// U1: platform-correct empty-library detail. macOS keeps the drag-from-
+    /// Finder language (drag-drop import works everywhere on the Mac); iOS has
+    /// no Finder/window, so it just invites an import.
+    private var emptyStateDetail: String {
+        #if os(macOS)
+        return "Import an EPUB, PDF, or plain-text book to start reading — or just drag files from Finder anywhere into this window."
+        #else
+        return "Import a file to start reading — an EPUB, PDF, or plain-text book."
+        #endif
+    }
+
     private var emptyState: some View {
         VStack(spacing: 14) {
             emptyBookGlyph
@@ -176,7 +187,10 @@ struct HomeView: View {
             Text("Your library is empty")
                 .font(.system(size: 19, weight: .semibold, design: .serif))
                 .foregroundStyle(theme.inkColor)
-            Text("Import an EPUB, PDF, or plain-text book to start reading — or just drag files from Finder anywhere into this window.")
+            // U1: platform-aware copy. Mac users get the drag-from-Finder
+            // affordance; iOS has no Finder or window, so it just invites an
+            // import (matches the empty-state mockups).
+            Text(emptyStateDetail)
                 .font(.system(size: 12.5))
                 .foregroundStyle(theme.muted)
                 .multilineTextAlignment(.center)

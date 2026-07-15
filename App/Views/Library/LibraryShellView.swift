@@ -49,7 +49,21 @@ struct LibraryShellView: View {
             detail
         }
         .background(theme.background)
-        .tint(AppTheme.accent)
+        // R8: accept dragged-in book files everywhere the shell claims — the
+        // sidebar and every detail screen, not just the empty state. Attached
+        // once at the split-view root so a single handler covers both columns
+        // (no per-screen duplication / double-handling).
+        .dropDestination(for: DroppedBookFile.self) { files, _ in
+            Task {
+                for file in files {
+                    await model.importBook(at: file.url)
+                }
+            }
+            return true
+        }
+        // R6/D1: generic chrome (back chevron, split-view controls) reads the
+        // neutral ink token — Iris stays reserved for AI moments only.
+        .tint(theme.inkColor)
         .fileImporter(
             isPresented: $isImporting,
             allowedContentTypes: LibraryImport.types,
@@ -328,16 +342,9 @@ struct LibraryShellView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(theme.background)
-        // The whole detail area accepts book files dragged in from
-        // Finder/Files — on every screen, not just the empty state.
-        .dropDestination(for: DroppedBookFile.self) { files, _ in
-            Task {
-                for file in files {
-                    await model.importBook(at: file.url)
-                }
-            }
-            return true
-        }
+        // R8: the drop target now lives at the NavigationSplitView root (see
+        // `body`) so drag-drop import works over the sidebar too, not just this
+        // detail area. Kept there as a single handler to avoid double-handling.
     }
 
     private func grid(title: String, books: [Book]) -> LibraryGridView {

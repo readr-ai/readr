@@ -290,7 +290,9 @@ struct AppearancePopover: View {
         }
         .toggleStyle(.switch)
         .controlSize(.mini)
-        .tint(theme.iris)
+        // R6/D1: a layout toggle is generic chrome, not an AI moment — the
+        // track uses neutral ink, keeping Iris reserved for AI.
+        .tint(theme.inkColor)
         .help("Book-style full justification with hyphenation")
         .accessibilityIdentifier("appearance.justify")
     }

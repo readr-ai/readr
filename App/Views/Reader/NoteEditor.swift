@@ -2,7 +2,7 @@ import SwiftUI
 import ReadrKit
 
 /// The note editor, Marginalia style: a compact elevated card — caps "NOTE"
-/// label, the quoted passage with an iris left rule, a paper text field, and
+/// label, the quoted passage with a muted left rule, a paper text field, and
 /// right-aligned Cancel / ink-filled Save. Creation of the highlight happens
 /// before this opens — the editor only writes the note text back via `onSave`.
 struct NoteEditor: View {
@@ -38,7 +38,10 @@ struct NoteEditor: View {
                     .lineLimit(3)
                     .padding(.leading, 10)
                     .overlay(alignment: .leading) {
-                        Rectangle().fill(theme.iris).frame(width: 2)
+                        // R6/D1: the quoted-passage rule is generic chrome (the
+                        // user's own highlight, not an AI citation) — neutral
+                        // muted, keeping Iris reserved for AI moments.
+                        Rectangle().fill(theme.muted).frame(width: 2)
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
             }

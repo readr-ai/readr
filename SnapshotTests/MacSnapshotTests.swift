@@ -190,6 +190,100 @@ final class MacSnapshotTests: XCTestCase {
         )
     }
 
+    // MARK: - R7: Create Article CTA states
+
+    /// R7: the "Create Article" CTA is the design's one legit Iris-filled AI
+    /// button — captured on a book WITH highlights (the seeded sample) so the
+    /// filled-iris treatment is visible in the gallery.
+    func testCreateArticleCTAReady() {
+        snapshot(
+            NotesHeaderActions(book: sampleBook)
+                .environmentObject(model)
+                .padding(16)
+                .frame(width: 340)
+                .background(ReadingTheme.paper.background),
+            size: CGSize(width: 340, height: 120),
+            name: "m09-create-article-cta-ready"
+        )
+    }
+
+    /// R7: the CTA is always enabled — even on a book with NO highlights it
+    /// stays a live Iris button (tapping it opens the studio's guidance state,
+    /// covered by the zero-highlights snapshot below).
+    func testCreateArticleCTAEmpty() {
+        let (emptyBook, emptyModel) = Self.bookWithNoHighlights()
+        snapshot(
+            NotesHeaderActions(book: emptyBook)
+                .environmentObject(emptyModel)
+                .padding(16)
+                .frame(width: 340)
+                .background(ReadingTheme.paper.background),
+            size: CGSize(width: 340, height: 120),
+            name: "m10-create-article-cta-empty"
+        )
+    }
+
+    /// A book with zero highlights, in a fresh in-memory store — shared by the
+    /// empty-CTA and zero-highlights-studio snapshots.
+    private static func bookWithNoHighlights() -> (Book, AppModel) {
+        let book = Book(
+            metadata: BookMetadata(title: "Unread Book", authors: ["Nobody"]),
+            chapters: [Chapter(title: "One", order: 0, text: "A short chapter.")],
+            estimatedTokenCount: 10
+        )
+        let store = InMemoryLibraryStore()
+        try? store.add(book)
+        return (book, AppModel(store: store))
+    }
+
+    /// R7: opening the studio for a book with zero highlights lands on the
+    /// "Highlight something first" guidance (create-article-empty mockup),
+    /// not a dead disabled control.
+    func testArticleStudioZeroHighlights() {
+        let (emptyBook, emptyModel) = Self.bookWithNoHighlights()
+        snapshot(
+            ArticleStudioView(book: emptyBook)
+                .environmentObject(emptyModel),
+            size: CGSize(width: 640, height: 560),
+            name: "m11-article-studio-zero-highlights"
+        )
+    }
+
+    // MARK: - R6: Iris-discipline chrome corrections
+
+    /// R6/D1: the color-filter chips + a noted highlight card render with the
+    /// neutral ❋ marker (muted, not Iris) — verifies Iris no longer leaks into
+    /// generic chrome in the notes list.
+    func testAnnotationListNeutralChrome() {
+        snapshot(
+            AnnotationListView(book: sampleBook)
+                .environmentObject(model)
+                .frame(width: 340)
+                .background(ReadingTheme.paper.background),
+            size: CGSize(width: 340, height: 520),
+            name: "m12-annotation-list-neutral-chrome"
+        )
+    }
+
+    /// R6/D1: the Appearance popover's Justify toggle now tints neutral ink
+    /// (generic chrome), captured alongside the reset of the popover.
+    func testAppearancePopoverNeutralJustify() {
+        snapshot(
+            AppearancePopover(
+                themeRaw: .constant(ReadingTheme.night.rawValue),
+                layoutRaw: .constant(PageLayout.singlePage.rawValue),
+                fontSize: .constant(18),
+                fontRaw: .constant(ReaderFont.newYork.rawValue),
+                lineSpacingRaw: .constant(ReaderLineSpacing.normal.rawValue),
+                isJustified: .constant(true),
+                isPDF: false,
+                pdfShowsOriginal: .constant(true)
+            ),
+            size: CGSize(width: 320, height: 520),
+            name: "m13-appearance-popover-dark-neutral"
+        )
+    }
+
     // MARK: - Library
 
     func testLibraryGrid() {

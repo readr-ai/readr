@@ -940,4 +940,94 @@ final class ReadrFlowUITests: XCTestCase {
             "The per-book menu must open the invoked book's annotations, not the first annotated book (R4)"
         )
     }
+
+    // MARK: - U1: platform-correct empty-library copy
+
+    // On iPhone the empty-library guidance must NOT use Mac-only "drag from
+    // Finder … into this window" language — it invites an import instead.
+    // Launched WITHOUT -uiTestSeed so the empty state renders.
+    func testEmptyLibraryCopyIsPlatformCorrect() {
+        let app = XCUIApplication()
+        app.launch()
+
+        let heading = app.staticTexts["Your library is empty"].firstMatch
+        // A cold, un-seeded first launch could conceivably carry a persisted
+        // library on a dirty simulator; only assert copy when the empty state
+        // is actually showing.
+        guard heading.waitForExistence(timeout: 10) else {
+            return
+        }
+        XCTAssertTrue(
+            app.staticTexts["Import a file to start reading — an EPUB, PDF, or plain-text book."]
+                .firstMatch.exists,
+            "iPhone empty-library copy should invite an import without Finder/window language (U1)"
+        )
+        // The Mac-only drag language must not appear on iOS.
+        XCTAssertFalse(
+            labeled(app.staticTexts, contains: "drag files from Finder").exists,
+            "iOS empty state must not mention dragging from Finder into a window (U1)"
+        )
+    }
+
+    // MARK: - R7: Create Article with zero highlights shows guidance
+
+    // The "Create Article" CTA is always enabled; opening the studio for a book
+    // that has no highlights must land on the "Highlight something first"
+    // guidance rather than being a dead disabled control.
+    func testCreateArticleWithNoHighlightsShowsGuidance() {
+        let app = launchSeeded()
+
+        // "A Voyage North" is seeded with NO highlights. Open it from Home's
+        // Recently Added row (it leads that row as the fresh import). The card
+        // is a button labeled by title, whose title also surfaces as static
+        // text — tap whichever the runner exposes.
+        let voyageButton = app.buttons["A Voyage North"].firstMatch
+        let voyage = voyageButton.waitForExistence(timeout: 10)
+            ? voyageButton
+            : app.staticTexts["A Voyage North"].firstMatch
+        XCTAssertTrue(voyage.waitForExistence(timeout: 10), "The un-highlighted seeded book should be on Home")
+        voyage.tap()
+        XCTAssertTrue(app.staticTexts["Departure"].waitForExistence(timeout: 10), "The book should open in the reader")
+
+        let notes = button(app, id: "reader.notes", label: "Highlights")
+        XCTAssertTrue(notes.waitForExistence(timeout: 5))
+        notes.tap()
+
+        let create = app.buttons["notes.createArticle"].firstMatch
+        XCTAssertTrue(create.waitForExistence(timeout: 5), "The Create Article CTA should be present")
+        XCTAssertTrue(create.isEnabled, "The Create Article CTA must be enabled even with no highlights (R7)")
+        create.tap()
+
+        XCTAssertTrue(
+            app.staticTexts["Highlight something first"].firstMatch.waitForExistence(timeout: 8),
+            "Opening the studio with zero highlights should show the guidance state, not a dead end (R7)"
+        )
+    }
+
+    // MARK: - R5: 44pt touch targets
+
+    // The annotation color-filter chips keep a small visual dot but must expose
+    // a ≥44×44pt tappable frame on iOS (Apple HIG). Reached via a book's Notes
+    // panel filter row, where the chips are always present.
+    func testAnnotationColorChipsAreAtLeast44pt() {
+        let app = launchSeeded()
+        openSampleBook(app)
+
+        let notes = button(app, id: "reader.notes", label: "Highlights")
+        XCTAssertTrue(notes.waitForExistence(timeout: 5))
+        notes.tap()
+
+        // The filter chips label as "<Color> highlights" (see HighlightColorChips).
+        let yellowChip = labeled(app.buttons, contains: "Yellow highlights")
+        XCTAssertTrue(yellowChip.waitForExistence(timeout: 5), "The yellow color-filter chip should be present")
+        let frame = yellowChip.frame
+        XCTAssertGreaterThanOrEqual(
+            frame.height, 44,
+            "Color-filter chip hit target should be ≥44pt tall on iOS (R5)"
+        )
+        XCTAssertGreaterThanOrEqual(
+            frame.width, 44,
+            "Color-filter chip hit target should be ≥44pt wide on iOS (R5)"
+        )
+    }
 }

@@ -209,6 +209,16 @@ struct LibraryGridView: View {
         }
     }
 
+    /// U1: platform-correct empty-grid detail — macOS keeps the drag language,
+    /// iOS invites an import without Finder/window terms.
+    private var emptyGridDetail: String {
+        #if os(macOS)
+        return "Use Import, or drag EPUB, PDF, or text files into the window."
+        #else
+        return "Import a file to start reading — an EPUB, PDF, or text book."
+        #endif
+    }
+
     @ViewBuilder
     private var emptyView: some View {
         if query.isEmpty {
@@ -222,7 +232,8 @@ struct LibraryGridView: View {
                 Text("Nothing here yet")
                     .font(.system(size: 19, weight: .semibold, design: .serif))
                     .foregroundStyle(theme.inkColor)
-                Text("Use Import, or drag EPUB, PDF, or text files into the window.")
+                // U1: platform-aware copy — no Finder/window language on iOS.
+                Text(emptyGridDetail)
                     .font(.system(size: 12.5))
                     .foregroundStyle(theme.muted)
                     .multilineTextAlignment(.center)

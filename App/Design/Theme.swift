@@ -359,3 +359,23 @@ struct ReaderStyle: Equatable {
     /// the book convention Apple Books renders for most EPUBs.
     var paragraphSpacing: CGFloat { fontSize * 0.35 }
 }
+
+// MARK: - Touch targets
+
+extension View {
+    /// R5: expand a control's tappable area to at least 44×44pt on touch
+    /// platforms (Apple HIG minimum) without changing its visual size. macOS
+    /// is pointer-driven and keeps the compact hit target. Applied via
+    /// `contentShape` so the whole 44pt frame is hit-testable, not just the
+    /// (smaller) rendered glyph.
+    @ViewBuilder
+    func annotationTouchTarget() -> some View {
+        #if os(iOS)
+        self
+            .frame(minWidth: 44, minHeight: 44)
+            .contentShape(Rectangle())
+        #else
+        self
+        #endif
+    }
+}
