@@ -382,4 +382,3 @@ private struct ThinkingDots: View {
         .onAppear { pulsing = true }
     }
 }
-}
