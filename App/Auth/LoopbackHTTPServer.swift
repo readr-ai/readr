@@ -28,9 +28,26 @@ final class LoopbackHTTPServer {
             guard let nwPort = NWEndpoint.Port(rawValue: port) else {
                 throw LoopbackError.invalidPort
             }
-            let listener = try NWListener(using: .tcp, on: nwPort)
+            // Bind to the loopback interface (127.0.0.1) ONLY. Without a
+            // `requiredLocalEndpoint`, `NWListener` binds to every interface
+            // (the equivalent of `INADDR_ANY` / `0.0.0.0`), which would expose
+            // the OAuth callback port to the local network. Pinning the local
+            // endpoint to `127.0.0.1` keeps the redirect reachable only from
+            // this machine.
+            let parameters = NWParameters.tcp
+            parameters.requiredLocalEndpoint = NWEndpoint.hostPort(
+                host: .ipv4(.loopback), port: nwPort
+            )
+            let listener = try NWListener(using: parameters)
             self.listener = listener
             listener.newConnectionHandler = { [weak self] connection in
+                // Defence in depth: even though we bind loopback-only, reject
+                // any connection whose remote endpoint isn't loopback before
+                // reading a single byte.
+                guard Self.isLoopbackEndpoint(connection.endpoint) else {
+                    connection.cancel()
+                    return
+                }
                 connection.start(queue: .main)
                 self?.readRequestLine(
                     connection, accumulated: Data(),
@@ -135,6 +152,23 @@ final class LoopbackHTTPServer {
         let parts = requestLine.split(separator: " ")
         guard parts.count >= 2 else { return nil }
         return String(parts[1])
+    }
+
+    /// Whether a connection's remote endpoint is the loopback interface.
+    /// Non-host endpoints (or any non-loopback address) are rejected so the
+    /// callback server never talks to anything off this machine.
+    static func isLoopbackEndpoint(_ endpoint: NWEndpoint) -> Bool {
+        guard case let .hostPort(host, _) = endpoint else { return false }
+        switch host {
+        case .ipv4(let address):
+            return address.isLoopback
+        case .ipv6(let address):
+            return address.isLoopback
+        case .name(let name, _):
+            return name == "localhost"
+        @unknown default:
+            return false
+        }
     }
 
     enum LoopbackError: Error { case invalidPort }
