@@ -54,12 +54,23 @@ struct PDFReaderView: View {
     @StateObject private var controller = PDFReaderController()
     /// Strip visibility persists across books like the other reader prefs.
     @AppStorage("pdfShowsThumbnails") private var showThumbnails = false
+    /// The reader's persisted theme, so the PDF overlays/popovers (page
+    /// indicator, annotation bar, its selection menu) match the Marginalia
+    /// palette instead of system materials that read as stark chrome in
+    /// sepia/dark.
+    @AppStorage("readingTheme") private var themeRaw = ReadingTheme.paper.rawValue
     @State private var showTOC = false
     @State private var showSearch = false
+
+    private var theme: ReadingTheme { ReadingTheme(rawValue: themeRaw) ?? .paper }
 
     var body: some View {
         content
             .toolbar { toolbarItems }
+            // Keep the selection menu (rendered by the controller in its
+            // NSPopover / the iOS floating bar) on the current reading theme.
+            .onAppear { controller.theme = theme }
+            .onChange(of: themeRaw) { _, _ in controller.theme = theme }
             .sheet(item: $controller.pendingNote) { highlight in
                 PDFHighlightNoteSheet(
                     highlight: highlight,
@@ -128,10 +139,13 @@ struct PDFReaderView: View {
         VStack(spacing: 10) {
             #if canImport(UIKit)
             // iOS has no anchored popover: the annotation menu floats as a
-            // capsule bar above the bottom edge, near the thumb.
+            // capsule bar above the bottom edge, near the thumb. Themed to the
+            // elevated reading surface (with a hairline) rather than a system
+            // material that clashes with the paper in sepia/dark.
             if let context = controller.activeMenu {
                 controller.menuView(for: context)
-                    .background(.regularMaterial, in: Capsule())
+                    .background(theme.elevated, in: Capsule())
+                    .overlay(Capsule().strokeBorder(theme.line, lineWidth: 1))
                     .shadow(color: .black.opacity(0.2), radius: 10, y: 3)
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
@@ -140,10 +154,11 @@ struct PDFReaderView: View {
                 Text("Page \(controller.currentPageIndex + 1) of \(controller.pageCount)")
                     .font(.caption.weight(.medium))
                     .monospacedDigit()
+                    .foregroundStyle(theme.muted)
                     .padding(.horizontal, 12)
                     .padding(.vertical, 6)
-                    .background(.ultraThinMaterial, in: Capsule())
-                    .overlay(Capsule().strokeBorder(.quaternary, lineWidth: 0.5))
+                    .background(theme.elevated, in: Capsule())
+                    .overlay(Capsule().strokeBorder(theme.line, lineWidth: 0.5))
                     .allowsHitTesting(false)
                     .accessibilityIdentifier("pdf.pageIndicator")
             }

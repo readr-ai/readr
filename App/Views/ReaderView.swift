@@ -1230,8 +1230,17 @@ struct ScrollReadingColumn: View {
         // the serif content font) + the 48pt of column padding above — the
         // book measure Apple Books holds on wide panes (PagedChapterView
         // shares the same em count).
-        .frame(maxWidth: style.fontSize * 33 + 48)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        //
+        // Modifier ORDER is load-bearing: cap the column at the measure (and
+        // let it fill the height) FIRST, paint `paper` on that capped column,
+        // and only THEN expand to an infinite width to CENTER it. Painting the
+        // paper after the infinite-width frame (the earlier bug) bled the page
+        // surface edge-to-edge instead of a centered measure column — the
+        // surplus window width should stay the deeper chrome `background`
+        // (ReaderView draws it behind), exactly like paged mode centers its
+        // page block over full-bleed paper.
+        .frame(maxWidth: style.fontSize * 33 + 48, maxHeight: .infinity)
         .background(style.theme.paper)
+        .frame(maxWidth: .infinity)
     }
 }

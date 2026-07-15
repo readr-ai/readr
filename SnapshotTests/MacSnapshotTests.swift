@@ -45,10 +45,12 @@ final class MacSnapshotTests: XCTestCase {
 
     // MARK: - Rendering
 
-    /// Renders `view` at `size` into a PNG attachment named `name`. The
-    /// hosting view goes into an offscreen (never-shown) window so AppKit
-    /// controls that require a window backing still draw.
-    private func snapshot(_ view: some View, size: CGSize, name: String) {
+    /// Renders `view` at `size` into an offscreen bitmap. The hosting view goes
+    /// into an offscreen (never-shown) window so AppKit controls that require a
+    /// window backing still draw. Returns the rep so callers can both attach a
+    /// PNG and sample individual pixels for layout/theming assertions.
+    @discardableResult
+    private func render(_ view: some View, size: CGSize) -> NSBitmapImageRep? {
         let host = NSHostingView(rootView: AnyView(view))
         host.frame = CGRect(origin: .zero, size: size)
         let window = NSWindow(
@@ -60,10 +62,18 @@ final class MacSnapshotTests: XCTestCase {
         window.contentView = host
         host.layoutSubtreeIfNeeded()
         guard let rep = host.bitmapImageRepForCachingDisplay(in: host.bounds) else {
+            return nil
+        }
+        host.cacheDisplay(in: host.bounds, to: rep)
+        return rep
+    }
+
+    /// Renders `view` at `size` into a PNG attachment named `name`.
+    private func snapshot(_ view: some View, size: CGSize, name: String) {
+        guard let rep = render(view, size: size) else {
             XCTFail("\(name): could not create bitmap rep")
             return
         }
-        host.cacheDisplay(in: host.bounds, to: rep)
         guard let png = rep.representation(using: .png, properties: [:]) else {
             XCTFail("\(name): could not encode PNG")
             return
@@ -74,6 +84,41 @@ final class MacSnapshotTests: XCTestCase {
         attachment.name = name
         attachment.lifetime = .keepAlways
         add(attachment)
+    }
+
+    /// The sRGB color at a fractional position (0…1 across width/height) of the
+    /// rendered bitmap. Fractions insulate the sample from the rep's backing
+    /// scale (Retina reps are 2× the point size).
+    private func color(
+        in rep: NSBitmapImageRep, atFractionX fx: CGFloat, fractionY fy: CGFloat
+    ) -> NSColor? {
+        let x = min(rep.pixelsWide - 1, max(0, Int(CGFloat(rep.pixelsWide) * fx)))
+        let y = min(rep.pixelsHigh - 1, max(0, Int(CGFloat(rep.pixelsHigh) * fy)))
+        return rep.colorAt(x: x, y: y)?.usingColorSpace(.sRGB)
+    }
+
+    /// Two colors are visually the same channel-wise within `tolerance` (0…1).
+    private func colorsClose(
+        _ lhs: NSColor?, _ rhs: NSColor?, tolerance: CGFloat = 0.05
+    ) -> Bool {
+        guard let lhs = lhs?.usingColorSpace(.sRGB),
+              let rhs = rhs?.usingColorSpace(.sRGB) else { return false }
+        return abs(lhs.redComponent - rhs.redComponent) <= tolerance
+            && abs(lhs.greenComponent - rhs.greenComponent) <= tolerance
+            && abs(lhs.blueComponent - rhs.blueComponent) <= tolerance
+    }
+
+    /// Euclidean sRGB distance, or a large sentinel if either is unreadable.
+    /// Used to pick the NEAREST of two candidate surfaces when they differ by
+    /// only a few percent (paper vs. chrome background), which is too tight for
+    /// a fixed tolerance but still unambiguous as "which is closer".
+    private func distance(_ lhs: NSColor?, _ rhs: NSColor?) -> CGFloat {
+        guard let lhs = lhs?.usingColorSpace(.sRGB),
+              let rhs = rhs?.usingColorSpace(.sRGB) else { return .greatestFiniteMagnitude }
+        let dr = lhs.redComponent - rhs.redComponent
+        let dg = lhs.greenComponent - rhs.greenComponent
+        let db = lhs.blueComponent - rhs.blueComponent
+        return (dr * dr + dg * dg + db * db).squareRoot()
     }
 
     // MARK: - Reader
@@ -136,6 +181,118 @@ final class MacSnapshotTests: XCTestCase {
             size: CGSize(width: 1100, height: 760),
             name: "m08-scroll-paper"
         )
+    }
+
+    /// R9: scroll mode must paint the paper as a CENTERED measure column, not
+    /// full-width. On a window far wider than the measure the outer margins
+    /// stay the deeper chrome `background`, and only the centered column is
+    /// `paper`. The pre-fix modifier order (`.background` after the infinite
+    /// frame) bled paper edge-to-edge, so both edges and center read as paper.
+    func testScrollColumnIsCenteredNotFullWidth() {
+        let theme = ReadingTheme.paper
+        // Width is well beyond the measure (fontSize 18 ⇒ 18*33+48 = 642pt), so
+        // symmetric background margins must remain (~229pt each side at 1100).
+        let size = CGSize(width: 1100, height: 760)
+        guard let rep = render(
+            ScrollReadingColumn(
+                chapter: sampleChapter,
+                style: ReaderStyle(theme: theme, fontSize: 18),
+                highlights: sampleSpans
+            )
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(theme.background),
+            size: size
+        ) else {
+            XCTFail("scroll column: could not render")
+            return
+        }
+        let background = NSColor(theme.background)
+        let paper = NSColor(theme.paper)
+        XCTAssertGreaterThan(
+            distance(background, paper), 0.0,
+            "test premise: paper and chrome background must differ"
+        )
+        // paper (0xFAF7F0) and background (0xEFEBE1) differ by only a few
+        // percent, too tight for a fixed tolerance, so classify each sample by
+        // whichever surface it is NEAREST. Outer margins must be background;
+        // the centered column must be paper.
+        let left = color(in: rep, atFractionX: 0.02, fractionY: 0.5)
+        let right = color(in: rep, atFractionX: 0.98, fractionY: 0.5)
+        // Sample low in the column to clear the kicker / first text lines.
+        let center = color(in: rep, atFractionX: 0.5, fractionY: 0.9)
+        XCTAssertLessThan(
+            distance(left, background), distance(left, paper),
+            "scroll column left edge should be chrome background, not full-width paper"
+        )
+        XCTAssertLessThan(
+            distance(right, background), distance(right, paper),
+            "scroll column right edge should be chrome background, not full-width paper"
+        )
+        XCTAssertLessThan(
+            distance(center, paper), distance(center, background),
+            "scroll column center should be the paper surface"
+        )
+    }
+
+    // MARK: - PDF popover theming (R10)
+
+    /// R10: the find-in-PDF popover adopts the reading theme's elevated surface
+    /// in every theme, rather than a system material that reads as stark
+    /// white/gray chrome on sepia/dark. Asserts a corner (bare chrome, clear of
+    /// the field and empty-state text) matches `theme.elevated`.
+    func testPDFSearchPopoverThemedPerTheme() {
+        for option in ReadingTheme.allCases {
+            UserDefaults.standard.set(option.rawValue, forKey: "readingTheme")
+            let controller = PDFReaderController()
+            guard let rep = render(
+                PDFSearchView(controller: controller, onDismiss: {}),
+                size: CGSize(width: 360, height: 420)
+            ) else {
+                XCTFail("pdf search (\(option.rawValue)): could not render")
+                continue
+            }
+            // Bottom-left corner: below the centered empty-state text, so it is
+            // the popover's own elevated background.
+            XCTAssertTrue(
+                colorsClose(
+                    color(in: rep, atFractionX: 0.03, fractionY: 0.96),
+                    NSColor(option.elevated)
+                ),
+                "pdf search popover should use \(option.rawValue) elevated surface"
+            )
+            snapshot(
+                PDFSearchView(controller: controller, onDismiss: {}),
+                size: CGSize(width: 360, height: 420),
+                name: "m09-pdf-search-\(option.rawValue)"
+            )
+        }
+        UserDefaults.standard.removeObject(forKey: "readingTheme")
+    }
+
+    /// R10: the PDF contents (outline) popover is likewise themed to the
+    /// elevated reading surface in every theme.
+    func testPDFOutlinePopoverThemedPerTheme() {
+        for option in ReadingTheme.allCases {
+            UserDefaults.standard.set(option.rawValue, forKey: "readingTheme")
+            let controller = PDFReaderController()
+            guard let rep = render(
+                PDFOutlineList(controller: controller, dismiss: {}),
+                size: CGSize(width: 260, height: 76)
+            ) else {
+                XCTFail("pdf outline (\(option.rawValue)): could not render")
+                continue
+            }
+            // Top-left corner: clear of the centered "No table of contents"
+            // label, so it is the popover's elevated background.
+            XCTAssertTrue(
+                colorsClose(
+                    color(in: rep, atFractionX: 0.03, fractionY: 0.04),
+                    NSColor(option.elevated)
+                ),
+                "pdf outline popover should use \(option.rawValue) elevated surface"
+            )
+        }
+        UserDefaults.standard.removeObject(forKey: "readingTheme")
     }
 
     // MARK: - Chrome & panels

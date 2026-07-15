@@ -47,6 +47,10 @@ final class PDFReaderController: NSObject, ObservableObject {
     weak var model: AppModel?
     var book: Book?
     var onAsk: ((Selection) -> Void)?
+    /// Current reading theme, so the annotation selection menu the controller
+    /// renders (macOS NSPopover / iOS floating bar) matches the Marginalia
+    /// palette rather than defaulting to `.paper`. Set by the host PDF view.
+    var theme: ReadingTheme = .paper
 
     // MARK: Private state
 
@@ -361,6 +365,7 @@ final class PDFReaderController: NSObject, ObservableObject {
         case .create:
             return AnnotationMenuView(
                 mode: .create,
+                theme: theme,
                 onHighlight: { [weak self] color in
                     self?.createHighlightsFromPendingSelection(color: color)
                 },
@@ -389,6 +394,7 @@ final class PDFReaderController: NSObject, ObservableObject {
                     currentColor: highlight.color,
                     hasNote: !(highlight.note ?? "").isEmpty
                 ),
+                theme: theme,
                 onHighlight: { [weak self] color in
                     self?.recolorHighlight(highlight, to: color)
                     self?.dismissMenu()

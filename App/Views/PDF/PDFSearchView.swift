@@ -16,10 +16,21 @@ struct PDFSearchView: View {
     @State private var results: [PDFReaderController.SearchResult] = []
     @FocusState private var fieldFocused: Bool
 
+    /// Matches the reader's persisted theme so the PDF find popover sits on the
+    /// same Marginalia palette as the page — not system materials that read as
+    /// stark white/gray chrome on sepia and dark (mirrors `ReaderSearchPopover`).
+    @AppStorage("readingTheme") private var themeRaw = ReadingTheme.paper.rawValue
+    private var theme: ReadingTheme { ReadingTheme(rawValue: themeRaw) ?? .paper }
+
     var body: some View {
         VStack(spacing: 10) {
             TextField("Search this PDF", text: $query)
-                .textFieldStyle(.roundedBorder)
+                .textFieldStyle(.plain)
+                .foregroundStyle(theme.inkColor)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 8)
+                .background(RoundedRectangle(cornerRadius: 8).fill(theme.paper))
+                .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(theme.line, lineWidth: 1))
                 .focused($fieldFocused)
                 .onSubmit {
                     // ⏎ jumps to the first hit, matching the text reader.
@@ -37,6 +48,8 @@ struct PDFSearchView: View {
         }
         .padding(12)
         .frame(width: 360, height: 420)
+        .background(theme.elevated)
+        .presentationBackground(theme.elevated)
         .onAppear { fieldFocused = true }
         .task(id: query) {
             try? await Task.sleep(nanoseconds: 250_000_000)
@@ -53,7 +66,7 @@ struct PDFSearchView: View {
         } else {
             Text("Find every mention across the PDF.")
                 .font(.callout)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(theme.muted)
                 .frame(maxHeight: .infinity)
         }
     }
@@ -70,10 +83,11 @@ struct PDFSearchView: View {
                             Text("p. \(result.pageNumber)")
                                 .font(.caption.weight(.semibold))
                                 .monospacedDigit()
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(theme.muted)
                                 .frame(width: 44, alignment: .leading)
                             Text(result.snippet)
-                                .font(.callout)
+                                .font(.system(size: 13, design: .serif))
+                                .foregroundStyle(theme.inkColor)
                                 .lineLimit(2)
                                 .multilineTextAlignment(.leading)
                                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -84,7 +98,7 @@ struct PDFSearchView: View {
                     }
                     .buttonStyle(.plain)
                     .accessibilityIdentifier("pdf.search.result")
-                    Divider()
+                    Divider().overlay(theme.line)
                 }
             }
         }
