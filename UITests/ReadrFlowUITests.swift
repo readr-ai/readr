@@ -801,20 +801,6 @@ final class ReadrFlowUITests: XCTestCase {
     /// Opens the seeded "Field Notes" PDF from Home and waits for the native
     /// PDFKit reader (the page indicator proves the document loaded). The
     /// fixture is 2 pages with one seeded PDF highlight on page 2.
-    private func openFieldNotesPDF(_ app: XCUIApplication) {
-        let pdfButton = app.buttons["Field Notes"].firstMatch
-        let pdfCard = pdfButton.waitForExistence(timeout: 10)
-            ? pdfButton
-            : app.staticTexts["Field Notes"].firstMatch
-        XCTAssertTrue(pdfCard.waitForExistence(timeout: 5), "The seeded PDF should be on the shelf")
-        if !pdfCard.isHittable { app.swipeUp() }
-        pdfCard.tap()
-        XCTAssertTrue(
-            app.staticTexts["pdf.pageIndicator"].firstMatch.waitForExistence(timeout: 15),
-            "The native PDF reader should show its page indicator"
-        )
-    }
-
     // R1 — tapping a PDF note in the Notes list jumps the PDF to that
     // annotation's page. The seeded highlight lives on page 2, so after the
     // jump the page indicator must read "Page 2 of 2" (it opens on page 1).
