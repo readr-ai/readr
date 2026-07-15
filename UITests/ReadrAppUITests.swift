@@ -101,6 +101,81 @@ final class ReadrAppUITests: XCTestCase {
         )
     }
 
+    // A6 — first-run copy must never advertise a connection path this build
+    // doesn't expose. On iOS the Local row is hidden, so "pick a local model"
+    // must not appear; subscription OAuth is hidden, so "sign in" must not
+    // appear either. The Ask/compose empty states derive their copy from
+    // SettingsModel.setupGuidance, so this asserts on the compose empty state
+    // (reached from the Notes panel) which is provider-less by default.
+    func testFirstRunCopyOmitsUnavailablePaths() {
+        let app = launchSeeded()
+        let bookCell = app.staticTexts["Sample Book"].firstMatch
+        XCTAssertTrue(bookCell.waitForExistence(timeout: 10))
+        bookCell.tap()
+        XCTAssertTrue(app.staticTexts["Chapter One"].waitForExistence(timeout: 5))
+
+        // Open the Notes panel → Create Article, which shows the provider-less
+        // compose empty state whose copy comes from setupGuidance.
+        let notes = button(app, id: "reader.notes", label: "Highlights")
+        XCTAssertTrue(notes.waitForExistence(timeout: 5))
+        notes.tap()
+        let createArticle = app.buttons["notes.createArticle"].firstMatch
+        XCTAssertTrue(createArticle.waitForExistence(timeout: 5))
+        createArticle.tap()
+
+        let guidance = app.staticTexts.matching(
+            NSPredicate(format: "label CONTAINS %@", "Add an API key")
+        ).firstMatch
+        XCTAssertTrue(guidance.waitForExistence(timeout: 5))
+        XCTAssertFalse(
+            guidance.label.contains("pick a local model"),
+            "iOS hides the Local provider, so the copy must not advertise it (got: \(guidance.label))"
+        )
+        XCTAssertFalse(
+            guidance.label.lowercased().contains("sign in"),
+            "Subscription OAuth is hidden, so the copy must not advertise 'sign in' (got: \(guidance.label))"
+        )
+    }
+
+    // A7 — the currently-selected connected provider carries an "Active" badge
+    // so both connected cards don't read an indistinguishable "Connected".
+    // -uiTestSkipProviderValidation keeps the saved key "Connected" offline
+    // (no real authenticated test call), so the badge is deterministic in CI.
+    func testActiveBadgeMarksSelectedProvider() {
+        let app = XCUIApplication()
+        app.launchArguments += [
+            "-uiTestSeed", "-uiTestInMemoryCredentials", "-uiTestSkipProviderValidation",
+        ]
+        app.launch()
+
+        let settingsButton = button(app, id: "library.settings", label: "AI providers")
+        XCTAssertTrue(settingsButton.waitForExistence(timeout: 10))
+        settingsButton.tap()
+        XCTAssertTrue(
+            app.staticTexts["AI Providers"].waitForExistence(timeout: 5)
+            || app.navigationBars["AI Providers"].waitForExistence(timeout: 5)
+        )
+
+        // Save an Anthropic key → it becomes the active selection.
+        let keyField = app.secureTextFields["settings.apiKey.anthropic"].firstMatch
+        XCTAssertTrue(keyField.waitForExistence(timeout: 5))
+        keyField.tap()
+        keyField.typeText("sk-ant-uitest-key")
+        app.buttons["settings.saveKey.anthropic"].firstMatch.tap()
+
+        // The Active badge appears on the selected (Anthropic) card only.
+        let anthropicBadge = app.staticTexts["settings.activeBadge.anthropic"].firstMatch
+        XCTAssertTrue(
+            anthropicBadge.waitForExistence(timeout: 5),
+            "The just-connected provider should show the Active badge"
+        )
+        // The un-selected OpenAI card must not carry the Active badge.
+        XCTAssertFalse(
+            app.staticTexts["settings.activeBadge.openAI"].firstMatch.exists,
+            "Only the selected provider should be badged Active"
+        )
+    }
+
     // Launch-friction guard: a first-run user must be able to get from the
     // key field to the provider's key console without hunting for the URL.
     // SwiftUI `Link` surfaces as a link or a button depending on platform,

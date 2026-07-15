@@ -9,23 +9,78 @@ final class SettingsModel: ObservableObject {
     @Published var activeSelection: ProviderSelection?
     @Published var errorMessage: String?
     @Published var isSigningIn = false
+    /// Latest validation/readiness state per kind, mirrored from the manager so
+    /// the cards can show Validating… / Connected / an error inline (A2/A3).
+    @Published private(set) var validation: [ProviderInfo.Kind: ProviderManager.ValidationState] = [:]
 
     private let manager: ProviderManager
     private let store: any CredentialStore
 
-    let kinds: [ProviderInfo.Kind] = [.anthropic, .openAI, .local]
+    /// `-uiTestSkipProviderValidation`: skip the live validate/probe calls so
+    /// the Active-badge XCUITest is deterministic offline (a saved key stays
+    /// "Connected" via the stored-key heuristic instead of failing the real
+    /// authenticated test call). Normal launches always validate.
+    private let skipValidation = ProcessInfo.processInfo.arguments
+        .contains("-uiTestSkipProviderValidation")
+
+    /// Every provider kind the app knows about, in display order.
+    static let allKinds: [ProviderInfo.Kind] = [.anthropic, .openAI, .local]
+
+    let kinds: [ProviderInfo.Kind] = SettingsModel.allKinds
 
     /// The provider rows the settings screen renders. On iOS the Local row is
     /// hidden: LocalLLMProvider defaults to loopback Ollama
     /// (http://127.0.0.1:11434), and nothing listens on a phone's loopback —
     /// the row would be a dead end. macOS keeps it; pointing at a LAN-hosted
     /// Ollama from iOS is a tracked fast-follow.
-    var displayedKinds: [ProviderInfo.Kind] {
+    static var displayedKinds: [ProviderInfo.Kind] {
         #if os(iOS)
-        return kinds.filter { $0 != .local }
+        return allKinds.filter { $0 != .local }
         #else
-        return kinds
+        return allKinds
         #endif
+    }
+
+    var displayedKinds: [ProviderInfo.Kind] { Self.displayedKinds }
+
+    // MARK: - First-run guidance (A6)
+
+    /// The ways a user can actually connect a provider in *this* build, phrased
+    /// for onboarding copy. Derived from `displayedKinds`/`supportsOAuth` so the
+    /// copy never advertises a path the reader can't take: "sign in" only when a
+    /// displayed kind offers OAuth (all are hidden today), and "pick a local
+    /// model" only when the Local row is shown (never on iOS — see
+    /// `displayedKinds`). "Add an API key" is always available.
+    static var availableSetupPaths: [String] {
+        var paths = ["Add an API key"]
+        let displayed = displayedKinds
+        if displayed.contains(where: { oauthConfig(for: $0) != nil }) {
+            paths.append("sign in")
+        }
+        if displayed.contains(.local) {
+            paths.append("pick a local model")
+        }
+        return paths
+    }
+
+    /// An honest onboarding sentence for an empty state, e.g.
+    /// "Add an API key or pick a local model to ask questions." Only names the
+    /// connection paths this build exposes (see `availableSetupPaths`).
+    static func setupGuidance(toDo action: String) -> String {
+        "\(joined(availableSetupPaths)) to \(action)."
+    }
+
+    /// Join a list into an English phrase with an Oxford "or":
+    /// ["a"] → "a"; ["a","b"] → "a or b"; ["a","b","c"] → "a, b, or c".
+    private static func joined(_ parts: [String]) -> String {
+        switch parts.count {
+        case 0: return ""
+        case 1: return parts[0]
+        case 2: return "\(parts[0]) or \(parts[1])"
+        default:
+            let head = parts.dropLast().joined(separator: ", ")
+            return "\(head), or \(parts.last!)"
+        }
     }
 
     init(manager: ProviderManager, store: any CredentialStore) {
@@ -38,7 +93,37 @@ final class SettingsModel: ObservableObject {
     }
 
     func refresh() {
-        for kind in kinds { configured[kind] = manager.isConfigured(kind) }
+        for kind in kinds {
+            configured[kind] = manager.isConfigured(kind)
+            validation[kind] = manager.validationState(kind)
+        }
+        activeSelection = manager.selection
+    }
+
+    /// The provider kind `ProviderManager.setActive` last selected (restored
+    /// from the persisted selection), used to badge the active card (A7). Nil
+    /// until the user has chosen one.
+    var activeKind: ProviderInfo.Kind? { activeSelection?.kind }
+
+    /// Kick off (or refresh) validation for a kind and mirror the result:
+    /// remote keys get a lightweight authenticated probe, Local hits Ollama's
+    /// `api/tags`. `validation[kind]` flips to `.validating` immediately so the
+    /// card can show a spinner, then to `.active`/`.invalid` when it settles.
+    func validate(_ kind: ProviderInfo.Kind) async {
+        guard !skipValidation else { return }
+        validation[kind] = .validating
+        let state = await manager.validate(kind)
+        validation[kind] = state
+        configured[kind] = manager.isConfigured(kind)
+    }
+
+    /// Validate every displayed kind that has something to check: remote kinds
+    /// with a stored credential, and Local always (its readiness is derived
+    /// from a live probe). Called from the view's `.task`.
+    func validateDisplayed() async {
+        for kind in displayedKinds where kind == .local || (configured[kind] ?? false) {
+            await validate(kind)
+        }
     }
 
     func models(for kind: ProviderInfo.Kind) -> [ProviderInfo] {
@@ -52,6 +137,10 @@ final class SettingsModel: ObservableObject {
             try store.save(.apiKey(trimmed), for: kind)
             activateIfNeeded(kind)
             refresh()
+            // A stored key isn't trusted until a lightweight test call
+            // succeeds — verify it so the card shows Validating… → Connected
+            // (or an invalid-key message) rather than a premature "Connected".
+            Task { await validate(kind) }
         } catch {
             errorMessage = "Couldn't save the key: \(error.localizedDescription)"
         }
@@ -76,6 +165,7 @@ final class SettingsModel: ObservableObject {
             try store.save(credentials, for: kind)
             activateIfNeeded(kind)
             refresh()
+            await validate(kind)
         } catch AuthError.userCancelled {
             // user backed out — no error to show
         } catch {
@@ -91,6 +181,11 @@ final class SettingsModel: ObservableObject {
     func makeActive(kind: ProviderInfo.Kind, modelID: String) {
         manager.setActive(kind: kind, modelID: modelID)
         activeSelection = manager.selection
+        // The selected model feeds Local's readiness probe (which model tag it
+        // looks for), so re-validate Local when its model changes.
+        if kind == .local {
+            Task { await validate(kind) }
+        }
     }
 
     /// Whether a kind offers a browser OAuth "sign in" option.
