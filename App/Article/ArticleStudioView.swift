@@ -383,7 +383,10 @@ struct ArticleStudioView: View {
         ContentUnavailableView {
             Label("No AI provider connected", systemImage: "sparkles")
         } description: {
-            Text("Add an API key, sign in, or pick a local model to compose articles from your highlights.")
+            // A6: derive the connection paths from what this build actually
+            // exposes (no "sign in" while OAuth is hidden; no "pick a local
+            // model" on iOS) so the copy never advertises a dead end.
+            Text(SettingsModel.setupGuidance(toDo: "compose articles from your highlights"))
         } actions: {
             Button {
                 showProviders = true

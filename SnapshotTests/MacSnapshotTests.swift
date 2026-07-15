@@ -192,6 +192,70 @@ final class MacSnapshotTests: XCTestCase {
 
     // MARK: - Library
 
+    // MARK: - Settings (A7/A9)
+
+    /// Provider settings at three Dynamic Type sizes, proving the AI/settings
+    /// surfaces now scale (A9) — the cards use semantic text styles / no fixed
+    /// `.system(size:)`, so text grows with the environment's size. Rendered
+    /// through `NSHostingView`, which honors the injected `dynamicTypeSize`.
+    func testProviderSettingsDynamicTypeSmall() {
+        snapshot(
+            ProviderSettingsView(app: model)
+                .environmentObject(model)
+                .dynamicTypeSize(.small),
+            size: CGSize(width: 620, height: 760),
+            name: "m09-provider-settings-dtype-small"
+        )
+    }
+
+    func testProviderSettingsDynamicTypeLarge() {
+        snapshot(
+            ProviderSettingsView(app: model)
+                .environmentObject(model)
+                .dynamicTypeSize(.large),
+            size: CGSize(width: 620, height: 900),
+            name: "m10-provider-settings-dtype-large"
+        )
+    }
+
+    func testProviderSettingsDynamicTypeAccessibility() {
+        snapshot(
+            ProviderSettingsView(app: model)
+                .environmentObject(model)
+                .dynamicTypeSize(.accessibility3),
+            size: CGSize(width: 620, height: 1100),
+            name: "m11-provider-settings-dtype-ax3"
+        )
+    }
+
+    // MARK: - First-run copy logic (A6)
+
+    /// On macOS the Local row is shown and OAuth is hidden, so the setup copy
+    /// advertises the API-key and local-model paths but never "sign in".
+    func testSetupGuidanceMatchesAvailablePathsOnMac() {
+        let paths = SettingsModel.availableSetupPaths
+        XCTAssertTrue(paths.contains("Add an API key"))
+        XCTAssertFalse(
+            paths.contains("sign in"),
+            "Subscription OAuth is hidden, so 'sign in' must not be advertised"
+        )
+        XCTAssertTrue(
+            paths.contains("pick a local model"),
+            "The Local row is shown on Mac, so its path is a legitimate suggestion"
+        )
+
+        let guidance = SettingsModel.setupGuidance(toDo: "ask questions")
+        XCTAssertTrue(guidance.hasSuffix("to ask questions."))
+        XCTAssertFalse(
+            guidance.lowercased().contains("sign in"),
+            "Guidance must not advertise the hidden OAuth path"
+        )
+        // Two paths join with a plain "or" (no Oxford comma).
+        XCTAssertEqual(guidance, "Add an API key or pick a local model to ask questions.")
+    }
+
+    // MARK: - Library
+
     func testLibraryGrid() {
         snapshot(
             LibraryGridView(
