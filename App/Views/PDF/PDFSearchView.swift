@@ -8,6 +8,9 @@ import SwiftUI
 /// query searches. Match paint on the pages is cleared when the popover goes.
 struct PDFSearchView: View {
     let controller: PDFReaderController
+    /// Jump to the tapped hit's page. The host closes the popover so the
+    /// document is revealed — mirroring `ReaderSearchPopover`'s `onJump`.
+    var onDismiss: () -> Void
 
     @State private var query = ""
     @State private var results: [PDFReaderController.SearchResult] = []
@@ -18,7 +21,12 @@ struct PDFSearchView: View {
             TextField("Search this PDF", text: $query)
                 .textFieldStyle(.roundedBorder)
                 .focused($fieldFocused)
-                .onSubmit { results = controller.search(query) }
+                .onSubmit {
+                    // ⏎ jumps to the first hit, matching the text reader.
+                    if let first = results.first {
+                        controller.jump(to: first)
+                    }
+                }
                 .accessibilityIdentifier("pdf.search.field")
 
             if results.isEmpty {
@@ -56,6 +64,7 @@ struct PDFSearchView: View {
                 ForEach(results) { result in
                     Button {
                         controller.jump(to: result)
+                        onDismiss()
                     } label: {
                         HStack(alignment: .firstTextBaseline, spacing: 8) {
                             Text("p. \(result.pageNumber)")
@@ -74,6 +83,7 @@ struct PDFSearchView: View {
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
+                    .accessibilityIdentifier("pdf.search.result")
                     Divider()
                 }
             }

@@ -191,7 +191,9 @@ struct PDFReaderView: View {
             .help("Find in PDF (⌘F)")
             .accessibilityIdentifier("pdf.search")
             .popover(isPresented: $showSearch, arrowEdge: .bottom) {
-                PDFSearchView(controller: controller)
+                PDFSearchView(controller: controller) {
+                    showSearch = false
+                }
             }
         }
     }

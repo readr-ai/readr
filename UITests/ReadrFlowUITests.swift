@@ -202,6 +202,134 @@ final class ReadrFlowUITests: XCTestCase {
         // width-dependent.
     }
 
+    // Opens the seeded "Field Notes" PDF from Home and waits for the native
+    // PDFKit reader (asserted via its page indicator). Mirrors the inline
+    // open in `testFieldNotesPDFShowsPageIndicator`.
+    private func openFieldNotesPDF(_ app: XCUIApplication) {
+        let pdfButton = app.buttons["Field Notes"].firstMatch
+        let pdfCard = pdfButton.waitForExistence(timeout: 10)
+            ? pdfButton
+            : app.staticTexts["Field Notes"].firstMatch
+        XCTAssertTrue(pdfCard.waitForExistence(timeout: 5), "The seeded PDF should be on the shelf")
+        if !pdfCard.isHittable { app.swipeUp() }
+        pdfCard.tap()
+
+        let indicator = app.staticTexts["pdf.pageIndicator"].firstMatch
+        XCTAssertTrue(
+            indicator.waitForExistence(timeout: 15),
+            "The PDF reader should show its page indicator"
+        )
+        XCTAssertTrue(
+            indicator.label.hasPrefix("Page 1 of 2"),
+            "A freshly opened 2-page PDF should read 'Page 1 of 2' (got: \(indicator.label))"
+        )
+    }
+
+    // MARK: - PDF search (R3)
+
+    // R3: pressing Return in the PDF find field jumps to the first hit. The
+    // seeded fixture's word "questions" lives ONLY on page 2, so a jump to
+    // the first hit is provable via the page indicator flipping to "Page 2
+    // of 2" (the reader opens on page 1).
+    func testPDFSearchReturnJumpsToFirstHit() throws {
+        let app = launchSeeded()
+        openFieldNotesPDF(app)
+
+        // pdf.search is a trailing primaryAction toolbar item (never in the
+        // silently-collapsing leading group), so it's reachable on both idioms.
+        let search = button(app, id: "pdf.search", label: "Find in PDF")
+        XCTAssertTrue(search.waitForExistence(timeout: 5))
+        search.tap()
+
+        let field = app.textFields["pdf.search.field"].firstMatch
+        XCTAssertTrue(field.waitForExistence(timeout: 5), "The PDF search field should open")
+        field.tap()
+
+        // CI simulators sometimes keep a hardware keyboard attached, in which
+        // case the software keyboard never appears and typeText can fail with
+        // a focus error we cannot catch — skip (not silently pass) there.
+        guard app.keyboards.firstMatch.waitForExistence(timeout: 3) else {
+            throw XCTSkip(
+                "No software keyboard (hardware keyboard attached?) — cannot type the query"
+            )
+        }
+        field.typeText("questions")
+
+        // The 250ms-debounced `.task(id:)` search must populate a result row
+        // before Return can jump to `results.first`.
+        XCTAssertTrue(
+            app.buttons["pdf.search.result"].firstMatch.waitForExistence(timeout: 5),
+            "Searching 'questions' should list a matching result row"
+        )
+
+        // Return submits the field → jump to the first hit (page 2).
+        field.typeText("\n")
+
+        let indicator = app.staticTexts["pdf.pageIndicator"].firstMatch
+        XCTAssertTrue(
+            indicator.waitForExistence(timeout: 5),
+            "The page indicator should stay visible after the jump"
+        )
+        let expectation = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "label BEGINSWITH 'Page 2 of 2'"),
+            object: indicator
+        )
+        XCTAssertEqual(
+            XCTWaiter().wait(for: [expectation], timeout: 5), .completed,
+            "Pressing Return should jump to the first hit on page 2 (got: \(indicator.label))"
+        )
+    }
+
+    // R3: tapping a result row jumps to that hit AND dismisses the popover so
+    // the document is revealed (the bug: the popover stayed open covering the
+    // doc). Asserted by the search field disappearing and the indicator
+    // landing on the hit's page (2).
+    func testPDFSearchRowTapDismissesPopoverAndReveals() throws {
+        let app = launchSeeded()
+        openFieldNotesPDF(app)
+
+        let search = button(app, id: "pdf.search", label: "Find in PDF")
+        XCTAssertTrue(search.waitForExistence(timeout: 5))
+        search.tap()
+
+        let field = app.textFields["pdf.search.field"].firstMatch
+        XCTAssertTrue(field.waitForExistence(timeout: 5), "The PDF search field should open")
+        field.tap()
+
+        guard app.keyboards.firstMatch.waitForExistence(timeout: 3) else {
+            throw XCTSkip(
+                "No software keyboard (hardware keyboard attached?) — cannot type the query"
+            )
+        }
+        field.typeText("questions")
+
+        let row = app.buttons["pdf.search.result"].firstMatch
+        XCTAssertTrue(
+            row.waitForExistence(timeout: 5),
+            "Searching 'questions' should list a matching result row"
+        )
+        row.tap() // jumps and closes
+
+        XCTAssertTrue(
+            field.waitForNonExistence(timeout: 5),
+            "Tapping a result should dismiss the search popover and reveal the doc"
+        )
+        // The tapped hit is on page 2 — the reader is showing it.
+        let indicator = app.staticTexts["pdf.pageIndicator"].firstMatch
+        XCTAssertTrue(
+            indicator.waitForExistence(timeout: 5),
+            "The revealed PDF should show its page indicator"
+        )
+        let expectation = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "label BEGINSWITH 'Page 2 of 2'"),
+            object: indicator
+        )
+        XCTAssertEqual(
+            XCTWaiter().wait(for: [expectation], timeout: 5), .completed,
+            "Tapping the result should land on page 2 (got: \(indicator.label))"
+        )
+    }
+
     // MARK: - In-book search
 
     func testInBookSearchFindsWinstonAndJumps() throws {
