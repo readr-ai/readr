@@ -60,8 +60,6 @@ public final class ProviderManager: @unchecked Sendable {
     /// derived from an Ollama `probe()` (`active` when ready, `invalid` when the
     /// server is down or the model is missing).
     public enum ValidationState: Sendable, Equatable {
-        /// A credential is stored (remote) but has not been verified yet.
-        case stored
         /// A validation request is in flight.
         case validating
         /// Verified usable — the key was accepted / the local model is ready.
@@ -146,6 +144,19 @@ public final class ProviderManager: @unchecked Sendable {
     private func setValidation(_ state: ValidationState, for kind: ProviderInfo.Kind) {
         lock.lock(); defer { lock.unlock() }
         _validation[kind] = state
+    }
+
+    /// Forget a kind's validation result, reverting it to "never checked".
+    ///
+    /// Called when the underlying credential changes out from under a cached
+    /// result — on disconnect (so a deleted key can't stay `.active`) and when a
+    /// new key/model is stored (so the stale result doesn't mask a re-check).
+    /// Reverting to nil (rather than `.invalid`) keeps the optimistic
+    /// "configured means usable until proven otherwise" behavior that lets Ask
+    /// work at launch / offline before Settings has run a live validation.
+    public func clearValidation(_ kind: ProviderInfo.Kind) {
+        lock.lock(); defer { lock.unlock() }
+        _validation[kind] = nil
     }
 
     /// Verify that a kind is actually usable, updating its `validationState`.
@@ -260,6 +271,17 @@ public final class ProviderManager: @unchecked Sendable {
     /// both to the factory.
     public func activeProvider() throws -> LLMProvider? {
         guard let selection = self.selection else { return nil }
+
+        // If the selected kind was checked this session and the provider
+        // actually rejected it (or a local model's probe failed), refuse to
+        // resolve — otherwise Ask/Article would keep using a credential we know
+        // is bad. Every other state stays optimistically usable: `nil` (never
+        // checked) and `.validating` (a re-check in flight) mean "unproven, not
+        // disproven", matching the cold-launch/offline behavior that lets Ask
+        // work before Settings has run a live validation.
+        if case .invalid = validationState(selection.kind) {
+            throw ProviderError.notConfigured(selection.kind)
+        }
 
         // Resolve the concrete model: prefer an exact modelID match, else the
         // catalog default for the kind.

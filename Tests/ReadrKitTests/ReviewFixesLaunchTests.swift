@@ -167,6 +167,60 @@ final class ReviewFixesLaunchTests: XCTestCase {
         XCTAssertEqual(restored.selection?.modelID, "gpt-4.1-mini")
     }
 
+    // MARK: - activeProvider() honors validation state
+
+    /// Cold launch: a stored key that has never been validated this session
+    /// must still resolve, so Ask works at launch / offline before Settings
+    /// runs a live check. (Optimistic `nil`-state path.)
+    func testActiveProviderResolvesNeverValidatedStoredKey() throws {
+        let store = FakeCredentialStore()
+        try store.save(.apiKey("sk-unchecked"), for: .openAI)
+        let manager = makeManager(store: store, http: MockHTTPClient())
+        manager.setActive(kind: .openAI)
+
+        XCTAssertNil(manager.validationState(.openAI), "precondition: never validated")
+        XCTAssertNotNil(try manager.activeProvider(), "unchecked stored key must resolve")
+    }
+
+    /// After a 401 marks the key `.invalid`, activeProvider() must refuse to
+    /// resolve it rather than keep using a credential we know is bad.
+    func testActiveProviderRefusesInvalidKeyAfter401() async throws {
+        let store = FakeCredentialStore()
+        try store.save(.apiKey("sk-bad"), for: .openAI)
+        let mock = MockHTTPClient()
+        mock.sendHandler = { _ in HTTPResponse(status: 401) }
+        let manager = makeManager(store: store, http: mock)
+        manager.setActive(kind: .openAI)
+
+        _ = await manager.validate(.openAI)
+        guard case .invalid = manager.validationState(.openAI) else {
+            return XCTFail("expected .invalid after 401")
+        }
+        XCTAssertThrowsError(try manager.activeProvider()) { error in
+            XCTAssertEqual(error as? ProviderManager.ProviderError, .notConfigured(.openAI))
+        }
+    }
+
+    /// `clearValidation` reverts to the never-checked state, so a replaced key
+    /// stops being gated by the previous key's `.invalid` result.
+    func testClearValidationRestoresOptimisticResolution() async throws {
+        let store = FakeCredentialStore()
+        try store.save(.apiKey("sk-bad"), for: .openAI)
+        let mock = MockHTTPClient()
+        mock.sendHandler = { _ in HTTPResponse(status: 401) }
+        let manager = makeManager(store: store, http: mock)
+        manager.setActive(kind: .openAI)
+
+        _ = await manager.validate(.openAI)
+        XCTAssertThrowsError(try manager.activeProvider())
+
+        // User pastes a new key: clearing validation restores optimistic resolve.
+        try store.save(.apiKey("sk-fresh"), for: .openAI)
+        manager.clearValidation(.openAI)
+        XCTAssertNil(manager.validationState(.openAI))
+        XCTAssertNotNil(try manager.activeProvider(), "cleared key must resolve again")
+    }
+
     // MARK: - A3: Ollama probe classification + ProviderManager .local readiness
 
     func testProbeReadyWhenModelInstalled() async {

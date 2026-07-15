@@ -135,6 +135,10 @@ final class SettingsModel: ObservableObject {
         guard !trimmed.isEmpty else { return }
         do {
             try store.save(.apiKey(trimmed), for: kind)
+            // The new key hasn't been checked yet — drop any prior result so the
+            // card doesn't flash a stale Connected/invalid from the old key
+            // before the re-validate below settles.
+            manager.clearValidation(kind)
             activateIfNeeded(kind)
             refresh()
             // A stored key isn't trusted until a lightweight test call
@@ -163,6 +167,9 @@ final class SettingsModel: ObservableObject {
         do {
             let credentials = try await OAuthCoordinator().signIn(config: config)
             try store.save(credentials, for: kind)
+            // New credentials — drop any prior result so a stale state can't
+            // mask the un-checked sign-in before the validate below settles.
+            manager.clearValidation(kind)
             activateIfNeeded(kind)
             refresh()
             await validate(kind)
@@ -175,6 +182,10 @@ final class SettingsModel: ObservableObject {
 
     func disconnect(_ kind: ProviderInfo.Kind) {
         try? store.delete(for: kind)
+        // Drop the cached validation result so a deleted key can't linger as
+        // ".active" — otherwise the card stays "Connected" and activeProvider()
+        // would still resolve it.
+        manager.clearValidation(kind)
         refresh()
     }
 

@@ -297,10 +297,10 @@ struct ProviderSettingsView: View {
                 showsSpinner: false,
                 isActive: false
             )
-        case .stored, .none:
-            // Not yet validated this session: fall back to the stored-key
-            // heuristic. Configured shows a neutral "Connected" until the
-            // in-flight validation settles it one way or the other.
+        case .none:
+            // Never validated this session: fall back to the stored-key
+            // heuristic. Configured shows a neutral "Connected" until a live
+            // validation settles it one way or the other.
             return CardStatus(
                 kindRawValue: kind.rawValue,
                 text: isConfigured ? "Connected" : "Not connected",
