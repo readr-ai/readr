@@ -479,6 +479,33 @@ final class MacSnapshotTests: XCTestCase {
         )
     }
 
+    /// A9: the Ask panel now uses semantic text styles (no fixed
+    /// `.system(size:)`), so its quote, input, chips, caption and answer scale
+    /// with Dynamic Type. Rendered at an accessibility size to prove the AI
+    /// surface grows with the environment like Settings does.
+    func testAskPanelDynamicTypeAccessibility() {
+        snapshot(
+            AskPanelView(app: model, book: sampleBook, selection: nil)
+                .environmentObject(model)
+                .dynamicTypeSize(.accessibility3),
+            size: CGSize(width: 620, height: 900),
+            name: "m18-ask-panel-dtype-ax3"
+        )
+    }
+
+    /// A9: the Article studio picker uses semantic text styles too, so its
+    /// heading, highlight cards, counts and direction field scale with Dynamic
+    /// Type. Rendered at an accessibility size alongside the Ask panel.
+    func testArticleStudioDynamicTypeAccessibility() {
+        snapshot(
+            ArticleStudioView(book: sampleBook)
+                .environmentObject(model)
+                .dynamicTypeSize(.accessibility3),
+            size: CGSize(width: 640, height: 900),
+            name: "m19-article-studio-dtype-ax3"
+        )
+    }
+
     // MARK: - First-run copy logic (A6)
 
     /// On macOS the Local row is shown and OAuth is hidden, so the setup copy

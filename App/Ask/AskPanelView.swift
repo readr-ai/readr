@@ -50,7 +50,7 @@ struct AskPanelView: View {
                             showProviders = true
                         } label: {
                             Text("Open AI Providers")
-                                .font(.system(size: 12.5, weight: .semibold))
+                                .font(.callout.weight(.semibold))
                                 .foregroundStyle(theme.background)
                                 .padding(.vertical, 9)
                                 .padding(.horizontal, 16)
@@ -76,10 +76,10 @@ struct AskPanelView: View {
                 ToolbarItem(placement: .principal) {
                     HStack(spacing: 8) {
                         Text(AppTheme.aiGlyph)
-                            .font(.system(size: 13))
+                            .font(.subheadline)
                             .foregroundStyle(theme.iris)
                         Text("ASK THE BOOK")
-                            .font(.system(size: 10.5, weight: .semibold))
+                            .font(.caption2.weight(.semibold))
                             .tracking(1.5)
                             .foregroundStyle(theme.muted)
                     }
@@ -97,7 +97,7 @@ struct AskPanelView: View {
         VStack(alignment: .leading, spacing: 12) {
             if let selection, !selection.quotedText.isEmpty {
                 Text(selection.quotedText)
-                    .font(.system(size: 12, design: .serif))
+                    .font(.system(.footnote, design: .serif))
                     .italic()
                     .lineSpacing(4)
                     .foregroundStyle(theme.muted)
@@ -111,14 +111,14 @@ struct AskPanelView: View {
                 // No selection: the panel was opened for whole-book questions —
                 // say so instead of showing an empty quote box.
                 Label("Ask anything about this book", systemImage: "book")
-                    .font(.system(size: 12.5))
+                    .font(.footnote)
                     .foregroundStyle(theme.muted)
             }
 
             HStack(spacing: 8) {
                 TextField("Ask a question about this book…", text: $question, axis: .vertical)
                     .textFieldStyle(.plain)
-                    .font(.system(size: 12.5))
+                    .font(.footnote)
                     .foregroundStyle(theme.inkColor)
                     .padding(.vertical, 9)
                     .padding(.horizontal, 11)
@@ -146,7 +146,7 @@ struct AskPanelView: View {
                                 question = suggestion
                             } label: {
                                 Text(suggestion)
-                                    .font(.system(size: 11.5))
+                                    .font(.caption)
                                     .foregroundStyle(theme.iris)
                                     .padding(.vertical, 5)
                                     .padding(.horizontal, 11)
@@ -164,7 +164,7 @@ struct AskPanelView: View {
             // hardcoded — the whole-book tier returns no per-passage sources,
             // so it must not promise citations it can't deliver.
             Text(groundingCaption)
-                .font(.system(size: 10.5))
+                .font(.caption2)
                 .foregroundStyle(theme.faint)
 
             if let tier = vm.tier {
@@ -172,14 +172,14 @@ struct AskPanelView: View {
                     tier.providesCitations ? "Using relevant passages" : "Using the whole book",
                     systemImage: tier.providesCitations ? "doc.text.magnifyingglass" : "book.closed"
                 )
-                .font(.system(size: 10.5))
+                .font(.caption2)
                 .foregroundStyle(theme.faint)
             }
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
                     Text(vm.answer)
-                        .font(.system(size: 13))
+                        .font(.callout)
                         .lineSpacing(7)
                         .foregroundStyle(theme.inkColor)
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -221,11 +221,11 @@ struct AskPanelView: View {
     private var wholeBookNote: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("USING THE WHOLE BOOK")
-                .font(.system(size: 10, weight: .semibold))
+                .font(.caption2.weight(.semibold))
                 .tracking(1.2)
                 .foregroundStyle(theme.faint)
             Text("This book is short enough to read in full, so the answer draws on the entire text — no passage retrieval, no citation list.")
-                .font(.system(size: 11.5))
+                .font(.caption)
                 .lineSpacing(3)
                 .foregroundStyle(theme.muted)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -242,16 +242,16 @@ struct AskPanelView: View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .top, spacing: 10) {
                 Image(systemName: "exclamationmark.circle")
-                    .font(.system(size: 15))
+                    .font(.body)
                     .foregroundStyle(.red)
                 VStack(alignment: .leading, spacing: 3) {
                     Text(message)
-                        .font(.system(size: 12.5, weight: .semibold))
+                        .font(.callout.weight(.semibold))
                         .foregroundStyle(theme.inkColor)
                         .fixedSize(horizontal: false, vertical: true)
                     if let recovery = vm.errorRecovery {
                         Text(recovery)
-                            .font(.system(size: 11.5))
+                            .font(.caption)
                             .foregroundStyle(theme.muted)
                             .fixedSize(horizontal: false, vertical: true)
                     }
@@ -261,7 +261,7 @@ struct AskPanelView: View {
             if vm.lastQuestion != nil {
                 Button(action: retry) {
                     Label("Retry", systemImage: "arrow.clockwise")
-                        .font(.system(size: 12.5, weight: .semibold))
+                        .font(.callout.weight(.semibold))
                         .foregroundStyle(theme.background)
                         .padding(.vertical, 9)
                         .frame(maxWidth: .infinity)
@@ -284,7 +284,7 @@ struct AskPanelView: View {
     private var citationsSection: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("SOURCES")
-                .font(.system(size: 10, weight: .semibold))
+                .font(.caption2.weight(.semibold))
                 .tracking(1.2)
                 .foregroundStyle(theme.faint)
 
@@ -296,7 +296,7 @@ struct AskPanelView: View {
                             expandedCitation = isExpanded ? nil : index
                         } label: {
                             Text(citation.locator)
-                                .font(.system(size: 10, weight: .semibold))
+                                .font(.caption2.weight(.semibold))
                                 .foregroundStyle(theme.iris)
                                 .padding(.vertical, 4)
                                 .padding(.horizontal, 10)
@@ -313,7 +313,7 @@ struct AskPanelView: View {
             if let index = expandedCitation, vm.citations.indices.contains(index) {
                 let citation = vm.citations[index]
                 Text("\u{201C}\(citation.quotedText)\u{201D}")
-                    .font(.system(size: 12, design: .serif))
+                    .font(.system(.footnote, design: .serif))
                     .italic()
                     .lineSpacing(4)
                     .foregroundStyle(theme.muted)
@@ -381,4 +381,5 @@ private struct ThinkingDots: View {
         .accessibilityLabel("Thinking")
         .onAppear { pulsing = true }
     }
+}
 }
