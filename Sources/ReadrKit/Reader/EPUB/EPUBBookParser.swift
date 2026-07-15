@@ -15,10 +15,10 @@ public struct EPUBBookParser {
 
     public func parse(container: EPUBContainer, fallbackTitle: String) throws -> Book {
         if container.entryExists("META-INF/encryption.xml"),
-           Self.declaresDRM(encryptionXML: try? container.data(at: "META-INF/encryption.xml")) {
+           Self.declaresDRM(encryptionXML: try Self.optionalData(container, at: "META-INF/encryption.xml")) {
             throw BookParserError.drmProtected
         }
-        guard let containerData = try? container.data(at: "META-INF/container.xml"),
+        guard let containerData = try Self.optionalData(container, at: "META-INF/container.xml"),
               let rawOPFPath = Self.rootfilePath(from: containerData) else {
             throw BookParserError.corrupted("missing or invalid META-INF/container.xml")
         }
@@ -27,7 +27,7 @@ public struct EPUBBookParser {
         let opfPath = Self.resolve(
             base: "", href: rawOPFPath.replacingOccurrences(of: "\\", with: "/")
         )
-        guard let opfData = try? container.data(at: opfPath) else {
+        guard let opfData = try Self.optionalData(container, at: opfPath) else {
             throw BookParserError.corrupted("missing OPF package document at \(opfPath)")
         }
 
@@ -46,7 +46,7 @@ public struct EPUBBookParser {
         for entry in orderedSpine {
             guard let item = opf.manifestItem(for: entry.idref) else { continue }
             let href = Self.resolve(base: baseDir, href: item.href)
-            guard let data = try? container.data(at: href),
+            guard let data = try Self.optionalData(container, at: href),
                   let html = Self.decodeText(data) else { continue }
             let (text, imageRefs) = XHTMLTextExtractor.textAndImages(from: html)
             guard !text.isEmpty else { continue }
@@ -70,7 +70,7 @@ public struct EPUBBookParser {
         // TOC: the package's declared navigation (EPUB 3 nav doc preferred,
         // EPUB 2 NCX fallback); chapter headings only when neither yields
         // anything.
-        let declaredTOC = Self.tableOfContents(
+        let declaredTOC = try Self.tableOfContents(
             opf: opf, baseDir: baseDir, container: container,
             chapterIndexByPath: chapterIndexByPath
         )
@@ -80,7 +80,7 @@ public struct EPUBBookParser {
             }
             : declaredTOC
 
-        let isFixedLayout = opf.isFixedLayout || Self.appleFixedLayoutDeclared(in: container)
+        let isFixedLayout = try opf.isFixedLayout || Self.appleFixedLayoutDeclared(in: container)
         let metadata = BookMetadata(
             title: opf.title.isEmpty ? fallbackTitle : opf.title,
             authors: opf.creators,
@@ -93,8 +93,31 @@ public struct EPUBBookParser {
             metadata: metadata,
             chapters: chapters,
             estimatedTokenCount: estimateTokens(fullText),
-            coverImageData: Self.coverImageData(opf: opf, baseDir: baseDir, container: container)
+            coverImageData: try Self.coverImageData(opf: opf, baseDir: baseDir, container: container)
         )
+    }
+
+    // MARK: - Cap-aware entry reads
+
+    /// Read an optional archive entry, distinguishing two failure modes:
+    ///
+    /// - A genuinely missing/unreadable **non-security** entry (e.g. a
+    ///   legitimately absent optional resource) yields `nil`, letting callers
+    ///   skip it — the prior `try?` behavior.
+    /// - An `EPUBParseError` (per-entry cap, cumulative cap, spine-count
+    ///   ceiling) is a security limit and is **rethrown** so a hostile archive
+    ///   aborts the whole parse instead of importing partially.
+    ///
+    /// Using this everywhere content bytes are read means no code path can
+    /// swallow a zip-bomb cap violation via `try?`.
+    static func optionalData(_ container: EPUBContainer, at path: String) throws -> Data? {
+        do {
+            return try container.data(at: path)
+        } catch let error as EPUBParseError {
+            throw error
+        } catch {
+            return nil
+        }
     }
 
     // MARK: - DRM vs font obfuscation
@@ -195,8 +218,8 @@ public struct EPUBBookParser {
     /// Legacy Apple fixed-layout declaration (pre-dating the EPUB 3
     /// `rendition:layout` vocabulary): `META-INF/com.apple.ibooks.display-
     /// options.xml` containing `<option name="fixed-layout">true</option>`.
-    static func appleFixedLayoutDeclared(in container: EPUBContainer) -> Bool {
-        guard let data = try? container.data(at: "META-INF/com.apple.ibooks.display-options.xml"),
+    static func appleFixedLayoutDeclared(in container: EPUBContainer) throws -> Bool {
+        guard let data = try optionalData(container, at: "META-INF/com.apple.ibooks.display-options.xml"),
               let xml = decodeText(data) else { return false }
         return xml.range(
             of: "<option[^>]*name\\s*=\\s*[\"']fixed-layout[\"'][^>]*>\\s*true\\s*</option>",
@@ -235,13 +258,15 @@ public struct EPUBBookParser {
     /// Loads the cover artwork declared in the OPF, if any. Prefers the EPUB3
     /// `properties="cover-image"` manifest item, falling back to the EPUB2
     /// `<meta name="cover" content="…"/>` reference. Never throws — a missing
-    /// or unreadable cover just yields nil.
-    static func coverImageData(opf: OPF, baseDir: String, container: EPUBContainer) -> Data? {
+    /// or unreadable cover just yields nil. A cap violation (`EPUBParseError`),
+    /// however, propagates so a hostile archive cannot slip an over-cap entry
+    /// past the parse via the cover lookup.
+    static func coverImageData(opf: OPF, baseDir: String, container: EPUBContainer) throws -> Data? {
         for id in [opf.coverItemID, opf.metaCoverID].compactMap({ $0 }) {
             guard let item = opf.manifest[id],
                   isImage(mediaType: item.type, href: item.href) else { continue }
             let path = resolve(base: baseDir, href: item.href)
-            if let data = try? container.data(at: path), !data.isEmpty {
+            if let data = try optionalData(container, at: path), !data.isEmpty {
                 return data
             }
         }
@@ -302,10 +327,10 @@ public struct EPUBBookParser {
     static func tableOfContents(
         opf: OPF, baseDir: String, container: EPUBContainer,
         chapterIndexByPath: [String: Int]
-    ) -> [TOCEntry] {
+    ) throws -> [TOCEntry] {
         if let navID = opf.navItemID, let item = opf.manifest[navID] {
             let navPath = resolve(base: baseDir, href: item.href)
-            if let data = try? container.data(at: navPath),
+            if let data = try optionalData(container, at: navPath),
                let html = decodeText(data) {
                 let entries = navDocumentTOC(
                     html: html, navDir: directory(of: navPath),
@@ -316,7 +341,7 @@ public struct EPUBBookParser {
         }
         if let ncxID = opf.ncxItemID, let item = opf.manifest[ncxID] {
             let ncxPath = resolve(base: baseDir, href: item.href)
-            if let data = try? container.data(at: ncxPath) {
+            if let data = try optionalData(container, at: ncxPath) {
                 let entries = ncxTOC(
                     data: data, ncxDir: directory(of: ncxPath),
                     chapterIndexByPath: chapterIndexByPath
