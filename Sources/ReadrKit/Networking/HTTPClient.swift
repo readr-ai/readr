@@ -39,6 +39,15 @@ public struct HTTPResponse: Sendable {
     }
 
     public var isSuccess: Bool { (200..<300).contains(status) }
+
+    /// Throw `HTTPError.status(_:body:)` (decoding the body as UTF-8) unless the
+    /// response is a 2xx success. Shared by the provider credential checks so the
+    /// "reject non-2xx" mapping is defined once.
+    public func throwIfUnsuccessful() throws {
+        guard isSuccess else {
+            throw HTTPError.status(status, body: String(decoding: body, as: UTF8.self))
+        }
+    }
 }
 
 public enum HTTPError: Error, Sendable, Equatable {

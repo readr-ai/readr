@@ -91,12 +91,7 @@ public struct AnthropicProvider: LLMProvider, CredentialValidating {
         let response = try await http.send(
             HTTPRequest(url: Self.endpoint, method: .post, headers: headers, body: body)
         )
-        guard response.isSuccess else {
-            throw HTTPError.status(
-                response.status,
-                body: String(decoding: response.body, as: UTF8.self)
-            )
-        }
+        try response.throwIfUnsuccessful()
     }
 
     // MARK: - Request building

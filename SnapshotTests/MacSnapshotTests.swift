@@ -360,7 +360,7 @@ final class MacSnapshotTests: XCTestCase {
                 .frame(width: 340)
                 .background(ReadingTheme.paper.background),
             size: CGSize(width: 340, height: 120),
-            name: "m09-create-article-cta-ready"
+            name: "m10-create-article-cta-ready"
         )
     }
 
@@ -376,7 +376,7 @@ final class MacSnapshotTests: XCTestCase {
                 .frame(width: 340)
                 .background(ReadingTheme.paper.background),
             size: CGSize(width: 340, height: 120),
-            name: "m10-create-article-cta-empty"
+            name: "m11-create-article-cta-empty"
         )
     }
 
@@ -402,7 +402,7 @@ final class MacSnapshotTests: XCTestCase {
             ArticleStudioView(book: emptyBook)
                 .environmentObject(emptyModel),
             size: CGSize(width: 640, height: 560),
-            name: "m11-article-studio-zero-highlights"
+            name: "m12-article-studio-zero-highlights"
         )
     }
 
@@ -418,7 +418,7 @@ final class MacSnapshotTests: XCTestCase {
                 .frame(width: 340)
                 .background(ReadingTheme.paper.background),
             size: CGSize(width: 340, height: 520),
-            name: "m12-annotation-list-neutral-chrome"
+            name: "m13-annotation-list-neutral-chrome"
         )
     }
 
@@ -437,7 +437,7 @@ final class MacSnapshotTests: XCTestCase {
                 pdfShowsOriginal: .constant(true)
             ),
             size: CGSize(width: 320, height: 520),
-            name: "m13-appearance-popover-dark-neutral"
+            name: "m14-appearance-popover-dark-neutral"
         )
     }
 
@@ -455,7 +455,7 @@ final class MacSnapshotTests: XCTestCase {
                 .environmentObject(model)
                 .dynamicTypeSize(.small),
             size: CGSize(width: 620, height: 760),
-            name: "m09-provider-settings-dtype-small"
+            name: "m15-provider-settings-dtype-small"
         )
     }
 
@@ -465,7 +465,7 @@ final class MacSnapshotTests: XCTestCase {
                 .environmentObject(model)
                 .dynamicTypeSize(.large),
             size: CGSize(width: 620, height: 900),
-            name: "m10-provider-settings-dtype-large"
+            name: "m16-provider-settings-dtype-large"
         )
     }
 
@@ -475,7 +475,7 @@ final class MacSnapshotTests: XCTestCase {
                 .environmentObject(model)
                 .dynamicTypeSize(.accessibility3),
             size: CGSize(width: 620, height: 1100),
-            name: "m11-provider-settings-dtype-ax3"
+            name: "m17-provider-settings-dtype-ax3"
         )
     }
 

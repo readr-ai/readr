@@ -74,12 +74,7 @@ public struct OpenAIProvider: LLMProvider, CredentialValidating {
         let response = try await http.send(
             HTTPRequest(url: Self.modelsEndpoint, method: .get, headers: headers)
         )
-        guard response.isSuccess else {
-            throw HTTPError.status(
-                response.status,
-                body: String(decoding: response.body, as: UTF8.self)
-            )
-        }
+        try response.throwIfUnsuccessful()
     }
 
     // MARK: - Request building
