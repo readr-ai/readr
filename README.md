@@ -6,7 +6,8 @@
 [![Swift](https://img.shields.io/badge/Swift-5.9-orange.svg)](Package.swift)
 
 An AI-powered, native **macOS & iOS** ebook reader — think Apple Books, but you can
-ask the book questions and turn your highlights into articles. Open source (MIT).
+ask the book questions and turn your highlights into articles. Open source (MIT),
+built for the love of reading.
 
 ![Readr: reading with highlights, and asking the book a question with cited sources](docs/screenshots/hero-reader-ask.png)
 
@@ -28,8 +29,9 @@ ask the book questions and turn your highlights into articles. Open source (MIT)
 
 When you read, you have questions. Today you copy a sentence, paste it into
 Claude/ChatGPT, and ask. Readr removes that loop: select text → ask → get an
-answer grounded in **the whole book**, without leaving the page. Your highlights
-and notes can also be auto-composed into a shareable article.
+answer grounded in **the whole book**, without leaving the page — your reading
+stays uninterrupted. Your highlights and notes can also be auto-composed into
+a shareable article.
 
 ## Features
 
