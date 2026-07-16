@@ -27,6 +27,12 @@ struct LibraryShellView: View {
     /// Start on Home so a collapsed (iPhone) split view lands on content, not
     /// the bare sidebar list.
     @State private var selection: LibrarySidebarItem? = .home
+    /// R4: the book the per-book "Highlights & Notes" context menu invoked, so
+    /// the review opens on that book rather than the first annotated one. Starts
+    /// nil — the review then defaults to the first annotated book — and the
+    /// review also falls back to the first book whenever this id no longer names
+    /// an annotated book (e.g. after that book is deleted).
+    @State private var selectedNotesBookID: UUID?
     @State private var query = ""
     @State private var isImporting = false
     @State private var showSettings = false
@@ -43,7 +49,21 @@ struct LibraryShellView: View {
             detail
         }
         .background(theme.background)
-        .tint(AppTheme.accent)
+        // R8: accept dragged-in book files everywhere the shell claims — the
+        // sidebar and every detail screen, not just the empty state. Attached
+        // once at the split-view root so a single handler covers both columns
+        // (no per-screen duplication / double-handling).
+        .dropDestination(for: DroppedBookFile.self) { files, _ in
+            Task {
+                for file in files {
+                    await model.importBook(at: file.url)
+                }
+            }
+            return true
+        }
+        // R6/D1: generic chrome (back chevron, split-view controls) reads the
+        // neutral ink token — Iris stays reserved for AI moments only.
+        .tint(theme.inkColor)
         .fileImporter(
             isPresented: $isImporting,
             allowedContentTypes: LibraryImport.types,
@@ -317,21 +337,14 @@ struct LibraryShellView: View {
                     books: model.books.filter { model.bookState(for: $0)?.isFinished == true }
                 )
             case .notes:
-                LibraryNotesView()
+                LibraryNotesView(selectedBookID: $selectedNotesBookID)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(theme.background)
-        // The whole detail area accepts book files dragged in from
-        // Finder/Files — on every screen, not just the empty state.
-        .dropDestination(for: DroppedBookFile.self) { files, _ in
-            Task {
-                for file in files {
-                    await model.importBook(at: file.url)
-                }
-            }
-            return true
-        }
+        // R8: the drop target now lives at the NavigationSplitView root (see
+        // `body`) so drag-drop import works over the sidebar too, not just this
+        // detail area. Kept there as a single handler to avoid double-handling.
     }
 
     private func grid(title: String, books: [Book]) -> LibraryGridView {
@@ -340,7 +353,10 @@ struct LibraryShellView: View {
             books: searchFiltered(books),
             query: trimmedQuery,
             openBook: open,
-            showNotes: { selection = .notes },
+            showNotes: { book in
+                selectedNotesBookID = book.id
+                selection = .notes
+            },
             isImporting: $isImporting,
             showSettings: $showSettings
         )

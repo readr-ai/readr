@@ -14,6 +14,12 @@ struct NotesPanel: View {
     let book: Book
     var onJumpHighlight: ((Highlight) -> Void)? = nil
     var onJumpPDF: ((PDFHighlight) -> Void)? = nil
+    /// R2: recolor/delete of a PDF highlight routed through the PDF controller
+    /// so the live PDFKit overlay is reconciled, not just the store. Nil when
+    /// no native PDF surface is mounted (text mode / library review) — the
+    /// list then updates the store directly, which is correct with no overlay.
+    var onRecolorPDF: ((PDFHighlight, HighlightColor) -> Void)? = nil
+    var onDeletePDF: ((PDFHighlight) -> Void)? = nil
     /// Host-provided close action. On iPhone the inspector presents as a
     /// sheet whose only built-in exit is the drag grabber — a visible Done
     /// keeps dismissal discoverable. iPad/macOS side columns hide it (the
@@ -61,7 +67,9 @@ struct NotesPanel: View {
             AnnotationListView(
                 book: book,
                 onJumpHighlight: onJumpHighlight,
-                onJumpPDF: onJumpPDF
+                onJumpPDF: onJumpPDF,
+                onRecolorPDF: onRecolorPDF,
+                onDeletePDF: onDeletePDF
             )
         }
         .padding([.horizontal, .top], 12)
@@ -69,10 +77,13 @@ struct NotesPanel: View {
     }
 }
 
-/// The "Compose article" CTA + Markdown export menu, shared by the Notes panel
+/// The "Create Article" CTA + Markdown export menu, shared by the Notes panel
 /// and the library "Highlights & Notes" review so both surfaces offer the same
-/// two exits for annotations. The CTA is the design's ink pill with the ✦ AI
-/// glyph; Export stays a quiet hairline-bordered button.
+/// two exits for annotations. R7: composing an article is an AI moment, so the
+/// CTA is the design's ONE legit Iris-filled button (✦ glyph on iris); Export
+/// stays a quiet hairline-bordered button. The CTA is always enabled — opening
+/// the studio with no highlights lands on its own "highlight something first"
+/// guidance rather than being a dead, disabled control.
 struct NotesHeaderActions: View {
     @EnvironmentObject private var model: AppModel
     let book: Book
@@ -82,13 +93,10 @@ struct NotesHeaderActions: View {
 
     @State private var showStudio = false
 
-    /// Nil when the book has no annotations (nothing to export).
+    /// Nil when the book has no annotations (nothing to export). The Create
+    /// Article CTA is always enabled (R7), so this now only gates Export.
     private var markdown: String? {
         model.annotationsMarkdown(for: book)
-    }
-
-    private var hasAnnotations: Bool {
-        !model.highlights(for: book).isEmpty || !model.pdfHighlights(for: book).isEmpty
     }
 
     var body: some View {
@@ -98,21 +106,22 @@ struct NotesHeaderActions: View {
             } label: {
                 HStack(spacing: 7) {
                     Text(AppTheme.aiGlyph)
-                    Text("Compose article")
+                    Text("Create Article")
                 }
                 .font(.system(size: 12.5, weight: .semibold))
-                .foregroundStyle(theme.background)
+                .foregroundStyle(.white)
                 .padding(.vertical, 9)
                 .padding(.horizontal, 15)
                 .frame(maxWidth: .infinity)
-                .background(theme.inkColor, in: RoundedRectangle(cornerRadius: 9))
-                .opacity(hasAnnotations ? 1 : 0.45)
+                .background(theme.iris, in: RoundedRectangle(cornerRadius: 9))
             }
             .buttonStyle(.plain)
-            .disabled(!hasAnnotations)
+            // R7: always enabled — composing IS an AI moment, and with no
+            // highlights the studio shows its own guidance state on tap rather
+            // than the CTA being a dead disabled control.
             .accessibilityIdentifier("notes.createArticle")
             .accessibilityLabel("Create Article")
-            .help("Compose an article from these highlights with AI")
+            .help("Create an article from these highlights with AI")
 
             Menu {
                 Button {

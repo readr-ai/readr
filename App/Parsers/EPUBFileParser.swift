@@ -7,9 +7,11 @@ import ReadrKit
 /// in `ReadrKit.EPUBBookParser`; this only supplies entry bytes from the archive.
 struct ZipEPUBContainer: EPUBContainer {
     private let archive: Archive
+    let extractionBudget: EPUBExtractionBudget
 
-    init(url: URL) throws {
+    init(url: URL, extractionBudget: EPUBExtractionBudget = EPUBExtractionBudget()) throws {
         self.archive = try Archive(url: url, accessMode: .read)
+        self.extractionBudget = extractionBudget
     }
 
     func entryExists(_ path: String) -> Bool {
@@ -20,8 +22,17 @@ struct ZipEPUBContainer: EPUBContainer {
         guard let entry = archive[path] else {
             throw BookParserError.corrupted("missing entry: \(path)")
         }
+        // Stream the entry in chunks, enforcing the per-entry and cumulative
+        // decompressed-size caps as each chunk arrives. A hostile, highly
+        // compressible entry aborts before its bytes accumulate in memory.
         var data = Data()
-        _ = try archive.extract(entry) { data.append($0) }
+        var entryBytes = 0
+        _ = try archive.extract(entry) { chunk in
+            entryBytes = try extractionBudget.accountChunk(
+                entryPath: path, entryBytesSoFar: entryBytes, chunkBytes: chunk.count
+            )
+            data.append(chunk)
+        }
         return data
     }
 }

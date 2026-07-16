@@ -14,6 +14,24 @@ public protocol LLMProvider: Sendable {
     func countTokens(_ text: String) throws -> Int
 }
 
+/// A remote provider whose stored credential can be verified with a cheap
+/// test call before the app treats the key as usable. Implemented by
+/// `AnthropicProvider` and `OpenAIProvider`; consumed by `ProviderManager`.
+public protocol CredentialValidating: Sendable {
+    /// Perform a lightweight authenticated request. Returns normally when the
+    /// credential is accepted, and throws when it is rejected
+    /// (`HTTPError.status(401/403, …)`) or the network fails.
+    func validateCredential() async throws
+}
+
+/// A local provider whose backing server can be probed for readiness (running
+/// and hosting the requested model). Implemented by `LocalLLMProvider`;
+/// consumed by `ProviderManager`.
+public protocol LocalReadinessProbing: Sendable {
+    /// Probe the local server and classify its readiness.
+    func probe() async -> LocalLLMProvider.ProbeResult
+}
+
 public struct ProviderInfo: Sendable, Hashable {
     public enum Kind: String, Sendable, Hashable, Codable { case anthropic, openAI, local }
     public var kind: Kind

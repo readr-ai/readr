@@ -8,6 +8,12 @@ options:
   deploymentTarget:
     iOS: "17.0"
     macOS: "14.0"
+  # `sources: - App` sweeps in App/PrivacyInfo.xcprivacy; make the privacy
+  # manifest a bundled resource (not a compiled source) on every XcodeGen
+  # version so the archive ships it (avoids the ITMS-91053 rejection).
+  fileTypes:
+    xcprivacy:
+      buildPhase: resources
 
 packages:
   # The core logic lives in the local Swift package at the repo root.
@@ -17,7 +23,7 @@ packages:
   # lives in ReadrKit.EPUBBookParser.
   ZIPFoundation:
     url: https://github.com/weichsel/ZIPFoundation
-    from: "0.9.19"
+    exactVersion: "0.9.19"
   # Readium's paginated navigator (reflow/fonts/decorations) is an optional
   # rendering upgrade tracked for a later milestone:
   # ReadiumNavigator:
@@ -94,6 +100,8 @@ targets:
         CURRENT_PROJECT_VERSION: "1"
         SWIFT_VERSION: "5.9"
         INFOPLIST_KEY_CFBundleDisplayName: Readr
+        # App Store / Launchpad category (an ebook reader → Books).
+        INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.books
         TARGETED_DEVICE_FAMILY: "1,2"
         # Cloud-managed signing: the TestFlight workflow passes
         # DEVELOPMENT_TEAM + an App Store Connect API key on the command line

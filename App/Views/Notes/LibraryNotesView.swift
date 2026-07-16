@@ -7,7 +7,11 @@ import ReadrKit
 /// This screen exists so annotations are reviewable without opening a book.
 struct LibraryNotesView: View {
     @EnvironmentObject private var model: AppModel
-    @State private var selectedBookID: UUID?
+    /// R4: the book to review, threaded from the per-book "Highlights & Notes"
+    /// context menu so the invoked book opens rather than the first annotated
+    /// one. Falls back to the first annotated book when nil (opened from the
+    /// sidebar) or when the id no longer matches an annotated book.
+    @Binding var selectedBookID: UUID?
     #if os(iOS)
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     #endif
@@ -15,7 +19,9 @@ struct LibraryNotesView: View {
     @AppStorage("readingTheme") private var themeRaw = ReadingTheme.paper.rawValue
     private var theme: ReadingTheme { ReadingTheme(rawValue: themeRaw) ?? .paper }
 
-    init() {}
+    init(selectedBookID: Binding<UUID?>) {
+        _selectedBookID = selectedBookID
+    }
 
     private var annotatedBooks: [Book] {
         model.books.filter { annotationCount(for: $0) > 0 }

@@ -94,7 +94,7 @@ struct ArticleStudioView: View {
             // straight onto the page: serif on paper, 640pt measure.
             ScrollView {
                 Text(article.markdown.isEmpty ? "Composing your article…" : article.markdown)
-                    .font(.system(size: 15.5, design: .serif))
+                    .font(.system(.body, design: .serif))
                     .lineSpacing(11)
                     .foregroundStyle(article.markdown.isEmpty ? theme.muted : theme.inkColor)
                     .textSelection(.enabled)
@@ -106,14 +106,21 @@ struct ArticleStudioView: View {
             .background(theme.paper)
         } else if !article.markdown.isEmpty {
             editor
+        } else if allItems.isEmpty {
+            // R7: the studio is reachable with zero highlights (the Create
+            // Article CTA is always enabled) — this is tappable guidance, not
+            // a dead end. Copy matches the create-article-empty mockup.
+            // Checked before the no-provider case so opening the studio from an
+            // un-highlighted book always lands on this guidance (there's
+            // nothing to compose regardless of the provider).
+            ContentUnavailableView {
+                Label("Highlight something first", systemImage: "highlighter")
+            } description: {
+                Text("The studio turns your highlights into an article. Open the book, select a passage, and pick a color — it lands here instantly.")
+            }
+            .accessibilityIdentifier("article.noHighlights")
         } else if model.activeProvider() == nil {
             noProvider
-        } else if allItems.isEmpty {
-            ContentUnavailableView {
-                Label("No highlights yet", systemImage: "highlighter")
-            } description: {
-                Text("Highlight passages in the book first — the studio turns them into an article.")
-            }
         } else {
             picker
         }
@@ -131,7 +138,7 @@ struct ArticleStudioView: View {
                 Text("New article")
                     .foregroundStyle(theme.inkColor)
             }
-            .font(.system(size: 12.5, weight: .semibold))
+            .font(.callout.weight(.semibold))
             .accessibilityAddTraits(.isHeader)
         }
         if !article.isComposing && !article.markdown.isEmpty {
@@ -169,7 +176,7 @@ struct ArticleStudioView: View {
     /// Quiet hairline-bordered action chrome for the top bar.
     private func quietAction(_ label: String) -> some View {
         Text(label)
-            .font(.system(size: 11.5, weight: .medium))
+            .font(.caption.weight(.medium))
             .foregroundStyle(theme.muted)
             .padding(.vertical, 5)
             .padding(.horizontal, 11)
@@ -183,10 +190,10 @@ struct ArticleStudioView: View {
         VStack(alignment: .leading, spacing: 12) {
             VStack(alignment: .leading, spacing: 3) {
                 Text("Create an article from your notes")
-                    .font(.system(size: 18, weight: .semibold, design: .serif))
+                    .font(.system(.title3, design: .serif).weight(.semibold))
                     .foregroundStyle(theme.inkColor)
                 Text(book.metadata.title)
-                    .font(.system(size: 12.5))
+                    .font(.footnote)
                     .foregroundStyle(theme.muted)
             }
 
@@ -194,13 +201,13 @@ struct ArticleStudioView: View {
                 HighlightColorChips(active: $activeColors)
                 Spacer()
                 Text("\(composeSelection.count) of \(visibleItems.count)")
-                    .font(.system(size: 11).monospacedDigit())
+                    .font(.caption.monospacedDigit())
                     .foregroundStyle(theme.faint)
                 Button {
                     selectedIDs.formUnion(visibleItems.map(\.id))
                 } label: {
                     Text("All")
-                        .font(.system(size: 11))
+                        .font(.caption)
                         .underline()
                         .foregroundStyle(theme.muted)
                 }
@@ -209,7 +216,7 @@ struct ArticleStudioView: View {
                     selectedIDs.subtract(visibleItems.map(\.id))
                 } label: {
                     Text("None")
-                        .font(.system(size: 11))
+                        .font(.caption)
                         .underline()
                         .foregroundStyle(theme.muted)
                 }
@@ -230,11 +237,11 @@ struct ArticleStudioView: View {
 
             HStack(spacing: 10) {
                 Text(AppTheme.aiGlyph)
-                    .font(.system(size: 12))
+                    .font(.callout)
                     .foregroundStyle(theme.iris)
                 TextField(Self.directionPlaceholder, text: $guidance)
                     .textFieldStyle(.plain)
-                    .font(.system(size: 12))
+                    .font(.callout)
                     .foregroundStyle(theme.inkColor)
                     .padding(.vertical, 8)
                     .padding(.horizontal, 11)
@@ -253,7 +260,7 @@ struct ArticleStudioView: View {
                     Text(AppTheme.aiGlyph)
                     Text("Compose")
                 }
-                .font(.system(size: 12.5, weight: .semibold))
+                .font(.callout.weight(.semibold))
                 .foregroundStyle(theme.background)
                 .padding(.vertical, 10)
                 .frame(maxWidth: .infinity)
@@ -288,21 +295,23 @@ struct ArticleStudioView: View {
                     .frame(width: 3)
                 VStack(alignment: .leading, spacing: 6) {
                     Text("\u{201C}\(item.quotedText)\u{201D}")
-                        .font(.system(size: 14.5, design: .serif))
+                        .font(.system(.subheadline, design: .serif))
                         .lineSpacing(5)
                         .foregroundStyle(theme.inkColor)
                         .lineLimit(3)
                         .multilineTextAlignment(.leading)
                         .accessibilityLabel(Text(item.quotedText))
                     if let note = item.note, !note.isEmpty {
-                        (Text(AppTheme.noteGlyph).foregroundColor(theme.iris)
+                        // R6/D1: ❋ note marker is generic chrome — muted, not
+                        // Iris (which stays reserved for AI moments).
+                        (Text(AppTheme.noteGlyph).foregroundColor(theme.muted)
                             + Text(" ")
                             + Text(note).foregroundColor(theme.muted))
-                            .font(.system(size: 12.5))
+                            .font(.footnote)
                             .lineLimit(2)
                     }
                     Text(item.locator(in: book))
-                        .font(.system(size: 11))
+                        .font(.caption)
                         .foregroundStyle(theme.faint)
                 }
                 Spacer(minLength: 0)
@@ -324,7 +333,7 @@ struct ArticleStudioView: View {
         VStack(spacing: 0) {
             directionRow
             TextEditor(text: $article.markdown)
-                .font(.system(size: 15.5, design: .serif))
+                .font(.system(.body, design: .serif))
                 .scrollContentBackground(.hidden)
                 .foregroundStyle(theme.inkColor)
                 .padding(.horizontal, 22)
@@ -347,11 +356,11 @@ struct ArticleStudioView: View {
     private var directionRow: some View {
         HStack(spacing: 10) {
             Text(AppTheme.aiGlyph)
-                .font(.system(size: 12))
+                .font(.callout)
                 .foregroundStyle(theme.iris)
             TextField(Self.directionPlaceholder, text: $guidance)
                 .textFieldStyle(.plain)
-                .font(.system(size: 12))
+                .font(.callout)
                 .foregroundStyle(theme.inkColor)
                 .padding(.vertical, 8)
                 .padding(.horizontal, 11)
@@ -360,7 +369,7 @@ struct ArticleStudioView: View {
                 .onSubmit(startCompose)
             Button(action: startCompose) {
                 Text("Rewrite")
-                    .font(.system(size: 11.5, weight: .semibold))
+                    .font(.caption.weight(.semibold))
                     .foregroundStyle(theme.background)
                     .padding(.vertical, 7)
                     .padding(.horizontal, 14)
@@ -383,13 +392,16 @@ struct ArticleStudioView: View {
         ContentUnavailableView {
             Label("No AI provider connected", systemImage: "sparkles")
         } description: {
-            Text("Add an API key, sign in, or pick a local model to compose articles from your highlights.")
+            // A6: derive the connection paths from what this build actually
+            // exposes (no "sign in" while OAuth is hidden; no "pick a local
+            // model" on iOS) so the copy never advertises a dead end.
+            Text(SettingsModel.setupGuidance(toDo: "compose articles from your highlights"))
         } actions: {
             Button {
                 showProviders = true
             } label: {
                 Text("Open AI Providers")
-                    .font(.system(size: 12.5, weight: .semibold))
+                    .font(.callout.weight(.semibold))
                     .foregroundStyle(theme.background)
                     .padding(.vertical, 9)
                     .padding(.horizontal, 16)

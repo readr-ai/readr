@@ -54,8 +54,9 @@ highlights→article) together, per project direction.
 - [ ] Streamed composition in the editor; manual J6 walk on a Mac
 
 ## M5 — Privacy hardening & polish (in progress)
-- [x] J7 zero-egress audit: on-device pipeline needs no network; local provider
-  only contacts loopback; no telemetry by default (`PrivacyAuditTests`)
+- [x] J7 privacy audit: on-device retrieval pipeline takes no network client;
+  local provider is asserted to contact loopback only; no telemetry by default
+  (`PrivacyAuditTests`)
 - [x] Accessibility: VoiceOver labels on icon controls; Dynamic Type in the reader
 - [x] Background indexing: build the RAG index on book open (faster first ask)
 - [x] Citations surfaced in the Ask panel; streamed article composition

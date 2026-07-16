@@ -1,7 +1,7 @@
 import Foundation
 
 /// Anthropic Messages API provider with streaming + prompt caching.
-public struct AnthropicProvider: LLMProvider {
+public struct AnthropicProvider: LLMProvider, CredentialValidating {
     public let info: ProviderInfo
 
     private let credentials: Credentials
@@ -60,6 +60,38 @@ public struct AnthropicProvider: LLMProvider {
 
     public func countTokens(_ text: String) throws -> Int {
         TokenCounter.estimate(text)
+    }
+
+    // MARK: - Validation
+
+    /// Cheapest possible credential check: Anthropic exposes no unauthenticated
+    /// models list, so this posts a minimal 1-token, non-streaming `messages`
+    /// request. Returns normally when the key is accepted (HTTP 200); throws
+    /// `HTTPError.status(401/403, …)` when the provider rejects the key, or the
+    /// underlying transport error for network failures. Reuses the injected
+    /// `HTTPClient`, so it is fully mockable in tests.
+    public func validateCredential() async throws {
+        var headers: [String: String] = [
+            "anthropic-version": Self.apiVersion,
+            "content-type": "application/json",
+        ]
+        switch credentials {
+        case let .apiKey(key):
+            headers["x-api-key"] = key
+        case let .oauth(accessToken, _, _):
+            headers["authorization"] = "Bearer \(accessToken)"
+            headers["anthropic-beta"] = "oauth-2025-04-20"
+        }
+        let payload: [String: Any] = [
+            "model": model,
+            "max_tokens": 1,
+            "messages": [["role": "user", "content": "ping"]],
+        ]
+        let body = try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])
+        let response = try await http.send(
+            HTTPRequest(url: Self.endpoint, method: .post, headers: headers, body: body)
+        )
+        try response.throwIfUnsuccessful()
     }
 
     // MARK: - Request building

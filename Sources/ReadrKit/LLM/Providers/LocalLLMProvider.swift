@@ -4,7 +4,7 @@ import Foundation
 ///
 /// Ollama streams newline-delimited JSON objects (NOT SSE `data:` frames), so
 /// each streamed line is parsed directly as JSON.
-public struct LocalLLMProvider: LLMProvider {
+public struct LocalLLMProvider: LLMProvider, LocalReadinessProbing {
     public let info: ProviderInfo
 
     private let model: String
@@ -58,6 +58,62 @@ public struct LocalLLMProvider: LLMProvider {
 
     public func countTokens(_ text: String) throws -> Int {
         TokenCounter.estimate(text)
+    }
+
+    // MARK: - Readiness probe
+
+    /// The outcome of probing the local Ollama server. Drives the readiness
+    /// state the UI shows for the on-device provider.
+    public enum ProbeResult: Sendable, Equatable {
+        /// The server responded and the requested model tag is installed.
+        case ready
+        /// The server is reachable but the requested model is not installed.
+        /// `available` lists the tags the server does have, for a helpful hint.
+        case modelMissing(requested: String, available: [String])
+        /// Nothing is listening on the Ollama port (connection refused / offline).
+        case notRunning
+    }
+
+    /// Probe the local Ollama server at `baseURL` via `GET /api/tags`, and
+    /// classify the result as `.notRunning` (connection refused), `.modelMissing`
+    /// (server up but the requested tag isn't installed), or `.ready`. Reuses the
+    /// injected `HTTPClient`, so it is fully mockable in tests.
+    public func probe() async -> ProbeResult {
+        let url = baseURL.appendingPathComponent("api/tags")
+        let response: HTTPResponse
+        do {
+            response = try await http.send(HTTPRequest(url: url, method: .get))
+        } catch {
+            // Connection refused / offline / any transport failure: the server
+            // isn't reachable, so treat it as not running.
+            return .notRunning
+        }
+        guard response.isSuccess else { return .notRunning }
+        let installed = Self.installedTags(from: response.body)
+        if Self.tagList(installed, contains: model) {
+            return .ready
+        }
+        return .modelMissing(requested: model, available: installed)
+    }
+
+    /// Parse the `models[].name` tags out of an `/api/tags` response body.
+    static func installedTags(from body: Data) -> [String] {
+        guard
+            let object = try? JSONSerialization.jsonObject(with: body) as? [String: Any],
+            let models = object["models"] as? [[String: Any]]
+        else { return [] }
+        return models.compactMap { $0["name"] as? String }
+    }
+
+    /// Ollama tags carry an implicit `:latest` suffix, so `llama3` matches an
+    /// installed `llama3:latest` (and vice versa).
+    private static func tagList(_ tags: [String], contains model: String) -> Bool {
+        let wanted = normalize(model)
+        return tags.contains { normalize($0) == wanted }
+    }
+
+    private static func normalize(_ tag: String) -> String {
+        tag.hasSuffix(":latest") ? String(tag.dropLast(":latest".count)) : tag
     }
 
     // MARK: - Request building

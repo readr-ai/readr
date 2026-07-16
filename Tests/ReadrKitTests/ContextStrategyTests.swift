@@ -133,6 +133,39 @@ final class ContextStrategyTests: XCTestCase {
     func testTokenEstimate() {
         XCTAssertEqual(estimateTokens(String(repeating: "a", count: 400)), 100)
     }
+
+    // MARK: - Tier citation signal (A4)
+
+    func testWholeBookTierDoesNotPromiseCitations() async throws {
+        let strategy = AdaptiveContextStrategy(index: StubRAGIndex())
+        let result = try await strategy.assembleContext(
+            for: "What happens?",
+            in: makeBook(tokenCount: 1_000),
+            selection: nil,
+            provider: provider(budget: 200_000, isLocal: false)
+        )
+        XCTAssertEqual(result.tier, .wholeBook)
+        XCTAssertFalse(result.providesCitations)
+        XCTAssertFalse(result.tier.providesCitations)
+    }
+
+    func testRetrievalTierPromisesCitations() async throws {
+        let strategy = AdaptiveContextStrategy(index: StubRAGIndex())
+        let result = try await strategy.assembleContext(
+            for: "What happens?",
+            in: makeBook(tokenCount: 5_000_000),
+            selection: nil,
+            provider: provider(budget: 200_000, isLocal: false)
+        )
+        XCTAssertEqual(result.tier, .retrieval)
+        XCTAssertTrue(result.providesCitations)
+        XCTAssertTrue(result.tier.providesCitations)
+    }
+
+    func testProvidesCitationsIsPurelyTierDerived() {
+        XCTAssertFalse(AssembledContext.Tier.wholeBook.providesCitations)
+        XCTAssertTrue(AssembledContext.Tier.retrieval.providesCitations)
+    }
 }
 
 /// Minimal in-memory index for routing tests.

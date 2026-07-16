@@ -1,7 +1,7 @@
 import Foundation
 
 /// OpenAI Chat Completions provider with SSE streaming.
-public struct OpenAIProvider: LLMProvider {
+public struct OpenAIProvider: LLMProvider, CredentialValidating {
     public let info: ProviderInfo
 
     private let credentials: Credentials
@@ -60,18 +60,35 @@ public struct OpenAIProvider: LLMProvider {
         TokenCounter.estimate(text)
     }
 
+    // MARK: - Validation
+
+    private static let modelsEndpoint = URL(string: "https://api.openai.com/v1/models")!
+
+    /// Cheapest possible credential check: a `GET /v1/models` list. Returns
+    /// normally when the key is accepted (HTTP 200); throws
+    /// `HTTPError.status(401/403, …)` when the provider rejects the key, or the
+    /// underlying transport error for network failures. Reuses the injected
+    /// `HTTPClient`, so it is fully mockable in tests.
+    public func validateCredential() async throws {
+        let headers = ["authorization": "Bearer \(authToken)"]
+        let response = try await http.send(
+            HTTPRequest(url: Self.modelsEndpoint, method: .get, headers: headers)
+        )
+        try response.throwIfUnsuccessful()
+    }
+
     // MARK: - Request building
 
-    private func makeRequest(_ request: ChatRequest) throws -> HTTPRequest {
-        let token: String
+    private var authToken: String {
         switch credentials {
-        case let .apiKey(key):
-            token = key
-        case let .oauth(accessToken, _, _):
-            token = accessToken
+        case let .apiKey(key): return key
+        case let .oauth(accessToken, _, _): return accessToken
         }
+    }
+
+    private func makeRequest(_ request: ChatRequest) throws -> HTTPRequest {
         let headers: [String: String] = [
-            "authorization": "Bearer \(token)",
+            "authorization": "Bearer \(authToken)",
             "content-type": "application/json",
         ]
         let body = try Self.encodeBody(request, model: model)

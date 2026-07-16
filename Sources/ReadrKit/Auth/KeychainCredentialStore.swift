@@ -6,12 +6,21 @@ import Security
 ///
 /// This is the **only** place provider secrets are persisted. Items are stored as
 /// `kSecClassGenericPassword` entries protected with
-/// `kSecAttrAccessibleAfterFirstUnlock`, so they are readable after the first
-/// device unlock following a boot and remain encrypted at rest.
+/// `kSecAttrAccessibleWhenUnlockedThisDeviceOnly`, so they are readable only while
+/// the device is unlocked, remain encrypted at rest, and — because of the
+/// `ThisDeviceOnly` protection class — are **never** included in device backups
+/// (iTunes/Finder or iCloud) and are **not** eligible for Keychain iCloud sync.
+/// This keeps keys pinned to the device they were entered on, matching the product
+/// promise that keys stay on this device.
 ///
 /// Secrets must NEVER be written to `UserDefaults`, plists, app-group containers,
 /// log output, or any other location — only here.
 public final class KeychainCredentialStore: CredentialStore, @unchecked Sendable {
+    /// The `kSecAttrAccessible` protection class applied to every item this store
+    /// writes. Exposed for testability so the non-syncable, device-only guarantee
+    /// can be asserted without a live Keychain.
+    static var accessibility: CFString { kSecAttrAccessibleWhenUnlockedThisDeviceOnly }
+
     /// Service identifier used as `kSecAttrService` for every item this store owns.
     private let service: String
 
@@ -32,7 +41,7 @@ public final class KeychainCredentialStore: CredentialStore, @unchecked Sendable
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: kind.rawValue,
-            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlock,
+            kSecAttrAccessible as String: Self.accessibility,
             kSecValueData as String: json,
         ]
 

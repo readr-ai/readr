@@ -26,7 +26,7 @@ struct AskPanelView: View {
         self.book = book
         self.selection = selection
         _vm = StateObject(wrappedValue: AskViewModel(
-            service: app.makeAskService(),
+            makeService: { app.makeAskService() },
             prepare: { await app.ensureIndexed(book) },
             book: book,
             selection: selection
@@ -44,13 +44,13 @@ struct AskPanelView: View {
                     ContentUnavailableView {
                         Label("No AI provider connected", systemImage: "sparkles")
                     } description: {
-                        Text("Add an API key, sign in, or pick a local model to ask questions.")
+                        Text(SettingsModel.setupGuidance(toDo: "ask questions"))
                     } actions: {
                         Button {
                             showProviders = true
                         } label: {
                             Text("Open AI Providers")
-                                .font(.system(size: 12.5, weight: .semibold))
+                                .font(.callout.weight(.semibold))
                                 .foregroundStyle(theme.background)
                                 .padding(.vertical, 9)
                                 .padding(.horizontal, 16)
@@ -58,7 +58,10 @@ struct AskPanelView: View {
                         }
                         .buttonStyle(.plain)
                     }
-                    .sheet(isPresented: $showProviders) {
+                    // A1: re-resolve the provider when the sheet dismisses so a
+                    // key saved here flips the panel out of its empty state
+                    // without an app restart.
+                    .sheet(isPresented: $showProviders, onDismiss: { vm.refresh() }) {
                         ProviderSettingsView(app: model)
                             .environmentObject(model)
                     }
@@ -73,10 +76,10 @@ struct AskPanelView: View {
                 ToolbarItem(placement: .principal) {
                     HStack(spacing: 8) {
                         Text(AppTheme.aiGlyph)
-                            .font(.system(size: 13))
+                            .font(.subheadline)
                             .foregroundStyle(theme.iris)
                         Text("ASK THE BOOK")
-                            .font(.system(size: 10.5, weight: .semibold))
+                            .font(.caption2.weight(.semibold))
                             .tracking(1.5)
                             .foregroundStyle(theme.muted)
                     }
@@ -94,7 +97,7 @@ struct AskPanelView: View {
         VStack(alignment: .leading, spacing: 12) {
             if let selection, !selection.quotedText.isEmpty {
                 Text(selection.quotedText)
-                    .font(.system(size: 12, design: .serif))
+                    .font(.system(.footnote, design: .serif))
                     .italic()
                     .lineSpacing(4)
                     .foregroundStyle(theme.muted)
@@ -108,14 +111,14 @@ struct AskPanelView: View {
                 // No selection: the panel was opened for whole-book questions —
                 // say so instead of showing an empty quote box.
                 Label("Ask anything about this book", systemImage: "book")
-                    .font(.system(size: 12.5))
+                    .font(.footnote)
                     .foregroundStyle(theme.muted)
             }
 
             HStack(spacing: 8) {
                 TextField("Ask a question about this book…", text: $question, axis: .vertical)
                     .textFieldStyle(.plain)
-                    .font(.system(size: 12.5))
+                    .font(.footnote)
                     .foregroundStyle(theme.inkColor)
                     .padding(.vertical, 9)
                     .padding(.horizontal, 11)
@@ -143,7 +146,7 @@ struct AskPanelView: View {
                                 question = suggestion
                             } label: {
                                 Text(suggestion)
-                                    .font(.system(size: 11.5))
+                                    .font(.caption)
                                     .foregroundStyle(theme.iris)
                                     .padding(.vertical, 5)
                                     .padding(.horizontal, 11)
@@ -157,41 +160,140 @@ struct AskPanelView: View {
                 }
             }
 
-            Text("Grounded in this book with citations — plus the model\u{2019}s wider knowledge.")
-                .font(.system(size: 10.5))
+            // A4: the grounding promise is derived from the tier signal, not
+            // hardcoded — the whole-book tier returns no per-passage sources,
+            // so it must not promise citations it can't deliver.
+            Text(groundingCaption)
+                .font(.caption2)
                 .foregroundStyle(theme.faint)
 
             if let tier = vm.tier {
                 Label(
-                    tier == .wholeBook ? "Using the whole book" : "Using relevant passages",
-                    systemImage: tier == .wholeBook ? "book.closed" : "doc.text.magnifyingglass"
+                    tier.providesCitations ? "Using relevant passages" : "Using the whole book",
+                    systemImage: tier.providesCitations ? "doc.text.magnifyingglass" : "book.closed"
                 )
-                .font(.system(size: 10.5))
+                .font(.caption2)
                 .foregroundStyle(theme.faint)
+            }
+
+            // The error card sits above the answer scroll region so its Retry
+            // button stays within the visible area of the iPhone medium sheet
+            // detent, ahead of the answer/citations content.
+            if let error = vm.errorMessage {
+                errorCard(error)
             }
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
                     Text(vm.answer)
-                        .font(.system(size: 13))
+                        .font(.callout)
                         .lineSpacing(7)
                         .foregroundStyle(theme.inkColor)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .textSelection(.enabled)
 
-                    if !vm.citations.isEmpty {
+                    // A4: retrieval tier lists real, tappable sources; the
+                    // whole-book tier explains — honestly — that there is no
+                    // citation list because nothing was retrieved.
+                    if vm.tier?.providesCitations == true, !vm.citations.isEmpty {
                         citationsSection
+                    } else if vm.tier?.providesCitations == false, !vm.answer.isEmpty {
+                        wholeBookNote
                     }
                 }
             }
 
             if vm.isStreaming { ThinkingDots(color: theme.iris) }
-            if let error = vm.errorMessage {
-                Text(error).font(.footnote).foregroundStyle(.red)
-            }
             Spacer()
         }
         .padding()
+    }
+
+    /// A4: the grounding caption promises citations only when the answer will
+    /// actually carry them. Before a tier is known (or on the citation-backed
+    /// retrieval tier) it keeps the full promise; on the whole-book tier it
+    /// drops the "with citations" claim it can't honor.
+    private var groundingCaption: String {
+        if vm.tier?.providesCitations == false {
+            return "Grounded in the whole book — plus the model\u{2019}s wider knowledge."
+        }
+        return "Grounded in this book with citations — plus the model\u{2019}s wider knowledge."
+    }
+
+    /// A4: the honest whole-book footer — the answer drew on the entire text,
+    /// so there is no passage retrieval and no citation list to show.
+    private var wholeBookNote: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("USING THE WHOLE BOOK")
+                .font(.caption2.weight(.semibold))
+                .tracking(1.2)
+                .foregroundStyle(theme.faint)
+            Text("This book is short enough to read in full, so the answer draws on the entire text — no passage retrieval, no citation list.")
+                .font(.caption)
+                .lineSpacing(3)
+                .foregroundStyle(theme.muted)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityIdentifier("ask.wholeBookNote")
+    }
+
+    /// A5: the actionable error state — a plain cause sentence, the mapped
+    /// recovery suggestion when the error carries one, and a Retry affordance
+    /// that re-runs the same question without retyping.
+    @ViewBuilder
+    private func errorCard(_ message: String) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: "exclamationmark.circle")
+                    .font(.body)
+                    .foregroundStyle(.red)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(message)
+                        .font(.callout.weight(.semibold))
+                        .foregroundStyle(theme.inkColor)
+                        .fixedSize(horizontal: false, vertical: true)
+                    if let recovery = vm.errorRecovery {
+                        Text(recovery)
+                            .font(.caption)
+                            .foregroundStyle(theme.muted)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            // Retry is always shown: `errorCard` only renders when
+            // `errorMessage` is set, and every path that sets it runs after
+            // `AskViewModel.ask` records `lastQuestion` — so there is always a
+            // question to re-run. (A prior `if vm.lastQuestion != nil` gate was
+            // both redundant and, because `lastQuestion` isn't `@Published`,
+            // risked dropping the button from the accessibility tree.)
+            Button(action: retry) {
+                Label("Retry", systemImage: "arrow.clockwise")
+                    .font(.callout.weight(.semibold))
+                    .foregroundStyle(theme.background)
+                    .padding(.vertical, 9)
+                    .frame(maxWidth: .infinity)
+                    .background(theme.inkColor, in: RoundedRectangle(cornerRadius: 9))
+            }
+            .buttonStyle(.plain)
+            .disabled(vm.isStreaming)
+            .accessibilityLabel("Retry")
+            .accessibilityIdentifier("ask.retry")
+        }
+        .padding(13)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(theme.paper, in: RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(.red, lineWidth: 1))
+        // Mark this card as an accessibility container so its own
+        // `ask.error` identifier stays on the container and does NOT flatten
+        // onto the children. Without `.contain`, SwiftUI propagated
+        // `ask.error` down to every descendant — the CI accessibility dump
+        // showed the Retry button reporting `identifier: 'ask.error'` instead
+        // of its own `ask.retry`, so `app.buttons["ask.retry"]` never matched.
+        // (Matches the `settings.card.*` and `reader.appearance` containers.)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("ask.error")
     }
 
     /// Citations as tappable iris pills labeled by locator; tapping one opens
@@ -199,7 +301,7 @@ struct AskPanelView: View {
     private var citationsSection: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("SOURCES")
-                .font(.system(size: 10, weight: .semibold))
+                .font(.caption2.weight(.semibold))
                 .tracking(1.2)
                 .foregroundStyle(theme.faint)
 
@@ -211,7 +313,7 @@ struct AskPanelView: View {
                             expandedCitation = isExpanded ? nil : index
                         } label: {
                             Text(citation.locator)
-                                .font(.system(size: 10, weight: .semibold))
+                                .font(.caption2.weight(.semibold))
                                 .foregroundStyle(theme.iris)
                                 .padding(.vertical, 4)
                                 .padding(.horizontal, 10)
@@ -228,7 +330,7 @@ struct AskPanelView: View {
             if let index = expandedCitation, vm.citations.indices.contains(index) {
                 let citation = vm.citations[index]
                 Text("\u{201C}\(citation.quotedText)\u{201D}")
-                    .font(.system(size: 12, design: .serif))
+                    .font(.system(.footnote, design: .serif))
                     .italic()
                     .lineSpacing(4)
                     .foregroundStyle(theme.muted)
@@ -263,6 +365,11 @@ struct AskPanelView: View {
     private func submit() {
         let q = question
         Task { await vm.ask(q) }
+    }
+
+    /// A5: re-run the last question after a failure.
+    private func retry() {
+        Task { await vm.retry() }
     }
 }
 

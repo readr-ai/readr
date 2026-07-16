@@ -213,9 +213,35 @@ struct ReaderView: View {
                         }
                         #endif
                     },
-                    // Jumping to a PDF page needs a page binding into
-                    // PDFReaderView; v2 ships without one.
-                    onJumpPDF: nil,
+                    // R1: a PDF note jumps to its page through the same funnel
+                    // the on-page bookmarks/outline use — the controller's
+                    // goToPage, published up via `pdfAnnotationActions` while
+                    // the native PDF surface is mounted.
+                    onJumpPDF: { highlight in
+                        pdfAnnotationActions?.goToPage(highlight.pageIndex)
+                        // iPhone: the inspector covers the page as a sheet —
+                        // close it so the jump is visible, mirroring the text
+                        // path above. iPad/macOS side columns stay open.
+                        #if os(iOS)
+                        if UIDevice.current.userInterfaceIdiom == .phone {
+                            showNotes = false
+                        }
+                        #endif
+                    },
+                    // R2: recolor/delete of a PDF highlight from the Notes
+                    // list must reconcile the live PDFKit overlay, not just the
+                    // store — route through the controller (via the published
+                    // actions) so the on-page paint matches after the edit.
+                    onRecolorPDF: pdfAnnotationActions.map { actions in
+                        { (highlight: PDFHighlight, color: HighlightColor) in
+                            actions.recolorHighlight(highlight, color)
+                        }
+                    },
+                    onDeletePDF: pdfAnnotationActions.map { actions in
+                        { (highlight: PDFHighlight) in
+                            actions.removeHighlight(highlight)
+                        }
+                    },
                     onClose: { showNotes = false }
                 )
                 .inspectorColumnWidth(min: 280, ideal: 340, max: 480)
@@ -1204,8 +1230,17 @@ struct ScrollReadingColumn: View {
         // the serif content font) + the 48pt of column padding above — the
         // book measure Apple Books holds on wide panes (PagedChapterView
         // shares the same em count).
-        .frame(maxWidth: style.fontSize * 33 + 48)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        //
+        // Modifier ORDER is load-bearing: cap the column at the measure (and
+        // let it fill the height) FIRST, paint `paper` on that capped column,
+        // and only THEN expand to an infinite width to CENTER it. Painting the
+        // paper after the infinite-width frame (the earlier bug) bled the page
+        // surface edge-to-edge instead of a centered measure column — the
+        // surplus window width should stay the deeper chrome `background`
+        // (ReaderView draws it behind), exactly like paged mode centers its
+        // page block over full-bleed paper.
+        .frame(maxWidth: style.fontSize * 33 + 48, maxHeight: .infinity)
         .background(style.theme.paper)
+        .frame(maxWidth: .infinity)
     }
 }

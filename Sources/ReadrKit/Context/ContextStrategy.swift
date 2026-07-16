@@ -23,11 +23,33 @@ public struct Selection: Sendable, Hashable {
 
 /// A ready-to-send payload: which routing tier was chosen and the messages.
 public struct AssembledContext: Sendable {
-    public enum Tier: String, Sendable { case wholeBook, retrieval }
+    public enum Tier: String, Sendable {
+        case wholeBook, retrieval
+
+        /// Whether answers assembled with this tier surface per-passage
+        /// citations to the reader. Only the retrieval tier grounds its answer
+        /// in a bounded set of passages worth citing; the whole-book tier
+        /// grounds the answer in the entire book and returns no per-passage
+        /// sources. The UI switches its copy on this so it never promises
+        /// citations the whole-book tier can't deliver.
+        public var providesCitations: Bool {
+            switch self {
+            case .retrieval: return true
+            case .wholeBook: return false
+            }
+        }
+    }
+
     public var tier: Tier
     public var request: ChatRequest
     /// Passages surfaced to the reader as sources. Empty for the whole-book tier.
     public var citations: [Citation]
+
+    /// Honest, tier-derived signal for the UI: `true` when this answer will be
+    /// backed by citable passages (retrieval tier), `false` when it is grounded
+    /// in the whole book with no per-passage sources (whole-book tier). Lets the
+    /// Ask panel avoid promising a SOURCES section that never appears.
+    public var providesCitations: Bool { tier.providesCitations }
 
     public init(tier: Tier, request: ChatRequest, citations: [Citation] = []) {
         self.tier = tier

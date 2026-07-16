@@ -58,6 +58,8 @@ jobs:
           -derivedDataPath build
           -skipPackagePluginValidation
           CODE_SIGNING_ALLOWED=NO
+          MARKETING_VERSION="${VERSION#v}"
+          CURRENT_PROJECT_VERSION="$GITHUB_RUN_NUMBER"
       - name: Ad-hoc sign the app
         if: env.HAS_SIGNING == 'false'
         # No Developer ID configured, so sign ad-hoc: Apple Silicon requires at

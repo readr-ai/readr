@@ -130,6 +130,51 @@ final class AskServiceTests: XCTestCase {
         XCTAssertFalse(hasCitations, "Whole-book tier must not surface citations")
     }
 
+    // MARK: - Tier citation signal (A4)
+
+    func testWholeBookTierEventReportsNoCitationsPromise() async throws {
+        let book = makeBook(tokenCount: 100)
+        let provider = MockLLMProvider(
+            info: .fixture(
+                kind: .anthropic,
+                contextBudget: 200_000,
+                supportsPromptCaching: true
+            ),
+            scriptedChunks: ["Hi"]
+        )
+        let strategy = AdaptiveContextStrategy(index: StubRAGIndex())
+        let service = AskService(strategy: strategy, provider: provider)
+
+        let events = try await collect(service.ask("What happens?", about: book, selection: nil))
+
+        guard case let .contextAssembled(tier) = try XCTUnwrap(events.first) else {
+            return XCTFail("Expected the first event to be contextAssembled; got \(events.first as Any)")
+        }
+        XCTAssertEqual(tier, .wholeBook)
+        XCTAssertFalse(tier.providesCitations)
+    }
+
+    func testRetrievalTierEventReportsCitationsPromise() async throws {
+        let book = makeBook(tokenCount: 5_000_000)
+        let provider = MockLLMProvider(
+            info: .fixture(
+                kind: .anthropic,
+                contextBudget: 200_000,
+                supportsPromptCaching: true
+            )
+        )
+        let strategy = AdaptiveContextStrategy(index: StubRAGIndex())
+        let service = AskService(strategy: strategy, provider: provider)
+
+        let events = try await collect(service.ask("What happens?", about: book, selection: nil))
+
+        guard case let .contextAssembled(tier) = try XCTUnwrap(events.first) else {
+            return XCTFail("Expected the first event to be contextAssembled; got \(events.first as Any)")
+        }
+        XCTAssertEqual(tier, .retrieval)
+        XCTAssertTrue(tier.providesCitations)
+    }
+
     // MARK: - Selection anchor
 
     func testSelectionAnchorAppearsInUserMessage() async throws {

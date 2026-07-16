@@ -196,10 +196,158 @@ final class ReadrFlowUITests: XCTestCase {
             byID.label.hasPrefix("Page 1 of 2"),
             "A freshly opened 2-page PDF should read 'Page 1 of 2' (got: \(byID.label))"
         )
-        // NOT asserted: the pdf.toc/pdf.search toolbar buttons — the iPhone
-        // nav bar silently collapses leading items past two (see the lesson
-        // note in ReaderView.toolbarContent), so their visibility is
-        // width-dependent.
+    }
+
+    // The key PDF chrome and the host Ask control must be reachable by
+    // accessibility id on every idiom. On compact iPhone the nav bar collapses
+    // items past two per group, so the PDF controls ride the bottom bar there
+    // (merged with the host's Ask); on regular width (iPad) they stay up top.
+    // Scoped to the plain-Button controls whose ids XCUITest reliably queries
+    // (Contents, Find) plus Ask — `pdf.thumbnails` (a Toggle) and
+    // `pdf.bookmark` (a Menu) are exercised by their own dedicated tests.
+    func testPDFToolbarControlsAreReachable() {
+        let app = launchSeeded()
+        openFieldNotesPDF(app) // asserts pdf.pageIndicator — surface is mounted
+
+        for id in ["pdf.toc", "pdf.search", "reader.ask"] {
+            XCTAssertTrue(
+                app.descendants(matching: .any)[id].firstMatch.waitForExistence(timeout: 5),
+                "PDF toolbar control '\(id)' should be reachable on this idiom"
+            )
+        }
+    }
+
+    // Opens the seeded "Field Notes" PDF from Home and waits for the native
+    // PDFKit reader (asserted via its page indicator). Mirrors the inline
+    // open in `testFieldNotesPDFShowsPageIndicator`.
+    private func openFieldNotesPDF(_ app: XCUIApplication) {
+        let pdfButton = app.buttons["Field Notes"].firstMatch
+        let pdfCard = pdfButton.waitForExistence(timeout: 10)
+            ? pdfButton
+            : app.staticTexts["Field Notes"].firstMatch
+        XCTAssertTrue(pdfCard.waitForExistence(timeout: 5), "The seeded PDF should be on the shelf")
+        if !pdfCard.isHittable { app.swipeUp() }
+        pdfCard.tap()
+
+        let indicator = app.staticTexts["pdf.pageIndicator"].firstMatch
+        XCTAssertTrue(
+            indicator.waitForExistence(timeout: 15),
+            "The PDF reader should show its page indicator"
+        )
+        XCTAssertTrue(
+            indicator.label.hasPrefix("Page 1 of 2"),
+            "A freshly opened 2-page PDF should read 'Page 1 of 2' (got: \(indicator.label))"
+        )
+    }
+
+    // MARK: - PDF search (R3)
+
+    // R3: pressing Return in the PDF find field jumps to the first hit. The
+    // seeded fixture's word "questions" lives ONLY on page 2, so a jump to
+    // the first hit is provable via the page indicator flipping to "Page 2
+    // of 2" (the reader opens on page 1).
+    func testPDFSearchReturnJumpsToFirstHit() throws {
+        let app = launchSeeded()
+        openFieldNotesPDF(app) // asserts pdf.pageIndicator — surface is mounted
+
+        // pdf.search lives in the trailing primaryAction group on regular width
+        // (iPad/macOS) but in the bottom bar on compact iPhone — the compact nav
+        // bar only has room for the host reader's Appearance + Notes up top.
+        // Either way it's reachable by id.
+        let search = button(app, id: "pdf.search", label: "Find in PDF")
+        XCTAssertTrue(search.waitForExistence(timeout: 5))
+        search.tap()
+
+        let field = app.textFields["pdf.search.field"].firstMatch
+        XCTAssertTrue(field.waitForExistence(timeout: 5), "The PDF search field should open")
+        field.tap()
+
+        // CI simulators sometimes keep a hardware keyboard attached, in which
+        // case the software keyboard never appears and typeText can fail with
+        // a focus error we cannot catch — skip (not silently pass) there.
+        guard app.keyboards.firstMatch.waitForExistence(timeout: 3) else {
+            throw XCTSkip(
+                "No software keyboard (hardware keyboard attached?) — cannot type the query"
+            )
+        }
+        field.typeText("questions")
+
+        // The 250ms-debounced `.task(id:)` search must populate a result row
+        // before Return can jump to `results.first`.
+        XCTAssertTrue(
+            app.buttons["pdf.search.result"].firstMatch.waitForExistence(timeout: 5),
+            "Searching 'questions' should list a matching result row"
+        )
+
+        // Return submits the field → jump to the first hit (page 2). onSubmit
+        // runs the search synchronously before jumping, so the jump is
+        // deterministic even if the 250ms debounce hasn't fired yet — the wait
+        // above is just to observe the debounced row, not a precondition for ⏎.
+        field.typeText("\n")
+
+        let indicator = app.staticTexts["pdf.pageIndicator"].firstMatch
+        XCTAssertTrue(
+            indicator.waitForExistence(timeout: 5),
+            "The page indicator should stay visible after the jump"
+        )
+        let expectation = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "label BEGINSWITH 'Page 2 of 2'"),
+            object: indicator
+        )
+        XCTAssertEqual(
+            XCTWaiter().wait(for: [expectation], timeout: 5), .completed,
+            "Pressing Return should jump to the first hit on page 2 (got: \(indicator.label))"
+        )
+    }
+
+    // R3: tapping a result row jumps to that hit AND dismisses the popover so
+    // the document is revealed (the bug: the popover stayed open covering the
+    // doc). Asserted by the search field disappearing and the indicator
+    // landing on the hit's page (2).
+    func testPDFSearchRowTapDismissesPopoverAndReveals() throws {
+        let app = launchSeeded()
+        openFieldNotesPDF(app)
+
+        let search = button(app, id: "pdf.search", label: "Find in PDF")
+        XCTAssertTrue(search.waitForExistence(timeout: 5))
+        search.tap()
+
+        let field = app.textFields["pdf.search.field"].firstMatch
+        XCTAssertTrue(field.waitForExistence(timeout: 5), "The PDF search field should open")
+        field.tap()
+
+        guard app.keyboards.firstMatch.waitForExistence(timeout: 3) else {
+            throw XCTSkip(
+                "No software keyboard (hardware keyboard attached?) — cannot type the query"
+            )
+        }
+        field.typeText("questions")
+
+        let row = app.buttons["pdf.search.result"].firstMatch
+        XCTAssertTrue(
+            row.waitForExistence(timeout: 5),
+            "Searching 'questions' should list a matching result row"
+        )
+        row.tap() // jumps and closes
+
+        XCTAssertTrue(
+            field.waitForNonExistence(timeout: 5),
+            "Tapping a result should dismiss the search popover and reveal the doc"
+        )
+        // The tapped hit is on page 2 — the reader is showing it.
+        let indicator = app.staticTexts["pdf.pageIndicator"].firstMatch
+        XCTAssertTrue(
+            indicator.waitForExistence(timeout: 5),
+            "The revealed PDF should show its page indicator"
+        )
+        let expectation = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "label BEGINSWITH 'Page 2 of 2'"),
+            object: indicator
+        )
+        XCTAssertEqual(
+            XCTWaiter().wait(for: [expectation], timeout: 5), .completed,
+            "Tapping the result should land on page 2 (got: \(indicator.label))"
+        )
     }
 
     // MARK: - In-book search
@@ -666,5 +814,230 @@ final class ReadrFlowUITests: XCTestCase {
         }
 
         selectLayout(app, "Scroll")
+    }
+
+    // MARK: - PDF Notes parity (R1 / R2 / R4)
+
+    /// Opens the seeded "Field Notes" PDF from Home and waits for the native
+    /// PDFKit reader (the page indicator proves the document loaded). The
+    /// fixture is 2 pages with one seeded PDF highlight on page 2.
+    // R1 — tapping a PDF note in the Notes list jumps the PDF to that
+    // annotation's page. The seeded highlight lives on page 2, so after the
+    // jump the page indicator must read "Page 2 of 2" (it opens on page 1).
+    func testPDFNoteJumpsToItsPage() {
+        let app = launchSeeded()
+        openFieldNotesPDF(app)
+
+        let indicator = app.staticTexts["pdf.pageIndicator"].firstMatch
+        XCTAssertTrue(
+            indicator.label.hasPrefix("Page 1 of 2"),
+            "A freshly opened PDF starts on page 1 (got: \(indicator.label))"
+        )
+
+        let notes = button(app, id: "reader.notes", label: "Highlights")
+        XCTAssertTrue(notes.waitForExistence(timeout: 5))
+        notes.tap()
+
+        // The seeded PDF highlight's quote appears as its own row (its raw
+        // text is the card's accessibility label).
+        XCTAssertTrue(
+            app.staticTexts["the gaps speak loudest"].firstMatch.waitForExistence(timeout: 5),
+            "The Notes list should show the seeded PDF highlight"
+        )
+
+        // "Show in book" jumps to the highlight's page (and, on iPhone, closes
+        // the covering inspector so the page is visible again).
+        let showInBook = app.buttons["notes.showInBook"].firstMatch
+        XCTAssertTrue(
+            showInBook.waitForExistence(timeout: 5),
+            "A PDF note must offer a jump-to-page control (R1)"
+        )
+        showInBook.tap()
+
+        XCTAssertTrue(
+            indicator.waitForExistence(timeout: 5),
+            "The PDF page should be visible again after the jump"
+        )
+        // The seeded highlight is on page 2, so the jump must land there.
+        XCTAssertTrue(
+            NSPredicate(format: "label BEGINSWITH 'Page 2 of 2'").evaluate(with: indicator),
+            "Tapping the PDF note should navigate to its page (got: \(indicator.label))"
+        )
+    }
+
+    // R2 — deleting a PDF highlight from the Notes list removes it from the
+    // store AND (in-app) from the live PDFKit overlay. XCUITest can't inspect
+    // PDFKit's rendered paint, so this asserts the list-side outcome (the
+    // annotation is gone, the empty state appears); the overlay-reconciliation
+    // itself is code-review + macOS snapshot verified.
+    func testDeletePDFHighlightFromNotesListRemovesIt() {
+        let app = launchSeeded()
+        openFieldNotesPDF(app)
+
+        let notes = button(app, id: "reader.notes", label: "Highlights")
+        XCTAssertTrue(notes.waitForExistence(timeout: 5))
+        notes.tap()
+
+        let quote = app.staticTexts["the gaps speak loudest"].firstMatch
+        XCTAssertTrue(
+            quote.waitForExistence(timeout: 5),
+            "The Notes list should show the seeded PDF highlight before deletion"
+        )
+
+        // Trailing swipe reveals Delete; the seeded book has exactly one PDF
+        // highlight, so after deletion the empty state replaces the list.
+        quote.swipeLeft()
+        let del = app.buttons["Delete"].firstMatch
+        if del.waitForExistence(timeout: 3), del.isHittable {
+            del.tap()
+        } else {
+            // Fallback: context menu → Delete Highlight (long-press the card).
+            quote.press(forDuration: 1.0)
+            let delItem = app.buttons["Delete Highlight"].firstMatch
+            if delItem.waitForExistence(timeout: 3) { delItem.tap() }
+        }
+
+        XCTAssertTrue(
+            app.staticTexts["No highlights yet"].firstMatch.waitForExistence(timeout: 5)
+                || quote.waitForNonExistence(timeout: 5),
+            "Deleting the only PDF highlight should clear it from the Notes list (R2)"
+        )
+    }
+
+    // R4 — the per-book "Highlights & Notes" context menu must open the
+    // INVOKED book, not fall back to the first annotated one. Long-presses the
+    // "Field Notes" (PDF) cover in the library grid and asserts the review
+    // opens on Field Notes' annotations — its seeded PDF highlight's quote is
+    // unique to that book, so it proves the right book was routed.
+    func testPerBookNotesContextMenuOpensInvokedBook() throws {
+        let app = launchSeeded()
+
+        // Reach a library grid (context menus live on grid cells, not Home's
+        // Recently Added row). From Home, pop to the sidebar and open PDFs so
+        // the grid shows Field Notes as the sole cell.
+        _ = app.staticTexts["Sample Book"].firstMatch.waitForExistence(timeout: 10)
+        let back = app.buttons["Readr"].firstMatch
+        if back.waitForExistence(timeout: 3), back.isHittable { back.tap() }
+        let pdfsCell = app.cells["sidebar.pdfs"].firstMatch
+        let pdfs = pdfsCell.exists ? pdfsCell : app.staticTexts["PDFs"].firstMatch
+        guard pdfs.waitForExistence(timeout: 5), pdfs.isHittable else {
+            throw XCTSkip("Could not reach the PDFs shelf on this simulator idiom")
+        }
+        pdfs.tap()
+
+        // The grid cell is a button labeled by title. Long-press to raise the
+        // per-book context menu.
+        let cell = app.buttons["Field Notes"].firstMatch
+        XCTAssertTrue(cell.waitForExistence(timeout: 5), "Field Notes should be on the PDF shelf")
+        cell.press(forDuration: 1.0)
+
+        let notesItem = labeled(app.buttons, contains: "Highlights & Notes")
+        XCTAssertTrue(
+            notesItem.waitForExistence(timeout: 5),
+            "The per-book context menu should offer Highlights & Notes"
+        )
+        notesItem.tap()
+
+        // The review must open on Field Notes — its seeded PDF highlight quote
+        // is unique to it (Sample Book, the first annotated book, has no such
+        // text), so its presence proves the invoked book was routed (R4).
+        XCTAssertTrue(
+            app.staticTexts["the gaps speak loudest"].firstMatch.waitForExistence(timeout: 8),
+            "The per-book menu must open the invoked book's annotations, not the first annotated book (R4)"
+        )
+    }
+
+    // MARK: - U1: platform-correct empty-library copy
+
+    // On iPhone the empty-library guidance must NOT use Mac-only "drag from
+    // Finder … into this window" language — it invites an import instead.
+    // Launched WITHOUT -uiTestSeed so the empty state renders.
+    func testEmptyLibraryCopyIsPlatformCorrect() {
+        let app = XCUIApplication()
+        app.launch()
+
+        let heading = app.staticTexts["Your library is empty"].firstMatch
+        // A cold, un-seeded first launch could conceivably carry a persisted
+        // library on a dirty simulator; only assert copy when the empty state
+        // is actually showing.
+        guard heading.waitForExistence(timeout: 10) else {
+            return
+        }
+        XCTAssertTrue(
+            app.staticTexts["Import a file to start reading — an EPUB, PDF, or plain-text book."]
+                .firstMatch.exists,
+            "iPhone empty-library copy should invite an import without Finder/window language (U1)"
+        )
+        // The Mac-only drag language must not appear on iOS.
+        XCTAssertFalse(
+            labeled(app.staticTexts, contains: "drag files from Finder").exists,
+            "iOS empty state must not mention dragging from Finder into a window (U1)"
+        )
+    }
+
+    // MARK: - R7: Create Article with zero highlights shows guidance
+
+    // The "Create Article" CTA is always enabled; opening the studio for a book
+    // that has no highlights must land on the "Highlight something first"
+    // guidance rather than being a dead disabled control.
+    func testCreateArticleWithNoHighlightsShowsGuidance() {
+        let app = launchSeeded()
+
+        // "A Voyage North" is seeded with NO highlights. Open it from Home's
+        // Recently Added row (it leads that row as the fresh import). The card
+        // is a button labeled by title, whose title also surfaces as static
+        // text — tap whichever the runner exposes.
+        let voyageButton = app.buttons["A Voyage North"].firstMatch
+        let voyage = voyageButton.waitForExistence(timeout: 10)
+            ? voyageButton
+            : app.staticTexts["A Voyage North"].firstMatch
+        XCTAssertTrue(voyage.waitForExistence(timeout: 10), "The un-highlighted seeded book should be on Home")
+        voyage.tap()
+        XCTAssertTrue(app.staticTexts["Departure"].waitForExistence(timeout: 10), "The book should open in the reader")
+
+        let notes = button(app, id: "reader.notes", label: "Highlights")
+        XCTAssertTrue(notes.waitForExistence(timeout: 5))
+        notes.tap()
+
+        let create = app.buttons["notes.createArticle"].firstMatch
+        XCTAssertTrue(create.waitForExistence(timeout: 5), "The Create Article CTA should be present")
+        XCTAssertTrue(create.isEnabled, "The Create Article CTA must be enabled even with no highlights (R7)")
+        create.tap()
+
+        XCTAssertTrue(
+            app.staticTexts["Highlight something first"].firstMatch.waitForExistence(timeout: 8),
+            "Opening the studio with zero highlights should show the guidance state, not a dead end (R7)"
+        )
+    }
+
+    // MARK: - R5: 44pt touch targets
+
+    // The annotation color-filter chips keep a small visual dot but must expose
+    // a ≥44×44pt tappable frame on iOS (Apple HIG). Reached via a book's Notes
+    // panel filter row, where the chips are always present.
+    func testAnnotationColorChipsAreAtLeast44pt() {
+        let app = launchSeeded()
+        openSampleBook(app)
+
+        let notes = button(app, id: "reader.notes", label: "Highlights")
+        XCTAssertTrue(notes.waitForExistence(timeout: 5))
+        notes.tap()
+
+        // The filter chips label as "<Color> highlights" (see HighlightColorChips).
+        let yellowChip = labeled(app.buttons, contains: "Yellow highlights")
+        XCTAssertTrue(yellowChip.waitForExistence(timeout: 5), "The yellow color-filter chip should be present")
+        let frame = yellowChip.frame
+        // The view applies `.frame(minWidth: 44, minHeight: 44)`, so intent is
+        // met; sub-point rendering rounding can report 43.999… so allow a tiny
+        // epsilon rather than padding the view past its 44pt design target.
+        let minTarget = 44.0 - 0.01
+        XCTAssertGreaterThanOrEqual(
+            frame.height, minTarget,
+            "Color-filter chip hit target should be ≥44pt tall on iOS (R5), got \(frame.height)"
+        )
+        XCTAssertGreaterThanOrEqual(
+            frame.width, minTarget,
+            "Color-filter chip hit target should be ≥44pt wide on iOS (R5), got \(frame.width)"
+        )
     }
 }

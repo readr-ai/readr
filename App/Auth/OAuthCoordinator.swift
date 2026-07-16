@@ -24,9 +24,21 @@ final class OAuthCoordinator: NSObject {
     /// finish paths (loopback callback vs. user tapping Done in Safari) can
     /// race without ever resuming twice.
     private var continuation: CheckedContinuation<URL, Error>?
+    /// Fires if the flow is never completed, so an abandoned sign-in doesn't
+    /// wedge forever waiting for a loopback callback that will never arrive
+    /// (on macOS the browser is external, so there's no "Done" delegate
+    /// callback like iOS's `SFSafariViewController` to cancel it).
+    private var timeoutTask: Task<Void, Never>?
+    /// How long to wait for the OAuth callback before giving up.
+    private let timeout: Duration
     #if os(iOS)
     private var safariViewController: SFSafariViewController?
     #endif
+
+    init(timeout: Duration = .seconds(300)) {
+        self.timeout = timeout
+        super.init()
+    }
 
     func signIn(config: OAuthProviderConfig) async throws -> Credentials {
         let pkce = PKCE()
@@ -53,6 +65,7 @@ final class OAuthCoordinator: NSObject {
                     self?.completeAuthorization(with: result)
                 }
             }
+            self.startTimeout()
             self.openBrowser(to: authorizeURL)
         }
 
@@ -67,6 +80,8 @@ final class OAuthCoordinator: NSObject {
     private func completeAuthorization(with result: Result<URL, Error>) {
         guard let continuation else { return } // already finished
         self.continuation = nil
+        timeoutTask?.cancel()
+        timeoutTask = nil
         server?.stop()
         server = nil
         #if os(iOS)
@@ -74,6 +89,25 @@ final class OAuthCoordinator: NSObject {
         safariViewController = nil
         #endif
         continuation.resume(with: result)
+    }
+
+    /// Cancel the flow if the user abandons it: the same teardown funnel runs,
+    /// so the loopback server and port are freed and the awaiting caller gets
+    /// `AuthError.userCancelled`.
+    func cancel() {
+        completeAuthorization(with: .failure(AuthError.userCancelled))
+    }
+
+    /// Arm the abandonment timeout. Completing (or cancelling) the flow cancels
+    /// this task via `completeAuthorization`; if it does fire, it tears down the
+    /// loopback server and fails the flow with `AuthError.userCancelled`.
+    private func startTimeout() {
+        timeoutTask?.cancel()
+        timeoutTask = Task { @MainActor [weak self, timeout] in
+            try? await Task.sleep(for: timeout)
+            guard !Task.isCancelled else { return }
+            self?.completeAuthorization(with: .failure(AuthError.userCancelled))
+        }
     }
 
     private func openBrowser(to url: URL) {

@@ -101,6 +101,81 @@ final class ReadrAppUITests: XCTestCase {
         )
     }
 
+    // A6 — first-run copy must never advertise a connection path this build
+    // doesn't expose. On iOS the Local row is hidden, so "pick a local model"
+    // must not appear; subscription OAuth is hidden, so "sign in" must not
+    // appear either. The Ask/compose empty states derive their copy from
+    // SettingsModel.setupGuidance, so this asserts on the compose empty state
+    // (reached from the Notes panel) which is provider-less by default.
+    func testFirstRunCopyOmitsUnavailablePaths() {
+        let app = launchSeeded()
+        let bookCell = app.staticTexts["Sample Book"].firstMatch
+        XCTAssertTrue(bookCell.waitForExistence(timeout: 10))
+        bookCell.tap()
+        XCTAssertTrue(app.staticTexts["Chapter One"].waitForExistence(timeout: 5))
+
+        // Open the Notes panel → Create Article, which shows the provider-less
+        // compose empty state whose copy comes from setupGuidance.
+        let notes = button(app, id: "reader.notes", label: "Highlights")
+        XCTAssertTrue(notes.waitForExistence(timeout: 5))
+        notes.tap()
+        let createArticle = app.buttons["notes.createArticle"].firstMatch
+        XCTAssertTrue(createArticle.waitForExistence(timeout: 5))
+        createArticle.tap()
+
+        let guidance = app.staticTexts.matching(
+            NSPredicate(format: "label CONTAINS %@", "Add an API key")
+        ).firstMatch
+        XCTAssertTrue(guidance.waitForExistence(timeout: 5))
+        XCTAssertFalse(
+            guidance.label.contains("pick a local model"),
+            "iOS hides the Local provider, so the copy must not advertise it (got: \(guidance.label))"
+        )
+        XCTAssertFalse(
+            guidance.label.lowercased().contains("sign in"),
+            "Subscription OAuth is hidden, so the copy must not advertise 'sign in' (got: \(guidance.label))"
+        )
+    }
+
+    // A7 — the currently-selected connected provider carries an "Active" badge
+    // so both connected cards don't read an indistinguishable "Connected".
+    // -uiTestSkipProviderValidation keeps the saved key "Connected" offline
+    // (no real authenticated test call), so the badge is deterministic in CI.
+    func testActiveBadgeMarksSelectedProvider() {
+        let app = XCUIApplication()
+        app.launchArguments += [
+            "-uiTestSeed", "-uiTestInMemoryCredentials", "-uiTestSkipProviderValidation",
+        ]
+        app.launch()
+
+        let settingsButton = button(app, id: "library.settings", label: "AI providers")
+        XCTAssertTrue(settingsButton.waitForExistence(timeout: 10))
+        settingsButton.tap()
+        XCTAssertTrue(
+            app.staticTexts["AI Providers"].waitForExistence(timeout: 5)
+            || app.navigationBars["AI Providers"].waitForExistence(timeout: 5)
+        )
+
+        // Save an Anthropic key → it becomes the active selection.
+        let keyField = app.secureTextFields["settings.apiKey.anthropic"].firstMatch
+        XCTAssertTrue(keyField.waitForExistence(timeout: 5))
+        keyField.tap()
+        keyField.typeText("sk-ant-uitest-key")
+        app.buttons["settings.saveKey.anthropic"].firstMatch.tap()
+
+        // The Active badge appears on the selected (Anthropic) card only.
+        let anthropicBadge = app.staticTexts["settings.activeBadge.anthropic"].firstMatch
+        XCTAssertTrue(
+            anthropicBadge.waitForExistence(timeout: 5),
+            "The just-connected provider should show the Active badge"
+        )
+        // The un-selected OpenAI card must not carry the Active badge.
+        XCTAssertFalse(
+            app.staticTexts["settings.activeBadge.openAI"].firstMatch.exists,
+            "Only the selected provider should be badged Active"
+        )
+    }
+
     // Launch-friction guard: a first-run user must be able to get from the
     // key field to the provider's key console without hunting for the URL.
     // SwiftUI `Link` surfaces as a link or a button depending on platform,
@@ -179,6 +254,151 @@ final class ReadrAppUITests: XCTestCase {
         XCTAssertTrue(
             app.staticTexts["No AI provider connected"].waitForExistence(timeout: 5),
             "Article studio should show the connect-a-provider guidance"
+        )
+    }
+
+    // MARK: - Ask the book (A1 / A5 / A4)
+
+    /// Open Sample Book and its Ask panel, driving through the seeded library.
+    /// Returns the launched app so callers can keep asserting.
+    private func openAskPanel(_ app: XCUIApplication) {
+        let bookCell = app.staticTexts["Sample Book"].firstMatch
+        XCTAssertTrue(bookCell.waitForExistence(timeout: 10))
+        bookCell.tap()
+        XCTAssertTrue(app.staticTexts["Chapter One"].waitForExistence(timeout: 10))
+        let ask = button(app, id: "reader.ask", label: "Ask the book")
+        XCTAssertTrue(ask.waitForExistence(timeout: 5))
+        ask.tap()
+        XCTAssertTrue(app.navigationBars["Ask the book"].waitForExistence(timeout: 5))
+    }
+
+    // A1 — the Ask panel refreshes after a key is saved from its own empty
+    // state: no app restart, the guidance gives way to the ask UI. Launched
+    // WITHOUT -uiTestStubLLM so the provider-less empty state renders, and
+    // with an in-memory credential store so the save stays off the Keychain.
+    // -uiTestSkipProviderValidation keeps the saved key "Connected" offline:
+    // this test exercises the panel's refresh out of the empty state, not the
+    // authenticated probe. Without it the fake key is live-validated, rejected
+    // as .invalid, and activeProvider() refuses to resolve it — so the panel
+    // would never leave the "No AI provider connected" state.
+    func testAskPanelRefreshesAfterConnectingProvider() {
+        let app = XCUIApplication()
+        app.launchArguments += [
+            "-uiTestSeed", "-uiTestInMemoryCredentials", "-uiTestSkipProviderValidation",
+        ]
+        app.launch()
+
+        openAskPanel(app)
+
+        // Empty state: no provider yet.
+        XCTAssertTrue(
+            app.staticTexts["No AI provider connected"].waitForExistence(timeout: 5),
+            "Ask panel should start in the connect-a-provider empty state"
+        )
+
+        // Route to provider settings from the empty state's action button.
+        app.buttons["Open AI Providers"].firstMatch.tap()
+        XCTAssertTrue(
+            app.navigationBars["AI Providers"].waitForExistence(timeout: 5)
+            || app.staticTexts["AI Providers"].waitForExistence(timeout: 5)
+        )
+
+        // Save an Anthropic key, then dismiss the sheet.
+        let keyField = app.secureTextFields["settings.apiKey.anthropic"].firstMatch
+        XCTAssertTrue(keyField.waitForExistence(timeout: 5))
+        keyField.tap()
+        keyField.typeText("sk-ant-uitest-key")
+        app.buttons["settings.saveKey.anthropic"].firstMatch.tap()
+        // Dismiss the keyboard first: tapping the nav-bar "Done" while the
+        // keyboard is up makes XCUITest try (and fail) a scroll-to-visible on a
+        // non-scrollable nav bar (kAXErrorCannotComplete). A coordinate tap on
+        // the already-on-screen Done avoids the AX scroll action entirely.
+        let done = app.navigationBars.buttons["Done"].firstMatch
+        XCTAssertTrue(done.waitForExistence(timeout: 5))
+        done.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+
+        // Back in the Ask panel: onDismiss re-resolved the provider, so the
+        // empty state is gone and the ask input is present — no relaunch.
+        XCTAssertTrue(
+            app.buttons["ask.send"].waitForExistence(timeout: 5),
+            "Ask panel should refresh out of the empty state after a key is saved"
+        )
+        XCTAssertFalse(
+            app.staticTexts["No AI provider connected"].exists,
+            "The empty-state guidance should be gone once a provider is connected"
+        )
+    }
+
+    // A5 — an ask failure surfaces the mapped, actionable error sentence and a
+    // Retry that re-runs the same question. -uiTestStubError makes the stub
+    // fail the stream with a transport timeout that HTTPError maps to a plain
+    // sentence.
+    func testAskErrorShowsActionableMessageAndRetry() {
+        let app = XCUIApplication()
+        app.launchArguments += ["-uiTestSeed", "-uiTestStubLLM", "-uiTestStubError"]
+        app.launch()
+
+        openAskPanel(app)
+
+        let suggestion = app.buttons["Summarize this book"].firstMatch
+        XCTAssertTrue(suggestion.waitForExistence(timeout: 5))
+        suggestion.tap()
+        let send = app.buttons["ask.send"].firstMatch
+        XCTAssertTrue(send.waitForExistence(timeout: 3))
+        send.tap()
+
+        // Mapped HTTPError sentence, not Foundation's generic message.
+        XCTAssertTrue(
+            app.staticTexts["The request to the provider timed out."]
+                .waitForExistence(timeout: 10),
+            "The error state should show the mapped, actionable sentence"
+        )
+        let retry = app.buttons["ask.retry"].firstMatch
+        XCTAssertTrue(retry.waitForExistence(timeout: 3), "A Retry affordance should appear on error")
+
+        // Retry re-runs the same question — the error card reappears (the stub
+        // still fails), proving the retry re-invoked the ask.
+        let errorCard = app.otherElements["ask.error"].firstMatch
+        XCTAssertTrue(errorCard.waitForExistence(timeout: 3))
+        retry.tap()
+        XCTAssertTrue(
+            app.staticTexts["The request to the provider timed out."]
+                .waitForExistence(timeout: 10),
+            "Retry should re-run the same question and surface the error again"
+        )
+    }
+
+    // A4 — a whole-book answer shows the honest no-citations copy and never a
+    // Sources list. -uiTestStubWholeBook makes the stub report a remote model
+    // so the small seeded book routes to the whole-book tier.
+    func testAskWholeBookShowsHonestNoCitationsCopy() {
+        let app = XCUIApplication()
+        app.launchArguments += ["-uiTestSeed", "-uiTestStubLLM", "-uiTestStubWholeBook"]
+        app.launch()
+
+        openAskPanel(app)
+
+        let suggestion = app.buttons["Summarize this book"].firstMatch
+        XCTAssertTrue(suggestion.waitForExistence(timeout: 5))
+        suggestion.tap()
+        let send = app.buttons["ask.send"].firstMatch
+        XCTAssertTrue(send.waitForExistence(timeout: 3))
+        send.tap()
+
+        // Wait for the stub's streamed tail phrase, then assert the honest
+        // whole-book footer and the absence of a fabricated Sources list.
+        _ = app.staticTexts.containing(
+            NSPredicate(format: "label CONTAINS %@", "tone of decay")
+        ).firstMatch.waitForExistence(timeout: 15)
+
+        XCTAssertTrue(
+            app.staticTexts["USING THE WHOLE BOOK"].waitForExistence(timeout: 5)
+            || app.otherElements["ask.wholeBookNote"].waitForExistence(timeout: 5),
+            "Whole-book answers should show the honest no-citations note"
+        )
+        XCTAssertFalse(
+            app.staticTexts["SOURCES"].exists,
+            "The whole-book tier must not promise a Sources list"
         )
     }
 

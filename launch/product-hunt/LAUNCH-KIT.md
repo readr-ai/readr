@@ -149,8 +149,9 @@ background at 240×240. If you use a GIF, make frame one the static icon.
 > do better on whole-chapter questions, and smaller ones still work because
 > local mode always uses retrieval rather than stuffing the whole book in.
 > Embeddings for retrieval are computed on-device too, so nothing leaves your
-> machine. There are tests asserting the local pipeline makes zero network
-> calls.
+> machine. The on-device retrieval pipeline takes no network client at all, and
+> tests assert local mode only ever talks to loopback (your Ollama server) —
+> never an external API.
 
 **"How do you fit a whole book in context? Doesn't that cost a fortune?"**
 > Adaptively. If the book fits the model's context budget (most novels are

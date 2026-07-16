@@ -1,5 +1,8 @@
 import XCTest
 @testable import ReadrKit
+#if canImport(Security)
+import Security
+#endif
 
 /// M2 — credential storage.
 ///
@@ -78,4 +81,19 @@ final class CredentialStoreTests: XCTestCase {
         let decoded = try JSONDecoder().decode(Credentials.self, from: data)
         XCTAssertEqual(decoded, original)
     }
+
+    // MARK: - KeychainCredentialStore accessibility (M2)
+
+    #if canImport(Security)
+    /// M2: Keychain items must be pinned to this device — non-syncable and
+    /// excluded from backups. This asserts the exact `kSecAttrAccessible`
+    /// protection class the `save()` path applies, without needing a live
+    /// Keychain. macOS-only: on Linux the store is stubbed out (no Security).
+    func testKeychainStoreUsesDeviceOnlyAccessibility() {
+        XCTAssertEqual(
+            KeychainCredentialStore.accessibility,
+            kSecAttrAccessibleWhenUnlockedThisDeviceOnly
+        )
+    }
+    #endif
 }

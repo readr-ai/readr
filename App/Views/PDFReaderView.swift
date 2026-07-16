@@ -16,6 +16,16 @@ struct PDFAnnotationActions {
     /// The Ask `Selection` for the current PDF selection; nil ⇒ nothing
     /// selected (callers fall back to a whole-book ask).
     var askSelection: () -> Selection?
+    /// Navigate the live PDF to a page (R1: Notes-list "Show in book" jumps a
+    /// PDF annotation to its page, mirroring the text reader's chapter jump).
+    var goToPage: (Int) -> Void
+    /// Recolor a stored PDF highlight AND its live PDFKit overlay in one step
+    /// (R2: a Notes-list color change must repaint the page, not just the
+    /// store). No-op on the page when the highlight isn't currently overlaid.
+    var recolorHighlight: (PDFHighlight, HighlightColor) -> Void
+    /// Remove a stored PDF highlight AND its live PDFKit overlay (R2: a
+    /// Notes-list delete must clear the on-page paint, not leave it stranded).
+    var removeHighlight: (PDFHighlight) -> Void
 }
 
 #if canImport(PDFKit)
@@ -41,15 +51,37 @@ struct PDFReaderView: View {
     @Binding var annotationActions: PDFAnnotationActions?
 
     @EnvironmentObject private var model: AppModel
+    #if os(iOS)
+    /// Placement of `pdf.search` depends on width: the compact iPhone nav bar
+    /// silently collapses trailing `.primaryAction` items past TWO, and the
+    /// host reader already spends both on Appearance + Notes there — so a third
+    /// trailing item (this search button) would be hidden in an overflow "…"
+    /// menu, taking `reader.notes` with it. On compact width we route search to
+    /// the bottom bar (mirroring the ebook `searchButton`); regular width (iPad)
+    /// has nav-bar room, so it stays up top like macOS.
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    private var isRegularWidth: Bool { horizontalSizeClass == .regular }
+    #endif
     @StateObject private var controller = PDFReaderController()
     /// Strip visibility persists across books like the other reader prefs.
     @AppStorage("pdfShowsThumbnails") private var showThumbnails = false
+    /// The reader's persisted theme, so the PDF overlays/popovers (page
+    /// indicator, annotation bar, its selection menu) match the Marginalia
+    /// palette instead of system materials that read as stark chrome in
+    /// sepia/dark.
+    @AppStorage("readingTheme") private var themeRaw = ReadingTheme.paper.rawValue
     @State private var showTOC = false
     @State private var showSearch = false
+
+    private var theme: ReadingTheme { ReadingTheme(rawValue: themeRaw) ?? .paper }
 
     var body: some View {
         content
             .toolbar { toolbarItems }
+            // Keep the selection menu (rendered by the controller in its
+            // NSPopover / the iOS floating bar) on the current reading theme.
+            .onAppear { controller.theme = theme }
+            .onChange(of: themeRaw) { _, _ in controller.theme = theme }
             .sheet(item: $controller.pendingNote) { highlight in
                 PDFHighlightNoteSheet(
                     highlight: highlight,
@@ -62,7 +94,10 @@ struct PDFReaderView: View {
                 annotationActions = PDFAnnotationActions(
                     highlightSelection: { controller.highlightCurrentSelection() },
                     noteSelection: { controller.noteCurrentSelection() },
-                    askSelection: { controller.askCurrentSelection() }
+                    askSelection: { controller.askCurrentSelection() },
+                    goToPage: { controller.goToPage($0) },
+                    recolorHighlight: { controller.recolorHighlight($0, to: $1) },
+                    removeHighlight: { controller.removeHighlight($0) }
                 )
             }
             .onDisappear {
@@ -115,10 +150,13 @@ struct PDFReaderView: View {
         VStack(spacing: 10) {
             #if canImport(UIKit)
             // iOS has no anchored popover: the annotation menu floats as a
-            // capsule bar above the bottom edge, near the thumb.
+            // capsule bar above the bottom edge, near the thumb. Themed to the
+            // elevated reading surface (with a hairline) rather than a system
+            // material that clashes with the paper in sepia/dark.
             if let context = controller.activeMenu {
                 controller.menuView(for: context)
-                    .background(.regularMaterial, in: Capsule())
+                    .background(theme.elevated, in: Capsule())
+                    .overlay(Capsule().strokeBorder(theme.line, lineWidth: 1))
                     .shadow(color: .black.opacity(0.2), radius: 10, y: 3)
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
@@ -127,10 +165,11 @@ struct PDFReaderView: View {
                 Text("Page \(controller.currentPageIndex + 1) of \(controller.pageCount)")
                     .font(.caption.weight(.medium))
                     .monospacedDigit()
+                    .foregroundStyle(theme.muted)
                     .padding(.horizontal, 12)
                     .padding(.vertical, 6)
-                    .background(.ultraThinMaterial, in: Capsule())
-                    .overlay(Capsule().strokeBorder(.quaternary, lineWidth: 0.5))
+                    .background(theme.elevated, in: Capsule())
+                    .overlay(Capsule().strokeBorder(theme.line, lineWidth: 0.5))
                     .allowsHitTesting(false)
                     .accessibilityIdentifier("pdf.pageIndicator")
             }
@@ -143,7 +182,7 @@ struct PDFReaderView: View {
 
     @ToolbarContentBuilder
     private var toolbarItems: some ToolbarContent {
-        ToolbarItem(id: "pdf.toc", placement: .navigation) {
+        ToolbarItem(id: "pdf.toc", placement: navPlacement) {
             Button {
                 showTOC.toggle()
             } label: {
@@ -155,7 +194,7 @@ struct PDFReaderView: View {
                 PDFOutlineList(controller: controller) { showTOC = false }
             }
         }
-        ToolbarItem(id: "pdf.thumbnails", placement: .navigation) {
+        ToolbarItem(id: "pdf.thumbnails", placement: navPlacement) {
             Toggle(isOn: $showThumbnails) {
                 Label("Thumbnails", systemImage: "rectangle.grid.1x2")
             }
@@ -163,22 +202,51 @@ struct PDFReaderView: View {
             .help("Show page thumbnails")
             .accessibilityIdentifier("pdf.thumbnails")
         }
-        ToolbarItem(id: "pdf.bookmark", placement: .navigation) {
+        ToolbarItem(id: "pdf.bookmark", placement: navPlacement) {
             bookmarkMenu
         }
-        ToolbarItem(id: "pdf.search", placement: .primaryAction) {
-            Button {
-                showSearch.toggle()
-            } label: {
-                Label("Find in PDF", systemImage: "magnifyingglass")
-            }
-            // The host reader's text search is disabled in PDF mode, so ⌘F
-            // is ours here.
-            .keyboardShortcut("f", modifiers: .command)
-            .help("Find in PDF (⌘F)")
-            .accessibilityIdentifier("pdf.search")
-            .popover(isPresented: $showSearch, arrowEdge: .bottom) {
-                PDFSearchView(controller: controller)
+        ToolbarItem(id: "pdf.search", placement: searchPlacement) {
+            searchButton
+        }
+    }
+
+    /// The iPhone nav bar silently collapses items past TWO in each of the
+    /// leading (`.navigation`) and trailing (`.primaryAction`) groups. The host
+    /// reader already fills the compact trailing group (Appearance + Notes), and
+    /// this view alone adds three leading controls (Contents, Thumbnails,
+    /// Bookmark) — over the leading budget too. So on compact iPhone all of the
+    /// PDF chrome lives in the bottom bar (Apple-Books style); regular width
+    /// (iPad) / macOS have nav-bar room and keep it up top.
+    private var navPlacement: ToolbarItemPlacement {
+        #if os(iOS)
+        isRegularWidth ? .navigation : .bottomBar
+        #else
+        .navigation
+        #endif
+    }
+
+    private var searchPlacement: ToolbarItemPlacement {
+        #if os(iOS)
+        isRegularWidth ? .primaryAction : .bottomBar
+        #else
+        .primaryAction
+        #endif
+    }
+
+    private var searchButton: some View {
+        Button {
+            showSearch.toggle()
+        } label: {
+            Label("Find in PDF", systemImage: "magnifyingglass")
+        }
+        // The host reader's text search is disabled in PDF mode, so ⌘F
+        // is ours here.
+        .keyboardShortcut("f", modifiers: .command)
+        .help("Find in PDF (⌘F)")
+        .accessibilityIdentifier("pdf.search")
+        .popover(isPresented: $showSearch, arrowEdge: .bottom) {
+            PDFSearchView(controller: controller) {
+                showSearch = false
             }
         }
     }

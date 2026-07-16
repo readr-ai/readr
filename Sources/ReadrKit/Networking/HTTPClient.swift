@@ -39,11 +39,26 @@ public struct HTTPResponse: Sendable {
     }
 
     public var isSuccess: Bool { (200..<300).contains(status) }
+
+    /// Throw `HTTPError.status(_:body:)` (decoding the body as UTF-8) unless the
+    /// response is a 2xx success. Shared by the provider credential checks so the
+    /// "reject non-2xx" mapping is defined once.
+    public func throwIfUnsuccessful() throws {
+        guard isSuccess else {
+            throw HTTPError.status(status, body: String(decoding: body, as: UTF8.self))
+        }
+    }
 }
 
 public enum HTTPError: Error, Sendable, Equatable {
     case status(Int, body: String)
     case nonHTTPResponse
+    /// A Foundation `URLError` (timeout, offline, host unreachable, …) raised by
+    /// the transport before any HTTP status was seen. Wrapping it here lets the
+    /// UI show an actionable sentence instead of Foundation's generic
+    /// "The operation couldn't be completed." Stores the `URLError.Code` so the
+    /// error stays `Equatable`/`Sendable`.
+    case transport(URLError.Code)
 }
 
 /// These errors render verbatim in the Ask panel and Article Studio, so each
@@ -73,6 +88,53 @@ extension HTTPError: LocalizedError {
             return message
         case .nonHTTPResponse:
             return "Unexpected response from the provider — check your network connection and try again."
+        case .transport(let code):
+            switch code {
+            case .timedOut:
+                return "The request to the provider timed out."
+            case .notConnectedToInternet:
+                return "You appear to be offline."
+            case .cannotConnectToHost, .cannotFindHost:
+                return "Couldn't reach the provider."
+            case .networkConnectionLost:
+                return "The network connection was lost while talking to the provider."
+            default:
+                return "The network request failed (\(code.rawValue))."
+            }
+        }
+    }
+
+    /// A concrete next step for the reader, shown beneath `errorDescription`.
+    public var recoverySuggestion: String? {
+        switch self {
+        case .status(let code, _):
+            switch code {
+            case 401, 403:
+                return "Open Settings → AI Providers and re-enter or refresh your API key."
+            case 429:
+                return "Wait a few seconds and try again."
+            case 400, 413:
+                return "Try a shorter question or a model with a larger context window."
+            case 500...:
+                return "The provider is having trouble. Wait a moment and retry."
+            default:
+                return nil
+            }
+        case .nonHTTPResponse:
+            return "Check your network connection and try again."
+        case .transport(let code):
+            switch code {
+            case .timedOut:
+                return "Check your connection and try again; the provider may be slow to respond."
+            case .notConnectedToInternet:
+                return "Reconnect to the internet, then try again."
+            case .cannotConnectToHost, .cannotFindHost:
+                return "Check your internet connection or try again shortly — the provider may be temporarily unavailable."
+            case .networkConnectionLost:
+                return "Check your connection and try again."
+            default:
+                return "Check your network connection and try again."
+            }
         }
     }
 }
@@ -86,7 +148,13 @@ public struct URLSessionHTTPClient: HTTPClient {
     }
 
     public func send(_ request: HTTPRequest) async throws -> HTTPResponse {
-        let (data, response) = try await session.data(for: request.urlRequest)
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await session.data(for: request.urlRequest)
+        } catch let error as URLError {
+            throw HTTPError.transport(error.code)
+        }
         guard let http = response as? HTTPURLResponse else { throw HTTPError.nonHTTPResponse }
         var headers: [String: String] = [:]
         for (key, value) in http.allHeaderFields {

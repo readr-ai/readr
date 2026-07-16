@@ -135,7 +135,11 @@ struct HighlightColorChips: View {
                                 .frame(width: 25, height: 25)
                         }
                     }
+                    // R5: keep the 25pt visual but expand the tappable area to
+                    // at least 44×44 on touch (Apple HIG); macOS keeps the
+                    // compact hit target since it's pointer-driven.
                     .frame(width: 25, height: 25)
+                    .annotationTouchTarget()
                 }
                 .buttonStyle(.plain)
                 .help("Show \(color.displayName.lowercased()) highlights")
@@ -158,6 +162,13 @@ struct AnnotationListView: View {
     let book: Book
     var onJumpHighlight: ((Highlight) -> Void)? = nil
     var onJumpPDF: ((PDFHighlight) -> Void)? = nil
+    /// R2: when a native PDF surface is mounted, recolor/delete of a PDF
+    /// highlight must go through the PDF controller so the live PDFKit overlay
+    /// is reconciled — updating the store alone leaves stale paint on the page.
+    /// Nil (text mode / library review, where no overlay exists) ⇒ fall back to
+    /// the model directly, which is correct there.
+    var onRecolorPDF: ((PDFHighlight, HighlightColor) -> Void)? = nil
+    var onDeletePDF: ((PDFHighlight) -> Void)? = nil
 
     @AppStorage("readingTheme") private var themeRaw = ReadingTheme.paper.rawValue
     private var theme: ReadingTheme { ReadingTheme(rawValue: themeRaw) ?? .paper }
@@ -272,7 +283,9 @@ struct AnnotationListView: View {
                     .multilineTextAlignment(.leading)
                     .accessibilityLabel(Text(item.quotedText))
                 if let note = item.note, !note.isEmpty {
-                    (Text(AppTheme.noteGlyph).foregroundColor(theme.iris)
+                    // R6/D1: the ❋ note marker is generic chrome, not an AI
+                    // moment — it reads muted, keeping Iris reserved for AI.
+                    (Text(AppTheme.noteGlyph).foregroundColor(theme.muted)
                         + Text(" ")
                         + Text(note).foregroundColor(theme.muted))
                         .font(.system(size: 12.5))
@@ -296,6 +309,7 @@ struct AnnotationListView: View {
                         }
                         .buttonStyle(.plain)
                         .help("Jump to this passage in the book")
+                        .accessibilityIdentifier("notes.showInBook")
                     }
                 }
                 .padding(.top, 10)
@@ -358,15 +372,31 @@ struct AnnotationListView: View {
             highlight.color = color
             model.updateHighlight(highlight)
         case .pdf(var highlight):
-            highlight.color = color
-            model.updatePDFHighlight(highlight)
+            // R2: route through the controller (which updates the store AND
+            // recolors the live overlay) when a PDF surface is mounted; fall
+            // back to the store alone where there's no overlay to reconcile.
+            if let onRecolorPDF {
+                onRecolorPDF(highlight, color)
+            } else {
+                highlight.color = color
+                model.updatePDFHighlight(highlight)
+            }
         }
     }
 
     private func delete(_ item: AnnotationItem) {
         switch item {
-        case .text(let highlight): model.removeHighlight(highlight, in: book)
-        case .pdf(let highlight): model.removePDFHighlight(highlight)
+        case .text(let highlight):
+            model.removeHighlight(highlight, in: book)
+        case .pdf(let highlight):
+            // R2: route through the controller (which removes the store record
+            // AND the live overlay) when a PDF surface is mounted; fall back to
+            // the store alone where there's no overlay to reconcile.
+            if let onDeletePDF {
+                onDeletePDF(highlight)
+            } else {
+                model.removePDFHighlight(highlight)
+            }
         }
     }
 
