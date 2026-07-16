@@ -541,7 +541,7 @@ final class MacSnapshotTests: XCTestCase {
                 books: model.books,
                 query: "",
                 openBook: { _ in },
-                showNotes: {},
+                showNotes: { _ in },
                 isImporting: .constant(false),
                 showSettings: .constant(false)
             )
