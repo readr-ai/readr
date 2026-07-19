@@ -1,0 +1,60 @@
+name: TestFlight beta setup
+
+# One-shot, manual-only: configures the TestFlight external beta in App Store
+# Connect via the API (test information, "Public Beta" group with public link,
+# attach the build, submit to Beta App Review) using the same ASC API key as
+# the upload workflow (testflight.yml). Idempotent — safe to re-run.
+#
+# Deliberately does NOT touch Beta App Review contact details; those are
+# maintained by hand in ASC.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version whose build to use, e.g. v2.10.0"
+        required: true
+        type: string
+      feedback_email:
+        description: "TestFlight feedback email"
+        required: true
+        type: string
+      group_name:
+        description: "External beta group name"
+        required: false
+        default: "Public Beta"
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  beta-setup:
+    name: Configure external beta & submit for review
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check secrets
+        env:
+          KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+          ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+          P8: ${{ secrets.APP_STORE_CONNECT_API_KEY_P8 }}
+        run: |
+          if [ -z "$KEY_ID" ] || [ -z "$ISSUER_ID" ] || [ -z "$P8" ]; then
+            echo "::error::APP_STORE_CONNECT_* secrets are not fully configured."
+            exit 1
+          fi
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: pip install --quiet requests PyJWT cryptography
+      - name: Configure beta & submit
+        env:
+          ASC_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+          ASC_KEY_P8_BASE64: ${{ secrets.APP_STORE_CONNECT_API_KEY_P8 }}
+        run: >
+          python scripts/asc_beta_setup.py
+          --version "${{ inputs.version }}"
+          --feedback-email "${{ inputs.feedback_email }}"
+          --group-name "${{ inputs.group_name }}"
