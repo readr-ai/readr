@@ -446,6 +446,97 @@ final class ReadrFlowUITests: XCTestCase {
         )
     }
 
+    // Paged mode: a left-to-right swipe must turn BACK a page — not hand the
+    // touch to the NavigationStack's interactive pop and dump the reader in
+    // the library mid-read (seen on device). The reader hides the system
+    // back gesture (PopGestureDisabler) and turns pages with a high-priority
+    // drag (SwipeToTurn); this pins both.
+    func testPagedModeSwipeRightGoesToPreviousPageNotBack() {
+        let app = launchSeeded()
+        openSampleBook(app)
+        selectLayout(app, "Single page")
+
+        // The explicit chevron replaces the hidden system back button.
+        XCTAssertTrue(
+            button(app, id: "reader.back", label: "Back to Library")
+                .waitForExistence(timeout: 5),
+            "The reader should carry its own back button"
+        )
+
+        let pageLabel = app.staticTexts.matching(
+            NSPredicate(format: "label BEGINSWITH 'Page '")
+        ).firstMatch
+        XCTAssertTrue(
+            pageLabel.waitForExistence(timeout: 5),
+            "Single-page mode should show the 'Page x of y' label"
+        )
+        let first = pageLabel.label
+
+        let text = app.textViews.firstMatch
+        XCTAssertTrue(text.waitForExistence(timeout: 5))
+
+        // Advance one page. Either the label changes, or — when the chapter
+        // fit on a single page and the turn overflowed — Chapter Two's kicker
+        // appears (its label could legitimately repeat "Page 1 of 1").
+        text.swipeLeft()
+        let changed = app.staticTexts.matching(
+            NSPredicate(format: "label BEGINSWITH 'Page ' AND label != %@", first)
+        ).firstMatch
+        let advanced = changed.waitForExistence(timeout: 5)
+            || app.staticTexts["Chapter Two"].firstMatch.exists
+        XCTAssertTrue(
+            advanced,
+            "A left swipe should advance the page (label stayed '\(first)')"
+        )
+
+        // Back one page: the starting label returns (overflow backward lands
+        // on the previous chapter's last page, which for a one-page chapter
+        // is the same label).
+        text.swipeRight()
+        let restored = app.staticTexts.matching(
+            NSPredicate(format: "label BEGINSWITH 'Page ' AND label == %@", first)
+        ).firstMatch
+        XCTAssertTrue(
+            restored.waitForExistence(timeout: 5),
+            "A right swipe should return to the previous page, not pop the reader"
+        )
+
+        // And the reader must still be on screen — the pop gesture must not
+        // have won the swipe.
+        XCTAssertTrue(pageLabel.exists, "The paged reader should still be up")
+        XCTAssertFalse(
+            app.buttons["library.settings"].firstMatch.exists,
+            "A right swipe must not pop back to the library"
+        )
+        XCTAssertFalse(
+            app.buttons["library.import"].firstMatch.exists,
+            "A right swipe must not pop back to the library"
+        )
+
+        selectLayout(app, "Scroll")
+    }
+
+    // The system back button is hidden while reading (its gesture fought the
+    // page-turn swipe) — the reader's explicit chevron must still return to
+    // the library.
+    func testReaderBackButtonReturnsToLibrary() {
+        let app = launchSeeded()
+        openSampleBook(app)
+
+        let back = button(app, id: "reader.back", label: "Back to Library")
+        XCTAssertTrue(back.waitForExistence(timeout: 5))
+        back.tap()
+
+        XCTAssertTrue(
+            app.buttons["library.settings"].firstMatch.waitForExistence(timeout: 5),
+            "Tapping the reader's back button should land on the library"
+        )
+        XCTAssertTrue(
+            app.buttons["reader.back"].firstMatch.waitForNonExistence(timeout: 5),
+            "The reader chrome should be gone after popping back"
+        )
+    }
+
     // MARK: - J3: highlight from selection
 
     // Core annotate gesture: select text in the reading surface, tap a color

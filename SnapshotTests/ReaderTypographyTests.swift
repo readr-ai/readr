@@ -149,7 +149,7 @@ final class ReaderTypographyTests: XCTestCase {
         let style = ReaderStyle()
         let attributed = TextRangeConvert.attributedString(
             "\u{FFFC}", highlights: [], style: style,
-            inlineImages: [0: solidImage(width: 1200, height: 800)]
+            inlineImages: [0: InlineImage(image: solidImage(width: 1200, height: 800))]
         )
         let size = try XCTUnwrap(resolvedAttachmentSize(attributed, layoutWidth: 320))
         XCTAssertLessThanOrEqual(size.width, 320.5, "A figure must never spill past the column")
@@ -161,7 +161,7 @@ final class ReaderTypographyTests: XCTestCase {
         style.maxImageHeight = 400
         let attributed = TextRangeConvert.attributedString(
             "\u{FFFC}", highlights: [], style: style,
-            inlineImages: [0: solidImage(width: 600, height: 2400)]
+            inlineImages: [0: InlineImage(image: solidImage(width: 600, height: 2400))]
         )
         let size = try XCTUnwrap(resolvedAttachmentSize(attributed, layoutWidth: 320))
         XCTAssertLessThanOrEqual(size.height, 400.5, "A figure must never exceed a page")
@@ -171,7 +171,7 @@ final class ReaderTypographyTests: XCTestCase {
     func testSmallImageIsNeverUpscaled() throws {
         let attributed = TextRangeConvert.attributedString(
             "\u{FFFC}", highlights: [], style: ReaderStyle(),
-            inlineImages: [0: solidImage(width: 80, height: 60)]
+            inlineImages: [0: InlineImage(image: solidImage(width: 80, height: 60))]
         )
         let size = try XCTUnwrap(resolvedAttachmentSize(attributed, layoutWidth: 320))
         XCTAssertEqual(size.width, 80, accuracy: 0.5)
@@ -187,7 +187,7 @@ final class ReaderTypographyTests: XCTestCase {
         style.maxImageHeight = 400
         let attributed = TextRangeConvert.attributedString(
             "\u{FFFC}", highlights: [], style: style,
-            inlineImages: [0: solidImage(width: 1200, height: 900)]
+            inlineImages: [0: InlineImage(image: solidImage(width: 1200, height: 900))]
         )
         let attachment = try XCTUnwrap(
             attributed.attribute(.attachment, at: 0, effectiveRange: nil)
@@ -203,6 +203,54 @@ final class ReaderTypographyTests: XCTestCase {
         XCTAssertLessThanOrEqual(bounds.height, 400.5, "TK2 must honor the page cap too")
     }
 
+    // MARK: - Declared image sizes (CSS px 1:1 points)
+
+    /// A 2×-exported 40px icon (80px bitmap, `width="40"`) must render 40pt —
+    /// the declared display size wins over the bitmap's native size.
+    func testDeclaredWidthSizesTheImageBelowItsNativeSize() throws {
+        let attributed = TextRangeConvert.attributedString(
+            "\u{FFFC}", highlights: [], style: ReaderStyle(),
+            inlineImages: [0: InlineImage(
+                image: solidImage(width: 80, height: 80),
+                displayWidth: 40, displayHeight: 40
+            )]
+        )
+        let size = try XCTUnwrap(resolvedAttachmentSize(attributed, layoutWidth: 300))
+        XCTAssertEqual(size.width, 40, accuracy: 0.5)
+        XCTAssertEqual(size.height, 40, accuracy: 0.5)
+    }
+
+    /// A declared width wider than the column still clamps to the column,
+    /// keeping the DECLARED aspect ratio.
+    func testDeclaredWidthWiderThanTheColumnStillClamps() throws {
+        let attributed = TextRangeConvert.attributedString(
+            "\u{FFFC}", highlights: [], style: ReaderStyle(),
+            inlineImages: [0: InlineImage(
+                image: solidImage(width: 1000, height: 500),
+                displayWidth: 500, displayHeight: 250
+            )]
+        )
+        let size = try XCTUnwrap(resolvedAttachmentSize(attributed, layoutWidth: 300))
+        XCTAssertEqual(size.width, 300, accuracy: 0.5, "declared > column must clamp")
+        XCTAssertEqual(size.height, 150, accuracy: 0.5, "height follows the declared aspect")
+    }
+
+    /// A height-only declaration (`height="60"` with no width — common EPUB
+    /// markup) still expresses a size intent: the width derives from it
+    /// through the bitmap's aspect.
+    func testDeclaredHeightAloneSizesTheImage() throws {
+        let attributed = TextRangeConvert.attributedString(
+            "\u{FFFC}", highlights: [], style: ReaderStyle(),
+            inlineImages: [0: InlineImage(
+                image: solidImage(width: 240, height: 120),
+                displayHeight: 60
+            )]
+        )
+        let size = try XCTUnwrap(resolvedAttachmentSize(attributed, layoutWidth: 300))
+        XCTAssertEqual(size.width, 120, accuracy: 0.5, "width follows the bitmap aspect")
+        XCTAssertEqual(size.height, 60, accuracy: 0.5)
+    }
+
     /// The pagination regression behind the cap: an image taller than the
     /// page used to make `LayoutPaginator` bail to the estimate fallback.
     /// With the page-height cap the paginator must cover the chapter with
@@ -211,10 +259,170 @@ final class ReaderTypographyTests: XCTestCase {
         var style = ReaderStyle()
         style.maxImageHeight = 460 // page text height, as PagedChapterView sets it
         let text = "Before the figure.\n\u{FFFC}\nAfter the figure, more prose follows."
-        let images = [19: solidImage(width: 800, height: 3000)]
+        let images = [19: InlineImage(image: solidImage(width: 800, height: 3000))]
         let paginator = LayoutPaginator(style: style, inlineImages: images)
         let pages = paginator.paginate(text) { _ in CGSize(width: 420, height: 540) }
         XCTAssertFalse(pages.isEmpty, "The capped figure must fit a measured page")
         XCTAssertEqual(pages.last?.range.upperBound, text.count, "Pages must cover the chapter")
+    }
+
+    // MARK: - Format spans (headings, emphasis, blockquotes, links)
+
+    func testHeadingRunUsesLargerBoldFontWhileBodyKeepsContentFont() throws {
+        let style = ReaderStyle()
+        let text = "Title\nBody paragraph follows."
+        let attributed = TextRangeConvert.attributedString(
+            text, highlights: [], style: style,
+            formatSpans: [FormatSpan(start: 0, end: 5, kind: .heading(1))]
+        )
+        let heading = try XCTUnwrap(
+            attributed.attribute(.font, at: 0, effectiveRange: nil) as? NSFont
+        )
+        XCTAssertEqual(heading.pointSize, (style.fontSize * 1.6).rounded())
+        XCTAssertTrue(heading.fontDescriptor.symbolicTraits.contains(.bold))
+        // Headings breathe: extra paragraph spacing around the run.
+        let headingParagraph = try XCTUnwrap(
+            attributed.attribute(.paragraphStyle, at: 0, effectiveRange: nil)
+                as? NSParagraphStyle
+        )
+        XCTAssertGreaterThan(headingParagraph.paragraphSpacingBefore, 0)
+        XCTAssertGreaterThan(headingParagraph.paragraphSpacing, style.paragraphSpacing)
+        // The body run keeps the plain content font and base paragraph style.
+        let body = try XCTUnwrap(
+            attributed.attribute(.font, at: 8, effectiveRange: nil) as? NSFont
+        )
+        XCTAssertEqual(body.pointSize, style.fontSize)
+        XCTAssertFalse(body.fontDescriptor.symbolicTraits.contains(.bold))
+        let bodyParagraph = try XCTUnwrap(
+            attributed.attribute(.paragraphStyle, at: 8, effectiveRange: nil)
+                as? NSParagraphStyle
+        )
+        XCTAssertEqual(bodyParagraph.paragraphSpacing, style.paragraphSpacing)
+    }
+
+    /// Bold + italic inside a heading: traits merge into the font already on
+    /// the range, so emphasis inside a heading keeps the heading size.
+    func testEmphasisTraitsMergeInsideAHeading() throws {
+        let style = ReaderStyle()
+        let text = "Big bold title"
+        let attributed = TextRangeConvert.attributedString(
+            text, highlights: [], style: style,
+            // Deliberately emitted out of application order — the renderer
+            // must sort structure before trait merges.
+            formatSpans: [
+                FormatSpan(start: 4, end: 8, kind: .italic),
+                FormatSpan(start: 0, end: text.count, kind: .heading(2)),
+                FormatSpan(start: 4, end: 8, kind: .bold),
+            ]
+        )
+        let merged = try XCTUnwrap(
+            attributed.attribute(.font, at: 5, effectiveRange: nil) as? NSFont
+        )
+        XCTAssertEqual(
+            merged.pointSize, (style.fontSize * 1.35).rounded(),
+            "Emphasis inside a heading must keep the heading size"
+        )
+        XCTAssertTrue(merged.fontDescriptor.symbolicTraits.contains(.bold))
+        XCTAssertTrue(merged.fontDescriptor.symbolicTraits.contains(.italic))
+        // Outside the emphasis run the heading is bold but not italic.
+        let plain = try XCTUnwrap(
+            attributed.attribute(.font, at: 0, effectiveRange: nil) as? NSFont
+        )
+        XCTAssertFalse(plain.fontDescriptor.symbolicTraits.contains(.italic))
+    }
+
+    func testLinkRangeCarriesLinkAccentAndUnderline() throws {
+        let style = ReaderStyle()
+        let text = "See the appendix for more."
+        let attributed = TextRangeConvert.attributedString(
+            text, highlights: [], style: style,
+            formatSpans: [FormatSpan(
+                start: 8, end: 16, kind: .link(.external(url: "https://example.com/a"))
+            )]
+        )
+        let url = try XCTUnwrap(
+            attributed.attribute(.link, at: 9, effectiveRange: nil) as? URL
+        )
+        XCTAssertEqual(url.absoluteString, "https://example.com/a")
+        let underline = try XCTUnwrap(
+            attributed.attribute(.underlineStyle, at: 9, effectiveRange: nil) as? Int
+        )
+        XCTAssertEqual(underline, NSUnderlineStyle.single.rawValue)
+        let color = try XCTUnwrap(
+            attributed.attribute(.foregroundColor, at: 9, effectiveRange: nil) as? NSColor
+        )
+        XCTAssertNotEqual(color, style.theme.ink, "Links render in the accent, not body ink")
+        // Outside the range: plain body text, no link.
+        XCTAssertNil(attributed.attribute(.link, at: 0, effectiveRange: nil))
+    }
+
+    /// Internal links encode as the custom jump scheme and decode back to the
+    /// exact target (path + fragment survive percent-encoding).
+    func testInternalLinkEncodesARoundTrippableJumpURL() throws {
+        let target = LinkTarget.internalDoc(path: "OEBPS/text/ch 2.xhtml", fragment: "note-3")
+        let text = "footnote"
+        let attributed = TextRangeConvert.attributedString(
+            text, highlights: [], style: ReaderStyle(),
+            formatSpans: [FormatSpan(start: 0, end: text.count, kind: .link(target))]
+        )
+        let url = try XCTUnwrap(
+            attributed.attribute(.link, at: 0, effectiveRange: nil) as? URL
+        )
+        XCTAssertEqual(url.scheme, ReaderLinkURL.internalScheme)
+        XCTAssertEqual(ReaderLinkURL.internalTarget(from: url), target)
+        // External URLs are NOT internal jumps — they keep the default
+        // open-in-browser interaction.
+        XCTAssertNil(
+            ReaderLinkURL.internalTarget(from: try XCTUnwrap(URL(string: "https://example.com")))
+        )
+    }
+
+    func testBlockquoteIndentsAndMutes() throws {
+        let style = ReaderStyle()
+        let text = "He said:\nQuoted wisdom here.\nBack to prose."
+        let attributed = TextRangeConvert.attributedString(
+            text, highlights: [], style: style,
+            formatSpans: [FormatSpan(start: 9, end: 28, kind: .blockquote)]
+        )
+        let quote = try XCTUnwrap(
+            attributed.attribute(.paragraphStyle, at: 10, effectiveRange: nil)
+                as? NSParagraphStyle
+        )
+        XCTAssertEqual(quote.headIndent, style.fontSize * 1.5)
+        XCTAssertEqual(quote.firstLineHeadIndent, style.fontSize * 1.5)
+        let color = try XCTUnwrap(
+            attributed.attribute(.foregroundColor, at: 10, effectiveRange: nil) as? NSColor
+        )
+        XCTAssertNotEqual(color, style.theme.ink, "Blockquotes render in the muted ink")
+        // Prose outside the quote keeps the un-indented base paragraph.
+        let body = try XCTUnwrap(
+            attributed.attribute(.paragraphStyle, at: 0, effectiveRange: nil)
+                as? NSParagraphStyle
+        )
+        XCTAssertEqual(body.headIndent, 0)
+    }
+
+    /// Page slices pass spans shifted into slice coordinates — truncated runs
+    /// can start negative or end past the slice. They must clamp (never trap)
+    /// and still style the surviving run.
+    func testSpansClampedToAPageSliceStyleTheRightRun() throws {
+        let text = "Sliced page"
+        let attributed = TextRangeConvert.attributedString(
+            text, highlights: [], style: ReaderStyle(),
+            formatSpans: [
+                FormatSpan(start: -3, end: 6, kind: .bold),
+                FormatSpan(start: 7, end: 400, kind: .italic),
+                FormatSpan(start: 20, end: 30, kind: .heading(1)), // fully off-slice
+            ]
+        )
+        let bold = try XCTUnwrap(
+            attributed.attribute(.font, at: 0, effectiveRange: nil) as? NSFont
+        )
+        XCTAssertTrue(bold.fontDescriptor.symbolicTraits.contains(.bold))
+        let italic = try XCTUnwrap(
+            attributed.attribute(.font, at: text.count - 1, effectiveRange: nil) as? NSFont
+        )
+        XCTAssertTrue(italic.fontDescriptor.symbolicTraits.contains(.italic))
+        XCTAssertFalse(italic.fontDescriptor.symbolicTraits.contains(.bold))
     }
 }

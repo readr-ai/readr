@@ -52,7 +52,7 @@ struct PagedChapterView: View {
     /// Highlights in chapter coordinates.
     let highlights: [HighlightSpan]
     /// Inline images keyed by character offset in **chapter** coordinates.
-    var inlineImages: [Int: PlatformImage] = [:]
+    var inlineImages: [Int: InlineImage] = [:]
     /// Reading position as a **character offset** into the chapter, so it
     /// survives re-pagination (layout switches, window resizes) without
     /// jumping — the page index is derived from it at render time. Owned by
@@ -68,6 +68,9 @@ struct PagedChapterView: View {
     /// chrome, Apple-Books-style. Taps on the column's outer quarters turn
     /// pages instead (see pageView), as do the margin strips.
     var onChromeToggle: (() -> Void)? = nil
+    /// A tapped internal link (targets carry document paths, so no coordinate
+    /// shifting) — the parent resolves and jumps.
+    var onLinkTap: ((LinkTarget) -> Void)? = nil
     /// Whether a turn past the first/last page has somewhere to go (the
     /// parent has an adjacent chapter). Keeps the arrows live at the edges.
     var canOverflowBackward = false
@@ -248,10 +251,13 @@ struct PagedChapterView: View {
         let hasKicker = chapter.title != nil
 
         // Every input that changes layout must be in the key: geometry, size,
-        // typeface, leading, justification, layout, kicker, and image set.
+        // typeface, leading, justification, layout, kicker, image set, and
+        // formatting spans (heading fonts and indents move page breaks; the
+        // hash is in-process only, exactly like this in-memory cache).
         let key = "\(Int(textWidth))x\(Int(pageHeight))|\(style.fontSize)|"
             + "\(style.font.rawValue)|\(style.spacing.rawValue)|\(style.isJustified)|"
-            + "\(layout.rawValue)|\(hasKicker)|\(inlineImages.keys.sorted())"
+            + "\(layout.rawValue)|\(hasKicker)|\(inlineImages.keys.sorted())|"
+            + "\(chapter.formatSpans?.hashValue ?? 0)"
         if cache.chapterID == chapter.id, cache.key == key {
             return cache.pages
         }
@@ -262,7 +268,10 @@ struct PagedChapterView: View {
         // absorbs sub-point engine differences between the measurement pass
         // and the live text view — a hair under-full is invisible; one line
         // over would clip.
-        let paginator = LayoutPaginator(style: renderStyle(for: size), inlineImages: inlineImages)
+        let paginator = LayoutPaginator(
+            style: renderStyle(for: size), inlineImages: inlineImages,
+            formatSpans: chapter.formatSpans ?? []
+        )
         var pages = paginator.paginate(chapter.text) { index in
             // The kicker renders on each spread's FIRST page (every page in
             // single-page layout; even indices in double, since spreads
@@ -415,6 +424,14 @@ struct PagedChapterView: View {
         let pageImages = Dictionary(uniqueKeysWithValues: inlineImages.compactMap { offset, image in
             (offset >= origin && offset < origin + page.text.count) ? (offset - origin, image) : nil
         })
+        // Formatting spans intersecting this page, clamped to the
+        // intersection and rebased — the same shift as highlights below.
+        let pageSpans: [FormatSpan] = (chapter.formatSpans ?? []).compactMap { span in
+            let lower = max(span.start, origin)
+            let upper = min(span.end, origin + page.text.count)
+            guard lower < upper else { return nil }
+            return FormatSpan(start: lower - origin, end: upper - origin, kind: span.kind)
+        }
         VStack(alignment: .leading, spacing: 0) {
             // Chapter kicker as a running head on the spread's first page.
             // Displayed in caps, but exposed to accessibility under the
@@ -450,6 +467,7 @@ struct PagedChapterView: View {
                 },
                 style: style,
                 inlineImages: pageImages,
+                formatSpans: pageSpans,
                 // Pages fit by construction — internal scrolling off, so the
                 // platform text view can't claim the swipe (iOS pan) or
                 // rubber-band under it (macOS elasticity).
@@ -473,7 +491,8 @@ struct PagedChapterView: View {
                     } else {
                         onChromeToggle?()
                     }
-                }
+                },
+                onLinkTap: onLinkTap
             )
         }
         .padding(pageInsets)
@@ -591,7 +610,11 @@ private struct SwipeToTurn: ViewModifier {
 
     func body(content: Content) -> some View {
         #if os(iOS)
-        content.gesture(
+        // High priority: the page-turn drag must beat any competing
+        // recognizer on the stack (system navigation gestures included) —
+        // a plain .gesture yields, and the swipe pops the reader instead
+        // of turning the page.
+        content.highPriorityGesture(
             DragGesture(minimumDistance: 40)
                 .onEnded { value in
                     let h = value.translation.width

@@ -59,9 +59,14 @@ final class XHTMLExtractorConformanceTests: XCTestCase {
     }
 
     func testBlockElementsProduceParagraphBreaks() {
+        // Updated for the structure overhaul: list items now carry visible
+        // markers ("• " for <ul>, "N. " for <ol>) instead of flattening to
+        // bare lines — a deliberate text-content improvement. Headings and
+        // blockquotes still break paragraphs (their styling now travels
+        // separately as format spans).
         let html = "<div>intro</div><h2>Head</h2><blockquote>quote</blockquote><ul><li>one</li><li>two</li></ul>"
         let text = XHTMLTextExtractor.text(from: html)
-        XCTAssertEqual(text, "intro\nHead\nquote\none\ntwo")
+        XCTAssertEqual(text, "intro\nHead\nquote\n• one\n• two")
     }
 
     func testRubyAnnotationTextIsNotDuplicated() {

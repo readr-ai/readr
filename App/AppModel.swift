@@ -434,21 +434,31 @@ final class AppModel: ObservableObject {
     /// changes) don't re-open the ZIP or re-decode bytes.
     private let inlineImageCache = NSCache<NSString, PlatformImage>()
 
-    func inlineImages(for book: Book, chapter: Chapter) -> [Int: PlatformImage] {
+    func inlineImages(for book: Book, chapter: Chapter) -> [Int: InlineImage] {
         guard let images = chapter.images, !images.isEmpty else { return [:] }
-        var result: [Int: PlatformImage] = [:]
+        var result: [Int: InlineImage] = [:]
         for image in images {
+            // The cache holds decoded bitmaps per archive entry; the declared
+            // display size is per placement (the same bitmap can appear at
+            // several offsets with different markup sizes), so it's attached
+            // outside the cache.
             let key = "\(book.id)/\(image.archivePath)" as NSString
+            let decoded: PlatformImage
             if let cached = inlineImageCache.object(forKey: key) {
-                result[image.offset] = cached
-                continue
+                decoded = cached
+            } else {
+                guard let src = sourceURL(for: book),
+                      let data = Self.loadArchiveImageData(bookURL: src, path: image.archivePath),
+                      let fresh = PlatformImage(data: data)
+                else { continue }
+                inlineImageCache.setObject(fresh, forKey: key)
+                decoded = fresh
             }
-            guard let src = sourceURL(for: book),
-                  let data = Self.loadArchiveImageData(bookURL: src, path: image.archivePath),
-                  let decoded = PlatformImage(data: data)
-            else { continue }
-            inlineImageCache.setObject(decoded, forKey: key)
-            result[image.offset] = decoded
+            result[image.offset] = InlineImage(
+                image: decoded,
+                displayWidth: image.displayWidth.map { CGFloat($0) },
+                displayHeight: image.displayHeight.map { CGFloat($0) }
+            )
         }
         return result
     }

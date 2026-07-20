@@ -108,6 +108,22 @@ final class LayoutPaginatorTests: XCTestCase {
         }
     }
 
+    func testTrailingWhitespaceFoldKeepsTextStartOffsetAligned() {
+        // Regression: the chapter-trailing whitespace tail used to extend
+        // only the last page's RANGE, shifting its derived textStartOffset —
+        // the origin every page-local highlight/image/span rebase uses.
+        let text = makeText() + "\n\n   "
+        let chars = Array(text)
+        let pages = paginate(text)
+        XCTAssertGreaterThan(pages.count, 1)
+        XCTAssertEqual(pages.last?.range.upperBound, chars.count, "tail stays covered")
+        for page in pages {
+            let origin = page.textStartOffset
+            let slice = String(chars[origin..<(origin + page.text.count)])
+            XCTAssertEqual(slice, page.text, "tail fold must not shift the origin")
+        }
+    }
+
     // MARK: - Fullness (the open-book property)
 
     func testInteriorPagesAreVisuallyFull() {
@@ -175,6 +191,54 @@ final class LayoutPaginatorTests: XCTestCase {
         let first = renderedHeight(of: pages[0].text, width: pageSize.width)
         XCTAssertLessThanOrEqual(first, shortFirst.height + 1)
         XCTAssertGreaterThanOrEqual(first, shortFirst.height - fillQuantum)
+    }
+
+    // MARK: - Format spans
+
+    /// Heading fonts, heading paragraph spacing and blockquote indents all
+    /// move page breaks — but the paginator must still tile the chapter
+    /// EXACTLY: every character on exactly one page, no loss, no duplication.
+    func testPagesWithFormatSpansTileTheChapterExactly() {
+        let text = makeText()
+        var spans: [FormatSpan] = [
+            FormatSpan(start: 0, end: 40, kind: .heading(1)),
+            FormatSpan(start: 0, end: 12, kind: .bold),
+            FormatSpan(start: text.count / 3, end: text.count / 3 + 60, kind: .heading(2)),
+            FormatSpan(start: text.count / 2, end: text.count / 2 + 200, kind: .blockquote),
+            FormatSpan(
+                start: text.count - 90, end: text.count - 30,
+                kind: .link(.external(url: "https://example.com"))
+            ),
+        ]
+        // Deterministic emphasis runs sprinkled through the chapter so
+        // several page breaks land inside styled text.
+        var cursor = 200
+        var bold = true
+        while cursor + 120 < text.count {
+            spans.append(FormatSpan(
+                start: cursor, end: cursor + 80, kind: bold ? .bold : .italic
+            ))
+            bold.toggle()
+            cursor += 900
+        }
+
+        let paginator = LayoutPaginator(style: style, inlineImages: [:], formatSpans: spans)
+        let pages = paginator.paginate(text) { _ in pageSize }
+        XCTAssertGreaterThan(pages.count, 3, "Fixture should span several pages")
+        XCTAssertEqual(pages.first?.range.lowerBound, 0)
+        XCTAssertEqual(pages.last?.range.upperBound, text.count)
+        for (a, b) in zip(pages, pages.dropFirst()) {
+            XCTAssertEqual(
+                a.range.upperBound, b.range.lowerBound,
+                "Ranges must be contiguous — no gap or overlap at page joins"
+            )
+        }
+        // And every page's text still maps back into the chapter verbatim.
+        let chars = Array(text)
+        for page in pages {
+            let origin = page.textStartOffset
+            XCTAssertEqual(String(chars[origin..<(origin + page.text.count)]), page.text)
+        }
     }
 
     // MARK: - Degenerate input

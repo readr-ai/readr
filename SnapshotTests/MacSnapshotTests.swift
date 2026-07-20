@@ -580,4 +580,93 @@ final class MacSnapshotTests: XCTestCase {
             name: "m07-library-grid"
         )
     }
+
+    // MARK: - Rich formatting (format spans)
+
+    /// A deterministic solid-color bitmap standing in for a chapter figure.
+    private static func solidImage(width: CGFloat, height: CGFloat) -> NSImage {
+        let image = NSImage(size: NSSize(width: width, height: height))
+        image.lockFocus()
+        NSColor.systemGray.setFill()
+        NSRect(x: 0, y: 0, width: width, height: height).fill()
+        image.unlockFocus()
+        return image
+    }
+
+    /// A NEW fixture chapter for m20 — the seeded `sampleChapter` feeds
+    /// m01–m19 and must stay byte-stable, so the formatting coverage gets its
+    /// own text + spans. Offsets are accumulated while building the text so
+    /// they can never drift from it.
+    private static func richFormattingFixture() -> (Chapter, [Int: InlineImage]) {
+        var text = ""
+        var spans: [FormatSpan] = []
+        func append(_ piece: String, _ kinds: FormatSpan.Kind...) {
+            let start = text.count
+            text += piece
+            for kind in kinds {
+                spans.append(FormatSpan(start: start, end: text.count, kind: kind))
+            }
+        }
+        append("On Marginalia", .heading(1))
+        append("\n")
+        append("Readers have always written back. ")
+        append("The margin is the reader's half of the conversation.", .italic)
+        append(" Some notes are ")
+        append("corrections", .bold)
+        append(", others are ")
+        append("running arguments", .bold, .italic)
+        append(" with the author.\n")
+        append("A Short Taxonomy", .heading(2))
+        append("\n")
+        // The parser emits list items with literal bullet markers.
+        append("\u{2022} the underline, quiet agreement\n")
+        append("\u{2022} the exclamation mark, delight or dissent\n")
+        append("\u{2022} the long note, a letter the author never receives\n")
+        append("As one librarian put it:\n")
+        append(
+            "Every used book is two books: the printed one, and the one the "
+                + "previous reader left behind in its margins.",
+            .blockquote
+        )
+        append("\n")
+        append("See the ")
+        append(
+            "catalogue of annotated volumes",
+            .link(.external(url: "https://example.com/marginalia"))
+        )
+        append(" for plates like this one:\n")
+        let imageOffset = text.count
+        append("\u{FFFC}")
+        append("\nThe plate above renders at its declared width, not the bitmap's.")
+
+        let chapter = Chapter(
+            title: "Rich Formatting", order: 0, text: text, formatSpans: spans
+        )
+        // 2×-exported figure: 240×160 bitmap declared at 120×80 CSS px.
+        let images = [imageOffset: InlineImage(
+            image: solidImage(width: 240, height: 160),
+            displayWidth: 120, displayHeight: 80
+        )]
+        return (chapter, images)
+    }
+
+    /// The rich-formatting render: h1 + h2, bold/italic (and both merged), a
+    /// bulleted list, an indented muted blockquote, an accent underlined
+    /// link, and a declared-width figure — in the scroll column, Paper theme.
+    func testScrollReaderRichFormatting() {
+        let (chapter, images) = Self.richFormattingFixture()
+        snapshot(
+            VStack(spacing: 0) {
+                ScrollReadingColumn(
+                    chapter: chapter,
+                    style: ReaderStyle(theme: .paper, fontSize: 18),
+                    highlights: [],
+                    inlineImages: images
+                )
+            }
+            .background(ReadingTheme.paper.background),
+            size: CGSize(width: 1100, height: 760),
+            name: "m20-rich-formatting"
+        )
+    }
 }

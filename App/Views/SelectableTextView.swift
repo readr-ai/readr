@@ -67,6 +67,60 @@ private func makeAnnotationMenu(
     )
 }
 
+/// An inline image ready to render: the decoded bitmap plus the source
+/// markup's intended display size (CSS pixels, treated 1:1 as points; nil ⇒
+/// unknown, size from the bitmap). Keyed by the character offset of the
+/// U+FFFC placeholder wherever a `[Int: InlineImage]` appears.
+struct InlineImage: Equatable {
+    var image: PlatformImage
+    var displayWidth: CGFloat?
+    var displayHeight: CGFloat?
+
+    init(image: PlatformImage, displayWidth: CGFloat? = nil, displayHeight: CGFloat? = nil) {
+        self.image = image
+        self.displayWidth = displayWidth
+        self.displayHeight = displayHeight
+    }
+}
+
+/// Encodes `LinkTarget`s as `.link` attribute URLs and decodes them back in
+/// the platform delegates. External targets carry their real URL so the
+/// platform's default interaction opens them in the browser; internal jumps
+/// ride a custom scheme the delegates intercept and route to `onLinkTap`.
+enum ReaderLinkURL {
+    static let internalScheme = "readr-internal"
+
+    static func url(for target: LinkTarget) -> URL? {
+        switch target {
+        case let .external(url):
+            return URL(string: url)
+        case let .internalDoc(path, fragment):
+            // URLComponents percent-encodes the query values (archive paths
+            // contain slashes; fragments can contain anything).
+            var components = URLComponents()
+            components.scheme = internalScheme
+            components.host = "jump"
+            var items = [URLQueryItem(name: "path", value: path)]
+            if let fragment {
+                items.append(URLQueryItem(name: "fragment", value: fragment))
+            }
+            components.queryItems = items
+            return components.url
+        }
+    }
+
+    /// The internal jump a URL encodes, or nil for anything else (external
+    /// links keep their default open-in-browser interaction).
+    static func internalTarget(from url: URL) -> LinkTarget? {
+        guard url.scheme == internalScheme,
+              let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              let path = components.queryItems?.first(where: { $0.name == "path" })?.value
+        else { return nil }
+        let fragment = components.queryItems?.first(where: { $0.name == "fragment" })?.value
+        return .internalDoc(path: path, fragment: fragment)
+    }
+}
+
 // MARK: - SelectableTextView
 
 /// A read-only, selectable text view that paints highlights in their marker
@@ -85,7 +139,11 @@ struct SelectableTextView: View {
     var style = ReaderStyle()
     /// Inline images keyed by the character offset of their U+FFFC placeholder
     /// in `text`.
-    var inlineImages: [Int: PlatformImage] = [:]
+    var inlineImages: [Int: InlineImage] = [:]
+    /// Formatting runs (headings, emphasis, blockquotes, links) in `text`
+    /// coordinates — page embedders pass spans already shifted/clamped into
+    /// their slice.
+    var formatSpans: [FormatSpan] = []
     /// Programmatic jump: a character offset to scroll into view. The view
     /// performs the scroll on its next update, then clears the binding
     /// (asynchronously — never during the update pass) so the same offset can
@@ -109,6 +167,11 @@ struct SelectableTextView: View {
     /// (the column's outer quarters turn pages, the middle toggles chrome).
     /// Delivered after a short settle window (see handleTap). Unused on macOS.
     var onPageTap: ((CGPoint, CGSize) -> Void)? = nil
+    /// An INTERNAL link (`LinkTarget.internalDoc`) was tapped/clicked — the
+    /// host resolves the archive path + fragment and jumps. External links
+    /// never reach this: they keep the platform's default open-in-browser
+    /// interaction (see the delegates).
+    var onLinkTap: ((LinkTarget) -> Void)? = nil
 
     #if canImport(UIKit)
     /// The target the floating bar is showing for (nil ⇒ bar hidden).
@@ -120,6 +183,7 @@ struct SelectableTextView: View {
             highlights: highlights,
             style: style,
             inlineImages: inlineImages,
+            formatSpans: formatSpans,
             // Read the wrapped value here so SwiftUI re-runs update* when
             // the host sets a new target.
             scrollTarget: scrollToOffset?.wrappedValue,
@@ -127,7 +191,8 @@ struct SelectableTextView: View {
             allowsInternalScrolling: allowsInternalScrolling,
             onTarget: { barTarget = $0 },
             onSelectionChange: onSelectionChange,
-            onPageTap: onPageTap
+            onPageTap: onPageTap,
+            onLinkTap: onLinkTap
         )
         .overlay(alignment: .bottom) {
             if let target = barTarget {
@@ -156,13 +221,15 @@ struct SelectableTextView: View {
             highlights: highlights,
             style: style,
             inlineImages: inlineImages,
+            formatSpans: formatSpans,
             // Read the wrapped value here so SwiftUI re-runs update* when
             // the host sets a new target.
             scrollTarget: scrollToOffset?.wrappedValue,
             clearScrollTarget: { scrollToOffset?.wrappedValue = nil },
             allowsInternalScrolling: allowsInternalScrolling,
             onAnnotate: onAnnotate,
-            onSelectionChange: onSelectionChange
+            onSelectionChange: onSelectionChange,
+            onLinkTap: onLinkTap
         )
         // See the iOS body: a torn-down surface must not leave the host's
         // mirrored selection state stale.
@@ -230,7 +297,8 @@ enum TextRangeConvert {
         _ text: String,
         highlights: [HighlightSpan],
         style: ReaderStyle,
-        inlineImages: [Int: PlatformImage] = [:]
+        inlineImages: [Int: InlineImage] = [:],
+        formatSpans: [FormatSpan] = []
     ) -> NSAttributedString {
         let attributed = NSMutableAttributedString(string: text)
         let full = NSRange(text.startIndex..<text.endIndex, in: text)
@@ -248,6 +316,8 @@ enum TextRangeConvert {
         attributed.addAttribute(.font, value: style.contentFont, range: full)
         attributed.addAttribute(.foregroundColor, value: style.theme.ink, range: full)
         attributed.addAttribute(.paragraphStyle, value: paragraph, range: full)
+
+        applyFormatSpans(formatSpans, to: attributed, text: text, style: style, base: paragraph)
 
         for span in highlights {
             guard let ns = nsRange(from: span.range, in: text) else { continue }
@@ -268,17 +338,107 @@ enum TextRangeConvert {
             }
         }
 
-        for (offset, image) in inlineImages.sorted(by: { $0.key < $1.key }) {
+        for (offset, inline) in inlineImages.sorted(by: { $0.key < $1.key }) {
             guard let ns = nsRange(from: offset..<(offset + 1), in: text),
                   let placeholder = Range(ns, in: text),
                   text[placeholder] == "\u{FFFC}"
             else { continue }
             let attachment = ColumnFittingAttachment()
-            attachment.image = image
+            attachment.image = inline.image
+            attachment.declaredWidth = inline.displayWidth
+            attachment.declaredHeight = inline.displayHeight
             attachment.maxHeight = style.maxImageHeight
             attributed.addAttribute(.attachment, value: attachment, range: ns)
         }
         return attributed
+    }
+
+    /// Applies formatting runs on top of the uniform base attributes. Spans
+    /// arrive in the coordinates of `text` (page embedders shift/clamp them
+    /// into their slice first) and are clamped again here, so a span truncated
+    /// by a page boundary can never index out of bounds.
+    ///
+    /// Application order is structural first: headings and blockquotes set
+    /// the run's font/paragraph/color, THEN bold/italic merge symbolic traits
+    /// into whatever font is already on the range (bold inside a heading
+    /// keeps the heading size), then links decorate. Sorting by phase makes
+    /// that hold regardless of the order the parser emitted the spans in.
+    private static func applyFormatSpans(
+        _ spans: [FormatSpan],
+        to attributed: NSMutableAttributedString,
+        text: String,
+        style: ReaderStyle,
+        base paragraph: NSParagraphStyle
+    ) {
+        guard !spans.isEmpty else { return }
+        let count = text.count
+
+        func phase(_ kind: FormatSpan.Kind) -> Int {
+            switch kind {
+            case .heading: return 0
+            case .blockquote: return 1
+            case .bold: return 2
+            case .italic: return 3
+            case .link: return 4
+            }
+        }
+
+        for span in spans.sorted(by: { phase($0.kind) < phase($1.kind) }) {
+            let lower = min(max(0, span.start), count)
+            let upper = min(max(lower, span.end), count)
+            guard lower < upper,
+                  let ns = nsRange(from: lower..<upper, in: text) else { continue }
+
+            switch span.kind {
+            case let .heading(level):
+                attributed.addAttribute(
+                    .font, value: style.headingFont(level: level), range: ns
+                )
+                // Headings breathe: extra space before and after, on a copy of
+                // the base paragraph style so leading/justification carry over.
+                let headingParagraph = NSMutableParagraphStyle()
+                headingParagraph.setParagraphStyle(paragraph)
+                headingParagraph.paragraphSpacingBefore = style.fontSize * 0.8
+                headingParagraph.paragraphSpacing = style.paragraphSpacing + style.fontSize * 0.3
+                attributed.addAttribute(.paragraphStyle, value: headingParagraph, range: ns)
+
+            case .blockquote:
+                let quoteParagraph = NSMutableParagraphStyle()
+                quoteParagraph.setParagraphStyle(paragraph)
+                let indent = style.fontSize * 1.5
+                quoteParagraph.firstLineHeadIndent = indent
+                quoteParagraph.headIndent = indent
+                attributed.addAttribute(.paragraphStyle, value: quoteParagraph, range: ns)
+                attributed.addAttribute(
+                    .foregroundColor, value: style.theme.mutedInk, range: ns
+                )
+
+            case .bold, .italic:
+                let bold = span.kind == .bold
+                // Merge the trait into whatever font each sub-run already has
+                // (the base font, a heading font, the other emphasis trait).
+                attributed.enumerateAttribute(.font, in: ns) { value, subrange, _ in
+                    let current = (value as? PlatformFont) ?? style.contentFont
+                    attributed.addAttribute(
+                        .font,
+                        value: ReaderStyle.fontMergingTraits(
+                            into: current, bold: bold, italic: !bold
+                        ),
+                        range: subrange
+                    )
+                }
+
+            case let .link(target):
+                guard let url = ReaderLinkURL.url(for: target) else { continue }
+                attributed.addAttribute(.link, value: url, range: ns)
+                attributed.addAttribute(
+                    .foregroundColor, value: style.theme.linkInk, range: ns
+                )
+                attributed.addAttribute(
+                    .underlineStyle, value: NSUnderlineStyle.single.rawValue, range: ns
+                )
+            }
+        }
     }
 }
 
@@ -299,17 +459,36 @@ enum TextRangeConvert {
 final class ColumnFittingAttachment: NSTextAttachment {
     /// Page-height cap (paged mode); nil ⇒ only the width constrains.
     var maxHeight: CGFloat?
+    /// The source markup's intended display size (CSS px, 1:1 points).
+    /// A declared width wins over the bitmap's native width — a 40px icon
+    /// exported at 2× (80px bitmap) must render 40pt — but the column still
+    /// caps it. nil ⇒ size from the bitmap, never upscaled past native.
+    var declaredWidth: CGFloat?
+    var declaredHeight: CGFloat?
 
-    /// The shared sizing rule: fit the proposed line-fragment width (never
-    /// upscaling), preserve aspect, honor the page-height cap.
+    /// The shared sizing rule: width = min(declared ?? native, column),
+    /// height from the declared aspect when both dimensions are declared
+    /// (else the bitmap's), honor the page-height cap.
     private func fittedBounds(proposedWidth: CGFloat) -> CGRect? {
         guard let image, image.size.width > 0, image.size.height > 0 else { return nil }
         let native = image.size
-        var width = proposedWidth > 0 ? min(native.width, proposedWidth) : native.width
-        var height = width * native.height / native.width
+        let declared = declaredWidth.flatMap { $0 > 0 ? $0 : nil }
+        let declaredH = declaredHeight.flatMap { $0 > 0 ? $0 : nil }
+        let aspect: CGFloat // height per unit width
+        if let declared, let declaredH {
+            aspect = declaredH / declared
+        } else {
+            aspect = native.height / native.width
+        }
+        // A height-only declaration (height="200" with no width — common in
+        // EPUB markup) still expresses a size intent: derive the width from
+        // it through the bitmap's aspect.
+        let baseWidth = declared ?? declaredH.map { $0 / aspect } ?? native.width
+        var width = proposedWidth > 0 ? min(baseWidth, proposedWidth) : baseWidth
+        var height = width * aspect
         if let maxHeight, maxHeight > 0, height > maxHeight {
             height = maxHeight
-            width = height * native.width / native.height
+            width = height / aspect
         }
         return CGRect(x: 0, y: 0, width: width, height: height)
     }
@@ -361,7 +540,8 @@ private struct Representable: UIViewRepresentable {
     let text: String
     let highlights: [HighlightSpan]
     let style: ReaderStyle
-    let inlineImages: [Int: PlatformImage]
+    let inlineImages: [Int: InlineImage]
+    let formatSpans: [FormatSpan]
     /// Pending programmatic scroll (character offset into `text`); nil ⇒ none.
     let scrollTarget: Int?
     /// Clears the host's scroll target once the scroll has been issued.
@@ -373,6 +553,8 @@ private struct Representable: UIViewRepresentable {
     let onSelectionChange: (Range<Int>?) -> Void
     /// Reports a clean page tap (see SelectableTextView).
     let onPageTap: ((CGPoint, CGSize) -> Void)?
+    /// Reports a tapped internal link (see SelectableTextView).
+    let onLinkTap: ((LinkTarget) -> Void)?
 
     func makeUIView(context: Context) -> UITextView {
         let view = AnnotatingUITextView()
@@ -414,19 +596,27 @@ private struct Representable: UIViewRepresentable {
         coordinator.onTarget = onTarget
         coordinator.selectionReporter.callback = onSelectionChange
         coordinator.onPageTap = onPageTap
+        coordinator.onLinkTap = onLinkTap
         coordinator.text = text
         coordinator.spans = highlights
         // Only rebuild the attributed string when the content actually changed —
         // reassigning it resets the user's selection and re-fires the delegate.
         if coordinator.needsRender(
-            text: text, spans: highlights, style: style,
+            text: text, spans: highlights, formatSpans: formatSpans, style: style,
             imageOffsets: inlineImages.keys.sorted()
         ) {
             // Hiding the bar writes SwiftUI state via onTarget, which is
             // undefined behavior synchronously inside a view update — defer.
             coordinator.hideBarAsync()
+            // Applied to link ranges OVER the string's own attributes — keep
+            // it in the theme's accent, not the system tint blue.
+            view.linkTextAttributes = [
+                .foregroundColor: style.theme.linkInk,
+                .underlineStyle: NSUnderlineStyle.single.rawValue,
+            ]
             view.attributedText = TextRangeConvert.attributedString(
-                text, highlights: highlights, style: style, inlineImages: inlineImages
+                text, highlights: highlights, style: style,
+                inlineImages: inlineImages, formatSpans: formatSpans
             )
         }
         performPendingScroll(on: view)
@@ -479,6 +669,7 @@ private struct Representable: UIViewRepresentable {
         var spans: [HighlightSpan] = []
         var onTarget: (AnnotationTarget?) -> Void
         var onPageTap: ((CGPoint, CGSize) -> Void)?
+        var onLinkTap: ((LinkTarget) -> Void)?
         let selectionReporter: SelectionReporter
         weak var textView: UITextView?
         /// `sizeThatFits` cache (paged mode): the fitted height for the last
@@ -490,6 +681,7 @@ private struct Representable: UIViewRepresentable {
         private var barVisible = false
         private var renderedText: String?
         private var renderedSpans: [HighlightSpan] = []
+        private var renderedFormatSpans: [FormatSpan] = []
         private var renderedStyle: ReaderStyle?
         private var renderedImageOffsets: [Int] = []
 
@@ -506,11 +698,14 @@ private struct Representable: UIViewRepresentable {
         deinit { debounce?.invalidate() }
 
         func needsRender(
-            text: String, spans: [HighlightSpan], style: ReaderStyle, imageOffsets: [Int]
+            text: String, spans: [HighlightSpan], formatSpans: [FormatSpan],
+            style: ReaderStyle, imageOffsets: [Int]
         ) -> Bool {
-            guard renderedText == text, renderedSpans == spans, renderedStyle == style,
+            guard renderedText == text, renderedSpans == spans,
+                  renderedFormatSpans == formatSpans, renderedStyle == style,
                   renderedImageOffsets == imageOffsets else {
                 renderedText = text; renderedSpans = spans; renderedStyle = style
+                renderedFormatSpans = formatSpans
                 renderedImageOffsets = imageOffsets
                 fittedWidth = -1 // content changed — the cached height is stale
                 return true
@@ -571,6 +766,22 @@ private struct Representable: UIViewRepresentable {
             if barVisible { hideBar() }
         }
 
+        /// Link taps (iOS 17 text-item interaction): internal jumps route to
+        /// the host's `onLinkTap`; external links keep the default action,
+        /// which opens them in the browser.
+        func textView(
+            _ textView: UITextView,
+            primaryActionFor textItem: UITextItem,
+            defaultAction: UIAction
+        ) -> UIAction? {
+            if case let .link(url) = textItem.content,
+               let target = ReaderLinkURL.internalTarget(from: url) {
+                let onLinkTap = self.onLinkTap
+                return UIAction { _ in onLinkTap?(target) }
+            }
+            return defaultAction
+        }
+
         @objc func handleTap(_ gesture: UITapGestureRecognizer) {
             guard let view = textView,
                   let position = view.closestPosition(to: gesture.location(in: view))
@@ -592,6 +803,13 @@ private struct Representable: UIViewRepresentable {
                    ),
                    let span = self.spans.first(where: { $0.range.contains(offset) }) {
                     self.show(.span(span))
+                    return
+                }
+                // A tap on a link belongs to the link interaction (which the
+                // system delivers separately) — it must not ALSO turn a page
+                // or toggle chrome out from under the navigation.
+                if let rendered = self.textView?.attributedText, utf16 < rendered.length,
+                   rendered.attribute(.link, at: utf16, effectiveRange: nil) != nil {
                     return
                 }
                 // A clean tap on plain page text: hand it to the host
@@ -638,7 +856,8 @@ private struct Representable: NSViewRepresentable {
     let text: String
     let highlights: [HighlightSpan]
     let style: ReaderStyle
-    let inlineImages: [Int: PlatformImage]
+    let inlineImages: [Int: InlineImage]
+    let formatSpans: [FormatSpan]
     /// Pending programmatic scroll (character offset into `text`); nil ⇒ none.
     let scrollTarget: Int?
     /// Clears the host's scroll target once the scroll has been issued.
@@ -647,6 +866,8 @@ private struct Representable: NSViewRepresentable {
     let onAnnotate: (AnnotationTarget, AnnotationAction) -> Void
     /// Reports the committed selection (see SelectableTextView).
     let onSelectionChange: (Range<Int>?) -> Void
+    /// Reports a clicked internal link (see SelectableTextView).
+    let onLinkTap: ((LinkTarget) -> Void)?
 
     func makeNSView(context: Context) -> NSScrollView {
         // Built by hand (not NSTextView.scrollableTextView()) so the document
@@ -716,19 +937,28 @@ private struct Representable: NSViewRepresentable {
         let coordinator = context.coordinator
         coordinator.onAnnotate = onAnnotate
         coordinator.selectionReporter.callback = onSelectionChange
+        coordinator.onLinkTap = onLinkTap
         coordinator.text = text
         coordinator.spans = highlights
         coordinator.theme = style.theme
         if coordinator.needsRender(
-            text: text, spans: highlights, style: style,
+            text: text, spans: highlights, formatSpans: formatSpans, style: style,
             imageOffsets: inlineImages.keys.sorted()
         ) {
             // Content changed under the popover (chapter turn, highlight
             // edits) — its anchor rect is stale.
             coordinator.dismissMenu()
+            // Applied to link ranges OVER the string's own attributes — keep
+            // links in the theme's accent, not the system link blue.
+            textView.linkTextAttributes = [
+                .foregroundColor: style.theme.linkInk,
+                .underlineStyle: NSUnderlineStyle.single.rawValue,
+                .cursor: NSCursor.pointingHand,
+            ]
             textView.textStorage?.setAttributedString(
                 TextRangeConvert.attributedString(
-                    text, highlights: highlights, style: style, inlineImages: inlineImages
+                    text, highlights: highlights, style: style,
+                    inlineImages: inlineImages, formatSpans: formatSpans
                 )
             )
         }
@@ -797,6 +1027,7 @@ private struct Representable: NSViewRepresentable {
         /// Reading theme of the hosting page, forwarded to the menu.
         var theme: ReadingTheme
         var onAnnotate: (AnnotationTarget, AnnotationAction) -> Void
+        var onLinkTap: ((LinkTarget) -> Void)?
         let selectionReporter: SelectionReporter
         weak var textView: NSTextView?
         /// `sizeThatFits` cache (paged mode): the fitted height for the last
@@ -814,6 +1045,7 @@ private struct Representable: NSViewRepresentable {
 
         private var renderedText: String?
         private var renderedSpans: [HighlightSpan] = []
+        private var renderedFormatSpans: [FormatSpan] = []
         private var renderedStyle: ReaderStyle?
         private var renderedImageOffsets: [Int] = []
 
@@ -841,16 +1073,31 @@ private struct Representable: NSViewRepresentable {
         }
 
         func needsRender(
-            text: String, spans: [HighlightSpan], style: ReaderStyle, imageOffsets: [Int]
+            text: String, spans: [HighlightSpan], formatSpans: [FormatSpan],
+            style: ReaderStyle, imageOffsets: [Int]
         ) -> Bool {
-            guard renderedText == text, renderedSpans == spans, renderedStyle == style,
+            guard renderedText == text, renderedSpans == spans,
+                  renderedFormatSpans == formatSpans, renderedStyle == style,
                   renderedImageOffsets == imageOffsets else {
                 renderedText = text; renderedSpans = spans; renderedStyle = style
+                renderedFormatSpans = formatSpans
                 renderedImageOffsets = imageOffsets
                 fittedWidth = -1 // content changed — the cached height is stale
                 return true
             }
             return false
+        }
+
+        /// Internal links jump within the book (handled here, so AppKit never
+        /// tries to open the custom scheme); external links fall through to
+        /// the default handling, which opens them in the browser.
+        func textView(_ textView: NSTextView, clickedOnLink link: Any, at charIndex: Int) -> Bool {
+            let url = (link as? URL) ?? (link as? String).flatMap(URL.init(string:))
+            guard let url, let target = ReaderLinkURL.internalTarget(from: url) else {
+                return false
+            }
+            onLinkTap?(target)
+            return true
         }
 
         func observeScroll(of contentView: NSClipView) {

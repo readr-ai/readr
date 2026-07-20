@@ -15,6 +15,8 @@ import AppKit
 /// to the extracted-text "Reading view" in Appearance.
 struct ReaderView: View {
     @EnvironmentObject private var model: AppModel
+    /// External chapter links open in the reader's browser.
+    @Environment(\.openURL) private var openURL
     let book: Book
 
     @State private var chapterIndex = 0
@@ -90,6 +92,9 @@ struct ReaderView: View {
 
     #if os(iOS)
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    /// Pops the reader off the NavigationStack — the explicit back chevron's
+    /// action (the system back button is hidden, see `toolbarContent`).
+    @Environment(\.dismiss) private var dismiss
 
     /// Apple-Books-style distraction-free reading: a tap on the middle of the
     /// page hides ALL chrome (nav bar, bottom bar, status bar), another tap
@@ -166,6 +171,15 @@ struct ReaderView: View {
             .toolbar(showChrome ? .visible : .hidden, for: .navigationBar)
             .toolbar(showChrome ? .visible : .hidden, for: .bottomBar)
             .statusBarHidden(!showChrome)
+            // The reader owns horizontal swipes: in paged mode a
+            // left-to-right drag turns BACK a page (SwipeToTurn), so the
+            // system back affordances step aside — the back button is
+            // replaced by an explicit chevron (see `toolbarContent`) and the
+            // interactive pop gesture is off while reading. Apple Books does
+            // the same; leaving the pop gesture live let it win the swipe
+            // and dump the reader back in the library mid-read.
+            .navigationBarBackButtonHidden(true)
+            .background(PopGestureDisabler())
             #endif
             .background(hiddenFontShortcuts)
             .background(hiddenAnnotationShortcuts)
@@ -330,7 +344,8 @@ struct ReaderView: View {
                         handleAnnotation(in: chapter, target: target, action: action)
                     },
                     onSelectionChange: { currentSelection.value = $0 },
-                    onChromeToggle: toggleChrome
+                    onChromeToggle: toggleChrome,
+                    onLinkTap: handleLinkTap
                 )
                 // Scroll mode has no pages, but a horizontal flick still
                 // crosses chapters — the paged layouts flow across chapter
@@ -360,6 +375,7 @@ struct ReaderView: View {
                     },
                     onSelectionChange: { currentSelection.value = $0 },
                     onChromeToggle: toggleChrome,
+                    onLinkTap: handleLinkTap,
                     canOverflowBackward: chapterIndex > 0,
                     canOverflowForward: chapterIndex < book.chapters.count - 1,
                     onOverflow: { direction in
@@ -448,6 +464,20 @@ struct ReaderView: View {
 
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
+        #if os(iOS)
+        // The explicit way back to the library: the system back button is
+        // hidden and the pop gesture disabled (see body) so right-swipes turn
+        // pages. Reachable whenever chrome is shown — a page tap brings the
+        // bar back, as in Apple Books.
+        ToolbarItem(placement: .topBarLeading) {
+            Button { dismiss() } label: {
+                Image(systemName: "chevron.backward")
+            }
+            .accessibilityIdentifier("reader.back")
+            .accessibilityLabel("Back to Library")
+            .help("Back to Library")
+        }
+        #endif
         ToolbarItemGroup(placement: .navigation) {
             // Chapter chevrons are a macOS-only affordance. On iOS they read
             // as mystery buttons pinned over the page (nothing like Apple
@@ -942,6 +972,23 @@ struct ReaderView: View {
         model.savePosition(position, for: book)
     }
 
+    /// A tapped link in chapter text. Internal links resolve their archive
+    /// path against `Chapter.sourcePath` and their fragment against
+    /// `Chapter.anchors`, then ride the same `jump` as TOC/bookmarks/search.
+    /// External links normally never reach here (the platform text views hand
+    /// them to the system), but route through `openURL` if one ever does.
+    private func handleLinkTap(_ target: LinkTarget) {
+        switch target {
+        case let .external(url):
+            if let url = URL(string: url) { openURL(url) }
+        case let .internalDoc(path, fragment):
+            guard let index = book.chapters.firstIndex(where: { $0.sourcePath == path })
+            else { return }
+            let offset = fragment.flatMap { book.chapters[index].anchors?[$0] } ?? 0
+            jump(toChapter: index, offset: offset)
+        }
+    }
+
     /// Restore once; later re-appears (e.g. after dismissing a sheet) must not
     /// clobber the chapter the reader navigated to.
     private func restoreOnce() {
@@ -1184,7 +1231,7 @@ struct ScrollReadingColumn: View {
     /// Highlights in chapter coordinates.
     let highlights: [HighlightSpan]
     /// Inline images keyed by character offset in chapter coordinates.
-    var inlineImages: [Int: PlatformImage] = [:]
+    var inlineImages: [Int: InlineImage] = [:]
     /// Programmatic jump target (see SelectableTextView.scrollToOffset).
     var scrollTarget: Binding<Int?>? = nil
     var onAnnotate: (AnnotationTarget, AnnotationAction) -> Void = { _, _ in }
@@ -1194,6 +1241,8 @@ struct ScrollReadingColumn: View {
     /// A clean tap on the page (no selection, no annotation bar): the host
     /// toggles its chrome, Apple-Books-style. iOS only; nil ⇒ ignored.
     var onChromeToggle: (() -> Void)? = nil
+    /// A tapped internal link — the host resolves and jumps.
+    var onLinkTap: ((LinkTarget) -> Void)? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -1216,12 +1265,14 @@ struct ScrollReadingColumn: View {
                 highlights: highlights,
                 style: style,
                 inlineImages: inlineImages,
+                formatSpans: chapter.formatSpans ?? [],
                 scrollToOffset: scrollTarget,
                 onAnnotate: onAnnotate,
                 onSelectionChange: onSelectionChange,
                 // Scroll mode has no page-turn zones — any clean page tap
                 // just toggles the chrome.
-                onPageTap: { _, _ in onChromeToggle?() }
+                onPageTap: { _, _ in onChromeToggle?() },
+                onLinkTap: onLinkTap
             )
         }
         .padding(.horizontal, 24)

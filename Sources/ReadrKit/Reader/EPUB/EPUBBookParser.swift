@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(FoundationXML)
+import FoundationXML // XMLParser lives here in swift-corelibs-foundation (Linux)
+#endif
 
 /// Parses an EPUB (via an `EPUBContainer`) into a `Book`: reads the container
 /// pointer to the OPF package document, the spine reading order, the manifest,
@@ -46,21 +49,32 @@ public struct EPUBBookParser {
         for entry in orderedSpine {
             guard let item = opf.manifestItem(for: entry.idref) else { continue }
             let href = Self.resolve(base: baseDir, href: item.href)
+            // Two itemrefs resolving to the same content document (duplicate
+            // idrefs, or distinct manifest items sharing an href) must emit
+            // ONE chapter — the first occurrence wins.
+            guard chapterIndexByPath[href] == nil else { continue }
             guard let data = try Self.optionalData(container, at: href),
                   let html = Self.decodeText(data) else { continue }
-            let (text, imageRefs) = XHTMLTextExtractor.textAndImages(from: html)
+            let extraction = XHTMLTextExtractor.extract(from: html)
+            let text = extraction.text
             guard !text.isEmpty else { continue }
             let title = XHTMLTextExtractor.firstHeading(from: html)
-            // Image srcs are relative to the content document, not the OPF.
+            // Image and link hrefs are relative to the content document, not
+            // the OPF.
+            let documentDir = Self.directory(of: href)
             let images = Self.chapterImages(
-                in: text, refs: imageRefs, documentDir: Self.directory(of: href)
+                in: text, refs: extraction.images, documentDir: documentDir
             )
-            if chapterIndexByPath[href] == nil {
-                chapterIndexByPath[href] = chapters.count
-            }
+            let spans = Self.formatSpans(
+                from: extraction.spans, documentPath: href, documentDir: documentDir
+            )
+            chapterIndexByPath[href] = chapters.count
             chapters.append(Chapter(
                 title: title, order: chapters.count, text: text,
-                images: images.isEmpty ? nil : images
+                images: images.isEmpty ? nil : images,
+                formatSpans: spans.isEmpty ? nil : spans,
+                sourcePath: href,
+                anchors: extraction.anchors.isEmpty ? nil : extraction.anchors
             ))
         }
         guard !chapters.isEmpty else {
@@ -247,10 +261,70 @@ public struct EPUBBookParser {
             images.append(ChapterImage(
                 offset: offset,
                 archivePath: resolve(base: documentDir, href: ref.src),
-                alt: ref.alt
+                alt: ref.alt,
+                displayWidth: ref.displayWidth,
+                displayHeight: ref.displayHeight
             ))
         }
         return images
+    }
+
+    // MARK: - Format spans
+
+    /// Map extractor spans (raw hrefs) to model spans (resolved link targets).
+    static func formatSpans(
+        from raw: [XHTMLTextExtractor.Span], documentPath: String, documentDir: String
+    ) -> [FormatSpan] {
+        raw.map { span in
+            let kind: FormatSpan.Kind
+            switch span.kind {
+            case .heading(let level): kind = .heading(level)
+            case .bold: kind = .bold
+            case .italic: kind = .italic
+            case .blockquote: kind = .blockquote
+            case .link(let href):
+                kind = .link(linkTarget(
+                    href: href, documentPath: documentPath, documentDir: documentDir
+                ))
+            }
+            return FormatSpan(start: span.start, end: span.end, kind: kind)
+        }
+    }
+
+    /// Resolve a raw content-document href to a link target. Hrefs that leave
+    /// the book — any RFC 3986 scheme (`https:`, `mailto:`, `tel:`, `data:`)
+    /// or a protocol-relative `//host/...` — stay external verbatim;
+    /// everything else resolves relative to the chapter document's directory,
+    /// with any `#fragment` split off (percent-decoded, matching how
+    /// `resolve` decodes the path half — anchor ids come from raw markup). A
+    /// bare fragment (`#x`) targets the chapter's own document.
+    static func linkTarget(
+        href: String, documentPath: String, documentDir: String
+    ) -> LinkTarget {
+        if href.hasPrefix("//") || hasURIScheme(href) {
+            return .external(url: href)
+        }
+        let pieces = href.split(separator: "#", maxSplits: 1, omittingEmptySubsequences: false)
+        let rawPath = pieces.first.map(String.init) ?? ""
+        let rawFragment = pieces.count > 1 ? String(pieces[1]) : nil
+        let path = rawPath.isEmpty ? documentPath : resolve(base: documentDir, href: rawPath)
+        let fragment = rawFragment.flatMap { raw -> String? in
+            guard !raw.isEmpty else { return nil }
+            return raw.removingPercentEncoding ?? raw
+        }
+        return .internalDoc(path: path, fragment: fragment)
+    }
+
+    /// Whether `href` starts with an RFC 3986 scheme
+    /// (`ALPHA *( ALPHA / DIGIT / "+" / "-" / "." ) ":"`). A colon can only
+    /// appear this way in a valid relative EPUB href, so scheme ⇒ external.
+    private static func hasURIScheme(_ href: String) -> Bool {
+        guard let colon = href.firstIndex(of: ":") else { return false }
+        let scheme = href[..<colon]
+        guard let first = scheme.first, first.isASCII, first.isLetter else { return false }
+        return scheme.dropFirst().allSatisfy {
+            $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "+" || $0 == "-" || $0 == ".")
+        }
     }
 
     // MARK: - Cover image

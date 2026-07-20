@@ -178,6 +178,23 @@ enum ReadingTheme: String, CaseIterable, Codable, Identifiable {
         self == .night ? Color(hex: 0x938EE9) : Color(hex: 0x5B57C7)
     }
 
+    /// Platform color for tappable links in chapter text — the accent (iris)
+    /// adapted per surface, as a `PlatformColor` because it's applied through
+    /// `NSAttributedString` attributes, not SwiftUI styles.
+    var linkInk: PlatformColor {
+        self == .night ? PlatformColor(hex: 0x938EE9) : PlatformColor(hex: 0x5B57C7)
+    }
+
+    /// Secondary text as a `PlatformColor` (same values as `muted`) — used
+    /// for blockquote runs in the attributed chapter text.
+    var mutedInk: PlatformColor {
+        switch self {
+        case .paper: return PlatformColor(hex: 0x7E7669)
+        case .sepia: return PlatformColor(hex: 0x83745B)
+        case .night: return PlatformColor(hex: 0x9C9483)
+        }
+    }
+
     // MARK: Highlight markers ("muted literary" palette)
 
     /// Legacy single-color marker; prefer `marker(_:)`.
@@ -348,6 +365,63 @@ struct ReaderStyle: Equatable {
         guard let resolved = NSFont(descriptor: descriptor, size: size),
               resolved.familyName == family else { return nil }
         return resolved
+        #endif
+    }
+
+    // MARK: Derived formatting fonts (no stored state — Equatable unaffected)
+
+    /// Heading font for `formatSpans`: the content face scaled per level and
+    /// bolded. Bold (not semibold) at every level on purpose — semibold
+    /// weights don't exist across the curated device families (Charter,
+    /// Georgia, Palatino), and a per-family weight lookup that silently lands
+    /// on a different face is worse than a uniform bold.
+    func headingFont(level: Int) -> PlatformFont {
+        let scale: CGFloat
+        switch level {
+        case 1: scale = 1.6
+        case 2: scale = 1.35
+        case 3: scale = 1.2
+        default: scale = 1.05
+        }
+        var scaled = self
+        scaled.fontSize = (fontSize * scale).rounded()
+        return Self.fontMergingTraits(into: scaled.contentFont, bold: true, italic: false)
+    }
+
+    var boldFont: PlatformFont {
+        Self.fontMergingTraits(into: contentFont, bold: true, italic: false)
+    }
+
+    var italicFont: PlatformFont {
+        Self.fontMergingTraits(into: contentFont, bold: false, italic: true)
+    }
+
+    var boldItalicFont: PlatformFont {
+        Self.fontMergingTraits(into: contentFont, bold: true, italic: true)
+    }
+
+    /// Merge symbolic traits into an EXISTING font (which may already carry
+    /// traits — bold inside italic, bold inside a heading keeps the heading
+    /// size), via font descriptors like `resolveFont`. Graceful fallback: a
+    /// face without the requested variant returns the base font unchanged
+    /// rather than a substituted family.
+    static func fontMergingTraits(
+        into font: PlatformFont, bold: Bool, italic: Bool
+    ) -> PlatformFont {
+        #if canImport(UIKit)
+        var traits = font.fontDescriptor.symbolicTraits
+        if bold { traits.insert(.traitBold) }
+        if italic { traits.insert(.traitItalic) }
+        guard let descriptor = font.fontDescriptor.withSymbolicTraits(traits) else {
+            return font
+        }
+        return UIFont(descriptor: descriptor, size: font.pointSize)
+        #else
+        var traits = font.fontDescriptor.symbolicTraits
+        if bold { traits.insert(.bold) }
+        if italic { traits.insert(.italic) }
+        let descriptor = font.fontDescriptor.withSymbolicTraits(traits)
+        return NSFont(descriptor: descriptor, size: font.pointSize) ?? font
         #endif
     }
 
