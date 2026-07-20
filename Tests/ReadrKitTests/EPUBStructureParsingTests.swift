@@ -172,6 +172,37 @@ final class EPUBStructureParsingTests: XCTestCase {
         XCTAssertEqual(String(chars[spans[3].start..<spans[3].end]), "top")
     }
 
+    func testSchemeAndProtocolRelativeHrefsAreExternalAndFragmentsDecode() {
+        // Any RFC 3986 scheme or a protocol-relative href leaves the book —
+        // these used to be mangled into bogus internal archive paths.
+        for href in ["//example.com/p", "tel:+15551234567",
+                     "data:image/png;base64,AAAA", "HTTPS://x.y/z"] {
+            XCTAssertEqual(
+                EPUBBookParser.linkTarget(
+                    href: href, documentPath: "OEBPS/text/ch1.xhtml", documentDir: "OEBPS/text"
+                ),
+                .external(url: href), "\(href) should be external"
+            )
+        }
+        // A colon later in a relative href is not a scheme.
+        XCTAssertEqual(
+            EPUBBookParser.linkTarget(
+                href: "ch2.xhtml#note:1", documentPath: "OEBPS/text/ch1.xhtml",
+                documentDir: "OEBPS/text"
+            ),
+            .internalDoc(path: "OEBPS/text/ch2.xhtml", fragment: "note:1")
+        )
+        // Fragments percent-decode, matching the path half and the raw
+        // markup ids in Chapter.anchors.
+        XCTAssertEqual(
+            EPUBBookParser.linkTarget(
+                href: "ch2.xhtml#note%201", documentPath: "OEBPS/text/ch1.xhtml",
+                documentDir: "OEBPS/text"
+            ),
+            .internalDoc(path: "OEBPS/text/ch2.xhtml", fragment: "note 1")
+        )
+    }
+
     // MARK: - Image display sizes
 
     func testChapterImagesPropagateDisplaySizes() throws {

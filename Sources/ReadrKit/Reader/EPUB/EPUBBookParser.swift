@@ -291,22 +291,40 @@ public struct EPUBBookParser {
         }
     }
 
-    /// Resolve a raw content-document href to a link target. Scheme'd hrefs
-    /// (`://`, `mailto:`) leave the book; everything else resolves relative to
-    /// the chapter document's directory, with any `#fragment` split off. A
+    /// Resolve a raw content-document href to a link target. Hrefs that leave
+    /// the book — any RFC 3986 scheme (`https:`, `mailto:`, `tel:`, `data:`)
+    /// or a protocol-relative `//host/...` — stay external verbatim;
+    /// everything else resolves relative to the chapter document's directory,
+    /// with any `#fragment` split off (percent-decoded, matching how
+    /// `resolve` decodes the path half — anchor ids come from raw markup). A
     /// bare fragment (`#x`) targets the chapter's own document.
     static func linkTarget(
         href: String, documentPath: String, documentDir: String
     ) -> LinkTarget {
-        if href.contains("://") || href.lowercased().hasPrefix("mailto:") {
+        if href.hasPrefix("//") || hasURIScheme(href) {
             return .external(url: href)
         }
         let pieces = href.split(separator: "#", maxSplits: 1, omittingEmptySubsequences: false)
         let rawPath = pieces.first.map(String.init) ?? ""
         let rawFragment = pieces.count > 1 ? String(pieces[1]) : nil
         let path = rawPath.isEmpty ? documentPath : resolve(base: documentDir, href: rawPath)
-        let fragment = (rawFragment?.isEmpty ?? true) ? nil : rawFragment
+        let fragment = rawFragment.flatMap { raw -> String? in
+            guard !raw.isEmpty else { return nil }
+            return raw.removingPercentEncoding ?? raw
+        }
         return .internalDoc(path: path, fragment: fragment)
+    }
+
+    /// Whether `href` starts with an RFC 3986 scheme
+    /// (`ALPHA *( ALPHA / DIGIT / "+" / "-" / "." ) ":"`). A colon can only
+    /// appear this way in a valid relative EPUB href, so scheme ⇒ external.
+    private static func hasURIScheme(_ href: String) -> Bool {
+        guard let colon = href.firstIndex(of: ":") else { return false }
+        let scheme = href[..<colon]
+        guard let first = scheme.first, first.isASCII, first.isLetter else { return false }
+        return scheme.dropFirst().allSatisfy {
+            $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "+" || $0 == "-" || $0 == ".")
+        }
     }
 
     // MARK: - Cover image

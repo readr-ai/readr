@@ -473,13 +473,17 @@ final class ColumnFittingAttachment: NSTextAttachment {
         guard let image, image.size.width > 0, image.size.height > 0 else { return nil }
         let native = image.size
         let declared = declaredWidth.flatMap { $0 > 0 ? $0 : nil }
-        let baseWidth = declared ?? native.width
+        let declaredH = declaredHeight.flatMap { $0 > 0 ? $0 : nil }
         let aspect: CGFloat // height per unit width
-        if let declared, let declaredHeight, declaredHeight > 0 {
-            aspect = declaredHeight / declared
+        if let declared, let declaredH {
+            aspect = declaredH / declared
         } else {
             aspect = native.height / native.width
         }
+        // A height-only declaration (height="200" with no width — common in
+        // EPUB markup) still expresses a size intent: derive the width from
+        // it through the bitmap's aspect.
+        let baseWidth = declared ?? declaredH.map { $0 / aspect } ?? native.width
         var width = proposedWidth > 0 ? min(baseWidth, proposedWidth) : baseWidth
         var height = width * aspect
         if let maxHeight, maxHeight > 0, height > maxHeight {

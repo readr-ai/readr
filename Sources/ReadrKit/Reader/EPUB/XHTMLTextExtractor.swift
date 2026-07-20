@@ -132,11 +132,15 @@ public enum XHTMLTextExtractor {
         /// Indices into `working` of spans not yet closed.
         private var openStack: [Int] = []
         /// Indices into `working` whose `start` awaits the next content char.
-        private var unresolvedStarts: [Int] = []
+        /// A Set: a run of contentless formatting tags (page-map files hold
+        /// thousands) must not make membership checks quadratic.
+        private var unresolvedStarts: Set<Int> = []
 
         private var anchors: [String: Int] = [:]
-        /// Ids awaiting the next content character for their offset.
-        private var unresolvedAnchors: [String] = []
+        /// Ids awaiting the next content character for their offset. A Set
+        /// for the same reason as `unresolvedStarts` — real page-list files
+        /// carry thousands of consecutive empty `id` spans.
+        private var unresolvedAnchors: Set<String> = []
 
         private var images: [InlineImageRef] = []
 
@@ -154,10 +158,20 @@ public enum XHTMLTextExtractor {
             while i < end {
                 if html[i] == "<" {
                     if html[i...].hasPrefix("<!--") {
-                        // Comment: skip to `-->` (or end when unterminated).
                         let bodyStart = html.index(i, offsetBy: 4)
-                        if let close = html.range(of: "-->", range: bodyStart..<end) {
+                        // HTML5 abruptly-closed comments: `<!-->` / `<!--->`.
+                        if html[bodyStart...].hasPrefix(">") {
+                            i = html.index(after: bodyStart)
+                        } else if html[bodyStart...].hasPrefix("->") {
+                            i = html.index(bodyStart, offsetBy: 2)
+                        } else if let close = html.range(of: "-->", range: bodyStart..<end) {
                             i = close.upperBound
+                        } else if let gt = html[bodyStart..<end].firstIndex(of: ">") {
+                            // Unterminated comment (typo'd `->` etc. with no
+                            // later `-->`): recover at the first `>` — the old
+                            // stripping passes did — instead of silently
+                            // swallowing the whole rest of the chapter.
+                            i = html.index(after: gt)
                         } else {
                             i = end
                         }
@@ -224,11 +238,11 @@ public enum XHTMLTextExtractor {
             }
             if !unresolvedStarts.isEmpty {
                 for index in unresolvedStarts { working[index].start = out.count }
-                unresolvedStarts.removeAll()
+                unresolvedStarts.removeAll(keepingCapacity: true)
             }
             if !unresolvedAnchors.isEmpty {
                 for id in unresolvedAnchors { anchors[id] = out.count }
-                unresolvedAnchors.removeAll()
+                unresolvedAnchors.removeAll(keepingCapacity: true)
             }
             out.append(ch)
         }
@@ -275,8 +289,8 @@ public enum XHTMLTextExtractor {
             // id="…" on ANY element feeds the anchors map (first id wins).
             if hasAttributes, tagMarkup.contains("id"),
                let id = XHTMLTextExtractor.attribute("id", in: tagMarkup), !id.isEmpty,
-               anchors[id] == nil, !unresolvedAnchors.contains(id) {
-                unresolvedAnchors.append(id)
+               anchors[id] == nil {
+                unresolvedAnchors.insert(id)
             }
 
             if XHTMLTextExtractor.nonContentTags.contains(name), !selfClosing {
@@ -324,7 +338,7 @@ public enum XHTMLTextExtractor {
                 let index = working.count
                 working.append(WorkingSpan(tag: tag, kind: kind, start: nil, end: nil))
                 openStack.append(index)
-                unresolvedStarts.append(index)
+                unresolvedStarts.insert(index)
             }
         }
 
@@ -400,17 +414,26 @@ public enum XHTMLTextExtractor {
         }
 
         private func closeSpan(_ key: String) {
-            guard let stackPosition = openStack.lastIndex(where: { working[$0].tag == key }) else {
+            var stackPosition = openStack.lastIndex(where: { working[$0].tag == key })
+            if stackPosition == nil, key.count == 2, key.hasPrefix("h") {
+                // Mismatched heading close (`<h1>…</h2>`): close the most
+                // recent open heading of ANY level rather than leaving it
+                // open to the end of the document — an unterminated heading
+                // span would style the whole rest of the chapter.
+                stackPosition = openStack.lastIndex(where: {
+                    if case .heading = working[$0].kind { return true }
+                    return false
+                })
+            }
+            guard let stackPosition else {
                 return // Stray close tag — tolerate.
             }
             let index = openStack.remove(at: stackPosition)
-            if let waiting = unresolvedStarts.firstIndex(of: index) {
-                // Closed before any content: the span stays start-less and is
-                // dropped at finalize.
-                unresolvedStarts.remove(at: waiting)
-            } else {
+            if unresolvedStarts.remove(index) == nil {
                 working[index].end = out.count
             }
+            // else: closed before any content — the span stays start-less and
+            // is dropped at finalize.
         }
 
         // MARK: Non-content skipping
@@ -488,12 +511,36 @@ public enum XHTMLTextExtractor {
     /// Value of an HTML attribute inside a single tag string. The name is
     /// anchored on its left so it can't match as the suffix of another
     /// attribute (asking for `src` must not match `data-src`).
+    /// Compiled once per attribute name — `attribute` runs for every tag of a
+    /// chapter (id scan), so per-call `String.range(of:.regularExpression)`
+    /// compilation dominates extraction time on element-dense files.
+    private static let attributeRegexes: [String: NSRegularExpression] = {
+        var regexes: [String: NSRegularExpression] = [:]
+        for name in ["id", "src", "alt", "href", "style", "width", "height"] {
+            regexes[name] = try? NSRegularExpression(
+                pattern: "(?<![\\w-])\(name)\\s*=\\s*(\"[^\"]*\"|'[^']*')",
+                options: [.caseInsensitive]
+            )
+        }
+        return regexes
+    }()
+
     static func attribute(_ name: String, in tag: String) -> String? {
-        guard let range = tag.range(
-            of: "(?<![\\w-])\(name)\\s*=\\s*(\"[^\"]*\"|'[^']*')",
-            options: [.regularExpression, .caseInsensitive]
-        ) else { return nil }
-        let pair = tag[range]
+        let ns = tag as NSString
+        let match: NSRange
+        if let regex = attributeRegexes[name] {
+            guard let found = regex.firstMatch(
+                in: tag, range: NSRange(location: 0, length: ns.length)
+            ) else { return nil }
+            match = found.range
+        } else {
+            guard let range = tag.range(
+                of: "(?<![\\w-])\(name)\\s*=\\s*(\"[^\"]*\"|'[^']*')",
+                options: [.regularExpression, .caseInsensitive]
+            ) else { return nil }
+            match = NSRange(range, in: tag)
+        }
+        let pair = ns.substring(with: match)
         guard let quoteStart = pair.firstIndex(where: { $0 == "\"" || $0 == "'" }) else { return nil }
         let value = pair[pair.index(after: quoteStart)..<pair.index(before: pair.endIndex)]
         return decodeEntities(String(value))

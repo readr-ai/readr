@@ -129,6 +129,24 @@ final class PaginatorTests: XCTestCase {
         }
     }
 
+    func testTrailingWhitespaceFoldKeepsTextStartOffsetAligned() {
+        // Regression: the trailing-whitespace tail used to extend only the
+        // last page's RANGE, shifting its derived textStartOffset and thereby
+        // every page-local highlight/span rebase on that page.
+        let text = "alpha beta gamma delta epsilon zeta\n\n  "
+        let chars = Array(text)
+        let pages = Paginator(capacity: 14).paginate(text)
+        XCTAssertGreaterThan(pages.count, 1)
+        XCTAssertEqual(pages.last?.range.upperBound, chars.count, "tail stays covered")
+        for page in pages {
+            let start = page.textStartOffset
+            XCTAssertEqual(
+                String(chars[start..<(start + page.text.count)]), page.text,
+                "textStartOffset must locate the page's text even after the tail fold"
+            )
+        }
+    }
+
     func testPageLayoutSpreadSizes() {
         XCTAssertEqual(PageLayout.scroll.pagesPerSpread, 1)
         XCTAssertEqual(PageLayout.singlePage.pagesPerSpread, 1)

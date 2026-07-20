@@ -66,8 +66,14 @@ public struct Paginator: Sendable {
             // skipped run stays covered by this page's range (contiguity).
             while start < n, chars[start].isWhitespace { start += 1 }
             if start >= n {
-                // Only trailing whitespace remained — fold it into the last page.
+                // Only trailing whitespace remained — fold it into the last
+                // page's range AND text together, so the derived
+                // `textStartOffset` (upperBound − text.count) keeps pointing
+                // at the page's first character. Extending the range alone
+                // would shift every page-local highlight/span mapping by the
+                // folded run.
                 if var last = pages.last {
+                    last.text += String(chars[last.range.upperBound..<n])
                     last.range = last.range.lowerBound..<n
                     pages[pages.count - 1] = last
                 }

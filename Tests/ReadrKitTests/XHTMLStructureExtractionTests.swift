@@ -285,4 +285,61 @@ final class XHTMLStructureExtractionTests: XCTestCase {
         XCTAssertNil(result.images[0].displayWidth)
         XCTAssertNil(result.images[0].displayHeight)
     }
+
+    // MARK: Malformed markup recovery
+
+    func testUnterminatedCommentRecoversAtFirstGreaterThan() {
+        // A typo'd terminator (`->`) with no later `-->` must not swallow the
+        // rest of the chapter — recover at the first `>`, as the old
+        // stripping passes did.
+        let result = XHTMLTextExtractor.extract(
+            from: "<p>a</p><!-- broken comment -><p>rest of the chapter</p>"
+        )
+        XCTAssertEqual(result.text, "a\nrest of the chapter")
+    }
+
+    func testAbruptlyClosedCommentsDoNotEatContent() {
+        // HTML5 allows `<!-->` and `<!--->` as (empty) comments.
+        XCTAssertEqual(XHTMLTextExtractor.extract(from: "<!-->x").text, "x")
+        XCTAssertEqual(XHTMLTextExtractor.extract(from: "<!--->y").text, "y")
+    }
+
+    func testWellFormedCommentContainingTagsAndGtIsSkippedWhole() {
+        let result = XHTMLTextExtractor.extract(
+            from: "<p>a</p><!-- a > b <p>not content</p> --><p>b</p>"
+        )
+        XCTAssertEqual(result.text, "a\nb")
+        XCTAssertTrue(result.spans.isEmpty)
+    }
+
+    func testMismatchedHeadingCloseDoesNotStyleTheRestOfTheChapter() {
+        // `<h1>…</h2>` closes the open heading instead of leaving an
+        // unterminated h1 span running to the end of the document.
+        let result = XHTMLTextExtractor.extract(
+            from: "<h1>Title</h2><p>Body paragraph after the heading.</p>"
+        )
+        let headings = result.spans.filter {
+            if case .heading = $0.kind { return true }
+            return false
+        }
+        XCTAssertEqual(headings.count, 1)
+        XCTAssertEqual(headings[0].start, 0)
+        XCTAssertEqual(headings[0].end, "Title".count)
+    }
+
+    func testThousandsOfEmptyAnchorsStayLinear() {
+        // Real page-list files carry thousands of consecutive empty
+        // `<span id="pgN"/>` elements; membership checks used to be O(n²)
+        // (a ~10s hang at 20k, unbounded for hostile files).
+        var html = "<p>"
+        for n in 1...20_000 { html += "<span id=\"pg\(n)\"></span>" }
+        html += "done</p>"
+        let started = Date()
+        let result = XHTMLTextExtractor.extract(from: html)
+        XCTAssertLessThan(Date().timeIntervalSince(started), 2.0)
+        XCTAssertEqual(result.anchors.count, 20_000)
+        XCTAssertEqual(result.anchors["pg1"], 0)
+        XCTAssertEqual(result.anchors["pg20000"], 0)
+        XCTAssertEqual(result.text, "done")
+    }
 }

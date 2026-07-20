@@ -108,6 +108,22 @@ final class LayoutPaginatorTests: XCTestCase {
         }
     }
 
+    func testTrailingWhitespaceFoldKeepsTextStartOffsetAligned() {
+        // Regression: the chapter-trailing whitespace tail used to extend
+        // only the last page's RANGE, shifting its derived textStartOffset —
+        // the origin every page-local highlight/image/span rebase uses.
+        let text = makeText() + "\n\n   "
+        let chars = Array(text)
+        let pages = paginate(text)
+        XCTAssertGreaterThan(pages.count, 1)
+        XCTAssertEqual(pages.last?.range.upperBound, chars.count, "tail stays covered")
+        for page in pages {
+            let origin = page.textStartOffset
+            let slice = String(chars[origin..<(origin + page.text.count)])
+            XCTAssertEqual(slice, page.text, "tail fold must not shift the origin")
+        }
+    }
+
     // MARK: - Fullness (the open-book property)
 
     func testInteriorPagesAreVisuallyFull() {

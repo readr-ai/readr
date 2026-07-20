@@ -235,6 +235,22 @@ final class ReaderTypographyTests: XCTestCase {
         XCTAssertEqual(size.height, 150, accuracy: 0.5, "height follows the declared aspect")
     }
 
+    /// A height-only declaration (`height="60"` with no width — common EPUB
+    /// markup) still expresses a size intent: the width derives from it
+    /// through the bitmap's aspect.
+    func testDeclaredHeightAloneSizesTheImage() throws {
+        let attributed = TextRangeConvert.attributedString(
+            "\u{FFFC}", highlights: [], style: ReaderStyle(),
+            inlineImages: [0: InlineImage(
+                image: solidImage(width: 240, height: 120),
+                displayHeight: 60
+            )]
+        )
+        let size = try XCTUnwrap(resolvedAttachmentSize(attributed, layoutWidth: 300))
+        XCTAssertEqual(size.width, 120, accuracy: 0.5, "width follows the bitmap aspect")
+        XCTAssertEqual(size.height, 60, accuracy: 0.5)
+    }
+
     /// The pagination regression behind the cap: an image taller than the
     /// page used to make `LayoutPaginator` bail to the estimate fallback.
     /// With the page-height cap the paginator must cover the chapter with

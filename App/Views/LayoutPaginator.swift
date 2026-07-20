@@ -73,12 +73,14 @@ struct LayoutPaginator {
             var textStart = rangeStart
             while textStart < n, chars[textStart].isWhitespace { textStart += 1 }
             if textStart >= n {
-                // Only chapter-trailing whitespace remains: extend the last
-                // page's range over it. (Its `text` is unchanged, so this is
-                // the one place `textStartOffset`'s suffix derivation shifts
-                // by the folded run — same behavior as `Paginator`, and
-                // harmless: no visible character lives in that tail.)
+                // Only chapter-trailing whitespace remains: fold it into the
+                // last page's range AND text together, so the derived
+                // `textStartOffset` (upperBound − text.count) keeps pointing
+                // at the page's first character — the origin every page-local
+                // highlight/image/span rebase depends on. The invisible tail
+                // lays out below the measured content and clips harmlessly.
                 if var last = pages.last {
+                    last.text += String(chars[last.range.upperBound..<n])
                     last.range = last.range.lowerBound..<n
                     pages[pages.count - 1] = last
                 }
