@@ -164,6 +164,23 @@ public struct URLSessionHTTPClient: HTTPClient {
     }
 
     public func stream(_ request: HTTPRequest) async throws -> AsyncThrowingStream<Data, Error> {
+        #if canImport(FoundationNetworking)
+        // swift-corelibs-foundation (Linux) has no `URLSession.bytes` — there
+        // is no incremental-bytes API to wrap. Linux only needs this path to
+        // COMPILE for CI (unit tests use `MockHTTPClient`, never the network):
+        // fetch the whole body, then replay it line-by-line.
+        let response = try await send(request)
+        guard (200..<300).contains(response.status) else {
+            throw HTTPError.status(response.status, body: "")
+        }
+        return AsyncThrowingStream { continuation in
+            let text = String(decoding: response.body, as: UTF8.self)
+            for line in text.split(separator: "\n", omittingEmptySubsequences: true) {
+                continuation.yield(Data(line.utf8))
+            }
+            continuation.finish()
+        }
+        #else
         let (bytes, response) = try await session.bytes(for: request.urlRequest)
         guard let http = response as? HTTPURLResponse else { throw HTTPError.nonHTTPResponse }
         guard (200..<300).contains(http.statusCode) else {
@@ -182,6 +199,7 @@ public struct URLSessionHTTPClient: HTTPClient {
             }
             continuation.onTermination = { _ in task.cancel() }
         }
+        #endif
     }
 }
 
