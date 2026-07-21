@@ -73,11 +73,19 @@ public struct TOCEntry: Hashable, Sendable, Codable {
     public var title: String
     public var chapterIndex: Int
     public var children: [TOCEntry]
+    /// Element id within the target chapter (the `#fragment` of the TOC
+    /// href), for jumps inside a document that holds several TOC entries.
+    /// Optional so libraries persisted before this field still decode.
+    public var fragment: String?
 
-    public init(title: String, chapterIndex: Int, children: [TOCEntry] = []) {
+    public init(
+        title: String, chapterIndex: Int, children: [TOCEntry] = [],
+        fragment: String? = nil
+    ) {
         self.title = title
         self.chapterIndex = chapterIndex
         self.children = children
+        self.fragment = fragment
     }
 }
 
@@ -101,6 +109,17 @@ public struct Chapter: Identifiable, Hashable, Sendable, Codable {
     /// (`chapter.xhtml#note3`). First occurrence of an id wins. Optional so
     /// libraries persisted before this field still decode.
     public var anchors: [String: Int]?
+    /// Footnote/endnote bodies lifted OUT of `text` (EPUB 3
+    /// `epub:type="footnote|endnote|rearnote|note"` asides, `hidden`
+    /// elements), keyed by element id for popup display at the matching
+    /// noteref link. Optional so libraries persisted before this field
+    /// still decode.
+    public var footnotes: [Footnote]?
+    /// False when the spine marks this document `linear="no"` (notes files,
+    /// answer keys): reachable via links but skipped by continuous reading
+    /// order. Optional so libraries persisted before this field still
+    /// decode; nil means linear.
+    public var isLinear: Bool?
 
     public init(
         id: UUID = UUID(),
@@ -110,7 +129,9 @@ public struct Chapter: Identifiable, Hashable, Sendable, Codable {
         images: [ChapterImage]? = nil,
         formatSpans: [FormatSpan]? = nil,
         sourcePath: String? = nil,
-        anchors: [String: Int]? = nil
+        anchors: [String: Int]? = nil,
+        footnotes: [Footnote]? = nil,
+        isLinear: Bool? = nil
     ) {
         self.id = id
         self.title = title
@@ -120,7 +141,33 @@ public struct Chapter: Identifiable, Hashable, Sendable, Codable {
         self.formatSpans = formatSpans
         self.sourcePath = sourcePath
         self.anchors = anchors
+        self.footnotes = footnotes
+        self.isLinear = isLinear
     }
+}
+
+/// A footnote/endnote body extracted out of the reading flow, shown as a
+/// popup when its matching noteref link is activated.
+public struct Footnote: Hashable, Sendable, Codable {
+    /// The source element's id — the fragment a noteref link resolves to.
+    public var id: String
+    /// The note's extracted text (same normalization as `Chapter.text`).
+    public var text: String
+    /// Formatting runs with offsets into `text`. Optional.
+    public var formatSpans: [FormatSpan]?
+
+    public init(id: String, text: String, formatSpans: [FormatSpan]? = nil) {
+        self.id = id
+        self.text = text
+        self.formatSpans = formatSpans
+    }
+}
+
+/// Paragraph-level text alignment recovered from markup or styles. `left`
+/// and `justify` matter as explicit overrides of the reader's default
+/// (justified body text).
+public enum TextAlignment: String, Hashable, Sendable, Codable {
+    case left, center, right, justify
 }
 
 /// A run of formatting over `Chapter.text`, expressed as a half-open character
@@ -139,6 +186,15 @@ public struct FormatSpan: Hashable, Sendable, Codable {
         case italic
         case blockquote
         case link(LinkTarget)
+        /// Raised small text (`<sup>`) — footnote markers, exponents.
+        case superscript
+        /// Lowered small text (`<sub>`) — chemical formulas.
+        case `subscript`
+        /// Paragraph-level alignment override. The renderer snaps this (and
+        /// all paragraph-level kinds) outward to whole-paragraph boundaries.
+        case alignment(TextAlignment)
+        /// Small-caps run (CSS `font-variant: small-caps`).
+        case smallCaps
     }
 
     public init(start: Int, end: Int, kind: Kind) {
