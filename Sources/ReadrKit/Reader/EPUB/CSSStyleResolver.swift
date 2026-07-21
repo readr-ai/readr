@@ -161,12 +161,14 @@ public struct CSSStyleResolver: Sendable {
                 continue
             }
             // Qualified rule: selector list up to "{", declarations to "}".
-            guard let braceOpen = text[i..<end].firstIndex(of: "{") else {
+            // Brace scanning skips quoted strings — `content: "}"` must not
+            // terminate the block.
+            guard let braceOpen = Self.firstUnquotedIndex(of: "{", in: text, from: i) else {
                 break // trailing selector garbage with no block
             }
             let selectorList = text[i..<braceOpen]
             let bodyStart = text.index(after: braceOpen)
-            let braceClose = text[bodyStart..<end].firstIndex(of: "}")
+            let braceClose = Self.firstUnquotedIndex(of: "}", in: text, from: bodyStart)
             // No close brace: CSS auto-closes open blocks at end of input.
             let body = text[bodyStart..<(braceClose ?? end)]
             i = braceClose.map { text.index(after: $0) } ?? end
@@ -218,8 +220,41 @@ public struct CSSStyleResolver: Sendable {
         return end
     }
 
-    /// Remove `/* … */` comments in one pass. An unterminated comment drops
-    /// the rest of the sheet (matching CSS error recovery).
+    /// First occurrence of `target` in `text[start...]` OUTSIDE quoted
+    /// strings. Single/double-quoted runs are skipped whole, honoring
+    /// backslash escapes (`\"` does not close a string). An unterminated
+    /// string swallows the rest of the input — the scan returns nil, and
+    /// the caller's auto-close/degrade paths apply (never a hang: the index
+    /// only ever moves forward).
+    private static func firstUnquotedIndex(
+        of target: Character, in text: String, from start: String.Index
+    ) -> String.Index? {
+        var i = start
+        let end = text.endIndex
+        while i < end {
+            let ch = text[i]
+            if ch == target { return i }
+            if ch == "\"" || ch == "'" {
+                i = text.index(after: i)
+                while i < end, text[i] != ch {
+                    if text[i] == "\\" {
+                        // Skip the escaped character with the backslash.
+                        i = text.index(after: i)
+                        guard i < end else { return nil }
+                    }
+                    i = text.index(after: i)
+                }
+                guard i < end else { return nil } // unterminated string
+            }
+            i = text.index(after: i)
+        }
+        return nil
+    }
+
+    /// Remove `/* … */` comments in one pass. Quoted strings are copied
+    /// verbatim — a `/*` inside `content: "/*"` is content, not a comment.
+    /// An unterminated comment drops the rest of the sheet (matching CSS
+    /// error recovery).
     static func strippingComments(_ css: String) -> String {
         guard css.contains("/*") else { return css }
         var out = ""
@@ -227,13 +262,33 @@ public struct CSSStyleResolver: Sendable {
         var i = css.startIndex
         let end = css.endIndex
         while i < end {
-            if css[i] == "/", css.index(after: i) < end, css[css.index(after: i)] == "*" {
+            let ch = css[i]
+            if ch == "/", css.index(after: i) < end, css[css.index(after: i)] == "*" {
                 let bodyStart = css.index(i, offsetBy: 2)
                 guard let close = css.range(of: "*/", range: bodyStart..<end) else { break }
                 i = close.upperBound
                 continue
             }
-            out.append(css[i])
+            if ch == "\"" || ch == "'" {
+                // Copy the whole quoted run (with escapes) untouched.
+                out.append(ch)
+                i = css.index(after: i)
+                while i < end {
+                    let c = css[i]
+                    out.append(c)
+                    i = css.index(after: i)
+                    if c == "\\" {
+                        if i < end {
+                            out.append(css[i])
+                            i = css.index(after: i)
+                        }
+                        continue
+                    }
+                    if c == ch { break }
+                }
+                continue
+            }
+            out.append(ch)
             i = css.index(after: i)
         }
         return out

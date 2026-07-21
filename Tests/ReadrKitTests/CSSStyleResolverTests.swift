@@ -147,6 +147,45 @@ final class CSSStyleResolverTests: XCTestCase {
         XCTAssertEqual(style(".a { text-indent: 2em }", classAttr: "a"), ResolvedStyle())
     }
 
+    // MARK: - Parser: quoted strings
+
+    func testQuotedCloseBraceInContentDoesNotEatFollowingRules() {
+        let css = #"a::before { content: "}"; } .it { font-style: italic }"#
+        XCTAssertEqual(style(css, classAttr: "it").italic, true)
+    }
+
+    func testQuotedBracesAndEscapesInsideStringsAreSkipped() {
+        // "{", "}", and an escaped quote inside a string are content, not
+        // rule structure; the declaration after the string still parses and
+        // the following rule survives.
+        let css = #".a { content: "{}\"}"; font-weight: bold } .it { font-style: italic }"#
+        XCTAssertEqual(style(css, classAttr: "a").bold, true)
+        XCTAssertEqual(style(css, classAttr: "it").italic, true)
+        // Same with single quotes.
+        let single = ".a { content: '}'; font-weight: bold } .it { font-style: italic }"
+        XCTAssertEqual(style(single, classAttr: "a").bold, true)
+        XCTAssertEqual(style(single, classAttr: "it").italic, true)
+    }
+
+    func testQuotedCommentOpenerInsideStringIsNotAComment() {
+        let css = #".a { content: "/*"; font-weight: bold } .it { font-style: italic }"#
+        XCTAssertEqual(style(css, classAttr: "a").bold, true)
+        XCTAssertEqual(style(css, classAttr: "it").italic, true)
+    }
+
+    func testUnterminatedQuoteDegradesWithoutHangingOrCrashing() {
+        // An unterminated string swallows the rest of the sheet (CSS error
+        // recovery) — earlier rules survive, nothing loops or crashes.
+        let css = #".first { font-weight: bold } .a { content: "unterminated } .it { font-style: italic }"#
+        let resolver = CSSStyleResolver(css: css)
+        XCTAssertEqual(
+            resolver.style(element: "p", classAttr: "first", inlineStyle: nil).bold, true
+        )
+        XCTAssertNil(
+            resolver.style(element: "p", classAttr: "it", inlineStyle: nil).italic
+        )
+    }
+
     // MARK: - Property mapping
 
     func testFontWeightMapping() {

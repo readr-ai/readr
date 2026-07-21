@@ -178,6 +178,12 @@ public enum XHTMLTextExtractor {
             let kind: Span.Kind
             var start: Int?
             var end: Int?
+            /// A blockquote fragment reopened by the heading-split rule: it
+            /// survives only until its REAL close tag — still open at
+            /// document end means the close never came (a genuinely unclosed
+            /// quote), and the fragment is dropped rather than styling the
+            /// rest of the chapter.
+            var reopenedAfterHeading = false
         }
         private var working: [WorkingSpan] = []
         /// Indices into `working` of spans not yet closed.
@@ -209,6 +215,12 @@ public enum XHTMLTextExtractor {
             var out: [Character] = []
             var pendingSpace = false
             var pendingNewline = false
+            /// Active nested HIDDEN region inside the diversion (`hidden`
+            /// attribute, display:none / visibility:hidden — inline or via
+            /// stylesheet): text is discarded until the region's close tag,
+            /// with same-name nesting tracked via `dropDepth`.
+            var dropName: String?
+            var dropDepth = 0
         }
         private var diversion: Diversion?
         private var footnotes: [ExtractedFootnote] = []
@@ -219,21 +231,24 @@ public enum XHTMLTextExtractor {
         /// `out.count` at the most recent `<p>` open; unchanged at `</p>`
         /// means the paragraph was explicitly empty (a scene-break blank).
         private var openParagraphStart: Int?
-        /// Open `<blockquote>` spans — lets a heading open close them (an
+        /// Open `<blockquote>` spans — lets a heading open split them (an
         /// unclosed blockquote must not style the rest of the chapter)
         /// without scanning `openStack` when none is open.
         private var openBlockquoteCount = 0
-        /// Open attribute-driven alignment spans per element name, so the
-        /// element's own close tag (which is not a span tag) closes them.
-        private var openAlignSpans: [String: Int] = [:]
-        /// Open stylesheet-driven spans, counted per full key (element name +
-        /// kind suffix, e.g. `"span@i"`) — the `openAlignSpans` pattern, one
-        /// bucket per CSS-resolvable kind.
-        private var openCSSSpans: [String: Int] = [:]
-        /// Suffixes of the per-element CSS span keys (italic, bold, inset →
-        /// blockquote, small-caps), checked at each close tag while any CSS
-        /// span is open.
-        private static let cssSpanSuffixes = ["@i", "@b", "@q", "@sc"]
+        /// Indices of split-reopened blockquote spans waiting for their
+        /// heading to close before their `start` may resolve — the reopened
+        /// fragment must not cover the heading's own text.
+        private var pendingReopenStarts: Set<Int> = []
+        /// Attribute/stylesheet-driven ("@"-keyed) span bookkeeping: per
+        /// element name, a stack with one entry per currently-open element of
+        /// that name, recording exactly which span keys (`div@align`,
+        /// `span@i`, …) that particular open created — possibly none. The
+        /// matching close pops its entry and closes ONLY those keys, so an
+        /// inner same-name element that opened no span cannot close an outer
+        /// one. Entries are pushed only while the name has @-spans in play
+        /// (a key-creating open, or any open while the stack is non-empty),
+        /// so style-free documents never touch this at all.
+        private var atSpanStacks: [String: [[String]]] = [:]
 
         init(html: String, includeImages: Bool = true, styles: CSSStyleResolver? = nil) {
             self.html = html
@@ -374,7 +389,9 @@ public enum XHTMLTextExtractor {
 
         /// `feedText` for an active diversion: same whitespace model, but
         /// into the note's own buffer — nothing reaches the main text.
+        /// Inside a nested hidden region the text is discarded entirely.
         private func feedDivertedText(_ decoded: String) {
+            guard diversion?.dropName == nil else { return }
             for ch in decoded {
                 switch ch {
                 case " ", "\t", "\n", "\r", "\r\n":
@@ -466,7 +483,10 @@ public enum XHTMLTextExtractor {
             selfClosing: Bool, resumeAt i: inout String.Index
         ) {
             if diversion != nil {
-                handleDivertedOpenTag(name, selfClosing: selfClosing, resumeAt: &i)
+                handleDivertedOpenTag(
+                    name, tagMarkup: tagMarkup, hasAttributes: hasAttributes,
+                    selfClosing: selfClosing, resumeAt: &i
+                )
                 return
             }
 
@@ -522,6 +542,11 @@ public enum XHTMLTextExtractor {
                 return
             }
 
+            // The @-span keys THIS open creates; pushed (with the element
+            // name) once all sources have contributed, so the matching close
+            // tag closes exactly these.
+            var atSpanKeys: [String] = []
+
             if XHTMLTextExtractor.blockTags.contains(name) {
                 if name == "br" {
                     if pendingNewline, lastBreakWasBr {
@@ -546,14 +571,15 @@ public enum XHTMLTextExtractor {
                         alignment = XHTMLTextExtractor.inlineAlignment(in: tagMarkup)
                     }
                     if let alignment {
+                        let key = name + "@align"
                         let index = working.count
                         working.append(WorkingSpan(
-                            tag: name + "@align", kind: .alignment(alignment),
+                            tag: key, kind: .alignment(alignment),
                             start: nil, end: nil
                         ))
                         openStack.append(index)
                         unresolvedStarts.insert(index)
-                        openAlignSpans[name, default: 0] += 1
+                        atSpanKeys.append(key)
                     }
                 }
             }
@@ -584,24 +610,76 @@ public enum XHTMLTextExtractor {
             // un-italicizing in v1. Void elements have no close tag and get
             // no spans.
             if let resolved, !XHTMLTextExtractor.voidTags.contains(name) {
-                if resolved.italic == true { openCSSSpan(name + "@i", kind: .italic) }
-                if resolved.bold == true { openCSSSpan(name + "@b", kind: .bold) }
-                if resolved.inset == true { openCSSSpan(name + "@q", kind: .blockquote) }
-                if resolved.smallCaps == true { openCSSSpan(name + "@sc", kind: .smallCaps) }
+                if resolved.italic == true {
+                    openCSSSpan(name + "@i", kind: .italic, into: &atSpanKeys)
+                }
+                if resolved.bold == true {
+                    openCSSSpan(name + "@b", kind: .bold, into: &atSpanKeys)
+                }
+                if resolved.inset == true {
+                    openCSSSpan(name + "@q", kind: .blockquote, into: &atSpanKeys)
+                }
+                if resolved.smallCaps == true {
+                    openCSSSpan(name + "@sc", kind: .smallCaps, into: &atSpanKeys)
+                }
+            }
+            // Record which @-keyed spans this open created so ITS close tag
+            // (and only its close tag) closes them. Opens that created none
+            // still push an (empty) entry while same-name @-spans are open —
+            // otherwise an inner plain <div> would pop the outer styled
+            // div's entry. Nothing is pushed when neither applies, keeping
+            // the fast path allocation-free for unstyled documents.
+            if !atSpanKeys.isEmpty || atSpanStacks[name] != nil {
+                atSpanStacks[name, default: []].append(atSpanKeys)
             }
             if let (tag, kind) = spanKind(name, tagMarkup: tagMarkup, hasAttributes: hasAttributes) {
                 if case .heading = kind {
                     // An unclosed <blockquote> must not style the rest of the
-                    // chapter: a heading starts a new structural region, so
-                    // close any blockquote still open (document end stays the
-                    // last resort).
-                    while openBlockquoteCount > 0 { closeSpan("blockquote") }
+                    // chapter — but a heading INSIDE a well-formed blockquote
+                    // is legal (epigraphs). A heading therefore SPLITS every
+                    // open blockquote span: the content-bearing fragment
+                    // ends here, and a fresh fragment reopens for the real
+                    // close tag to end (document end stays the last resort,
+                    // where reopened-but-never-closed fragments are dropped).
+                    if openBlockquoteCount > 0 { splitOpenBlockquotesForHeading() }
                 }
                 let index = working.count
                 working.append(WorkingSpan(tag: tag, kind: kind, start: nil, end: nil))
                 openStack.append(index)
                 unresolvedStarts.insert(index)
                 if tag == "blockquote" { openBlockquoteCount += 1 }
+            }
+        }
+
+        /// The heading-split rule for open blockquote spans: a fragment with
+        /// content ends at the heading and a fresh working span replaces it
+        /// on the open stack (same `openBlockquoteCount` — the real
+        /// `</blockquote>` still closes it); a fragment with no content yet
+        /// simply defers. Either way the reopened span's `start` must not
+        /// resolve inside the heading's own text, so it waits in
+        /// `pendingReopenStarts` until the heading closes.
+        private func splitOpenBlockquotesForHeading() {
+            for position in openStack.indices {
+                let index = openStack[position]
+                guard working[index].tag == "blockquote" else { continue }
+                if unresolvedStarts.contains(index) {
+                    // No content yet (epigraph shape): keep the same span,
+                    // deferring its start past the heading.
+                    unresolvedStarts.remove(index)
+                    pendingReopenStarts.insert(index)
+                    working[index].reopenedAfterHeading = true
+                } else if working[index].start != nil {
+                    // End the content-bearing fragment; reopen a fresh one.
+                    working[index].end = out.count
+                    let reopened = working.count
+                    working.append(WorkingSpan(
+                        tag: "blockquote", kind: .blockquote, start: nil,
+                        end: nil, reopenedAfterHeading: true
+                    ))
+                    openStack[position] = reopened
+                    pendingReopenStarts.insert(reopened)
+                }
+                // else: already deferred by an earlier (still open) heading.
             }
         }
 
@@ -620,12 +698,36 @@ public enum XHTMLTextExtractor {
 
         /// Open tags inside a diversion: non-content blocks still skip, a
         /// same-name open deepens the region, block boundaries break the
-        /// note's paragraphs. No anchors, spans, images, or list markers.
+        /// note's paragraphs, and hidden elements (detected exactly like
+        /// `handleOpenTag` does) start a nested drop region whose contents
+        /// never reach the note. No anchors, spans, images, or list markers.
         private func handleDivertedOpenTag(
-            _ name: String, selfClosing: Bool, resumeAt i: inout String.Index
+            _ name: String, tagMarkup: String, hasAttributes: Bool,
+            selfClosing: Bool, resumeAt i: inout String.Index
         ) {
             if XHTMLTextExtractor.nonContentTags.contains(name), !selfClosing {
                 skipNonContent(name, resumeAt: &i)
+                return
+            }
+            if diversion!.dropName != nil {
+                // Inside the drop region: only depth bookkeeping — the
+                // diversion's own name stays balanced so its real close
+                // still ends it, and same-name nesting keeps the drop alive.
+                guard !selfClosing else { return }
+                if name == diversion!.name { diversion!.depth += 1 }
+                if name == diversion!.dropName { diversion!.dropDepth += 1 }
+                return
+            }
+            let resolved = resolvedStyle(name, tagMarkup: tagMarkup, hasAttributes: hasAttributes)
+            if (hasAttributes && XHTMLTextExtractor.isNoteOrHiddenRegion(tagMarkup))
+                || resolved?.hidden == true {
+                // Void/self-closed hidden elements have no contents — drop
+                // the element itself outright; a drop region would wait for
+                // a close tag that never comes.
+                guard !selfClosing, !XHTMLTextExtractor.voidTags.contains(name) else { return }
+                if name == diversion!.name { diversion!.depth += 1 }
+                diversion!.dropName = name
+                diversion!.dropDepth = 1
                 return
             }
             if name == diversion!.name, !selfClosing {
@@ -664,18 +766,14 @@ public enum XHTMLTextExtractor {
                 if name != "br" { lastBreakWasBr = false }
                 if name == "li" { pendingPrefix = nil }
             }
-            if let open = openAlignSpans[name], open > 0 {
-                closeSpan(name + "@align")
-                openAlignSpans[name] = open - 1
-            }
-            if !openCSSSpans.isEmpty {
-                for suffix in Scanner.cssSpanSuffixes {
-                    let key = name + suffix
-                    if let open = openCSSSpans[key], open > 0 {
-                        closeSpan(key)
-                        openCSSSpans[key] = open - 1
-                    }
-                }
+            if !atSpanStacks.isEmpty, atSpanStacks[name] != nil {
+                // Pop THIS close's entry and close exactly the @-keyed spans
+                // its matching open created (possibly none). Emptied stacks
+                // are removed so the open-side membership check stays exact.
+                var stack = atSpanStacks.removeValue(forKey: name)!
+                let keys = stack.removeLast()
+                if !stack.isEmpty { atSpanStacks[name] = stack }
+                for key in keys.reversed() { closeSpan(key) }
             }
             if let key = spanTagKey(name) {
                 closeSpan(key)
@@ -683,8 +781,27 @@ public enum XHTMLTextExtractor {
         }
 
         /// Close tags inside a diversion: the region's own close (at depth
-        /// zero) ends it; block boundaries break the note's paragraphs.
+        /// zero) ends it; block boundaries break the note's paragraphs. A
+        /// nested hidden drop region absorbs everything until its own close
+        /// (same-name nesting honored) — no text, no paragraph breaks.
         private func handleDivertedCloseTag(_ name: String) {
+            if diversion!.dropName != nil {
+                if name == diversion!.name {
+                    diversion!.depth -= 1
+                    if diversion!.depth == 0 {
+                        // The diversion's real close arrived while the drop
+                        // region was still open (unclosed hidden element):
+                        // the diversion ends — the drop dies with it.
+                        endDiversion()
+                        return
+                    }
+                }
+                if name == diversion!.dropName {
+                    diversion!.dropDepth -= 1
+                    if diversion!.dropDepth == 0 { diversion!.dropName = nil }
+                }
+                return
+            }
             if name == diversion!.name {
                 diversion!.depth -= 1
                 if diversion!.depth == 0 {
@@ -747,13 +864,14 @@ public enum XHTMLTextExtractor {
         }
 
         /// Open one stylesheet-driven span under `key` (element name + kind
-        /// suffix), mirroring the "@align" bookkeeping.
-        private func openCSSSpan(_ key: String, kind: Span.Kind) {
+        /// suffix), recording the key in the open's @-span entry so exactly
+        /// this element's close tag closes it.
+        private func openCSSSpan(_ key: String, kind: Span.Kind, into keys: inout [String]) {
             let index = working.count
             working.append(WorkingSpan(tag: key, kind: kind, start: nil, end: nil))
             openStack.append(index)
             unresolvedStarts.insert(index)
-            openCSSSpans[key, default: 0] += 1
+            keys.append(key)
         }
 
         /// The canonical span key for a formatting tag (b/strong share one key
@@ -816,6 +934,17 @@ public enum XHTMLTextExtractor {
             }
             // else: closed before any content — the span stays start-less and
             // is dropped at finalize.
+            if !pendingReopenStarts.isEmpty {
+                // Closed while still deferred (its heading never closed):
+                // the fragment stays start-less and is dropped at finalize.
+                pendingReopenStarts.remove(index)
+            }
+            if !pendingReopenStarts.isEmpty, case .heading = working[index].kind {
+                // The heading is over: split-reopened blockquote fragments
+                // may now start at the next content character.
+                unresolvedStarts.formUnion(pendingReopenStarts)
+                pendingReopenStarts.removeAll()
+            }
         }
 
         // MARK: Non-content skipping
@@ -856,9 +985,19 @@ public enum XHTMLTextExtractor {
         private func finalize() -> ExtractionResult {
             // An unclosed footnote/hidden region ends at the document's end.
             endDiversion()
-            // Unclosed elements end at the document's end.
+            // Unclosed elements end at the document's end — EXCEPT blockquote
+            // fragments reopened after a heading split: still open here means
+            // their real close tag never came (a genuinely unclosed quote),
+            // and extending them would style the whole chapter tail. Drop
+            // them instead.
             for index in openStack where !unresolvedStarts.contains(index) {
-                if working[index].end == nil { working[index].end = out.count }
+                if working[index].end == nil {
+                    if working[index].reopenedAfterHeading {
+                        working[index].start = nil
+                    } else {
+                        working[index].end = out.count
+                    }
+                }
             }
             // Trailing edge trim (leading trim happened during emission).
             while let last = out.last, last.isWhitespace {

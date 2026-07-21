@@ -371,6 +371,135 @@ final class XHTMLSemanticsTests: XCTestCase {
         XCTAssertEqual(slice(result.text, result.spans[0]), "runs on")
     }
 
+    // MARK: - CSS/align span close bookkeeping (same-name nesting)
+
+    func testCSSSpanSurvivesInnerSameNameElement() {
+        // The inner (unstyled) </div> must NOT close the outer div's
+        // CSS-derived italic span — "gamma" keeps its italics.
+        let styles = CSSStyleResolver(css: ".it { font-style: italic }")
+        let html = #"<div class="it">alpha <div>beta</div> gamma</div>"#
+        let result = XHTMLTextExtractor.extract(from: html, styles: styles)
+        XCTAssertEqual(result.text, "alpha\nbeta\ngamma")
+        let italics = result.spans.filter { $0.kind == .italic }
+        XCTAssertEqual(italics.count, 1)
+        XCTAssertEqual(slice(result.text, italics[0]), "alpha\nbeta\ngamma")
+    }
+
+    func testInnerStyledSameNameElementClosesOnlyItsOwnSpans() {
+        // The inner </div> closes the inner div's bold span ONLY — not the
+        // outer div's italic span too.
+        let styles = CSSStyleResolver(
+            css: ".it { font-style: italic } .b { font-weight: bold }"
+        )
+        let html = #"<div class="it">a <div class="b">x</div> y</div>"#
+        let result = XHTMLTextExtractor.extract(from: html, styles: styles)
+        XCTAssertEqual(result.text, "a\nx\ny")
+        let italics = result.spans.filter { $0.kind == .italic }
+        let bolds = result.spans.filter { $0.kind == .bold }
+        XCTAssertEqual(italics.count, 1)
+        XCTAssertEqual(slice(result.text, italics[0]), "a\nx\ny")
+        XCTAssertEqual(bolds.count, 1)
+        XCTAssertEqual(slice(result.text, bolds[0]), "x")
+    }
+
+    func testAlignAttributeSpanSurvivesInnerSameNameElement() {
+        let html = #"<div align="center">alpha <div>beta</div> gamma</div>"#
+        let result = XHTMLTextExtractor.extract(from: html)
+        XCTAssertEqual(result.text, "alpha\nbeta\ngamma")
+        XCTAssertEqual(result.spans.count, 1)
+        XCTAssertEqual(result.spans[0].kind, .alignment(.center))
+        XCTAssertEqual(slice(result.text, result.spans[0]), "alpha\nbeta\ngamma")
+    }
+
+    func testDeepSameNameNestingKeepsOuterSpanAndStaysLinear() {
+        let depth = 1500
+        let styles = CSSStyleResolver(css: ".it { font-style: italic }")
+        let html = "<div class=\"it\">start"
+            + String(repeating: "<div>", count: depth) + "core"
+            + String(repeating: "</div>", count: depth)
+            + "finish</div>"
+        let result = XHTMLTextExtractor.extract(from: html, styles: styles)
+        XCTAssertEqual(result.text, "start\ncore\nfinish")
+        let italics = result.spans.filter { $0.kind == .italic }
+        XCTAssertEqual(italics.count, 1)
+        XCTAssertEqual(italics[0].start, 0)
+        XCTAssertEqual(italics[0].end, result.text.count)
+    }
+
+    // MARK: - Blockquote split at headings (well-formed markup)
+
+    func testWellFormedBlockquoteWithLeadingHeadingKeepsQuoteAfterHeading() {
+        // Epigraph shape: the heading must not swallow the quote — the
+        // blockquote span covers the content AFTER the heading.
+        let html = "<blockquote><h2>Epigraph</h2><p>quoted</p></blockquote>"
+        let result = XHTMLTextExtractor.extract(from: html)
+        XCTAssertEqual(result.text, "Epigraph\nquoted")
+        let quotes = result.spans.filter { $0.kind == .blockquote }
+        XCTAssertEqual(quotes.count, 1)
+        XCTAssertEqual(slice(result.text, quotes[0]), "quoted")
+        let headings = result.spans.filter { $0.kind == .heading(2) }
+        XCTAssertEqual(headings.count, 1)
+        XCTAssertEqual(slice(result.text, headings[0]), "Epigraph")
+    }
+
+    func testHeadingInsideBlockquoteSplitsTheQuoteSpan() {
+        let html = """
+        <blockquote><p>intro</p><h2>Head</h2><p>tail</p></blockquote><p>after</p>
+        """
+        let result = XHTMLTextExtractor.extract(from: html)
+        XCTAssertEqual(result.text, "intro\nHead\ntail\nafter")
+        let quotes = result.spans.filter { $0.kind == .blockquote }
+        XCTAssertEqual(quotes.map { slice(result.text, $0) }, ["intro", "tail"])
+    }
+
+    func testUnclosedBlockquoteReopenedFragmentIsDroppedAtDocumentEnd() {
+        // Genuinely unclosed quote + heading: the split fragment reopened
+        // after the heading never sees its close tag, so it is dropped —
+        // the chapter tail stays unstyled.
+        let html = "<blockquote><p>quote</p><h2>Chapter II</h2><p>body runs to the end"
+        let result = XHTMLTextExtractor.extract(from: html)
+        let quotes = result.spans.filter { $0.kind == .blockquote }
+        XCTAssertEqual(quotes.map { slice(result.text, $0) }, ["quote"])
+    }
+
+    // MARK: - Hidden content inside diverted (footnote) regions
+
+    func testHiddenElementInsideFootnoteIsDropped() {
+        let html = """
+        <p>a</p>\
+        <aside epub:type="footnote" id="f1">Visible \
+        <img hidden src="d.png"> <span hidden>SECRET</span> tail</aside>\
+        <p>b</p>
+        """
+        let result = XHTMLTextExtractor.extract(from: html)
+        XCTAssertEqual(result.text, "a\nb")
+        XCTAssertEqual(result.footnotes, [.init(id: "f1", text: "Visible tail")])
+    }
+
+    func testCSSHiddenElementInsideFootnoteIsDropped() {
+        let styles = CSSStyleResolver(css: ".hide { display: none }")
+        let html = """
+        <p>a</p>\
+        <aside epub:type="footnote" id="f1">outer \
+        <div class="hide">SECRET</div> tail</aside>\
+        <p>b</p>
+        """
+        let result = XHTMLTextExtractor.extract(from: html, styles: styles)
+        XCTAssertEqual(result.text, "a\nb")
+        XCTAssertEqual(result.footnotes, [.init(id: "f1", text: "outer tail")])
+    }
+
+    func testHiddenSameNameNestingInsideFootnoteDropsWholeRegion() {
+        // The inner </div> must not end the hidden drop region early.
+        let html = """
+        <aside epub:type="footnote" id="f1">keep \
+        <div hidden>drop <div>inner</div> more</div> end</aside><p>x</p>
+        """
+        let result = XHTMLTextExtractor.extract(from: html)
+        XCTAssertEqual(result.text, "x")
+        XCTAssertEqual(result.footnotes, [.init(id: "f1", text: "keep end")])
+    }
+
     // MARK: - firstHeading hardening
 
     func testFirstHeadingMatchesAcrossNewlines() {
