@@ -103,10 +103,29 @@ final class AppModel: ObservableObject {
         """
         let chapterOne = (0..<6).map { _ in paragraph }.joined(separator: "\n\n")
         let sample = Book(
-            metadata: BookMetadata(title: "Sample Book", authors: ["Test Author"]),
+            metadata: BookMetadata(
+                title: "Sample Book", authors: ["Test Author"],
+                // A real nav TOC so the Contents sheet's real-TOC path is on
+                // every seeded run: "Part I" exists ONLY here (no chapter has
+                // that title), proving the sheet reads the TOC, not the spine.
+                tableOfContents: [
+                    TOCEntry(title: "Part I", chapterIndex: 0, children: [
+                        TOCEntry(title: "Chapter One", chapterIndex: 0),
+                        TOCEntry(title: "Chapter Two", chapterIndex: 1),
+                    ]),
+                    TOCEntry(title: "Notes", chapterIndex: 2),
+                ]
+            ),
             chapters: [
                 Chapter(title: "Chapter One", order: 0, text: chapterOne),
                 Chapter(title: "Chapter Two", order: 1, text: "The clocks were striking thirteen.\n\n" + paragraph),
+                // linear="no" notes document: reachable from Contents, but
+                // skipped by continuous next/previous navigation.
+                Chapter(
+                    title: "Notes", order: 2,
+                    text: "1. The thirteenth strike is the reader's first clue.",
+                    isLinear: false
+                ),
             ],
             estimatedTokenCount: 500
         )

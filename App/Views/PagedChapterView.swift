@@ -49,6 +49,9 @@ struct PagedChapterView: View {
     /// Theme + typography used to render pages; also drives the
     /// characters-per-page capacity estimate.
     var style: ReaderStyle = ReaderStyle()
+    /// Contents-derived kicker title for a chapter without its own (the host
+    /// resolves it from the TOC; nil keeps an untitled chapter kicker-less).
+    var displayTitle: String? = nil
     /// Highlights in chapter coordinates.
     let highlights: [HighlightSpan]
     /// Inline images keyed by character offset in **chapter** coordinates.
@@ -145,6 +148,9 @@ struct PagedChapterView: View {
     /// Full-height edge hit strip for the page-turn chevron (Apple-Books
     /// edge-tap). Narrower on a phone so it doesn't cover the column's edge.
     private var arrowStripWidth: CGFloat { isCompact ? 24 : 56 }
+    /// Running-head title: the chapter's own, else the host's TOC-derived
+    /// fallback. Drives both the rendered kicker and the capacity/key terms.
+    private var kickerTitle: String? { chapter.title ?? displayTitle }
 
     /// Memoizes the last pagination so page turns/selection don't re-scan the
     /// whole chapter on every body evaluation. Reference type on purpose:
@@ -248,7 +254,7 @@ struct PagedChapterView: View {
         let pageHeight = max(
             1, size.height - (pageInsets.top + pageInsets.bottom) - labelAllowance
         )
-        let hasKicker = chapter.title != nil
+        let hasKicker = kickerTitle != nil
 
         // Every input that changes layout must be in the key: geometry, size,
         // typeface, leading, justification, layout, kicker, image set, and
@@ -438,7 +444,7 @@ struct PagedChapterView: View {
             // original title so UI tests (and VoiceOver) still find e.g.
             // "Chapter One" on ANY page — the seeded reading position lands
             // mid-chapter. (Capacity reserves a fixed allowance for it.)
-            if showsKicker, let title = chapter.title {
+            if showsKicker, let title = kickerTitle {
                 Text(title.uppercased())
                     .font(.system(size: 11))
                     .kerning(2)

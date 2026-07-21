@@ -66,6 +66,9 @@ struct ReaderView: View {
     /// Whole-chapter "min left" for the scroll footer. Word-counting is
     /// O(chapter length), so it runs on chapter change — never in body.
     @State private var minutesCache: (chapterID: UUID, minutes: Int)?
+    /// Footnote being shown as a popup (a tapped noteref whose fragment
+    /// matched a lifted `Chapter.footnotes` entry); nil ⇒ none.
+    @State private var footnotePopup: FootnotePopup?
 
     /// Persisted reading layout: continuous scroll, one page, or facing pages.
     @AppStorage("readerLayout") private var layoutRaw = PageLayout.scroll.rawValue
@@ -210,6 +213,25 @@ struct ReaderView: View {
                         : nil
                 )
             }
+            // Footnote popup: a medium sheet on iOS (Apple-Books-style note
+            // card), a popover on macOS. Anchored to the toolbar area, not
+            // the tapped glyph — the link callback carries no geometry.
+            #if os(iOS)
+            .sheet(item: $footnotePopup) { popup in
+                FootnoteView(note: popup.note, style: style)
+                    .presentationDetents([.medium])
+                    .presentationDragIndicator(.visible)
+                    .presentationBackground(style.theme.elevated)
+            }
+            #else
+            .popover(item: $footnotePopup) { popup in
+                FootnoteView(note: popup.note, style: style)
+                    .frame(
+                        minWidth: 320, idealWidth: 380, maxWidth: 440,
+                        minHeight: 140, maxHeight: 420
+                    )
+            }
+            #endif
             .inspector(isPresented: $showNotes) {
                 NotesPanel(
                     book: book,
@@ -337,6 +359,7 @@ struct ReaderView: View {
                 ScrollReadingColumn(
                     chapter: chapter,
                     style: style,
+                    displayTitle: book.tocTitle(forChapterIndex: chapterIndex),
                     highlights: spans,
                     inlineImages: images,
                     scrollTarget: $scrollTarget,
@@ -352,10 +375,10 @@ struct ReaderView: View {
                 // walls on swipe, and the default layout offering no swipe
                 // at all reads as broken navigation.
                 .modifier(ChapterSwipe { direction in
-                    if direction > 0, chapterIndex < book.chapters.count - 1 {
-                        jump(toChapter: chapterIndex + 1, offset: 0)
-                    } else if direction < 0, chapterIndex > 0 {
-                        jump(toChapter: chapterIndex - 1, offset: 0)
+                    if direction > 0, let next = linearIndex(after: chapterIndex) {
+                        jump(toChapter: next, offset: 0)
+                    } else if direction < 0, let previous = linearIndex(before: chapterIndex) {
+                        jump(toChapter: previous, offset: 0)
                     }
                 })
                 scrollFooter(for: chapter)
@@ -367,6 +390,7 @@ struct ReaderView: View {
                     chapter: chapter,
                     layout: layout,
                     style: style,
+                    displayTitle: book.tocTitle(forChapterIndex: chapterIndex),
                     highlights: spans,
                     inlineImages: images,
                     anchorOffset: $pagedAnchor,
@@ -376,17 +400,17 @@ struct ReaderView: View {
                     onSelectionChange: { currentSelection.value = $0 },
                     onChromeToggle: toggleChrome,
                     onLinkTap: handleLinkTap,
-                    canOverflowBackward: chapterIndex > 0,
-                    canOverflowForward: chapterIndex < book.chapters.count - 1,
+                    canOverflowBackward: linearIndex(before: chapterIndex) != nil,
+                    canOverflowForward: linearIndex(after: chapterIndex) != nil,
                     onOverflow: { direction in
                         // Paging past a chapter's edge flows into the next/
-                        // previous chapter: forward lands on its first page,
-                        // backward on its LAST (an end-of-text offset — the
-                        // paginator clamps it into the final page).
-                        if direction > 0, chapterIndex < book.chapters.count - 1 {
-                            jump(toChapter: chapterIndex + 1, offset: 0)
-                        } else if direction < 0, chapterIndex > 0 {
-                            let previous = chapterIndex - 1
+                        // previous LINEAR chapter: forward lands on its first
+                        // page, backward on its LAST (an end-of-text offset —
+                        // the paginator clamps it into the final page).
+                        if direction > 0, let next = linearIndex(after: chapterIndex) {
+                            jump(toChapter: next, offset: 0)
+                        } else if direction < 0,
+                                  let previous = linearIndex(before: chapterIndex) {
                             jump(
                                 toChapter: previous,
                                 offset: max(0, book.chapters[previous].text.count - 1)
@@ -421,9 +445,14 @@ struct ReaderView: View {
         let minutes = minutesCache?.chapterID == chapter.id
             ? (minutesCache?.minutes ?? 0)
             : 0
-        let fraction = book.chapters.isEmpty
+        // Progress counts LINEAR chapters only — a notes appendix the reader
+        // never pages through must not stretch the track's denominator.
+        let linearTotal = book.chapters.filter { $0.isLinear != false }.count
+        let linearPosition = book.chapters.prefix(chapterIndex + 1)
+            .filter { $0.isLinear != false }.count
+        let fraction = linearTotal == 0
             ? 0
-            : Double(chapterIndex + 1) / Double(book.chapters.count)
+            : Double(linearPosition) / Double(linearTotal)
         return HStack(spacing: 14) {
             ReaderProgressTrack(
                 fraction: fraction,
@@ -485,21 +514,29 @@ struct ReaderView: View {
             // (paged mode flows across chapter walls), the horizontal flick
             // in scroll mode, and the Contents list.
             #if os(macOS)
-            Button { jump(toChapter: chapterIndex - 1) } label: {
+            Button {
+                if let previous = linearIndex(before: chapterIndex) {
+                    jump(toChapter: previous)
+                }
+            } label: {
                 Image(systemName: "chevron.left")
             }
             .accessibilityIdentifier("prevChapter")
             .accessibilityLabel("Previous chapter")
             .help("Previous chapter")
-            .disabled(chapterIndex == 0 || isPDFOriginal)
+            .disabled(linearIndex(before: chapterIndex) == nil || isPDFOriginal)
 
-            Button { jump(toChapter: chapterIndex + 1) } label: {
+            Button {
+                if let next = linearIndex(after: chapterIndex) {
+                    jump(toChapter: next)
+                }
+            } label: {
                 Image(systemName: "chevron.right")
             }
             .accessibilityIdentifier("nextChapter")
             .accessibilityLabel("Next chapter")
             .help("Next chapter")
-            .disabled(chapterIndex >= book.chapters.count - 1 || isPDFOriginal)
+            .disabled(linearIndex(after: chapterIndex) == nil || isPDFOriginal)
 
             if !isPDFOriginal {
                 tocButton
@@ -583,6 +620,7 @@ struct ReaderView: View {
             // (the default white List clashed with the reading page — seen in
             // the CI gallery), sized to a half sheet on iPhone instead of a
             // full screen for a handful of rows.
+            let toc = book.flattenedTOC
             VStack(alignment: .leading, spacing: 0) {
                 Text("CONTENTS")
                     .font(.system(size: 10.5, weight: .semibold))
@@ -591,33 +629,51 @@ struct ReaderView: View {
                     .padding(.horizontal, 20)
                     .padding(.top, 18)
                     .padding(.bottom, 6)
-                List(0..<book.chapters.count, id: \.self) { index in
-                    Button {
-                        showTOC = false
-                        jump(toChapter: index)
-                    } label: {
-                        Text(book.chapters[index].title ?? "Chapter \(index + 1)")
-                            .font(.system(size: 14.5, design: .serif))
-                            .fontWeight(index == chapterIndex ? .bold : .regular)
-                            .foregroundStyle(style.theme.inkColor)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(.vertical, 3)
-                            .contentShape(Rectangle())
+                if toc.isEmpty {
+                    // No parsed TOC (plain text, PDFs): fall back to the
+                    // spine, one row per chapter.
+                    List(0..<book.chapters.count, id: \.self) { index in
+                        tocRow(
+                            title: book.chapterDisplayTitle(index),
+                            depth: 0,
+                            isCurrent: index == chapterIndex
+                        ) {
+                            jump(toChapter: index)
+                        }
                     }
-                    .buttonStyle(.plain)
-                    .listRowBackground(Color.clear)
-                    .listRowSeparatorTint(style.theme.line)
+                    .listStyle(.plain)
+                    .scrollContentBackground(.hidden)
+                } else {
+                    // The book's REAL table of contents — the spine list
+                    // mislabeled front matter and multi-entry documents as
+                    // "Chapter N". Current row: the last entry at/before the
+                    // reading position's chapter.
+                    let currentID = toc.last(
+                        where: { $0.entry.chapterIndex <= chapterIndex }
+                    )?.id
+                    List(toc) { row in
+                        tocRow(
+                            title: row.entry.title,
+                            depth: row.depth,
+                            isCurrent: row.id == currentID
+                        ) {
+                            jump(toTOCEntry: row.entry)
+                        }
+                    }
+                    .listStyle(.plain)
+                    .scrollContentBackground(.hidden)
                 }
-                .listStyle(.plain)
-                .scrollContentBackground(.hidden)
             }
-            // Height hugs the chapter list (header + ~34pt rows) instead of a
+            // Height hugs the row count (header + ~34pt rows) instead of a
             // fixed ideal — a two-chapter book in an iPad popover was ~60%
             // dead cream below the rows. Long books cap where scrolling
             // takes over; iPhone's sheet detents below override this anyway.
             .frame(
                 minWidth: 260, idealWidth: 300,
-                idealHeight: min(420, 64 + CGFloat(book.chapters.count) * 34)
+                idealHeight: min(
+                    420,
+                    64 + CGFloat(toc.isEmpty ? book.chapters.count : toc.count) * 34
+                )
             )
             .background(style.theme.elevated)
             #if os(iOS)
@@ -626,6 +682,39 @@ struct ReaderView: View {
             #endif
             .presentationBackground(style.theme.elevated)
         }
+    }
+
+    /// One Contents row, shared by the real-TOC and fallback lists. Nested
+    /// TOC entries indent by depth.
+    private func tocRow(
+        title: String, depth: Int, isCurrent: Bool, action: @escaping () -> Void
+    ) -> some View {
+        Button {
+            showTOC = false
+            action()
+        } label: {
+            Text(title)
+                .font(.system(size: 14.5, design: .serif))
+                .fontWeight(isCurrent ? .bold : .regular)
+                .foregroundStyle(style.theme.inkColor)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.leading, CGFloat(depth) * 14)
+                .padding(.vertical, 3)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .listRowBackground(Color.clear)
+        .listRowSeparatorTint(style.theme.line)
+    }
+
+    /// TOC jump: the entry's chapter, at its fragment anchor when it carries
+    /// one (several entries can share a single spine document) — the same
+    /// anchor resolution as internal links (`handleLinkTap`).
+    private func jump(toTOCEntry entry: TOCEntry) {
+        guard book.chapters.indices.contains(entry.chapterIndex) else { return }
+        let offset = entry.fragment
+            .flatMap { book.chapters[entry.chapterIndex].anchors?[$0] } ?? 0
+        jump(toChapter: entry.chapterIndex, offset: offset)
     }
 
     private var bookmarksMenu: some View {
@@ -972,8 +1061,10 @@ struct ReaderView: View {
         model.savePosition(position, for: book)
     }
 
-    /// A tapped link in chapter text. Internal links resolve their archive
-    /// path against `Chapter.sourcePath` and their fragment against
+    /// A tapped link in chapter text. A noteref whose fragment names a lifted
+    /// footnote opens as a popup in place (the note body was extracted out of
+    /// the chapter text). Other internal links resolve their archive path
+    /// against `Chapter.sourcePath` and their fragment against
     /// `Chapter.anchors`, then ride the same `jump` as TOC/bookmarks/search.
     /// External links normally never reach here (the platform text views hand
     /// them to the system), but route through `openURL` if one ever does.
@@ -982,11 +1073,53 @@ struct ReaderView: View {
         case let .external(url):
             if let url = URL(string: url) { openURL(url) }
         case let .internalDoc(path, fragment):
+            if let fragment,
+               let note = Self.resolveFootnote(
+                   id: fragment, targetPath: path,
+                   chapters: book.chapters, currentChapter: chapter
+               ) {
+                footnotePopup = FootnotePopup(note: note)
+                return
+            }
             guard let index = book.chapters.firstIndex(where: { $0.sourcePath == path })
             else { return }
             let offset = fragment.flatMap { book.chapters[index].anchors?[$0] } ?? 0
             jump(toChapter: index, offset: offset)
         }
+    }
+
+    /// The lifted footnote a noteref resolves to: the TARGET document's notes
+    /// first, then the current chapter's (same-document refs whose paths
+    /// don't match any spine entry). Internal for the snapshot-suite tests.
+    static func resolveFootnote(
+        id: String, targetPath: String, chapters: [Chapter], currentChapter: Chapter?
+    ) -> Footnote? {
+        let target = chapters.first { $0.sourcePath == targetPath }
+        return target?.footnotes?.first { $0.id == id }
+            ?? currentChapter?.footnotes?.first { $0.id == id }
+    }
+
+    /// Next linear chapter after `index` — spine documents marked
+    /// `linear="no"` (notes files, nav docs) are skipped by every
+    /// next/previous move; they stay reachable through internal links and
+    /// the Contents list. Nil at the reading order's end.
+    private func linearIndex(after index: Int) -> Int? {
+        var candidate = index + 1
+        while book.chapters.indices.contains(candidate) {
+            if book.chapters[candidate].isLinear != false { return candidate }
+            candidate += 1
+        }
+        return nil
+    }
+
+    /// Previous linear chapter before `index` (see `linearIndex(after:)`).
+    private func linearIndex(before index: Int) -> Int? {
+        var candidate = index - 1
+        while book.chapters.indices.contains(candidate) {
+            if book.chapters[candidate].isLinear != false { return candidate }
+            candidate -= 1
+        }
+        return nil
     }
 
     /// Restore once; later re-appears (e.g. after dismissing a sheet) must not
@@ -1031,10 +1164,7 @@ struct ReaderView: View {
     }
 
     private func bookmarkLabel(for bookmark: Bookmark) -> String {
-        let title = book.chapters.indices.contains(bookmark.chapterIndex)
-            ? (book.chapters[bookmark.chapterIndex].title
-                ?? "Chapter \(bookmark.chapterIndex + 1)")
-            : "Chapter \(bookmark.chapterIndex + 1)"
+        let title = book.chapterDisplayTitle(bookmark.chapterIndex)
         return bookmark.snippet.isEmpty
             ? title
             : "\(title) — \u{201C}\(bookmark.snippet)\u{201D}"
@@ -1158,6 +1288,87 @@ struct ReaderView: View {
     }
 }
 
+// MARK: - Footnote popup
+
+/// Identifiable wrapper for the sheet/popover item binding — `Footnote.id`
+/// is the source element id, unique per chapter but not globally.
+struct FootnotePopup: Identifiable {
+    let id = UUID()
+    let note: Footnote
+}
+
+/// Footnote body presented in place of navigating to a notes document. The
+/// text renders through the shared attributed builder, so emphasis inside
+/// the note (its own `formatSpans`, nil ⇒ plain) styles like the page.
+struct FootnoteView: View {
+    let note: Footnote
+    let style: ReaderStyle
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text("FOOTNOTE")
+                .font(.system(size: 10.5, weight: .semibold))
+                .kerning(1.5)
+                .foregroundStyle(style.theme.faint)
+                .padding(.bottom, 10)
+            SelectableTextView(
+                text: note.text,
+                highlights: [],
+                style: style,
+                formatSpans: note.formatSpans ?? []
+            )
+        }
+        .padding(20)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background(style.theme.elevated)
+    }
+}
+
+// MARK: - TOC & chapter display titles
+
+/// One row of the flattened TOC. Identity is the row's position — stable for
+/// a given parse, which is all the Contents list needs.
+struct FlatTOCEntry: Identifiable {
+    let id: Int
+    let entry: TOCEntry
+    let depth: Int
+}
+
+extension Book {
+    /// The real TOC flattened to rows in document order (parents before
+    /// their children), with nesting depth for indentation. Empty when the
+    /// book carries no parsed TOC.
+    var flattenedTOC: [FlatTOCEntry] {
+        var rows: [FlatTOCEntry] = []
+        func walk(_ entries: [TOCEntry], depth: Int) {
+            for entry in entries {
+                rows.append(FlatTOCEntry(id: rows.count, entry: entry, depth: depth))
+                walk(entry.children, depth: depth + 1)
+            }
+        }
+        walk(metadata.tableOfContents, depth: 0)
+        return rows
+    }
+
+    /// The nearest TOC title at/before a chapter index (a chapter without an
+    /// entry of its own belongs to the preceding section), or nil without a
+    /// TOC.
+    func tocTitle(forChapterIndex index: Int) -> String? {
+        flattenedTOC.last(where: { $0.entry.chapterIndex <= index })?.entry.title
+    }
+
+    /// Display title for a chapter: its own title, else the nearest TOC
+    /// title, else a neutral "Section N" — never the synthetic "Chapter N"
+    /// that mislabeled front matter and split documents as chapters.
+    func chapterDisplayTitle(_ index: Int) -> String {
+        if chapters.indices.contains(index), let title = chapters[index].title,
+           !title.isEmpty {
+            return title
+        }
+        return tocTitle(forChapterIndex: index) ?? "Section \(index + 1)"
+    }
+}
+
 // MARK: - Selection mirror
 
 /// Render-inert holder for the reading surfaces' committed selection. A plain
@@ -1228,6 +1439,9 @@ private extension View {
 struct ScrollReadingColumn: View {
     let chapter: Chapter
     let style: ReaderStyle
+    /// Contents-derived kicker title for a chapter without its own (the host
+    /// resolves it from the TOC; nil keeps an untitled chapter kicker-less).
+    var displayTitle: String? = nil
     /// Highlights in chapter coordinates.
     let highlights: [HighlightSpan]
     /// Inline images keyed by character offset in chapter coordinates.
@@ -1246,7 +1460,7 @@ struct ScrollReadingColumn: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            if let title = chapter.title {
+            if let title = chapter.title ?? displayTitle {
                 // Displayed in caps, but exposed to accessibility under the
                 // original title so UI tests (and VoiceOver) still find e.g.
                 // "Chapter One".

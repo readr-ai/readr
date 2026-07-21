@@ -402,6 +402,248 @@ final class ReaderTypographyTests: XCTestCase {
         XCTAssertEqual(body.headIndent, 0)
     }
 
+    // MARK: - Paragraph-level pass (whole-paragraph styles)
+
+    /// A blockquote span covering only PART of a paragraph must style the
+    /// WHOLE paragraph (and only it): `.paragraphStyle` is a whole-paragraph
+    /// attribute, and per-span application indented only the covered lines
+    /// on device (the mid-paragraph indentation bug).
+    func testPartialBlockquoteSpanStylesItsWholeParagraphOnly() throws {
+        let style = ReaderStyle()
+        let text = "Intro prose.\nA quotation that runs on.\nAfter the quote."
+        let attributed = TextRangeConvert.attributedString(
+            text, highlights: [], style: style,
+            // Covers just "quotation" — mid-paragraph on both sides.
+            formatSpans: [FormatSpan(start: 15, end: 24, kind: .blockquote)]
+        )
+        let indent = style.fontSize * 1.5
+        // Whole quote paragraph, INCLUDING its trailing newline (offset 38).
+        for offset in [13, 25, 38] {
+            let quote = try XCTUnwrap(
+                attributed.attribute(.paragraphStyle, at: offset, effectiveRange: nil)
+                    as? NSParagraphStyle,
+                "offset \(offset)"
+            )
+            XCTAssertEqual(quote.firstLineHeadIndent, indent, "offset \(offset)")
+            XCTAssertEqual(quote.headIndent, indent, "offset \(offset)")
+            XCTAssertEqual(
+                quote.tailIndent, -indent,
+                "quotes inset from the trailing edge too (offset \(offset))"
+            )
+            XCTAssertNotEqual(
+                quote.alignment, .justified,
+                "quote paragraphs render ragged-right (offset \(offset))"
+            )
+        }
+        // The neighbors keep the base style.
+        for offset in [0, 39] {
+            let body = try XCTUnwrap(
+                attributed.attribute(.paragraphStyle, at: offset, effectiveRange: nil)
+                    as? NSParagraphStyle,
+                "offset \(offset)"
+            )
+            XCTAssertEqual(body.headIndent, 0, "offset \(offset)")
+            XCTAssertEqual(body.tailIndent, 0, "offset \(offset)")
+        }
+    }
+
+    /// The heading's paragraph spacing must cover its trailing newline — the
+    /// style applies over the FULL paragraph range, so the gap below the
+    /// heading is the heading's, not the base body spacing.
+    func testHeadingParagraphSpacingCoversItsTrailingNewline() throws {
+        let style = ReaderStyle()
+        let text = "Title\nBody paragraph follows."
+        let attributed = TextRangeConvert.attributedString(
+            text, highlights: [], style: style,
+            formatSpans: [FormatSpan(start: 0, end: 5, kind: .heading(1))]
+        )
+        let atNewline = try XCTUnwrap(
+            attributed.attribute(.paragraphStyle, at: 5, effectiveRange: nil)
+                as? NSParagraphStyle
+        )
+        XCTAssertEqual(
+            atNewline.paragraphSpacing,
+            style.paragraphSpacing + style.fontSize * 0.3,
+            accuracy: 0.01
+        )
+        XCTAssertEqual(atNewline.paragraphSpacingBefore, style.fontSize * 0.8, accuracy: 0.01)
+        // The body paragraph after keeps the base spacing.
+        let body = try XCTUnwrap(
+            attributed.attribute(.paragraphStyle, at: 8, effectiveRange: nil)
+                as? NSParagraphStyle
+        )
+        XCTAssertEqual(body.paragraphSpacing, style.paragraphSpacing)
+    }
+
+    /// A centered alignment span (the extracted `<hr>` "* * *" separator)
+    /// centers its WHOLE paragraph, un-justified and un-hyphenated, while
+    /// the neighbors keep the justified default.
+    func testCenteredAlignmentSpanCentersWholeParagraphUnhyphenated() throws {
+        let style = ReaderStyle() // justified default
+        let text = "Before the break.\n* * *\nAfter the break."
+        let attributed = TextRangeConvert.attributedString(
+            text, highlights: [], style: style,
+            // Covers only part of the separator paragraph (18..<23).
+            formatSpans: [FormatSpan(start: 19, end: 22, kind: .alignment(.center))]
+        )
+        for offset in [18, 23] { // first char … trailing newline
+            let centered = try XCTUnwrap(
+                attributed.attribute(.paragraphStyle, at: offset, effectiveRange: nil)
+                    as? NSParagraphStyle,
+                "offset \(offset)"
+            )
+            XCTAssertEqual(centered.alignment, .center, "offset \(offset)")
+            XCTAssertEqual(
+                centered.hyphenationFactor, 0,
+                "centered lines must never hyphenate (offset \(offset))"
+            )
+        }
+        for offset in [0, 24] {
+            let body = try XCTUnwrap(
+                attributed.attribute(.paragraphStyle, at: offset, effectiveRange: nil)
+                    as? NSParagraphStyle,
+                "offset \(offset)"
+            )
+            XCTAssertEqual(body.alignment, .justified, "offset \(offset)")
+        }
+    }
+
+    /// Superscript runs shrink and raise, subscript runs shrink and lower —
+    /// composing with bold through the existing trait merge.
+    func testSuperscriptAndSubscriptShiftBaselineAndShrink() throws {
+        let style = ReaderStyle()
+        let text = "E = mc2 and H2O"
+        let attributed = TextRangeConvert.attributedString(
+            text, highlights: [], style: style,
+            formatSpans: [
+                FormatSpan(start: 6, end: 7, kind: .superscript),
+                FormatSpan(start: 6, end: 7, kind: .bold),
+                FormatSpan(start: 13, end: 14, kind: .`subscript`),
+            ]
+        )
+        let sup = try XCTUnwrap(
+            attributed.attribute(.font, at: 6, effectiveRange: nil) as? NSFont
+        )
+        XCTAssertEqual(sup.pointSize, style.fontSize * 0.75, accuracy: 0.1)
+        XCTAssertTrue(
+            sup.fontDescriptor.symbolicTraits.contains(.bold),
+            "bold must survive the superscript resize"
+        )
+        let raised = try XCTUnwrap(
+            attributed.attribute(.baselineOffset, at: 6, effectiveRange: nil) as? Double
+        )
+        XCTAssertGreaterThan(raised, 0)
+        let sub = try XCTUnwrap(
+            attributed.attribute(.font, at: 13, effectiveRange: nil) as? NSFont
+        )
+        XCTAssertEqual(sub.pointSize, style.fontSize * 0.75, accuracy: 0.1)
+        let lowered = try XCTUnwrap(
+            attributed.attribute(.baselineOffset, at: 13, effectiveRange: nil) as? Double
+        )
+        XCTAssertLessThan(lowered, 0)
+        // Plain body: full size, no baseline shift.
+        let body = try XCTUnwrap(
+            attributed.attribute(.font, at: 0, effectiveRange: nil) as? NSFont
+        )
+        XCTAssertEqual(body.pointSize, style.fontSize)
+        XCTAssertNil(attributed.attribute(.baselineOffset, at: 0, effectiveRange: nil))
+    }
+
+    /// Small-caps runs carry the lowercase→small-caps font feature at the
+    /// unchanged body size; text outside the run keeps the plain face.
+    func testSmallCapsRunCarriesTheFeatureAtBodySize() throws {
+        let style = ReaderStyle()
+        let text = "The small caps run."
+        let attributed = TextRangeConvert.attributedString(
+            text, highlights: [], style: style,
+            formatSpans: [FormatSpan(start: 4, end: 14, kind: .smallCaps)]
+        )
+        let smallCaps = try XCTUnwrap(
+            attributed.attribute(.font, at: 5, effectiveRange: nil) as? NSFont
+        )
+        XCTAssertEqual(smallCaps.pointSize, style.fontSize)
+        let settings = smallCaps.fontDescriptor.object(forKey: .featureSettings) as? [Any]
+        XCTAssertEqual(
+            settings?.isEmpty, false,
+            "the small-caps feature should ride the run's font descriptor"
+        )
+        let plain = try XCTUnwrap(
+            attributed.attribute(.font, at: 0, effectiveRange: nil) as? NSFont
+        )
+        XCTAssertNil(
+            plain.fontDescriptor.object(forKey: .featureSettings) as? [Any],
+            "text outside the run keeps the plain content face"
+        )
+    }
+
+    /// Page slices rebase spans, so a quote continuing from the previous page
+    /// arrives starting at character 0 — the paragraph pass must still indent
+    /// the slice's first paragraph (mirror of PagedChapterView's pageSpans).
+    func testRebasedQuoteSpanAtSliceStartStillIndents() throws {
+        let style = ReaderStyle()
+        let text = "continuation of a quotation.\nBack to prose."
+        let attributed = TextRangeConvert.attributedString(
+            text, highlights: [], style: style,
+            formatSpans: [FormatSpan(start: 0, end: 12, kind: .blockquote)]
+        )
+        let indent = style.fontSize * 1.5
+        for offset in [0, 27] { // slice start … past the span's end
+            let quote = try XCTUnwrap(
+                attributed.attribute(.paragraphStyle, at: offset, effectiveRange: nil)
+                    as? NSParagraphStyle,
+                "offset \(offset)"
+            )
+            XCTAssertEqual(quote.firstLineHeadIndent, indent, "offset \(offset)")
+            XCTAssertEqual(quote.headIndent, indent, "offset \(offset)")
+        }
+        let after = try XCTUnwrap(
+            attributed.attribute(.paragraphStyle, at: 29, effectiveRange: nil)
+                as? NSParagraphStyle
+        )
+        XCTAssertEqual(after.headIndent, 0)
+    }
+
+    // MARK: - Footnote resolution
+
+    /// A tapped noteref resolves against the TARGET document's lifted notes
+    /// first, then the current chapter's; an unknown fragment resolves to
+    /// nothing (the tap falls through to navigation).
+    func testFootnoteResolutionPrefersTargetChapterThenCurrent() {
+        let target = Chapter(
+            title: "Notes", order: 1, text: "",
+            sourcePath: "OEBPS/notes.xhtml",
+            footnotes: [Footnote(id: "fn1", text: "From the notes doc.")]
+        )
+        let current = Chapter(
+            title: "One", order: 0, text: "body",
+            sourcePath: "OEBPS/ch1.xhtml",
+            footnotes: [
+                Footnote(id: "fn1", text: "From the current chapter."),
+                Footnote(id: "fn2", text: "Same-document note."),
+            ]
+        )
+        XCTAssertEqual(
+            ReaderView.resolveFootnote(
+                id: "fn1", targetPath: "OEBPS/notes.xhtml",
+                chapters: [current, target], currentChapter: current
+            )?.text,
+            "From the notes doc."
+        )
+        XCTAssertEqual(
+            ReaderView.resolveFootnote(
+                id: "fn2", targetPath: "OEBPS/missing.xhtml",
+                chapters: [current, target], currentChapter: current
+            )?.text,
+            "Same-document note."
+        )
+        XCTAssertNil(
+            ReaderView.resolveFootnote(
+                id: "nope", targetPath: "OEBPS/notes.xhtml",
+                chapters: [current, target], currentChapter: current
+            )
+        )
+    }
+
     /// Page slices pass spans shifted into slice coordinates — truncated runs
     /// can start negative or end past the slice. They must clamp (never trap)
     /// and still style the surviving run.

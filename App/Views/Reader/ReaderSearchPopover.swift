@@ -49,7 +49,9 @@ struct ReaderSearchPopover: View {
                         onJump(result.chapterIndex, result.characterOffset)
                     } label: {
                         VStack(alignment: .leading, spacing: 3) {
-                            Text(result.chapterTitle ?? "Chapter \(result.chapterIndex + 1)")
+                            // Own title → nearest TOC title → "Section N".
+                            Text(result.chapterTitle
+                                ?? book.chapterDisplayTitle(result.chapterIndex))
                                 .font(.system(size: 10.5, weight: .semibold))
                                 .foregroundStyle(theme.muted)
                             Text(emphasized(result.snippet))

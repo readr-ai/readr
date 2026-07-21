@@ -195,9 +195,10 @@ final class LayoutPaginatorTests: XCTestCase {
 
     // MARK: - Format spans
 
-    /// Heading fonts, heading paragraph spacing and blockquote indents all
-    /// move page breaks — but the paginator must still tile the chapter
-    /// EXACTLY: every character on exactly one page, no loss, no duplication.
+    /// Heading fonts, heading paragraph spacing, blockquote indents and
+    /// paragraph alignment overrides all move page breaks — but the paginator
+    /// must still tile the chapter EXACTLY: every character on exactly one
+    /// page, no loss, no duplication.
     func testPagesWithFormatSpansTileTheChapterExactly() {
         let text = makeText()
         var spans: [FormatSpan] = [
@@ -205,6 +206,16 @@ final class LayoutPaginatorTests: XCTestCase {
             FormatSpan(start: 0, end: 12, kind: .bold),
             FormatSpan(start: text.count / 3, end: text.count / 3 + 60, kind: .heading(2)),
             FormatSpan(start: text.count / 2, end: text.count / 2 + 200, kind: .blockquote),
+            // The audit's new kinds: alignment snaps to whole paragraphs and
+            // super/subscript/small-caps change glyph metrics — none may
+            // break the tiling contract.
+            FormatSpan(
+                start: text.count / 4, end: text.count / 4 + 30,
+                kind: .alignment(.center)
+            ),
+            FormatSpan(start: text.count / 5, end: text.count / 5 + 3, kind: .superscript),
+            FormatSpan(start: text.count / 5 + 40, end: text.count / 5 + 43, kind: .`subscript`),
+            FormatSpan(start: text.count / 6, end: text.count / 6 + 12, kind: .smallCaps),
             FormatSpan(
                 start: text.count - 90, end: text.count - 30,
                 kind: .link(.external(url: "https://example.com"))
