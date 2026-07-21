@@ -48,8 +48,10 @@ enum AnnotationItem: Identifiable, Hashable {
     func locator(in book: Book) -> String {
         switch self {
         case .text(let highlight):
-            if let chapter = book.chapters.first(where: { $0.id == highlight.chapterID }) {
-                return chapter.title ?? "Chapter \(chapter.order + 1)"
+            if let index = book.chapters.firstIndex(where: { $0.id == highlight.chapterID }) {
+                // Own title → nearest TOC title → "Section N" (never a
+                // synthetic "Chapter N" out of step with the real names).
+                return book.chapterDisplayTitle(index)
             }
             return "Unknown chapter"
         case .pdf(let highlight):

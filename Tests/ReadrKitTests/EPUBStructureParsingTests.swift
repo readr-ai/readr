@@ -228,6 +228,245 @@ final class EPUBStructureParsingTests: XCTestCase {
         XCTAssertNil(images[1].displayHeight)
     }
 
+    // MARK: - Non-linear spine items and the in-spine nav doc
+
+    /// `linear="no"` items keep their spine POSITION (no reordering) and are
+    /// flagged `isLinear = false`; linear chapters carry nil (= linear).
+    func testLinearNoChapterKeepsSpinePositionAndIsFlaggedNonLinear() throws {
+        let opf = makeOPF(
+            manifest: """
+            <item id="notes" href="notes.xhtml" media-type="application/xhtml+xml"/>
+            <item id="c1" href="ch1.xhtml" media-type="application/xhtml+xml"/>
+            """,
+            spine: """
+            <itemref idref="notes" linear="no"/>
+            <itemref idref="c1"/>
+            """
+        )
+        let book = try parser.parse(
+            container: container(opf: opf, entries: [
+                "OEBPS/ch1.xhtml": chapterOne,
+                "OEBPS/notes.xhtml": "<html><body><p>Endnotes here.</p></body></html>",
+            ]),
+            fallbackTitle: "x"
+        )
+        XCTAssertEqual(book.chapters.count, 2)
+        // Spine order preserved: notes first, flagged non-linear.
+        XCTAssertTrue(book.chapters[0].text.contains("Endnotes here."))
+        XCTAssertEqual(book.chapters[0].isLinear, false)
+        XCTAssertTrue(book.chapters[1].text.contains("bright cold day"))
+        XCTAssertNil(book.chapters[1].isLinear)
+    }
+
+    /// An EPUB 3 nav document placed IN the spine is an in-book TOC page —
+    /// non-linear regardless of its `linear` attribute.
+    func testNavPropertyChapterInSpineIsFlaggedNonLinear() throws {
+        let navDoc = """
+        <html xmlns:epub="http://www.idpf.org/2007/ops"><body>
+        <nav epub:type="toc"><h1>Contents</h1><ol>
+          <li><a href="ch1.xhtml">One</a></li>
+        </ol></nav>
+        </body></html>
+        """
+        let opf = makeOPF(
+            manifest: """
+            <item id="nav" href="nav.xhtml" properties="nav" media-type="application/xhtml+xml"/>
+            <item id="c1" href="ch1.xhtml" media-type="application/xhtml+xml"/>
+            """,
+            spine: """
+            <itemref idref="nav"/>
+            <itemref idref="c1"/>
+            """
+        )
+        let book = try parser.parse(
+            container: container(opf: opf, entries: [
+                "OEBPS/nav.xhtml": navDoc,
+                "OEBPS/ch1.xhtml": chapterOne,
+            ]),
+            fallbackTitle: "x"
+        )
+        XCTAssertEqual(book.chapters.count, 2)
+        XCTAssertEqual(book.chapters[0].isLinear, false)
+        XCTAssertNil(book.chapters[1].isLinear)
+    }
+
+    // MARK: - Footnote pass-through
+
+    func testFootnoteAsidesReachChapterFootnotesAndLeaveTheText() throws {
+        let ch1 = """
+        <html><body><h1>One</h1>
+        <p>Fact<a epub:type="noteref" href="#fn1">1</a>.</p>
+        <aside epub:type="footnote" id="fn1"><p>The source.</p></aside>
+        </body></html>
+        """
+        let opf = makeOPF(
+            manifest: #"<item id="c1" href="ch1.xhtml" media-type="application/xhtml+xml"/>"#,
+            spine: #"<itemref idref="c1"/>"#
+        )
+        let book = try parser.parse(
+            container: container(opf: opf, entries: ["OEBPS/ch1.xhtml": ch1]),
+            fallbackTitle: "x"
+        )
+        let chapter = try XCTUnwrap(book.chapters.first)
+        XCTAssertEqual(chapter.text, "One\nFact1.")
+        XCTAssertEqual(chapter.footnotes, [Footnote(id: "fn1", text: "The source.")])
+        XCTAssertNil(chapter.anchors?["fn1"])
+    }
+
+    func testChapterWithoutNotesCarriesNilFootnotes() throws {
+        let opf = makeOPF(
+            manifest: #"<item id="c1" href="ch1.xhtml" media-type="application/xhtml+xml"/>"#,
+            spine: #"<itemref idref="c1"/>"#
+        )
+        let book = try parser.parse(
+            container: container(opf: opf, entries: ["OEBPS/ch1.xhtml": chapterOne]),
+            fallbackTitle: "x"
+        )
+        XCTAssertNil(book.chapters.first?.footnotes)
+    }
+
+    // MARK: - New span kinds flow through to FormatSpan
+
+    func testSupSubAndAlignmentSpansReachChapterFormatSpans() throws {
+        let ch1 = """
+        <html><body><p align="center">x<sup>2</sup> and H<sub>2</sub>O</p></body></html>
+        """
+        let opf = makeOPF(
+            manifest: #"<item id="c1" href="ch1.xhtml" media-type="application/xhtml+xml"/>"#,
+            spine: #"<itemref idref="c1"/>"#
+        )
+        let book = try parser.parse(
+            container: container(opf: opf, entries: ["OEBPS/ch1.xhtml": ch1]),
+            fallbackTitle: "x"
+        )
+        let spans = try XCTUnwrap(book.chapters.first?.formatSpans)
+        XCTAssertEqual(Set(spans.map(\.kind)), [
+            .alignment(.center), .superscript, .`subscript`,
+        ])
+    }
+
+    // MARK: - TOC fragments and href resolution
+
+    /// A book packing several chapters/sections into one XHTML file keeps
+    /// EVERY nav TOC entry, with `TOCEntry.fragment` populated for the
+    /// in-document jumps.
+    func testNavTOCKeepsEveryEntryPerDocumentWithFragments() throws {
+        let navDoc = """
+        <html xmlns:epub="http://www.idpf.org/2007/ops"><body>
+        <nav epub:type="toc"><ol>
+          <li><a href="ch1.xhtml">Part I</a></li>
+          <li><a href="ch1.xhtml#s2">Part II</a></li>
+          <li><a href="ch1.xhtml#s3">Part III</a></li>
+          <li><a href="ch2.xhtml">Part IV</a></li>
+        </ol></nav>
+        </body></html>
+        """
+        let opf = makeOPF(
+            manifest: """
+            <item id="c1" href="ch1.xhtml" media-type="application/xhtml+xml"/>
+            <item id="c2" href="ch2.xhtml" media-type="application/xhtml+xml"/>
+            <item id="nav" href="nav.xhtml" properties="nav" media-type="application/xhtml+xml"/>
+            """,
+            spine: """
+            <itemref idref="c1"/>
+            <itemref idref="c2"/>
+            """
+        )
+        let book = try parser.parse(
+            container: container(opf: opf, entries: [
+                "OEBPS/ch1.xhtml": """
+                <html><body><h1 id="s1">Part I</h1><p>One.</p>
+                <h1 id="s2">Part II</h1><p>Two.</p>
+                <h1 id="s3">Part III</h1><p>Three.</p></body></html>
+                """,
+                "OEBPS/ch2.xhtml": chapterTwo,
+                "OEBPS/nav.xhtml": navDoc,
+            ]),
+            fallbackTitle: "x"
+        )
+        let toc = book.metadata.tableOfContents
+        XCTAssertEqual(toc.map(\.title), ["Part I", "Part II", "Part III", "Part IV"])
+        XCTAssertEqual(toc.map(\.chapterIndex), [0, 0, 0, 1])
+        XCTAssertEqual(toc.map(\.fragment), [nil, "s2", "s3", nil])
+    }
+
+    /// A fragment-only href ("#intro") in the nav TOC targets the nav
+    /// document itself — meaningful when the nav doc sits in the spine as an
+    /// in-book Contents page.
+    func testFragmentOnlyNavHrefTargetsTheNavDocumentItself() throws {
+        let navDoc = """
+        <html xmlns:epub="http://www.idpf.org/2007/ops"><body>
+        <h1 id="intro">Contents</h1>
+        <nav epub:type="toc"><ol>
+          <li><a href="#intro">Intro</a></li>
+          <li><a href="ch1.xhtml">One</a></li>
+        </ol></nav>
+        </body></html>
+        """
+        let opf = makeOPF(
+            manifest: """
+            <item id="nav" href="nav.xhtml" properties="nav" media-type="application/xhtml+xml"/>
+            <item id="c1" href="ch1.xhtml" media-type="application/xhtml+xml"/>
+            """,
+            spine: """
+            <itemref idref="nav"/>
+            <itemref idref="c1"/>
+            """
+        )
+        let book = try parser.parse(
+            container: container(opf: opf, entries: [
+                "OEBPS/nav.xhtml": navDoc,
+                "OEBPS/ch1.xhtml": chapterOne,
+            ]),
+            fallbackTitle: "x"
+        )
+        XCTAssertEqual(book.chapters.count, 2)
+        XCTAssertEqual(book.chapters[0].sourcePath, "OEBPS/nav.xhtml")
+        let toc = book.metadata.tableOfContents
+        XCTAssertEqual(toc.map(\.title), ["Intro", "One"])
+        // "#intro" resolves to the nav document's own chapter, not a bogus
+        // "OEBPS/intro" path (which used to drop the entry).
+        XCTAssertEqual(toc.map(\.chapterIndex), [0, 1])
+        XCTAssertEqual(toc.map(\.fragment), ["intro", nil])
+    }
+
+    /// TOC hrefs survive real-world sloppiness: case mismatches against the
+    /// manifest, absolute (container-root-relative) paths, and
+    /// percent-encoded paths.
+    func testTOCHrefLookupSurvivesCaseAbsoluteAndPercentEncodedPaths() throws {
+        let navDoc = """
+        <html xmlns:epub="http://www.idpf.org/2007/ops"><body>
+        <nav epub:type="toc"><ol>
+          <li><a href="CH1.xhtml">One</a></li>
+          <li><a href="/OEBPS/text/ch%202.xhtml#top">Two</a></li>
+        </ol></nav>
+        </body></html>
+        """
+        let opf = makeOPF(
+            manifest: """
+            <item id="c1" href="ch1.xhtml" media-type="application/xhtml+xml"/>
+            <item id="c2" href="text/ch%202.xhtml" media-type="application/xhtml+xml"/>
+            <item id="nav" href="nav.xhtml" properties="nav" media-type="application/xhtml+xml"/>
+            """,
+            spine: """
+            <itemref idref="c1"/>
+            <itemref idref="c2"/>
+            """
+        )
+        let book = try parser.parse(
+            container: container(opf: opf, entries: [
+                "OEBPS/ch1.xhtml": chapterOne,
+                "OEBPS/text/ch 2.xhtml": chapterTwo,
+                "OEBPS/nav.xhtml": navDoc,
+            ]),
+            fallbackTitle: "x"
+        )
+        let toc = book.metadata.tableOfContents
+        XCTAssertEqual(toc.map(\.title), ["One", "Two"])
+        XCTAssertEqual(toc.map(\.chapterIndex), [0, 1])
+        XCTAssertEqual(toc.map(\.fragment), [nil, "top"])
+    }
+
     // MARK: - Codable compatibility
 
     func testChapterWithNewFieldsRoundTripsThroughCodable() throws {

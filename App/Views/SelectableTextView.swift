@@ -358,11 +358,17 @@ enum TextRangeConvert {
     /// into their slice first) and are clamped again here, so a span truncated
     /// by a page boundary can never index out of bounds.
     ///
-    /// Application order is structural first: headings and blockquotes set
-    /// the run's font/paragraph/color, THEN bold/italic merge symbolic traits
-    /// into whatever font is already on the range (bold inside a heading
-    /// keeps the heading size), then links decorate. Sorting by phase makes
-    /// that hold regardless of the order the parser emitted the spans in.
+    /// Two channels. CHARACTER attributes (fonts, ink, links, baseline
+    /// shifts) go on the exact clamped range, structural first: heading fonts
+    /// land before bold/italic merge symbolic traits into whatever font the
+    /// range already carries, super/subscript then scale that composed font,
+    /// and links decorate last — sorting by phase makes that hold regardless
+    /// of parser emission order. PARAGRAPH styles (heading spacing, quote
+    /// indents, alignment) are computed ONCE per paragraph and applied over
+    /// the full paragraph range including its trailing newline:
+    /// `.paragraphStyle` is a whole-paragraph attribute, and the old per-span
+    /// application let the last span win over sub-paragraph ranges — quote
+    /// paragraphs indented only up to where the span happened to end.
     private static func applyFormatSpans(
         _ spans: [FormatSpan],
         to attributed: NSMutableAttributedString,
@@ -373,48 +379,53 @@ enum TextRangeConvert {
         guard !spans.isEmpty else { return }
         let count = text.count
 
+        // Clamp every span once; route each kind to its channel(s).
+        var character: [(ns: NSRange, kind: FormatSpan.Kind)] = []
+        var paragraphLevel: [(ns: NSRange, kind: FormatSpan.Kind)] = []
+        for span in spans {
+            let lower = min(max(0, span.start), count)
+            let upper = min(max(lower, span.end), count)
+            guard lower < upper,
+                  let ns = nsRange(from: lower..<upper, in: text) else { continue }
+            switch span.kind {
+            case .heading, .blockquote:
+                // Font/ink at character level, spacing/indents at paragraph.
+                character.append((ns, span.kind))
+                paragraphLevel.append((ns, span.kind))
+            case .alignment:
+                paragraphLevel.append((ns, span.kind))
+            case .bold, .italic, .link, .superscript, .`subscript`, .smallCaps:
+                character.append((ns, span.kind))
+            }
+        }
+
         func phase(_ kind: FormatSpan.Kind) -> Int {
             switch kind {
             case .heading: return 0
             case .blockquote: return 1
             case .bold: return 2
             case .italic: return 3
-            case .link: return 4
+            case .smallCaps: return 4
+            case .superscript, .`subscript`: return 5
+            case .link: return 6
+            case .alignment: return 7
             }
         }
 
-        for span in spans.sorted(by: { phase($0.kind) < phase($1.kind) }) {
-            let lower = min(max(0, span.start), count)
-            let upper = min(max(lower, span.end), count)
-            guard lower < upper,
-                  let ns = nsRange(from: lower..<upper, in: text) else { continue }
-
-            switch span.kind {
+        for (ns, kind) in character.sorted(by: { phase($0.kind) < phase($1.kind) }) {
+            switch kind {
             case let .heading(level):
                 attributed.addAttribute(
                     .font, value: style.headingFont(level: level), range: ns
                 )
-                // Headings breathe: extra space before and after, on a copy of
-                // the base paragraph style so leading/justification carry over.
-                let headingParagraph = NSMutableParagraphStyle()
-                headingParagraph.setParagraphStyle(paragraph)
-                headingParagraph.paragraphSpacingBefore = style.fontSize * 0.8
-                headingParagraph.paragraphSpacing = style.paragraphSpacing + style.fontSize * 0.3
-                attributed.addAttribute(.paragraphStyle, value: headingParagraph, range: ns)
 
             case .blockquote:
-                let quoteParagraph = NSMutableParagraphStyle()
-                quoteParagraph.setParagraphStyle(paragraph)
-                let indent = style.fontSize * 1.5
-                quoteParagraph.firstLineHeadIndent = indent
-                quoteParagraph.headIndent = indent
-                attributed.addAttribute(.paragraphStyle, value: quoteParagraph, range: ns)
                 attributed.addAttribute(
                     .foregroundColor, value: style.theme.mutedInk, range: ns
                 )
 
             case .bold, .italic:
-                let bold = span.kind == .bold
+                let bold = kind == .bold
                 // Merge the trait into whatever font each sub-run already has
                 // (the base font, a heading font, the other emphasis trait).
                 attributed.enumerateAttribute(.font, in: ns) { value, subrange, _ in
@@ -428,6 +439,34 @@ enum TextRangeConvert {
                     )
                 }
 
+            case .smallCaps:
+                attributed.enumerateAttribute(.font, in: ns) { value, subrange, _ in
+                    let current = (value as? PlatformFont) ?? style.contentFont
+                    attributed.addAttribute(
+                        .font,
+                        value: ReaderStyle.fontAddingSmallCaps(to: current),
+                        range: subrange
+                    )
+                }
+
+            case .superscript, .`subscript`:
+                let raised = kind == .superscript
+                // Fractions of the size the run would otherwise render at, so
+                // a note marker inside a heading scales with the heading.
+                attributed.enumerateAttribute(.font, in: ns) { value, subrange, _ in
+                    let current = (value as? PlatformFont) ?? style.contentFont
+                    attributed.addAttribute(
+                        .font,
+                        value: ReaderStyle.fontResized(current, to: current.pointSize * 0.75),
+                        range: subrange
+                    )
+                    attributed.addAttribute(
+                        .baselineOffset,
+                        value: current.pointSize * (raised ? 0.33 : -0.33),
+                        range: subrange
+                    )
+                }
+
             case let .link(target):
                 guard let url = ReaderLinkURL.url(for: target) else { continue }
                 attributed.addAttribute(.link, value: url, range: ns)
@@ -437,6 +476,94 @@ enum TextRangeConvert {
                 attributed.addAttribute(
                     .underlineStyle, value: NSUnderlineStyle.single.rawValue, range: ns
                 )
+
+            case .alignment:
+                break // paragraph channel only
+            }
+        }
+
+        guard !paragraphLevel.isEmpty else { return }
+        // Paragraph channel: walk the paragraphs once and give each ONE
+        // winning style over its FULL range (trailing newline included —
+        // heading spacing lives on that newline). Spans intersect via the
+        // paragraph's CONTENT range so a run that only touches the newline
+        // separator never styles the paragraph before it. Fold order: quote
+        // geometry, then heading spacing, then an explicit alignment.
+        let nsText = text as NSString
+        var location = 0
+        while location < nsText.length {
+            var pStart = 0
+            var pEnd = 0
+            var contentsEnd = 0
+            nsText.getParagraphStart(
+                &pStart, end: &pEnd, contentsEnd: &contentsEnd,
+                for: NSRange(location: location, length: 0)
+            )
+            guard pEnd > location else { break }
+            location = pEnd
+            let paragraphRange = NSRange(location: pStart, length: pEnd - pStart)
+            let contentRange = NSRange(location: pStart, length: contentsEnd - pStart)
+            guard contentRange.length > 0 else { continue }
+
+            func intersects(_ ns: NSRange) -> Bool {
+                NSIntersectionRange(ns, contentRange).length > 0
+            }
+
+            var winner: NSMutableParagraphStyle?
+            func mutable() -> NSMutableParagraphStyle {
+                if let winner { return winner }
+                let created = NSMutableParagraphStyle()
+                created.setParagraphStyle(paragraph)
+                winner = created
+                return created
+            }
+
+            if paragraphLevel.contains(where: { $0.kind == .blockquote && intersects($0.ns) }) {
+                let quote = mutable()
+                let indent = style.fontSize * 1.5
+                quote.firstLineHeadIndent = indent
+                quote.headIndent = indent
+                // Negative tailIndent measures from the trailing edge — the
+                // quote insets symmetrically. Ragged-right: justifying the
+                // narrowed measure tears rivers.
+                quote.tailIndent = -indent
+                quote.alignment = .natural
+            }
+            if paragraphLevel.contains(where: { entry in
+                if case .heading = entry.kind { return intersects(entry.ns) }
+                return false
+            }) {
+                // Headings breathe: extra space before and after.
+                let heading = mutable()
+                heading.paragraphSpacingBefore = style.fontSize * 0.8
+                heading.paragraphSpacing = style.paragraphSpacing + style.fontSize * 0.3
+            }
+            var alignmentOverride: ReadrKit.TextAlignment?
+            for entry in paragraphLevel {
+                if case let .alignment(value) = entry.kind, intersects(entry.ns) {
+                    alignmentOverride = value
+                }
+            }
+            if let alignmentOverride {
+                let aligned = mutable()
+                switch alignmentOverride {
+                case .left:
+                    aligned.alignment = .left
+                case .center:
+                    // Centered/right-set lines must never justify or
+                    // hyphenate ("* * *" separators, captions, verse).
+                    aligned.alignment = .center
+                    aligned.hyphenationFactor = 0
+                case .right:
+                    aligned.alignment = .right
+                    aligned.hyphenationFactor = 0
+                case .justify:
+                    aligned.alignment = .justified
+                    aligned.hyphenationFactor = 0.9
+                }
+            }
+            if let winner {
+                attributed.addAttribute(.paragraphStyle, value: winner, range: paragraphRange)
             }
         }
     }

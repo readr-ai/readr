@@ -420,6 +420,60 @@ final class ReadrFlowUITests: XCTestCase {
         )
     }
 
+    // The Contents sheet must render the book's REAL table of contents when
+    // one was parsed: "Part I" exists ONLY in the seeded nav TOC (no chapter
+    // carries that title), so its row proves the sheet reads the TOC and not
+    // the synthetic spine list. Also covers: nested entries jump, and the
+    // linear="no" notes document stays reachable from Contents while
+    // continuous swiping skips it.
+    func testContentsSheetShowsRealTOCTitles() {
+        let app = launchSeeded()
+        openSampleBook(app)
+        // Scroll mode: one full-height text view for the swipe below.
+        selectLayout(app, "Scroll")
+
+        let toc = button(app, id: "reader.toc", label: "Table of contents")
+        XCTAssertTrue(toc.waitForExistence(timeout: 5))
+        toc.tap()
+
+        XCTAssertTrue(
+            app.buttons["Part I"].firstMatch.waitForExistence(timeout: 5),
+            "The Contents sheet should render the nav TOC's section title"
+        )
+        XCTAssertTrue(
+            app.buttons["Notes"].firstMatch.exists,
+            "The non-linear notes document stays reachable from Contents"
+        )
+        // A nested child entry jumps like any row.
+        let chapterTwo = app.buttons["Chapter Two"].firstMatch
+        XCTAssertTrue(chapterTwo.exists, "Nested chapter entries should be listed")
+        chapterTwo.tap() // jumps and closes
+        XCTAssertTrue(
+            app.staticTexts["Chapter Two"].waitForExistence(timeout: 5),
+            "Tapping a TOC entry should land in that chapter"
+        )
+
+        // Continuous reading order must NOT flow into the linear="no" notes
+        // doc: a forward flick past the last linear chapter goes nowhere.
+        // Probe the reader's own kicker — a bare staticTexts["Notes"] check
+        // always passes because the library's "Notes" section label stays
+        // mounted in the navigation hierarchy beneath the reader.
+        let text = app.textViews.firstMatch
+        XCTAssertTrue(text.waitForExistence(timeout: 5))
+        text.swipeLeft()
+        let notesKicker = app.staticTexts.matching(
+            NSPredicate(format: "identifier == 'reader.kicker' AND label == 'Notes'")
+        ).firstMatch
+        XCTAssertFalse(
+            notesKicker.waitForExistence(timeout: 3),
+            "A forward swipe past the last linear chapter must skip the notes document"
+        )
+        XCTAssertEqual(
+            app.staticTexts["reader.kicker"].firstMatch.label, "Chapter Two",
+            "The reader should stay on the last linear chapter"
+        )
+    }
+
     // Scroll mode has no pages, but a horizontal flick must still cross
     // chapters (left → next, right → previous) — the paged layouts already
     // flow across chapter walls on swipe, and scroll mode (the default)

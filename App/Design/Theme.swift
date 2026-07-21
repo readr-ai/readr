@@ -1,5 +1,8 @@
 import SwiftUI
 import ReadrKit
+// SFNT feature constants (kLowerCaseType/kLowerCaseSmallCapsSelector) for the
+// small-caps font variant.
+import CoreText
 
 #if canImport(UIKit)
 import UIKit
@@ -421,6 +424,39 @@ struct ReaderStyle: Equatable {
         if bold { traits.insert(.bold) }
         if italic { traits.insert(.italic) }
         let descriptor = font.fontDescriptor.withSymbolicTraits(traits)
+        return NSFont(descriptor: descriptor, size: font.pointSize) ?? font
+        #endif
+    }
+
+    /// Scale an EXISTING font to a new point size, keeping its family and
+    /// traits (super/subscript runs shrink whatever composed font the range
+    /// already carries — bold inside a heading stays bold at heading scale).
+    static func fontResized(_ font: PlatformFont, to size: CGFloat) -> PlatformFont {
+        #if canImport(UIKit)
+        return UIFont(descriptor: font.fontDescriptor, size: size)
+        #else
+        return NSFont(descriptor: font.fontDescriptor, size: size) ?? font
+        #endif
+    }
+
+    /// Small-caps variant of an EXISTING font via the lowercase→small-caps
+    /// AAT feature (the descriptor route `fontMergingTraits` uses for
+    /// traits). Faces without the feature render unchanged — the setting is
+    /// inert — so there is no fallback branch to get wrong.
+    static func fontAddingSmallCaps(to font: PlatformFont) -> PlatformFont {
+        #if canImport(UIKit)
+        let feature: [UIFontDescriptor.FeatureKey: Int] = [
+            .type: kLowerCaseType,
+            .selector: kLowerCaseSmallCapsSelector,
+        ]
+        let descriptor = font.fontDescriptor.addingAttributes([.featureSettings: [feature]])
+        return UIFont(descriptor: descriptor, size: font.pointSize)
+        #else
+        let feature: [NSFontDescriptor.FeatureKey: Int] = [
+            .typeIdentifier: kLowerCaseType,
+            .selectorIdentifier: kLowerCaseSmallCapsSelector,
+        ]
+        let descriptor = font.fontDescriptor.addingAttributes([.featureSettings: [feature]])
         return NSFont(descriptor: descriptor, size: font.pointSize) ?? font
         #endif
     }

@@ -37,17 +37,20 @@ public struct EPUBBookParser {
         let opf = OPF.parse(opfData)
         let baseDir = Self.directory(of: opfPath)
 
-        // Non-linear spine items (linear="no": endnotes, answer keys) leave
-        // the main reading flow but keep their content — appended after the
-        // linear chapters rather than interleaved or dropped.
-        let orderedSpine = opf.spineItems.filter { $0.linear } + opf.spineItems.filter { !$0.linear }
-        guard orderedSpine.count <= Self.maxSpineItems else {
-            throw EPUBParseError.tooManySpineItems(count: orderedSpine.count, limit: Self.maxSpineItems)
+        // Non-linear spine items (linear="no": endnotes, answer keys) keep
+        // their spine POSITION — links into them still land where expected —
+        // and are flagged `isLinear = false` so continuous reading order
+        // skips them. The EPUB 3 nav document, when it sits in the spine, is
+        // an in-book TOC page and is non-linear regardless.
+        guard opf.spineItems.count <= Self.maxSpineItems else {
+            throw EPUBParseError.tooManySpineItems(count: opf.spineItems.count, limit: Self.maxSpineItems)
         }
         var chapters: [Chapter] = []
         var chapterIndexByPath: [String: Int] = [:]
-        for entry in orderedSpine {
-            guard let item = opf.manifestItem(for: entry.idref) else { continue }
+        var styleCache = StylesheetCache()
+        for entry in opf.spineItems {
+            guard let itemID = opf.manifestID(for: entry.idref),
+                  let item = opf.manifest[itemID] else { continue }
             let href = Self.resolve(base: baseDir, href: item.href)
             // Two itemrefs resolving to the same content document (duplicate
             // idrefs, or distinct manifest items sharing an href) must emit
@@ -55,26 +58,37 @@ public struct EPUBBookParser {
             guard chapterIndexByPath[href] == nil else { continue }
             guard let data = try Self.optionalData(container, at: href),
                   let html = Self.decodeText(data) else { continue }
-            let extraction = XHTMLTextExtractor.extract(from: html)
-            let text = extraction.text
-            guard !text.isEmpty else { continue }
-            let title = XHTMLTextExtractor.firstHeading(from: html)
-            // Image and link hrefs are relative to the content document, not
-            // the OPF.
+            // Image, link, AND stylesheet hrefs are relative to the content
+            // document, not the OPF.
             let documentDir = Self.directory(of: href)
+            let styles = try Self.styleResolver(
+                for: html, documentDir: documentDir, container: container,
+                cache: &styleCache
+            )
+            let extraction = XHTMLTextExtractor.extract(from: html, styles: styles)
+            let text = extraction.text
+            let footnotes = extraction.footnotes.map { Footnote(id: $0.id, text: $0.text) }
+            // A document whose entire content was diverted to footnotes (a
+            // hidden-notes file) keeps its chapter — noteref links resolve
+            // into it — but a truly empty document is still skipped.
+            guard !text.isEmpty || !footnotes.isEmpty else { continue }
+            let title = XHTMLTextExtractor.firstHeading(from: html)
             let images = Self.chapterImages(
                 in: text, refs: extraction.images, documentDir: documentDir
             )
             let spans = Self.formatSpans(
                 from: extraction.spans, documentPath: href, documentDir: documentDir
             )
+            let isLinear = entry.linear && !opf.navItemIDs.contains(itemID)
             chapterIndexByPath[href] = chapters.count
             chapters.append(Chapter(
                 title: title, order: chapters.count, text: text,
                 images: images.isEmpty ? nil : images,
                 formatSpans: spans.isEmpty ? nil : spans,
                 sourcePath: href,
-                anchors: extraction.anchors.isEmpty ? nil : extraction.anchors
+                anchors: extraction.anchors.isEmpty ? nil : extraction.anchors,
+                footnotes: footnotes.isEmpty ? nil : footnotes,
+                isLinear: isLinear ? nil : false
             ))
         }
         guard !chapters.isEmpty else {
@@ -89,9 +103,7 @@ public struct EPUBBookParser {
             chapterIndexByPath: chapterIndexByPath
         )
         let toc = declaredTOC.isEmpty
-            ? chapters.compactMap { chapter in
-                chapter.title.map { TOCEntry(title: $0, chapterIndex: chapter.order) }
-            }
+            ? Self.headingFallbackTOC(chapters: chapters)
             : declaredTOC
 
         let isFixedLayout = try opf.isFixedLayout || Self.appleFixedLayoutDeclared(in: container)
@@ -241,6 +253,104 @@ public struct EPUBBookParser {
         ) != nil
     }
 
+    // MARK: - Stylesheets
+
+    /// Per-book stylesheet cache: sheet text per archive path (each sheet is
+    /// fetched and decoded once, unreadable paths remembered), and one
+    /// composed resolver per unique ordered sheet set (each set is parsed
+    /// once; chapters sharing it — the overwhelmingly common case — reuse
+    /// the parse).
+    struct StylesheetCache {
+        var sheetText: [String: String] = [:]
+        var unreadable: Set<String> = []
+        var resolverBySheetSet: [String: CSSStyleResolver] = [:]
+    }
+
+    /// Compiled once — the link pre-pass runs per spine document.
+    private static let linkTagRegex = try? NSRegularExpression(
+        pattern: "<link\\b[^>]*>", options: [.caseInsensitive]
+    )
+    private static let styleBlockRegex = try? NSRegularExpression(
+        pattern: "<style\\b[^>]*>(.*?)</style\\s*>",
+        options: [.caseInsensitive, .dotMatchesLineSeparators]
+    )
+
+    /// Hrefs of the document's applied stylesheets — `<link>` tags whose
+    /// `rel` tokens include `stylesheet` (attribute order-independent, both
+    /// quote styles) — in document order. Alternate stylesheets are not
+    /// applied by default and are skipped. Raw hrefs; the caller resolves
+    /// them against the document directory.
+    static func stylesheetHrefs(in html: String) -> [String] {
+        guard html.range(of: "<link", options: .caseInsensitive) != nil,
+              let regex = linkTagRegex else { return [] }
+        let ns = html as NSString
+        var hrefs: [String] = []
+        for match in regex.matches(in: html, range: NSRange(location: 0, length: ns.length)) {
+            let tag = ns.substring(with: match.range)
+            guard let rel = XHTMLTextExtractor.attribute("rel", in: tag) else { continue }
+            let tokens = rel.lowercased().split(whereSeparator: \.isWhitespace).map(String.init)
+            guard tokens.contains("stylesheet"), !tokens.contains("alternate"),
+                  let href = XHTMLTextExtractor.attribute("href", in: tag),
+                  !href.isEmpty else { continue }
+            hrefs.append(href)
+        }
+        return hrefs
+    }
+
+    /// Contents of the document's `<style>` blocks, in document order.
+    static func styleBlocks(in html: String) -> [String] {
+        guard html.range(of: "<style", options: .caseInsensitive) != nil,
+              let regex = styleBlockRegex else { return [] }
+        let ns = html as NSString
+        return regex.matches(in: html, range: NSRange(location: 0, length: ns.length)).map {
+            ns.substring(with: $0.range(at: 1))
+        }
+    }
+
+    /// The composed stylesheet resolver for one spine document: its linked
+    /// sheets in document order, then its `<style>` blocks (cascade order).
+    /// Nil when the document references no styles at all — the extractor's
+    /// zero-cost fast path. Only link-referenced sheets are ever fetched;
+    /// manifest CSS nothing points at is never read. A missing or unreadable
+    /// sheet is skipped (styles are enhancement), but an `EPUBParseError`
+    /// (zip-bomb cap) propagates as everywhere else.
+    static func styleResolver(
+        for html: String, documentDir: String, container: EPUBContainer,
+        cache: inout StylesheetCache
+    ) throws -> CSSStyleResolver? {
+        let hrefs = stylesheetHrefs(in: html)
+        let blocks = styleBlocks(in: html)
+        guard !hrefs.isEmpty || !blocks.isEmpty else { return nil }
+        var paths: [String] = []
+        for rawHref in hrefs {
+            let path = resolve(base: documentDir, href: rawHref)
+            guard !path.isEmpty, !cache.unreadable.contains(path) else { continue }
+            if cache.sheetText[path] == nil {
+                if let data = try optionalData(container, at: path),
+                   let css = decodeText(data) {
+                    cache.sheetText[path] = css
+                } else {
+                    cache.unreadable.insert(path)
+                    continue
+                }
+            }
+            paths.append(path)
+        }
+        guard !paths.isEmpty || !blocks.isEmpty else { return nil }
+        let setKey = paths.joined(separator: "\u{0}")
+        var resolver: CSSStyleResolver
+        if let cached = cache.resolverBySheetSet[setKey] {
+            resolver = cached
+        } else {
+            resolver = CSSStyleResolver(sheets: paths.compactMap { cache.sheetText[$0] })
+            cache.resolverBySheetSet[setKey] = resolver
+        }
+        // `<style>` blocks are document-specific — layered on a copy, the
+        // cached sheet-set resolver stays clean for the next chapter.
+        for block in blocks { resolver.add(sheet: block) }
+        return resolver
+    }
+
     // MARK: - Inline images
 
     /// Pair the k-th U+FFFC placeholder in `text` with the k-th extracted image
@@ -282,6 +392,10 @@ public struct EPUBBookParser {
             case .bold: kind = .bold
             case .italic: kind = .italic
             case .blockquote: kind = .blockquote
+            case .superscript: kind = .superscript
+            case .`subscript`: kind = .`subscript`
+            case .alignment(let alignment): kind = .alignment(alignment)
+            case .smallCaps: kind = .smallCaps
             case .link(let href):
                 kind = .link(linkTarget(
                     href: href, documentPath: documentPath, documentDir: documentDir
@@ -395,59 +509,181 @@ public struct EPUBBookParser {
 
     // MARK: - Table of contents
 
+    /// One declared-TOC source's outcome: the surviving entries plus how
+    /// many candidate entries the source attempted vs actually resolved to
+    /// parsed chapters — the accept/fall-through decision needs the ratio.
+    struct TOCSource {
+        var entries: [TOCEntry] = []
+        var attempted = 0
+        var resolved = 0
+        /// A source is trusted only when it resolved at least half of what
+        /// it attempted (and something at all). A mostly-broken nav/NCX —
+        /// stale hrefs, or an XML parse aborted early by an undeclared
+        /// entity — must fall through to the next source instead of
+        /// shipping a near-empty Contents list; a source with most of its
+        /// entries intact still beats whatever comes after it.
+        var isAcceptable: Bool { resolved > 0 && resolved * 2 >= attempted }
+    }
+
     /// The package's declared TOC: the EPUB 3 nav document when the manifest
-    /// declares one, else the EPUB 2 NCX. Returns [] when neither exists or
-    /// yields entries — the caller falls back to chapter headings.
+    /// declares one, else the EPUB 2 NCX — each accepted only when it
+    /// resolves at least half of the entries it attempted. Returns [] when
+    /// no source is acceptable — the caller falls back to chapter headings.
     static func tableOfContents(
         opf: OPF, baseDir: String, container: EPUBContainer,
         chapterIndexByPath: [String: Int]
     ) throws -> [TOCEntry] {
+        let lowercasedIndex = lowercasedChapterIndex(chapterIndexByPath)
         if let navID = opf.navItemID, let item = opf.manifest[navID] {
             let navPath = resolve(base: baseDir, href: item.href)
             if let data = try optionalData(container, at: navPath),
                let html = decodeText(data) {
-                let entries = navDocumentTOC(
-                    html: html, navDir: directory(of: navPath),
-                    chapterIndexByPath: chapterIndexByPath
+                let source = navDocumentTOC(
+                    html: html, navPath: navPath,
+                    chapterIndexByPath: chapterIndexByPath,
+                    lowercasedIndex: lowercasedIndex
                 )
-                if !entries.isEmpty { return entries }
+                if source.isAcceptable { return source.entries }
             }
         }
         if let ncxID = opf.ncxItemID, let item = opf.manifest[ncxID] {
             let ncxPath = resolve(base: baseDir, href: item.href)
             if let data = try optionalData(container, at: ncxPath) {
-                let entries = ncxTOC(
+                let source = ncxTOC(
                     data: data, ncxDir: directory(of: ncxPath),
-                    chapterIndexByPath: chapterIndexByPath
+                    chapterIndexByPath: chapterIndexByPath,
+                    lowercasedIndex: lowercasedIndex
                 )
-                if !entries.isEmpty { return entries }
+                if source.isAcceptable { return source.entries }
             }
         }
         return []
     }
 
-    /// EPUB 3 navigation document: the anchors inside `<nav epub:type="toc">`
-    /// (or `role="doc-toc"`), in document order. Regex-based like the text
-    /// extractor — nav docs are XHTML with HTML entities (`&nbsp;`) that
-    /// would abort a strict XML parse. Entries pointing at fragments of the
-    /// same spine document collapse to one entry per chapter; entries whose
-    /// target isn't a parsed chapter are dropped.
-    static func navDocumentTOC(
-        html: String, navDir: String, chapterIndexByPath: [String: Int]
-    ) -> [TOCEntry] {
-        let tocNav =
-            "(?is)<nav\\b[^>]*(?:epub:type|role)\\s*=\\s*[\"'][^\"']*\\btoc\\b[^\"']*[\"'][^>]*>.*?</nav>"
-        let anyNav = "(?is)<nav\\b[^>]*>.*?</nav>"
-        let block: Substring
-        if let range = html.range(of: tocNav, options: .regularExpression) {
-            block = html[range]
-        } else if let range = html.range(of: anyNav, options: .regularExpression) {
-            block = html[range]
-        } else {
-            return []
-        }
+    /// Fallback TOC when no declared source survives: one entry per LINEAR
+    /// chapter — the chapter's heading when it has one, else "Section N"
+    /// (1-based position in this list) — so heading-less books still get a
+    /// complete Contents list. Non-linear chapters (notes files, in-spine
+    /// nav pages) stay out of Contents.
+    static func headingFallbackTOC(chapters: [Chapter]) -> [TOCEntry] {
         var entries: [TOCEntry] = []
-        var seenChapters = Set<Int>()
+        for chapter in chapters where chapter.isLinear != false {
+            entries.append(TOCEntry(
+                title: chapter.title ?? "Section \(entries.count + 1)",
+                chapterIndex: chapter.order
+            ))
+        }
+        return entries
+    }
+
+    /// Case-folded chapter index for sloppy books whose TOC hrefs mismatch
+    /// the manifest's case. On (pathological) case-insensitive collisions
+    /// the earliest chapter wins, deterministically.
+    static func lowercasedChapterIndex(_ index: [String: Int]) -> [String: Int] {
+        var lowered: [String: Int] = [:]
+        for (path, chapterIndex) in index {
+            let key = path.lowercased()
+            if let existing = lowered[key], existing <= chapterIndex { continue }
+            lowered[key] = chapterIndex
+        }
+        return lowered
+    }
+
+    /// Resolve one TOC href/src to its chapter index and jump fragment.
+    ///
+    /// - A fragment-only href (`#ch4`) targets the document containing the
+    ///   TOC itself: `ownDocumentPath` for a nav document. The NCX passes
+    ///   nil there — a fragment-only `content src` is malformed, so the
+    ///   entry is dropped.
+    /// - A leading `/` is container-root-relative: resolved WITHOUT
+    ///   prepending the TOC document's directory.
+    /// - The lookup is exact first, then case-insensitive; `resolve` already
+    ///   percent-decodes the path half.
+    /// - The fragment is percent-decoded, matching `Chapter.anchors` ids
+    ///   (which come from raw markup).
+    static func tocTarget(
+        href: String, baseDir: String, ownDocumentPath: String?,
+        chapterIndexByPath: [String: Int], lowercasedIndex: [String: Int]
+    ) -> (chapterIndex: Int, fragment: String?)? {
+        let pieces = href.split(separator: "#", maxSplits: 1, omittingEmptySubsequences: false)
+        let rawPath = pieces.first.map(String.init) ?? ""
+        let fragment = (pieces.count > 1 ? String(pieces[1]) : nil).flatMap { raw -> String? in
+            guard !raw.isEmpty else { return nil }
+            return raw.removingPercentEncoding ?? raw
+        }
+        let path: String
+        if rawPath.isEmpty {
+            guard let ownDocumentPath else { return nil }
+            path = ownDocumentPath
+        } else if rawPath.hasPrefix("/") {
+            path = resolve(base: "", href: String(rawPath.dropFirst()))
+        } else {
+            path = resolve(base: baseDir, href: rawPath)
+        }
+        guard let index = chapterIndexByPath[path] ?? lowercasedIndex[path.lowercased()] else {
+            return nil
+        }
+        return (index, fragment)
+    }
+
+    /// Exact-duplicate key for TOC entries: only entries identical in
+    /// chapter, fragment, AND title collapse; distinct sections of one
+    /// document all survive.
+    private static func tocDuplicateKey(
+        _ target: (chapterIndex: Int, fragment: String?), title: String
+    ) -> String {
+        "\(target.chapterIndex)\u{0}\(target.fragment ?? "\u{1}")\u{0}\(title)"
+    }
+
+    /// The `<nav>` element holding the book's TOC: the first nav whose
+    /// `epub:type` tokens include `toc` or whose `role` tokens include
+    /// `doc-toc` (token match — `epub:type="no-toc"` must NOT qualify, which
+    /// a `\btoc\b` regex got wrong at the hyphen); else the first nav that
+    /// is NOT a landmarks/page-list nav; only then the first nav at all.
+    static func tocNavBlock(in html: String) -> Substring? {
+        var firstNav: Substring?
+        var firstNonAuxiliaryNav: Substring?
+        var remainder = Substring(html)
+        while let match = remainder.range(of: "(?is)<nav\\b[^>]*>.*?</nav>", options: .regularExpression) {
+            let block = remainder[match]
+            remainder = remainder[match.upperBound...]
+            guard let tagEnd = block.firstIndex(of: ">") else { continue }
+            let tag = String(block[...tagEnd])
+            let typeTokens = attributeTokens("epub:type", in: tag)
+            if typeTokens.contains("toc") || attributeTokens("role", in: tag).contains("doc-toc") {
+                return block
+            }
+            if firstNav == nil { firstNav = block }
+            if firstNonAuxiliaryNav == nil, !typeTokens.contains("landmarks"),
+               !typeTokens.contains("page-list") {
+                firstNonAuxiliaryNav = block
+            }
+        }
+        return firstNonAuxiliaryNav ?? firstNav
+    }
+
+    /// Whitespace-separated tokens of a tag attribute's value, lowercased.
+    private static func attributeTokens(_ name: String, in tag: String) -> Set<String> {
+        guard let value = XHTMLTextExtractor.attribute(name, in: tag) else { return [] }
+        return Set(value.lowercased().split(whereSeparator: \.isWhitespace).map(String.init))
+    }
+
+    /// EPUB 3 navigation document: the anchors inside the TOC `<nav>`, in
+    /// document order. Regex-based like the text extractor — nav docs are
+    /// XHTML with HTML entities (`&nbsp;`) that would abort a strict XML
+    /// parse. Every entry is kept (books legitimately pack several
+    /// chapters/sections into one XHTML file), with its fragment for
+    /// in-document jumps; only exact duplicates collapse. Entries whose
+    /// target isn't a parsed chapter are dropped (but still counted, so a
+    /// mostly-broken nav fails the acceptance ratio).
+    static func navDocumentTOC(
+        html: String, navPath: String, chapterIndexByPath: [String: Int],
+        lowercasedIndex: [String: Int]
+    ) -> TOCSource {
+        guard let block = tocNavBlock(in: html) else { return TOCSource() }
+        let navDir = directory(of: navPath)
+        var source = TOCSource()
+        var seen = Set<String>()
         var remainder = block
         while let match = remainder.range(of: "(?is)<a\\b[^>]*>.*?</a>", options: .regularExpression) {
             let anchor = String(remainder[match])
@@ -459,36 +695,55 @@ public struct EPUBBookParser {
             let cleanTitle = XHTMLTextExtractor.decodeEntities(title)
                 .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
                 .trimmingCharacters(in: .whitespacesAndNewlines)
-            guard let href, !href.isEmpty, !cleanTitle.isEmpty,
-                  let index = chapterIndexByPath[resolve(base: navDir, href: href)],
-                  !seenChapters.contains(index) else { continue }
-            seenChapters.insert(index)
-            entries.append(TOCEntry(title: cleanTitle, chapterIndex: index))
+            guard let href, !href.isEmpty, !cleanTitle.isEmpty else { continue }
+            source.attempted += 1
+            guard let target = tocTarget(
+                href: href, baseDir: navDir, ownDocumentPath: navPath,
+                chapterIndexByPath: chapterIndexByPath, lowercasedIndex: lowercasedIndex
+            ) else { continue }
+            source.resolved += 1
+            guard seen.insert(tocDuplicateKey(target, title: cleanTitle)).inserted else { continue }
+            source.entries.append(TOCEntry(
+                title: cleanTitle, chapterIndex: target.chapterIndex,
+                fragment: target.fragment
+            ))
         }
-        return entries
+        return source
     }
 
     /// EPUB 2 NCX: navMap navPoints in document order, nesting flattened.
+    /// Every navPoint is kept, with its (percent-decoded) fragment; only
+    /// exact duplicates collapse. An NCX whose XML parse aborts mid-document
+    /// (e.g. an undeclared `&nbsp;` entity) simply yields the points parsed
+    /// before the abort — the shared acceptance ratio in `tableOfContents`
+    /// decides whether that partial TOC still beats the next source.
     static func ncxTOC(
-        data: Data, ncxDir: String, chapterIndexByPath: [String: Int]
-    ) -> [TOCEntry] {
+        data: Data, ncxDir: String, chapterIndexByPath: [String: Int],
+        lowercasedIndex: [String: Int]
+    ) -> TOCSource {
         let delegate = NCXDelegate()
         let parser = XMLParser(data: data)
         parser.delegate = delegate
         parser.parse()
-        var entries: [TOCEntry] = []
-        var seenChapters = Set<Int>()
+        var source = TOCSource()
+        var seen = Set<String>()
         for point in delegate.points {
             let title = point.title
                 .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
                 .trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !title.isEmpty, let src = point.src,
-                  let index = chapterIndexByPath[resolve(base: ncxDir, href: src)],
-                  !seenChapters.contains(index) else { continue }
-            seenChapters.insert(index)
-            entries.append(TOCEntry(title: title, chapterIndex: index))
+            guard !title.isEmpty, let src = point.src, !src.isEmpty else { continue }
+            source.attempted += 1
+            guard let target = tocTarget(
+                href: src, baseDir: ncxDir, ownDocumentPath: nil,
+                chapterIndexByPath: chapterIndexByPath, lowercasedIndex: lowercasedIndex
+            ) else { continue }
+            source.resolved += 1
+            guard seen.insert(tocDuplicateKey(target, title: title)).inserted else { continue }
+            source.entries.append(TOCEntry(
+                title: title, chapterIndex: target.chapterIndex, fragment: target.fragment
+            ))
         }
-        return entries
+        return source
     }
 }
 
@@ -507,6 +762,9 @@ struct OPF {
     var metaCoverID: String?
     /// Manifest id of the EPUB3 navigation document (`properties="nav"`).
     var navItemID: String?
+    /// ALL manifest ids carrying the `nav` property — an in-spine nav doc is
+    /// non-linear whichever declaration order the manifest used.
+    var navItemIDs: Set<String> = []
     /// Manifest id named by `<spine toc="…">` (the EPUB2 NCX).
     var spineTocID: String?
     /// True when the package declares pre-paginated (fixed) layout — the
@@ -514,13 +772,13 @@ struct OPF {
     /// or any spine item's `rendition:layout-pre-paginated` override.
     var isFixedLayout = false
 
-    /// Manifest item for a spine idref. IDs are case-sensitive per spec, but
+    /// Manifest id for a spine idref. IDs are case-sensitive per spec, but
     /// sloppy real-world books mismatch case between spine and manifest —
     /// fall back to a case-insensitive match rather than dropping the chapter.
-    func manifestItem(for idref: String) -> (href: String, type: String)? {
-        if let item = manifest[idref] { return item }
+    func manifestID(for idref: String) -> String? {
+        if manifest[idref] != nil { return idref }
         let lowered = idref.lowercased()
-        return manifest.first { $0.key.lowercased() == lowered }?.value
+        return manifest.first { $0.key.lowercased() == lowered }?.key
     }
 
     /// The NCX manifest id: the spine's `toc` attribute when it resolves,
@@ -591,8 +849,9 @@ private final class OPFDelegate: NSObject, XMLParserDelegate {
                 if opf.coverItemID == nil, properties.contains("cover-image") {
                     opf.coverItemID = id
                 }
-                if opf.navItemID == nil, properties.contains("nav") {
-                    opf.navItemID = id
+                if properties.contains("nav") {
+                    opf.navItemIDs.insert(id)
+                    if opf.navItemID == nil { opf.navItemID = id }
                 }
             }
         case "spine":

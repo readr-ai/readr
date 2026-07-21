@@ -111,7 +111,7 @@ final class EPUBConformanceTests: XCTestCase {
 
     // MARK: - OPF / spine variance
 
-    func testLinearNoSpineItemsAppendAfterTheMainFlow() throws {
+    func testLinearNoSpineItemsKeepPositionAndAreFlaggedNonLinear() throws {
         let opf = makeOPF(
             manifest: """
             <item id="notes" href="notes.xhtml" media-type="application/xhtml+xml"/>
@@ -129,9 +129,14 @@ final class EPUBConformanceTests: XCTestCase {
             ]),
             fallbackTitle: "x"
         )
+        // linear="no" items keep their spine POSITION (links into them keep
+        // working, no surprise reordering) but are flagged non-linear so
+        // continuous reading order skips them.
         XCTAssertEqual(book.chapters.count, 2)
-        XCTAssertTrue(book.chapters[0].text.contains("bright cold day"))
-        XCTAssertTrue(book.chapters[1].text.contains("Endnotes here."))
+        XCTAssertTrue(book.chapters[0].text.contains("Endnotes here."))
+        XCTAssertEqual(book.chapters[0].isLinear, false)
+        XCTAssertTrue(book.chapters[1].text.contains("bright cold day"))
+        XCTAssertNil(book.chapters[1].isLinear)
         XCTAssertEqual(book.chapters.map(\.order), [0, 1])
     }
 
@@ -474,9 +479,11 @@ final class EPUBConformanceTests: XCTestCase {
             container: tocFixture(includeNav: true, includeNCX: true), fallbackTitle: "x"
         )
         // Titles come from the toc nav (not landmarks, not NCX, not headings);
-        // &nbsp;/&amp; decode; the fragment href still maps to chapter 1.
+        // &nbsp;/&amp; decode; the fragment href still maps to chapter 1 and
+        // keeps its fragment for the in-document jump.
         XCTAssertEqual(book.metadata.tableOfContents.map(\.title), ["Nav One", "Nav & Two"])
         XCTAssertEqual(book.metadata.tableOfContents.map(\.chapterIndex), [0, 1])
+        XCTAssertEqual(book.metadata.tableOfContents.map(\.fragment), [nil, "start"])
     }
 
     func testNCXTOCIsUsedWhenThereIsNoNavDoc() throws {
@@ -501,11 +508,16 @@ final class EPUBConformanceTests: XCTestCase {
         )
     }
 
-    func testNavTOCDeduplicatesFragmentsAndDropsUnknownTargets() throws {
+    /// Several TOC entries pointing into ONE spine document all survive
+    /// (fragments distinguish them for in-document jumps); only EXACT
+    /// duplicates (same chapter + fragment + title) collapse, and entries
+    /// whose target isn't a parsed chapter are still dropped.
+    func testNavTOCKeepsFragmentEntriesAndDropsUnknownTargets() throws {
         let navDoc = """
         <html xmlns:epub="http://www.idpf.org/2007/ops"><body>
         <nav epub:type="toc"><ol>
           <li><a href="ch1.xhtml">Intro</a></li>
+          <li><a href="ch1.xhtml#part2">Intro, Part 2</a></li>
           <li><a href="ch1.xhtml#part2">Intro, Part 2</a></li>
           <li><a href="notes.xhtml">Notes (not in spine)</a></li>
           <li><a href="text/ch2.xhtml">Two</a></li>
@@ -531,7 +543,290 @@ final class EPUBConformanceTests: XCTestCase {
             ]),
             fallbackTitle: "x"
         )
-        XCTAssertEqual(book.metadata.tableOfContents.map(\.title), ["Intro", "Two"])
+        XCTAssertEqual(
+            book.metadata.tableOfContents.map(\.title),
+            ["Intro", "Intro, Part 2", "Two"]
+        )
+        XCTAssertEqual(book.metadata.tableOfContents.map(\.chapterIndex), [0, 0, 1])
+        XCTAssertEqual(book.metadata.tableOfContents.map(\.fragment), [nil, "part2", nil])
+    }
+
+    // MARK: - TOC nav selection (epub:type / role token matching)
+
+    /// `epub:type="no-toc"` must not be mistaken for the toc nav (the old
+    /// `\btoc\b` regex matched at the hyphen) — the REAL toc nav later in the
+    /// document wins.
+    func testHyphenatedNoTocNavIsNotSelectedAsTheTOC() throws {
+        let navDoc = """
+        <html xmlns:epub="http://www.idpf.org/2007/ops"><body>
+        <nav epub:type="no-toc"><ol><li><a href="ch1.xhtml">Wrong</a></li></ol></nav>
+        <nav epub:type="toc"><ol>
+          <li><a href="ch1.xhtml">Right One</a></li>
+          <li><a href="text/ch2.xhtml">Right Two</a></li>
+        </ol></nav>
+        </body></html>
+        """
+        let opf = makeOPF(
+            manifest: """
+            <item id="c1" href="ch1.xhtml" media-type="application/xhtml+xml"/>
+            <item id="c2" href="text/ch2.xhtml" media-type="application/xhtml+xml"/>
+            <item id="nav" href="nav.xhtml" properties="nav" media-type="application/xhtml+xml"/>
+            """,
+            spine: """
+            <itemref idref="c1"/>
+            <itemref idref="c2"/>
+            """
+        )
+        let book = try parser.parse(
+            container: container(opf: opf, entries: [
+                "OEBPS/ch1.xhtml": chapterOne,
+                "OEBPS/text/ch2.xhtml": chapterTwo,
+                "OEBPS/nav.xhtml": navDoc,
+            ]),
+            fallbackTitle: "x"
+        )
+        XCTAssertEqual(
+            book.metadata.tableOfContents.map(\.title), ["Right One", "Right Two"]
+        )
+    }
+
+    /// When no nav carries the toc type, landmarks and page-list navs are
+    /// skipped in favor of the first non-auxiliary nav.
+    func testLandmarksAndPageListNavsAreSkippedWhenNoTocNavExists() throws {
+        let navDoc = """
+        <html xmlns:epub="http://www.idpf.org/2007/ops"><body>
+        <nav epub:type="landmarks"><ol><li><a href="ch1.xhtml">Guide</a></li></ol></nav>
+        <nav epub:type="page-list"><ol><li><a href="ch1.xhtml">1</a></li></ol></nav>
+        <nav><ol>
+          <li><a href="ch1.xhtml">One</a></li>
+          <li><a href="text/ch2.xhtml">Two</a></li>
+        </ol></nav>
+        </body></html>
+        """
+        let opf = makeOPF(
+            manifest: """
+            <item id="c1" href="ch1.xhtml" media-type="application/xhtml+xml"/>
+            <item id="c2" href="text/ch2.xhtml" media-type="application/xhtml+xml"/>
+            <item id="nav" href="nav.xhtml" properties="nav" media-type="application/xhtml+xml"/>
+            """,
+            spine: """
+            <itemref idref="c1"/>
+            <itemref idref="c2"/>
+            """
+        )
+        let book = try parser.parse(
+            container: container(opf: opf, entries: [
+                "OEBPS/ch1.xhtml": chapterOne,
+                "OEBPS/text/ch2.xhtml": chapterTwo,
+                "OEBPS/nav.xhtml": navDoc,
+            ]),
+            fallbackTitle: "x"
+        )
+        XCTAssertEqual(book.metadata.tableOfContents.map(\.title), ["One", "Two"])
         XCTAssertEqual(book.metadata.tableOfContents.map(\.chapterIndex), [0, 1])
+    }
+
+    // MARK: - NCX fragments and malformed srcs
+
+    /// NCX entries carry their (percent-decoded) fragment; a fragment-only
+    /// `content src="#x"` is malformed in an NCX and is dropped.
+    func testNCXPopulatesFragmentsAndDropsFragmentOnlySrc() throws {
+        let ncx = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1">
+          <navMap>
+            <navPoint id="n1"><navLabel><text>One</text></navLabel><content src="ch1.xhtml"/></navPoint>
+            <navPoint id="n2"><navLabel><text>Bad</text></navLabel><content src="#loose"/></navPoint>
+            <navPoint id="n3"><navLabel><text>Two</text></navLabel><content src="text/ch2.xhtml#s%201"/></navPoint>
+          </navMap>
+        </ncx>
+        """
+        let opf = makeOPF(
+            manifest: """
+            <item id="c1" href="ch1.xhtml" media-type="application/xhtml+xml"/>
+            <item id="c2" href="text/ch2.xhtml" media-type="application/xhtml+xml"/>
+            <item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>
+            """,
+            spine: """
+            <itemref idref="c1"/>
+            <itemref idref="c2"/>
+            """,
+            spineAttributes: " toc=\"ncx\""
+        )
+        let book = try parser.parse(
+            container: container(opf: opf, entries: [
+                "OEBPS/ch1.xhtml": chapterOne,
+                "OEBPS/text/ch2.xhtml": chapterTwo,
+                "OEBPS/toc.ncx": ncx,
+            ]),
+            fallbackTitle: "x"
+        )
+        XCTAssertEqual(book.metadata.tableOfContents.map(\.title), ["One", "Two"])
+        XCTAssertEqual(book.metadata.tableOfContents.map(\.chapterIndex), [0, 1])
+        XCTAssertEqual(book.metadata.tableOfContents.map(\.fragment), [nil, "s 1"])
+    }
+
+    // MARK: - Partial-TOC rejection and fall-through
+
+    /// A nav doc that resolves only 1 of its 5 entries is a broken source —
+    /// it must fall through to the complete NCX instead of shipping a
+    /// one-entry Contents list.
+    func testNavResolvingFewEntriesFallsThroughToCompleteNCX() throws {
+        let navDoc = """
+        <html xmlns:epub="http://www.idpf.org/2007/ops"><body>
+        <nav epub:type="toc"><ol>
+          <li><a href="gone1.xhtml">Lost One</a></li>
+          <li><a href="gone2.xhtml">Lost Two</a></li>
+          <li><a href="gone3.xhtml">Lost Three</a></li>
+          <li><a href="gone4.xhtml">Lost Four</a></li>
+          <li><a href="ch1.xhtml">Nav One</a></li>
+        </ol></nav>
+        </body></html>
+        """
+        let ncx = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1">
+          <navMap>
+            <navPoint id="n1"><navLabel><text>NCX One</text></navLabel><content src="ch1.xhtml"/></navPoint>
+            <navPoint id="n2"><navLabel><text>NCX Two</text></navLabel><content src="text/ch2.xhtml"/></navPoint>
+          </navMap>
+        </ncx>
+        """
+        let opf = makeOPF(
+            manifest: """
+            <item id="c1" href="ch1.xhtml" media-type="application/xhtml+xml"/>
+            <item id="c2" href="text/ch2.xhtml" media-type="application/xhtml+xml"/>
+            <item id="nav" href="nav.xhtml" properties="nav" media-type="application/xhtml+xml"/>
+            <item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>
+            """,
+            spine: """
+            <itemref idref="c1"/>
+            <itemref idref="c2"/>
+            """,
+            spineAttributes: " toc=\"ncx\""
+        )
+        let book = try parser.parse(
+            container: container(opf: opf, entries: [
+                "OEBPS/ch1.xhtml": chapterOne,
+                "OEBPS/text/ch2.xhtml": chapterTwo,
+                "OEBPS/nav.xhtml": navDoc,
+                "OEBPS/toc.ncx": ncx,
+            ]),
+            fallbackTitle: "x"
+        )
+        XCTAssertEqual(book.metadata.tableOfContents.map(\.title), ["NCX One", "NCX Two"])
+        XCTAssertEqual(book.metadata.tableOfContents.map(\.chapterIndex), [0, 1])
+    }
+
+    /// An NCX whose XML parse aborts mid-document — truncated in the LAST
+    /// navPoint, so `parserError` is set (premature EOF; on Darwin an
+    /// undeclared `&nbsp;` entity aborts the same way) — still parsed most
+    /// of its entries. That partial TOC beats the heading fallback and is
+    /// kept.
+    func testAbortedNCXKeepsMostlyParsedEntries() throws {
+        var manifest = ""
+        var spine = ""
+        var entries: [String: String] = [:]
+        for (i, name) in ["One", "Two", "Three", "Four", "Five"].enumerated() {
+            manifest += "<item id=\"c\(i)\" href=\"ch\(i).xhtml\" media-type=\"application/xhtml+xml\"/>\n"
+            spine += "<itemref idref=\"c\(i)\"/>\n"
+            entries["OEBPS/ch\(i).xhtml"] =
+                "<html><body><h1>Heading \(name)</h1><p>Text.</p></body></html>"
+        }
+        manifest += "<item id=\"ncx\" href=\"toc.ncx\" media-type=\"application/x-dtbncx+xml\"/>"
+        // Truncated mid-way through the fifth navPoint's label: the XML
+        // parse aborts with four complete navPoints collected.
+        entries["OEBPS/toc.ncx"] = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1">
+          <navMap>
+            <navPoint id="n0"><navLabel><text>NCX One</text></navLabel><content src="ch0.xhtml"/></navPoint>
+            <navPoint id="n1"><navLabel><text>NCX Two</text></navLabel><content src="ch1.xhtml"/></navPoint>
+            <navPoint id="n2"><navLabel><text>NCX Three</text></navLabel><content src="ch2.xhtml"/></navPoint>
+            <navPoint id="n3"><navLabel><text>NCX Four</text></navLabel><content src="ch3.xhtml"/></navPoint>
+            <navPoint id="n4"><navLabel><text>NCX Five
+        """
+        let opf = makeOPF(
+            manifest: manifest, spine: spine, spineAttributes: " toc=\"ncx\""
+        )
+        let book = try parser.parse(
+            container: container(opf: opf, entries: entries), fallbackTitle: "x"
+        )
+        XCTAssertEqual(book.chapters.count, 5)
+        // Four of five entries parsed before the abort — kept, not headings.
+        XCTAssertEqual(
+            book.metadata.tableOfContents.map(\.title),
+            ["NCX One", "NCX Two", "NCX Three", "NCX Four"]
+        )
+        XCTAssertEqual(book.metadata.tableOfContents.map(\.chapterIndex), [0, 1, 2, 3])
+    }
+
+    /// The same mid-document abort in the FIRST navPoint leaves nothing
+    /// usable — the parser must fall through to the heading fallback.
+    func testAbortedNCXEarlyFallsThroughToHeadings() throws {
+        let ncx = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1">
+          <navMap>
+            <navPoint id="n1"><navLabel><text>Part I
+        """
+        let opf = makeOPF(
+            manifest: """
+            <item id="c1" href="ch1.xhtml" media-type="application/xhtml+xml"/>
+            <item id="c2" href="text/ch2.xhtml" media-type="application/xhtml+xml"/>
+            <item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>
+            """,
+            spine: """
+            <itemref idref="c1"/>
+            <itemref idref="c2"/>
+            """,
+            spineAttributes: " toc=\"ncx\""
+        )
+        let book = try parser.parse(
+            container: container(opf: opf, entries: [
+                "OEBPS/ch1.xhtml": chapterOne,
+                "OEBPS/text/ch2.xhtml": chapterTwo,
+                "OEBPS/toc.ncx": ncx,
+            ]),
+            fallbackTitle: "x"
+        )
+        XCTAssertEqual(
+            book.metadata.tableOfContents.map(\.title),
+            ["Chapter One", "Chapter Two"]
+        )
+    }
+
+    // MARK: - Heading fallback completeness
+
+    /// With no declared TOC, every LINEAR chapter gets an entry — heading
+    /// when it has one, "Section N" when it doesn't — and non-linear
+    /// chapters (notes files) stay out of Contents.
+    func testHeadingFallbackCoversHeadinglessChaptersAndSkipsNonLinear() throws {
+        let opf = makeOPF(
+            manifest: """
+            <item id="notes" href="notes.xhtml" media-type="application/xhtml+xml"/>
+            <item id="c1" href="ch1.xhtml" media-type="application/xhtml+xml"/>
+            <item id="c2" href="ch2.xhtml" media-type="application/xhtml+xml"/>
+            """,
+            spine: """
+            <itemref idref="notes" linear="no"/>
+            <itemref idref="c1"/>
+            <itemref idref="c2"/>
+            """
+        )
+        let book = try parser.parse(
+            container: container(opf: opf, entries: [
+                "OEBPS/notes.xhtml": "<html><body><p>Endnotes here.</p></body></html>",
+                "OEBPS/ch1.xhtml": chapterOne,
+                "OEBPS/ch2.xhtml": "<html><body><p>No heading, just prose.</p></body></html>",
+            ]),
+            fallbackTitle: "x"
+        )
+        XCTAssertEqual(book.chapters.count, 3)
+        XCTAssertEqual(
+            book.metadata.tableOfContents.map(\.title),
+            ["Chapter One", "Section 2"]
+        )
+        XCTAssertEqual(book.metadata.tableOfContents.map(\.chapterIndex), [1, 2])
     }
 }

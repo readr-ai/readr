@@ -49,6 +49,9 @@ struct PagedChapterView: View {
     /// Theme + typography used to render pages; also drives the
     /// characters-per-page capacity estimate.
     var style: ReaderStyle = ReaderStyle()
+    /// Contents-derived kicker title for a chapter without its own (the host
+    /// resolves it from the TOC; nil keeps an untitled chapter kicker-less).
+    var displayTitle: String? = nil
     /// Highlights in chapter coordinates.
     let highlights: [HighlightSpan]
     /// Inline images keyed by character offset in **chapter** coordinates.
@@ -145,6 +148,9 @@ struct PagedChapterView: View {
     /// Full-height edge hit strip for the page-turn chevron (Apple-Books
     /// edge-tap). Narrower on a phone so it doesn't cover the column's edge.
     private var arrowStripWidth: CGFloat { isCompact ? 24 : 56 }
+    /// Running-head title: the chapter's own, else the host's TOC-derived
+    /// fallback. Drives both the rendered kicker and the capacity/key terms.
+    private var kickerTitle: String? { chapter.title ?? displayTitle }
 
     /// Memoizes the last pagination so page turns/selection don't re-scan the
     /// whole chapter on every body evaluation. Reference type on purpose:
@@ -248,7 +254,7 @@ struct PagedChapterView: View {
         let pageHeight = max(
             1, size.height - (pageInsets.top + pageInsets.bottom) - labelAllowance
         )
-        let hasKicker = chapter.title != nil
+        let hasKicker = kickerTitle != nil
 
         // Every input that changes layout must be in the key: geometry, size,
         // typeface, leading, justification, layout, kicker, image set, and
@@ -424,28 +430,27 @@ struct PagedChapterView: View {
         let pageImages = Dictionary(uniqueKeysWithValues: inlineImages.compactMap { offset, image in
             (offset >= origin && offset < origin + page.text.count) ? (offset - origin, image) : nil
         })
-        // Formatting spans intersecting this page, clamped to the
-        // intersection and rebased — the same shift as highlights below.
-        let pageSpans: [FormatSpan] = (chapter.formatSpans ?? []).compactMap { span in
-            let lower = max(span.start, origin)
-            let upper = min(span.end, origin + page.text.count)
-            guard lower < upper else { return nil }
-            return FormatSpan(start: lower - origin, end: upper - origin, kind: span.kind)
-        }
+        // Formatting spans intersecting this page, rebased — the same shift
+        // as highlights below (paragraph-level kinds snap first, see the
+        // helper).
+        let pageSpans = Self.pageSpans(
+            from: chapter.formatSpans ?? [], chapterText: chapter.text,
+            origin: origin, pageLength: page.text.count
+        )
         VStack(alignment: .leading, spacing: 0) {
             // Chapter kicker as a running head on the spread's first page.
             // Displayed in caps, but exposed to accessibility under the
             // original title so UI tests (and VoiceOver) still find e.g.
             // "Chapter One" on ANY page — the seeded reading position lands
             // mid-chapter. (Capacity reserves a fixed allowance for it.)
-            if showsKicker, let title = chapter.title {
+            if showsKicker, let title = kickerTitle {
                 Text(title.uppercased())
                     .font(.system(size: 11))
                     .kerning(2)
                     .foregroundStyle(style.theme.faint)
                     .lineLimit(1)
                     .accessibilityLabel(title)
-                    .accessibilityIdentifier(title)
+                    .accessibilityIdentifier("reader.kicker")
                     .padding(.bottom, 22)
             }
             SelectableTextView(
@@ -520,6 +525,59 @@ struct PagedChapterView: View {
             var shifted = span
             shifted.range = (span.range.lowerBound + origin)..<(span.range.upperBound + origin)
             return .span(shifted)
+        }
+    }
+
+    /// Formatting spans for one page slice: intersect with the page's range
+    /// (`origin ..< origin + pageLength`, chapter coordinates) and rebase to
+    /// page coordinates. Character-level kinds clamp to the exact
+    /// intersection. PARAGRAPH-level kinds (heading/blockquote/alignment)
+    /// first snap outward to the enclosing \n-separated paragraphs of the
+    /// CHAPTER text (trailing newline included — the renderer's
+    /// paragraphRange semantics): the renderer styles whole paragraphs and
+    /// the paginator measured the full-chapter string that way, so a span
+    /// confined to the previous page's portion of a paragraph split across
+    /// the break must still reach the continuation — the exact-intersection
+    /// clamp dropped it, un-indenting text that was measured WITH the
+    /// indent. Internal + static for the snapshot suite.
+    static func pageSpans(
+        from spans: [FormatSpan], chapterText: String, origin: Int, pageLength: Int
+    ) -> [FormatSpan] {
+        let pageEnd = origin + pageLength
+        // Newline offsets, found lazily: only calls carrying a
+        // paragraph-level span pay for the chapter scan (once, not per span).
+        var newlineOffsets: [Int]?
+        func newlines() -> [Int] {
+            if let newlineOffsets { return newlineOffsets }
+            var found: [Int] = []
+            var offset = 0
+            for character in chapterText {
+                if character == "\n" { found.append(offset) }
+                offset += 1
+            }
+            newlineOffsets = found
+            return found
+        }
+        return spans.compactMap { span in
+            // Degenerate runs must not snap into a whole styled paragraph.
+            guard span.start < span.end else { return nil }
+            var start = span.start
+            var end = span.end
+            switch span.kind {
+            case .heading, .blockquote, .alignment:
+                let breaks = newlines()
+                start = breaks.last(where: { $0 < start }).map { $0 + 1 } ?? 0
+                // `end - 1` so a span already covering its trailing newline
+                // doesn't snap into the following paragraph.
+                end = breaks.first(where: { $0 >= end - 1 }).map { $0 + 1 }
+                    ?? chapterText.count
+            case .bold, .italic, .link, .superscript, .`subscript`, .smallCaps:
+                break
+            }
+            let lower = max(start, origin)
+            let upper = min(end, pageEnd)
+            guard lower < upper else { return nil }
+            return FormatSpan(start: lower - origin, end: upper - origin, kind: span.kind)
         }
     }
 

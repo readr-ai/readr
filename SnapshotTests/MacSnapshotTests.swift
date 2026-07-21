@@ -637,10 +637,34 @@ final class MacSnapshotTests: XCTestCase {
         append(" for plates like this one:\n")
         let imageOffset = text.count
         append("\u{FFFC}")
-        append("\nThe plate above renders at its declared width, not the bitmap's.")
+        append("\nThe plate above renders at its declared width, not the bitmap's.\n")
+        // The audit's new kinds: an <hr> extracts as a centered separator
+        // paragraph; sup/sub shift the baseline; small caps keep body size;
+        // the noteref link resolves to the lifted footnote below.
+        append("* * *", .alignment(.center))
+        append("\n")
+        append("Chemistry sets H")
+        append("2", .`subscript`)
+        append("O beside E = mc")
+        append("2", .superscript)
+        append(", and ")
+        append("small capitals", .smallCaps)
+        append(" close the sampler")
+        append(
+            "1",
+            .superscript,
+            .link(.internalDoc(path: "OEBPS/rich.xhtml", fragment: "fn1"))
+        )
+        append(".")
 
         let chapter = Chapter(
-            title: "Rich Formatting", order: 0, text: text, formatSpans: spans
+            title: "Rich Formatting", order: 0, text: text, formatSpans: spans,
+            sourcePath: "OEBPS/rich.xhtml",
+            footnotes: [Footnote(
+                id: "fn1",
+                text: "A footnote lifted out of the chapter text, shown as a popup.",
+                formatSpans: [FormatSpan(start: 2, end: 10, kind: .italic)]
+            )]
         )
         // 2×-exported figure: 240×160 bitmap declared at 120×80 CSS px.
         let images = [imageOffset: InlineImage(
@@ -650,9 +674,24 @@ final class MacSnapshotTests: XCTestCase {
         return (chapter, images)
     }
 
+    /// The footnote popup renders the lifted note through the shared
+    /// attributed builder (emphasis inside the note styles like the page).
+    func testFootnotePopupRendersLiftedNote() {
+        let (chapter, _) = Self.richFormattingFixture()
+        guard let note = chapter.footnotes?.first else {
+            return XCTFail("The rich-formatting fixture should carry a footnote")
+        }
+        snapshot(
+            FootnoteView(note: note, style: ReaderStyle(theme: .paper, fontSize: 18)),
+            size: CGSize(width: 380, height: 220),
+            name: "m21-footnote-popup"
+        )
+    }
+
     /// The rich-formatting render: h1 + h2, bold/italic (and both merged), a
     /// bulleted list, an indented muted blockquote, an accent underlined
-    /// link, and a declared-width figure — in the scroll column, Paper theme.
+    /// link, a centered separator, sup/sub + small caps, a noteref, and a
+    /// declared-width figure — in the scroll column, Paper theme.
     func testScrollReaderRichFormatting() {
         let (chapter, images) = Self.richFormattingFixture()
         snapshot(
