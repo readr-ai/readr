@@ -1081,22 +1081,43 @@ struct ReaderView: View {
                 footnotePopup = FootnotePopup(note: note)
                 return
             }
-            guard let index = book.chapters.firstIndex(where: { $0.sourcePath == path })
+            guard let index = Self.spineIndex(forPath: path, in: book.chapters)
             else { return }
             let offset = fragment.flatMap { book.chapters[index].anchors?[$0] } ?? 0
             jump(toChapter: index, offset: offset)
         }
     }
 
+    /// Spine entry whose `sourcePath` matches an internal link's archive
+    /// path: exact match first, then case-insensitive — the parser tolerates
+    /// case drift between hrefs and archive paths the same way
+    /// (`EPUBBookParser.lowercasedChapterIndex`). Percent-decoding already
+    /// happened on both sides.
+    private static func spineIndex(forPath path: String, in chapters: [Chapter]) -> Int? {
+        if let exact = chapters.firstIndex(where: { $0.sourcePath == path }) {
+            return exact
+        }
+        let lowercased = path.lowercased()
+        return chapters.firstIndex { $0.sourcePath?.lowercased() == lowercased }
+    }
+
     /// The lifted footnote a noteref resolves to: the TARGET document's notes
-    /// first, then the current chapter's (same-document refs whose paths
-    /// don't match any spine entry). Internal for the snapshot-suite tests.
+    /// when the path resolves to a spine entry, the current chapter's only
+    /// when it resolves to none (same-document refs) or back to the current
+    /// chapter itself. A DIFFERENT resolved target that doesn't lift the id
+    /// returns nil — footnote ids (fn1…) recur per document, so falling back
+    /// would hijack a legitimate cross-document link into an unrelated
+    /// same-id popup; the tap falls through to navigation instead. Internal
+    /// for the snapshot-suite tests.
     static func resolveFootnote(
         id: String, targetPath: String, chapters: [Chapter], currentChapter: Chapter?
     ) -> Footnote? {
-        let target = chapters.first { $0.sourcePath == targetPath }
-        return target?.footnotes?.first { $0.id == id }
-            ?? currentChapter?.footnotes?.first { $0.id == id }
+        guard let index = spineIndex(forPath: targetPath, in: chapters),
+              chapters[index].id != currentChapter?.id
+        else {
+            return currentChapter?.footnotes?.first { $0.id == id }
+        }
+        return chapters[index].footnotes?.first { $0.id == id }
     }
 
     /// Next linear chapter after `index` — spine documents marked

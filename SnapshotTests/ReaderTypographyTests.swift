@@ -603,11 +603,58 @@ final class ReaderTypographyTests: XCTestCase {
         XCTAssertEqual(after.headIndent, 0)
     }
 
+    /// A blockquote span can lie ENTIRELY in the previous page's portion of a
+    /// paragraph split across a page break. The page slicing must still
+    /// deliver the style to the continuation — the paginator measured the
+    /// full-chapter string WITH the indent, so dropping the span un-indented
+    /// the continuation and broke the measure/render agreement. Built the way
+    /// pageView builds its slice: through `PagedChapterView.pageSpans`.
+    func testParagraphSpanBeforeThePageBreakStillStylesTheContinuation() throws {
+        let style = ReaderStyle()
+        // One quote paragraph; the page break falls after "wisdom " (page 2
+        // starts at "that", offset 22). The spans cover page-1 words only.
+        let chapterText = "A quotation of wisdom that continues.\nBack to prose."
+        let origin = 22
+        let pageText = String(chapterText.dropFirst(origin))
+        let pageSpans = PagedChapterView.pageSpans(
+            from: [
+                FormatSpan(start: 0, end: 11, kind: .blockquote),
+                // Character-level kinds keep exact ranges: off-page → dropped.
+                FormatSpan(start: 2, end: 11, kind: .bold),
+            ],
+            chapterText: chapterText, origin: origin, pageLength: pageText.count
+        )
+        // The quote snapped to its whole paragraph (through offset 37 + its
+        // newline), intersected with the page, and rebased; the bold did not.
+        XCTAssertEqual(
+            pageSpans, [FormatSpan(start: 0, end: 16, kind: .blockquote)]
+        )
+        let attributed = TextRangeConvert.attributedString(
+            pageText, highlights: [], style: style, formatSpans: pageSpans
+        )
+        let indent = style.fontSize * 1.5
+        let quote = try XCTUnwrap(
+            attributed.attribute(.paragraphStyle, at: 0, effectiveRange: nil)
+                as? NSParagraphStyle
+        )
+        XCTAssertEqual(quote.firstLineHeadIndent, indent)
+        XCTAssertEqual(quote.headIndent, indent)
+        // The prose paragraph after the quote keeps the base style.
+        let after = try XCTUnwrap(
+            attributed.attribute(.paragraphStyle, at: 17, effectiveRange: nil)
+                as? NSParagraphStyle
+        )
+        XCTAssertEqual(after.headIndent, 0)
+    }
+
     // MARK: - Footnote resolution
 
-    /// A tapped noteref resolves against the TARGET document's lifted notes
-    /// first, then the current chapter's; an unknown fragment resolves to
-    /// nothing (the tap falls through to navigation).
+    /// A tapped noteref resolves against the TARGET document's lifted notes.
+    /// The current chapter's apply only when the path matches no spine entry
+    /// (same-document refs) or resolves back to the current chapter itself —
+    /// a DIFFERENT resolved target lacking the id resolves to NOTHING, so the
+    /// tap navigates instead of hijacking the cross-document link into an
+    /// unrelated same-id popup (footnote ids like fn1 recur per document).
     func testFootnoteResolutionPrefersTargetChapterThenCurrent() {
         let target = Chapter(
             title: "Notes", order: 1, text: "",
@@ -622,6 +669,8 @@ final class ReaderTypographyTests: XCTestCase {
                 Footnote(id: "fn2", text: "Same-document note."),
             ]
         )
+        // The target document lifts the id: its note wins over the current
+        // chapter's same-id note.
         XCTAssertEqual(
             ReaderView.resolveFootnote(
                 id: "fn1", targetPath: "OEBPS/notes.xhtml",
@@ -629,9 +678,34 @@ final class ReaderTypographyTests: XCTestCase {
             )?.text,
             "From the notes doc."
         )
+        // Path resolution tolerates case drift, like the parser.
+        XCTAssertEqual(
+            ReaderView.resolveFootnote(
+                id: "fn1", targetPath: "OEBPS/Notes.XHTML",
+                chapters: [current, target], currentChapter: current
+            )?.text,
+            "From the notes doc."
+        )
+        // A DIFFERENT existing target without the id: nil — navigate, never
+        // the current chapter's same-id note.
+        XCTAssertNil(
+            ReaderView.resolveFootnote(
+                id: "fn2", targetPath: "OEBPS/notes.xhtml",
+                chapters: [current, target], currentChapter: current
+            )
+        )
+        // No spine entry matches the path: the current chapter's notes apply.
         XCTAssertEqual(
             ReaderView.resolveFootnote(
                 id: "fn2", targetPath: "OEBPS/missing.xhtml",
+                chapters: [current, target], currentChapter: current
+            )?.text,
+            "Same-document note."
+        )
+        // The target IS the current chapter: its notes apply.
+        XCTAssertEqual(
+            ReaderView.resolveFootnote(
+                id: "fn2", targetPath: "OEBPS/ch1.xhtml",
                 chapters: [current, target], currentChapter: current
             )?.text,
             "Same-document note."
