@@ -74,6 +74,14 @@ final class AppModel: ObservableObject {
             let url = URL(fileURLWithPath: path)
             Task { await self.importBook(at: url) }
         }
+
+        // `-uiTestFreshDefaults`: forget the persisted reader-layout choice so
+        // a UI test can assert the true first-run default — the suite's
+        // simulator reuses UserDefaults across runs, and an earlier test's
+        // Aa-popover toggle would otherwise leak into the assertion.
+        if ProcessInfo.processInfo.arguments.contains("-uiTestFreshDefaults") {
+            UserDefaults.standard.removeObject(forKey: "readerLayout")
+        }
     }
 
     private static func makeCredentialStore() -> any CredentialStore {

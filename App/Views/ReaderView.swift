@@ -71,7 +71,9 @@ struct ReaderView: View {
     @State private var footnotePopup: FootnotePopup?
 
     /// Persisted reading layout: continuous scroll, one page, or facing pages.
-    @AppStorage("readerLayout") private var layoutRaw = PageLayout.scroll.rawValue
+    // Single page is the first-run default (#42): book-like pagination is the
+    // expected reading posture for EPUBs — Scroll stays one Aa-popover tap away.
+    @AppStorage("readerLayout") private var layoutRaw = PageLayout.singlePage.rawValue
     /// Persisted appearance: reading theme (Paper/Sepia/Night) and text size.
     @AppStorage("readingTheme") private var themeRaw = ReadingTheme.paper.rawValue
     @AppStorage("readingFontSize") private var fontSize = 18.0
@@ -116,7 +118,7 @@ struct ReaderView: View {
     #endif
 
     private var layout: PageLayout {
-        let stored = PageLayout(rawValue: layoutRaw) ?? .scroll
+        let stored = PageLayout(rawValue: layoutRaw) ?? .singlePage
         #if os(iOS)
         // iOS offers single page + scroll only (like Apple Books on iPhone):
         // a facing-page spread doesn't make sense on a handheld screen, so a
@@ -372,8 +374,8 @@ struct ReaderView: View {
                 )
                 // Scroll mode has no pages, but a horizontal flick still
                 // crosses chapters — the paged layouts flow across chapter
-                // walls on swipe, and the default layout offering no swipe
-                // at all reads as broken navigation.
+                // walls on swipe, and a layout offering no swipe at all
+                // reads as broken navigation.
                 .modifier(ChapterSwipe { direction in
                     if direction > 0, let next = linearIndex(after: chapterIndex) {
                         jump(toChapter: next, offset: 0)

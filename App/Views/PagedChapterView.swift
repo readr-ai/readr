@@ -653,6 +653,9 @@ struct PagedChapterView: View {
                 .frame(height: labelAllowance)
                 .frame(maxHeight: .infinity, alignment: .bottom)
                 .allowsHitTesting(false)
+                // Paged-only element: UI tests probe it to prove which
+                // layout the reader is in (see testReaderDefaultsToSinglePage).
+                .accessibilityIdentifier("reader.pageLabel")
         }
     }
 }

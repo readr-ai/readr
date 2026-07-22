@@ -35,6 +35,30 @@ final class ReadrAppUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Sample Book"].firstMatch.waitForExistence(timeout: 5))
     }
 
+    // #42 — a fresh install opens EPUBs in Single page layout, not Scroll.
+    // The paged footer's "Page x of y" label only renders in paged layouts,
+    // so its presence proves which layout the reader started in.
+    // -uiTestFreshDefaults clears any layout choice a previous test persisted.
+    func testReaderDefaultsToSinglePage() {
+        let app = XCUIApplication()
+        app.launchArguments += ["-uiTestSeed", "-uiTestFreshDefaults"]
+        app.launch()
+
+        let bookCell = app.staticTexts["Sample Book"].firstMatch
+        XCTAssertTrue(bookCell.waitForExistence(timeout: 10))
+        bookCell.tap()
+
+        let pageLabel = app.staticTexts["reader.pageLabel"].firstMatch
+        XCTAssertTrue(
+            pageLabel.waitForExistence(timeout: 10),
+            "A fresh install should open the reader paged (Single page), not in Scroll"
+        )
+        XCTAssertTrue(
+            pageLabel.label.hasPrefix("Page "),
+            "The paged footer should read 'Page x of y' (got: \(pageLabel.label))"
+        )
+    }
+
     // J1/J2 — open a seeded book and navigate chapters. iOS has no chapter
     // chevrons (Apple Books-style: swipe or the Contents list) — this drives
     // the Contents path; the swipe path is covered by

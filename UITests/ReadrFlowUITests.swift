@@ -476,8 +476,8 @@ final class ReadrFlowUITests: XCTestCase {
 
     // Scroll mode has no pages, but a horizontal flick must still cross
     // chapters (left → next, right → previous) — the paged layouts already
-    // flow across chapter walls on swipe, and scroll mode (the default)
-    // offering no swipe at all reads as broken navigation.
+    // flow across chapter walls on swipe, and a layout offering no swipe
+    // at all reads as broken navigation.
     func testScrollModeSwipeCrossesChapters() {
         let app = launchSeeded()
         openSampleBook(app)
