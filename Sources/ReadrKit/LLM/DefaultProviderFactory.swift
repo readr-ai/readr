@@ -24,11 +24,15 @@ public enum DefaultProviderFactory {
                 http: http, contextBudget: info.contextBudget
             )
         case .chatGPT:
-            // Placeholder until ChatGPTSubscriptionProvider lands (P3 of this
-            // branch): the kind is not yet reachable from the UI, so treat any
-            // resolution attempt as unconfigured rather than build a wrong
-            // transport.
-            throw ProviderManager.ProviderError.notConfigured(.chatGPT)
+            // This kind only works with subscription OAuth tokens — an API key
+            // stored under it can't drive the ChatGPT backend.
+            guard case .oauth = credentials else {
+                throw ProviderManager.ProviderError.notConfigured(.chatGPT)
+            }
+            return ChatGPTSubscriptionProvider(
+                credentials: credentials!, model: info.modelID,
+                http: http, contextBudget: info.contextBudget
+            )
         case .openRouter:
             guard let credentials else { throw ProviderManager.ProviderError.notConfigured(.openRouter) }
             return OpenAIProvider(

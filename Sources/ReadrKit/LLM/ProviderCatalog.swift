@@ -53,12 +53,20 @@ public enum ProviderCatalog {
     ]
 
     /// ChatGPT subscription models, served by ChatGPT's backend (not
-    /// api.openai.com). NEEDS-VERIFICATION: the backend's accepted model slugs
-    /// must be confirmed with a live subscription sign-in before shipping.
+    /// api.openai.com). The default slug is the one verified working in
+    /// third-party wham clients (Muesli); NEEDS-VERIFICATION: confirm the full
+    /// accepted slug list with a live subscription sign-in before shipping.
     public static let chatGPTModels: [ProviderInfo] = [
         ProviderInfo(
             kind: .chatGPT,
-            modelID: "gpt-5.2",
+            modelID: "gpt-5.4-mini",
+            contextBudget: 128_000,
+            supportsPromptCaching: false,
+            isLocal: false
+        ),
+        ProviderInfo(
+            kind: .chatGPT,
+            modelID: "gpt-5.4",
             contextBudget: 128_000,
             supportsPromptCaching: false,
             isLocal: false

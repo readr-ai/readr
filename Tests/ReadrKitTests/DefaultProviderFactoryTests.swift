@@ -46,6 +46,25 @@ final class DefaultProviderFactoryTests: XCTestCase {
         }
     }
 
+    func testChatGPTBuildsWithOAuthCredentials() throws {
+        let info = ProviderCatalog.defaultModel(for: .chatGPT)
+        let provider = try DefaultProviderFactory.make(
+            info: info,
+            credentials: .oauth(accessToken: "at", refreshToken: "rt", expiresAt: nil),
+            http: http
+        )
+        XCTAssertEqual(provider.info.kind, .chatGPT)
+    }
+
+    func testChatGPTRejectsAPIKeyCredentials() {
+        let info = ProviderCatalog.defaultModel(for: .chatGPT)
+        XCTAssertThrowsError(
+            try DefaultProviderFactory.make(info: info, credentials: .apiKey("sk-x"), http: http)
+        ) {
+            XCTAssertEqual($0 as? ProviderManager.ProviderError, .notConfigured(.chatGPT))
+        }
+    }
+
     func testIntegratesWithProviderManager() throws {
         let store = FakeCredentialStore()
         let manager = ProviderManager(store: store, factory: DefaultProviderFactory.factory(http: http))
