@@ -121,6 +121,26 @@ final class ProviderManagerTests: XCTestCase {
 
     // MARK: - Selection model defaulting
 
+    func testStalePersistedModelIDResolvesToCatalogDefault() throws {
+        // A catalog refresh can retire a model ID that a user's persisted
+        // selection still names (e.g. "gpt-4.1" after the 2026-07 refresh).
+        // Resolution must fall back to the kind's current default rather
+        // than failing or resurrecting the retired ID.
+        let store = FakeCredentialStore()
+        let factory = CapturingFactory()
+        let manager = makeManager(store: store, factory: factory)
+
+        try store.save(.apiKey("sk-test"), for: .openAI)
+        manager.setActive(kind: .openAI, modelID: "gpt-4.1")
+
+        let provider = try manager.activeProvider()
+        XCTAssertEqual(
+            provider?.info.modelID,
+            ProviderCatalog.defaultModel(for: .openAI).modelID,
+            "A retired persisted model ID must resolve to the catalog default"
+        )
+    }
+
     func testSetActiveDefaultsToCatalogDefaultModel() {
         let store = FakeCredentialStore()
         let factory = CapturingFactory()
