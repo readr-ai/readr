@@ -82,6 +82,22 @@ final class AppModel: ObservableObject {
         if ProcessInfo.processInfo.arguments.contains("-uiTestFreshDefaults") {
             UserDefaults.standard.removeObject(forKey: "readerLayout")
         }
+
+        // `-uiTestSeedProviderKeys`: mark both remote providers as configured
+        // (with obvious non-secret placeholder values — NOT real or realistic
+        // API keys) and make Anthropic the active selection, so provider-
+        // switching UI tests need no keyboard input (typing into a second
+        // SecureField mid-sheet is a chronic XCUITest focus flake).
+        // Isolation: requires `-uiTestInMemoryCredentials`, which swaps the
+        // store for `InMemoryCredentialStore` — these placeholders can never
+        // reach the real Keychain, and the flag pair only exists in UI-test
+        // launches.
+        if ProcessInfo.processInfo.arguments.contains("-uiTestSeedProviderKeys"),
+           ProcessInfo.processInfo.arguments.contains("-uiTestInMemoryCredentials") {
+            try? credentials.save(.apiKey("uitest-placeholder-not-a-secret"), for: .anthropic)
+            try? credentials.save(.apiKey("uitest-placeholder-not-a-secret"), for: .openAI)
+            providerManager.setActive(kind: .anthropic)
+        }
     }
 
     private static func makeCredentialStore() -> any CredentialStore {
