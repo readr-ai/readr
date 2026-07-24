@@ -130,7 +130,7 @@ struct ProviderSettingsView: View {
                     Button {
                         Task { await model.signIn(kind) }
                     } label: {
-                        if model.isSigningIn {
+                        if model.signingInKind == kind {
                             ProgressView()
                                 .controlSize(.small)
                         } else {

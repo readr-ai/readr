@@ -113,7 +113,7 @@ public struct ChatGPTSubscriptionProvider: LLMProvider, CredentialValidating {
             HTTPRequest(
                 url: Self.validationEndpoint,
                 method: .get,
-                headers: headers(accessToken: authTokenOrEmpty, accountID: accountID)
+                headers: headers(accessToken: accessToken, accountID: accountID)
             )
         )
         try response.throwIfUnsuccessful()
@@ -149,11 +149,6 @@ public struct ChatGPTSubscriptionProvider: LLMProvider, CredentialValidating {
     }
 
     // MARK: - Request building
-
-    private var authTokenOrEmpty: String {
-        if case let .oauth(accessToken, _, _) = credentials { return accessToken }
-        return ""
-    }
 
     private func headers(accessToken: String, accountID: String) -> [String: String] {
         [

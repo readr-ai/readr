@@ -371,7 +371,11 @@ public final class ProviderManager: @unchecked Sendable {
             try store.save(refreshed, for: kind)
         } catch AuthError.tokenExchangeFailed, AuthError.refreshFailed {
             // The provider rejected the refresh token — proven re-auth case.
+            // Bump the generation too (the pattern `clearValidation` sets):
+            // a validate() already probing with the old token could otherwise
+            // commit a stale `.active` over this verdict.
             lock.lock()
+            _validationGeneration[kind, default: 0] += 1
             _validation[kind] = .invalid(
                 reason: "Your session has expired. Sign in again in Settings → AI Providers."
             )

@@ -26,11 +26,11 @@ public enum DefaultProviderFactory {
         case .chatGPT:
             // This kind only works with subscription OAuth tokens — an API key
             // stored under it can't drive the ChatGPT backend.
-            guard case .oauth = credentials else {
+            guard let credentials, case .oauth = credentials else {
                 throw ProviderManager.ProviderError.notConfigured(.chatGPT)
             }
             return ChatGPTSubscriptionProvider(
-                credentials: credentials!, model: info.modelID,
+                credentials: credentials, model: info.modelID,
                 http: http, contextBudget: info.contextBudget
             )
         case .openRouter:

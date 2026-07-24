@@ -5,6 +5,31 @@ import XCTest
 /// tokens through the injected refresher before providers are built.
 final class ProviderManagerRefreshTests: XCTestCase {
 
+    /// A `CredentialValidating` provider whose probe blocks until released,
+    /// so tests can interleave other manager calls mid-validation.
+    private final class GatedValidatingProvider: LLMProvider, CredentialValidating, @unchecked Sendable {
+        let info = ProviderInfo(
+            kind: .chatGPT, modelID: "gpt-5.4-mini", contextBudget: 128_000,
+            supportsPromptCaching: false, isLocal: false
+        )
+        private let started = AsyncStream<Void>.makeStream()
+        private let release = AsyncStream<Void>.makeStream()
+
+        /// Await the probe having begun.
+        func probeStarted() async { for await _ in started.stream { break } }
+        func releaseProbe() { release.continuation.yield() }
+
+        func validateCredential() async throws {
+            started.continuation.yield()
+            for await _ in release.stream { break }
+        }
+
+        func stream(_ request: ChatRequest) -> AsyncThrowingStream<ChatChunk, Error> {
+            AsyncThrowingStream { $0.finish() }
+        }
+        func countTokens(_ text: String) throws -> Int { max(1, text.count / 4) }
+    }
+
     /// Thread-safe call recorder for the refresher closure.
     private final class RefreshRecorder: @unchecked Sendable {
         private let lock = NSLock()
@@ -156,6 +181,40 @@ final class ProviderManagerRefreshTests: XCTestCase {
             return XCTFail("credentials should be untouched")
         }
         XCTAssertEqual(accessToken, "old-at")
+    }
+
+    /// A validate() that was already probing when a refresh rejection lands
+    /// must not overwrite the `.invalid` verdict with its stale `.active` —
+    /// the old access token may still probe fine right up until expiry.
+    func testRefreshRejectionDiscardsInFlightValidation() async throws {
+        let store = FakeCredentialStore()
+        // Fresh enough to skip refresh at validate() entry (beyond the skew).
+        try store.save(
+            .oauth(accessToken: "at", refreshToken: "rt", expiresAt: Date(timeIntervalSinceNow: 300)),
+            for: .chatGPT
+        )
+        let gate = GatedValidatingProvider()
+        let manager = ProviderManager(
+            store: store,
+            factory: { _, _ in gate },
+            tokenRefresher: { _, _ in throw AuthError.tokenExchangeFailed("invalid_grant") }
+        )
+
+        let validation = Task { await manager.validate(.chatGPT) }
+        await gate.probeStarted()
+
+        // Mid-probe, the token hits expiry elsewhere and the refresh is
+        // rejected (e.g. the Ask path tried to renew).
+        try store.save(expiredCredentials(), for: .chatGPT)
+        await manager.refreshCredentialsIfNeeded(.chatGPT)
+        gate.releaseProbe()
+        _ = await validation.value
+
+        XCTAssertEqual(
+            manager.validationState(.chatGPT),
+            .invalid(reason: "Your session has expired. Sign in again in Settings → AI Providers."),
+            "the rejection verdict must survive the in-flight validation"
+        )
     }
 
     func testValidateRefreshesExpiredCredentialsFirst() async throws {

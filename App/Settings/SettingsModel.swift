@@ -8,7 +8,11 @@ final class SettingsModel: ObservableObject {
     @Published private(set) var configured: [ProviderInfo.Kind: Bool] = [:]
     @Published var activeSelection: ProviderSelection?
     @Published var errorMessage: String?
-    @Published var isSigningIn = false
+    /// The kind whose OAuth flow is in flight, or nil. Non-nil disables every
+    /// sign-in button (one loopback flow at a time); only the matching card
+    /// shows the spinner.
+    @Published var signingInKind: ProviderInfo.Kind?
+    var isSigningIn: Bool { signingInKind != nil }
     /// Latest validation/readiness state per kind, mirrored from the manager so
     /// the cards can show Validating… / Connected / an error inline (A2/A3).
     @Published private(set) var validation: [ProviderInfo.Kind: ProviderManager.ValidationState] = [:]
@@ -185,8 +189,9 @@ final class SettingsModel: ObservableObject {
 
     func signIn(_ kind: ProviderInfo.Kind) async {
         guard let config = Self.oauthConfig(for: kind) else { return }
-        isSigningIn = true
-        defer { isSigningIn = false }
+        guard signingInKind == nil else { return }
+        signingInKind = kind
+        defer { signingInKind = nil }
         do {
             let credentials = try await OAuthCoordinator().signIn(config: config)
             try store.save(credentials, for: kind)
