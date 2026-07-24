@@ -73,7 +73,19 @@ final class ErrorMessagesTests: XCTestCase {
 
         let openAI = ProviderManager.ProviderError
             .notConfigured(.openAI).localizedDescription
-        XCTAssertTrue(openAI.contains("ChatGPT"), openAI)
+        XCTAssertTrue(openAI.contains("OpenAI"), openAI)
+        XCTAssertTrue(openAI.localizedCaseInsensitiveContains("API key"), openAI)
+
+        // ChatGPT is the subscription path — its fix is signing in, not a key.
+        let chatGPT = ProviderManager.ProviderError
+            .notConfigured(.chatGPT).localizedDescription
+        XCTAssertTrue(chatGPT.contains("ChatGPT"), chatGPT)
+        XCTAssertTrue(chatGPT.localizedCaseInsensitiveContains("sign in"), chatGPT)
+        XCTAssertFalse(chatGPT.localizedCaseInsensitiveContains("API key"), chatGPT)
+
+        let openRouter = ProviderManager.ProviderError
+            .notConfigured(.openRouter).localizedDescription
+        XCTAssertTrue(openRouter.contains("OpenRouter"), openRouter)
     }
 
     func testLocalMismatchIsReadable() {

@@ -33,7 +33,12 @@ public protocol LocalReadinessProbing: Sendable {
 }
 
 public struct ProviderInfo: Sendable, Hashable {
-    public enum Kind: String, Sendable, Hashable, Codable { case anthropic, openAI, local }
+    /// `openAI` is the API-key path against api.openai.com; `chatGPT` is the
+    /// separate subscription-OAuth path against ChatGPT's backend — distinct
+    /// kinds because their credentials, catalogs, and endpoints all differ.
+    public enum Kind: String, Sendable, Hashable, Codable {
+        case anthropic, openAI, chatGPT, openRouter, local
+    }
     public var kind: Kind
     public var modelID: String
     /// Usable context budget in tokens (after reserving room for the reply).

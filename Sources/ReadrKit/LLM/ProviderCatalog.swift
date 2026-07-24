@@ -52,6 +52,55 @@ public enum ProviderCatalog {
         ),
     ]
 
+    /// ChatGPT subscription models, served by ChatGPT's backend (not
+    /// api.openai.com). The default slug is the one verified working in
+    /// third-party wham clients (Muesli); NEEDS-VERIFICATION: confirm the full
+    /// accepted slug list with a live subscription sign-in before shipping.
+    public static let chatGPTModels: [ProviderInfo] = [
+        ProviderInfo(
+            kind: .chatGPT,
+            modelID: "gpt-5.4-mini",
+            contextBudget: 128_000,
+            supportsPromptCaching: false,
+            isLocal: false
+        ),
+        ProviderInfo(
+            kind: .chatGPT,
+            modelID: "gpt-5.4",
+            contextBudget: 128_000,
+            supportsPromptCaching: false,
+            isLocal: false
+        ),
+    ]
+
+    /// OpenRouter models (OpenAI-compatible API; slugs are namespaced).
+    /// A deliberately small starter set: one strong default, one budget
+    /// option, one free-tier model users can try before adding credits.
+    /// NEEDS-VERIFICATION: slugs drift — especially the `:free` lineup.
+    public static let openRouterModels: [ProviderInfo] = [
+        ProviderInfo(
+            kind: .openRouter,
+            modelID: "anthropic/claude-sonnet-4-6",
+            contextBudget: 200_000,
+            supportsPromptCaching: false,
+            isLocal: false
+        ),
+        ProviderInfo(
+            kind: .openRouter,
+            modelID: "openai/gpt-4.1",
+            contextBudget: 128_000,
+            supportsPromptCaching: false,
+            isLocal: false
+        ),
+        ProviderInfo(
+            kind: .openRouter,
+            modelID: "meta-llama/llama-3.3-70b-instruct:free",
+            contextBudget: 65_536,
+            supportsPromptCaching: false,
+            isLocal: false
+        ),
+    ]
+
     /// On-device models — enable the zero-egress privacy mode.
     public static let localModels: [ProviderInfo] = [
         ProviderInfo(
@@ -72,13 +121,15 @@ public enum ProviderCatalog {
 
     /// Every selectable model, across all kinds.
     public static let all: [ProviderInfo] =
-        anthropicModels + openAIModels + localModels
+        anthropicModels + openAIModels + chatGPTModels + openRouterModels + localModels
 
     /// The models available for a given provider kind.
     public static func models(for kind: ProviderInfo.Kind) -> [ProviderInfo] {
         switch kind {
         case .anthropic: return anthropicModels
         case .openAI: return openAIModels
+        case .chatGPT: return chatGPTModels
+        case .openRouter: return openRouterModels
         case .local: return localModels
         }
     }

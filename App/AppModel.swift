@@ -45,7 +45,15 @@ final class AppModel: ObservableObject {
         self.providerManager = ProviderManager(
             store: credentials,
             factory: DefaultProviderFactory.factory(),
-            persistingIn: .standard
+            persistingIn: .standard,
+            tokenRefresher: { kind, stored in
+                // Only kinds with an OAuth config can renew; anything else
+                // reaching here holds unrefreshable tokens → re-auth.
+                guard let config = OAuthProviderConfig.config(for: kind) else {
+                    throw AuthError.refreshFailed
+                }
+                return try await OAuthClient(config: config).refresh(stored)
+            }
         )
 
         // All stored properties are initialized above — only now may init
@@ -695,6 +703,23 @@ final class AppModel: ObservableObject {
     func makeAskService() -> AskService? {
         guard let provider = activeProvider() else { return nil }
         return AskService(strategy: AdaptiveContextStrategy(index: ragIndex), provider: provider)
+    }
+
+    /// Renew the active provider's OAuth tokens if they're at expiry, so a
+    /// provider built right after holds fresh credentials. No-op for API-key
+    /// and local providers. Await this before `activeProvider()` on the
+    /// AI-request paths (ask, compose); render-time nil-checks stay sync.
+    func refreshActiveProviderCredentialsIfNeeded() async {
+        guard let kind = providerManager.selection?.kind else { return }
+        await providerManager.refreshCredentialsIfNeeded(kind)
+    }
+
+    /// `refreshActiveProviderCredentialsIfNeeded()` + `activeProvider()` in
+    /// one await — the provider handed back is built from post-refresh
+    /// credentials.
+    func refreshedActiveProvider() async -> LLMProvider? {
+        await refreshActiveProviderCredentialsIfNeeded()
+        return activeProvider()
     }
 
     /// The active LLM provider, or nil if none is configured.

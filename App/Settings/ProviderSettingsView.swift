@@ -126,33 +126,44 @@ struct ProviderSettingsView: View {
             statusLine(status)
 
             if kind != .local {
-                APIKeyField(kind: kind, theme: theme) { model.saveAPIKey($0, for: kind) }
-                // First-run users stall at the key field with no idea where
-                // keys come from — link straight to the provider's console.
-                if let console = keyConsole(for: kind) {
-                    Link(destination: console.url) {
-                        Label("Get an API key", systemImage: "arrow.up.right.square")
-                            .font(.caption)
-                            .foregroundStyle(theme.muted)
-                    }
-                    .accessibilityIdentifier("settings.getKey.\(console.slug)")
-                }
                 if model.supportsOAuth(kind) {
                     Button {
                         Task { await model.signIn(kind) }
                     } label: {
-                        if model.isSigningIn {
+                        if model.signingInKind == kind {
                             ProgressView()
                                 .controlSize(.small)
                         } else {
-                            Label("Sign in with subscription", systemImage: "person.badge.key")
+                            Label(signInLabel(for: kind), systemImage: "person.badge.key")
                                 .font(.caption)
                                 .foregroundStyle(theme.muted)
                         }
                     }
                     .buttonStyle(.plain)
-                    .accessibilityLabel("Sign in with subscription")
+                    .accessibilityLabel(signInLabel(for: kind))
                     .disabled(model.isSigningIn)
+                    // The subscription path rides an unofficial client — say
+                    // so up front instead of surprising the reader later
+                    // (docs/AUTH.md ToS caveat; keep the key path primary).
+                    if kind == .chatGPT {
+                        Text("Uses your ChatGPT subscription. This unofficial path may be subject to OpenAI's terms.")
+                            .font(.caption2)
+                            .foregroundStyle(theme.faint)
+                            .accessibilityIdentifier("settings.tosCaveat.chatgpt")
+                    }
+                }
+                if usesAPIKey(kind) {
+                    APIKeyField(kind: kind, theme: theme) { model.saveAPIKey($0, for: kind) }
+                    // First-run users stall at the key field with no idea where
+                    // keys come from — link straight to the provider's console.
+                    if let console = keyConsole(for: kind) {
+                        Link(destination: console.url) {
+                            Label("Get an API key", systemImage: "arrow.up.right.square")
+                                .font(.caption)
+                                .foregroundStyle(theme.muted)
+                        }
+                        .accessibilityIdentifier("settings.getKey.\(console.slug)")
+                    }
                 }
             } else {
                 // Local: a manual re-check for when the reader has just started
@@ -215,15 +226,41 @@ struct ProviderSettingsView: View {
             .accessibilityIdentifier("settings.activeBadge.\(kind.rawValue)")
     }
 
+    /// Whether the card offers a paste-a-key path. ChatGPT is
+    /// subscription-only (its backend can't be driven by an API key); Local
+    /// needs no credentials at all.
+    private func usesAPIKey(_ kind: ProviderInfo.Kind) -> Bool {
+        kind != .chatGPT && kind != .local
+    }
+
+    /// The per-provider sign-in button title — also the accessibility label
+    /// the UI tests assert.
+    private func signInLabel(for kind: ProviderInfo.Kind) -> String {
+        switch kind {
+        case .chatGPT: return "Sign in with ChatGPT"
+        case .openRouter: return "Sign in with OpenRouter"
+        case .anthropic, .openAI, .local: return "Sign in with subscription"
+        }
+    }
+
     /// Small pill naming how this provider connects, derived from the flow it
     /// offers: keys for cloud providers, on-device for the local model.
     private func badge(for kind: ProviderInfo.Kind) -> some View {
-        Text(kind == .local ? "Local" : "API key")
+        Text(badgeLabel(for: kind))
             .font(.caption2.weight(.semibold))
             .foregroundStyle(theme.faint)
             .padding(.vertical, 2)
             .padding(.horizontal, 7)
             .overlay(Capsule().strokeBorder(theme.line, lineWidth: 1))
+    }
+
+    private func badgeLabel(for kind: ProviderInfo.Kind) -> String {
+        switch kind {
+        case .local: return "Local"
+        case .chatGPT: return "Subscription"
+        case .openRouter: return "Sign in or key"
+        case .anthropic, .openAI: return "API key"
+        }
     }
 
     /// The provider console where a key is created, or nil for kinds that
@@ -234,7 +271,10 @@ struct ProviderSettingsView: View {
             return (URL(string: "https://console.anthropic.com/settings/keys")!, "anthropic")
         case .openAI:
             return (URL(string: "https://platform.openai.com/api-keys")!, "openai")
-        case .local:
+        case .openRouter:
+            return (URL(string: "https://openrouter.ai/keys")!, "openrouter")
+        case .chatGPT, .local:
+            // ChatGPT connects by subscription sign-in only; Local needs no key.
             return nil
         }
     }
@@ -242,7 +282,9 @@ struct ProviderSettingsView: View {
     private func title(for kind: ProviderInfo.Kind) -> String {
         switch kind {
         case .anthropic: return "Claude (Anthropic)"
-        case .openAI: return "ChatGPT (OpenAI)"
+        case .openAI: return "OpenAI (API key)"
+        case .chatGPT: return "ChatGPT (subscription)"
+        case .openRouter: return "OpenRouter"
         case .local: return "Local model (on-device)"
         }
     }

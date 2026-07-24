@@ -117,6 +117,17 @@ final class ProviderManagerTests: XCTestCase {
             Set(manager.availableKinds()),
             Set([.anthropic, .openAI, .local])
         )
+
+        // The sign-in kinds surface once their credentials exist: OpenRouter
+        // stores the key its PKCE exchange returns, ChatGPT stores OAuth tokens.
+        try store.save(.apiKey("sk-or-key"), for: .openRouter)
+        try store.save(
+            .oauth(accessToken: "at", refreshToken: "rt", expiresAt: nil), for: .chatGPT
+        )
+        XCTAssertEqual(
+            Set(manager.availableKinds()),
+            Set([.anthropic, .openAI, .openRouter, .chatGPT, .local])
+        )
     }
 
     // MARK: - Selection model defaulting
@@ -153,6 +164,8 @@ final class ProviderManagerTests: XCTestCase {
     func testCatalogAllCountEqualsSum() {
         let expected = ProviderCatalog.anthropicModels.count
             + ProviderCatalog.openAIModels.count
+            + ProviderCatalog.chatGPTModels.count
+            + ProviderCatalog.openRouterModels.count
             + ProviderCatalog.localModels.count
         XCTAssertEqual(ProviderCatalog.all.count, expected)
     }

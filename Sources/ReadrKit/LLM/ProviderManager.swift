@@ -42,7 +42,11 @@ public final class ProviderManager: @unchecked Sendable {
                 case .anthropic:
                     return "Claude (Anthropic) isn't connected. Add an API key in Settings → AI Providers."
                 case .openAI:
-                    return "ChatGPT (OpenAI) isn't connected. Add an API key in Settings → AI Providers."
+                    return "OpenAI isn't connected. Add an API key in Settings → AI Providers."
+                case .chatGPT:
+                    return "ChatGPT isn't connected. Sign in with your ChatGPT account in Settings → AI Providers."
+                case .openRouter:
+                    return "OpenRouter isn't connected. Sign in or add an API key in Settings → AI Providers."
                 case .local:
                     return "The local model isn't available. Make sure Ollama is running on this device."
                 }
@@ -83,11 +87,23 @@ public final class ProviderManager: @unchecked Sendable {
         case unavailable(reason: String?)
     }
 
+    /// Renews an expired OAuth credential for a kind (typically wrapping
+    /// `OAuthClient.refresh`). Throwing `AuthError.tokenExchangeFailed` /
+    /// `.refreshFailed` marks the credential invalid (re-auth required);
+    /// any other error is treated as transient.
+    public typealias TokenRefresher =
+        @Sendable (ProviderInfo.Kind, Credentials) async throws -> Credentials
+
     private let lock = NSLock()
     private let store: CredentialStore
     private let factory: ProviderFactory
+    private let tokenRefresher: TokenRefresher?
     private let defaults: UserDefaults?
     private var _selection: ProviderSelection?
+    /// In-flight refresh per kind so concurrent callers share one exchange —
+    /// refresh tokens are often single-use, so a duplicate POST could revoke
+    /// the session the first one just renewed.
+    private var _refreshTasks: [ProviderInfo.Kind: Task<Void, Never>] = [:]
     /// Latest validation/readiness state per kind (nil == never checked).
     private var _validation: [ProviderInfo.Kind: ValidationState] = [:]
     /// Per-kind generation counter. Bumped whenever the credential/selection
@@ -115,11 +131,13 @@ public final class ProviderManager: @unchecked Sendable {
         store: CredentialStore,
         factory: @escaping ProviderFactory,
         selection: ProviderSelection? = nil,
-        persistingIn defaults: UserDefaults? = nil
+        persistingIn defaults: UserDefaults? = nil,
+        tokenRefresher: TokenRefresher? = nil
     ) {
         self.store = store
         self.factory = factory
         self.defaults = defaults
+        self.tokenRefresher = tokenRefresher
         self._selection = selection ?? Self.loadSelection(from: defaults)
     }
 
@@ -289,8 +307,88 @@ public final class ProviderManager: @unchecked Sendable {
     /// written to the stored state. The returned value is best-effort in that
     /// case; callers that must reflect the committed state should re-read
     /// `validationState(_:)` after awaiting (as `SettingsModel.validate` does).
+    // MARK: - OAuth refresh
+
+    /// How early before `expiresAt` a token is treated as expired, so a
+    /// request started just under the wire doesn't race the expiry.
+    private static let refreshSkew: TimeInterval = 60
+
+    /// Whether stored credentials are OAuth tokens at (or within the skew
+    /// window of) expiry — the only case the refresher should touch.
+    private static func needsRefresh(_ credentials: Credentials) -> Bool {
+        guard case let .oauth(_, _, expiresAt?) = credentials else { return false }
+        return expiresAt <= Date().addingTimeInterval(refreshSkew)
+    }
+
+    /// Proactively renew an expired (or nearly expired) OAuth credential via
+    /// the injected `tokenRefresher`, persisting the rotated tokens. No-op for
+    /// API keys, fresh tokens, missing credentials, or when no refresher is
+    /// configured. Concurrent callers await a single shared refresh.
+    ///
+    /// On a token-endpoint rejection the kind is marked
+    /// `.invalid` ("sign in again"); on transient/transport errors nothing is
+    /// recorded — the following request will surface its own actionable error.
+    /// A successful refresh deliberately does NOT clear validation state: the
+    /// logical credential is unchanged, so a prior `.active` stays earned.
+    public func refreshCredentialsIfNeeded(_ kind: ProviderInfo.Kind) async {
+        guard tokenRefresher != nil else { return }
+        guard let stored = (try? store.load(for: kind)) ?? nil, Self.needsRefresh(stored) else {
+            return
+        }
+
+        let task: Task<Void, Never>
+        lock.lock()
+        if let existing = _refreshTasks[kind] {
+            task = existing
+            lock.unlock()
+        } else {
+            let newTask = Task { [weak self] () -> Void in
+                await self?.performRefresh(kind)
+                return
+            }
+            _refreshTasks[kind] = newTask
+            lock.unlock()
+            task = newTask
+        }
+        await task.value
+    }
+
+    private func performRefresh(_ kind: ProviderInfo.Kind) async {
+        defer {
+            lock.lock()
+            _refreshTasks[kind] = nil
+            lock.unlock()
+        }
+        // Re-load under the in-flight guard: a caller that queued behind an
+        // earlier refresh finds fresh tokens here and stops.
+        guard let refresher = tokenRefresher,
+              let stored = (try? store.load(for: kind)) ?? nil,
+              Self.needsRefresh(stored) else {
+            return
+        }
+        do {
+            let refreshed = try await refresher(kind, stored)
+            try store.save(refreshed, for: kind)
+        } catch AuthError.tokenExchangeFailed, AuthError.refreshFailed {
+            // The provider rejected the refresh token — proven re-auth case.
+            // Bump the generation too (the pattern `clearValidation` sets):
+            // a validate() already probing with the old token could otherwise
+            // commit a stale `.active` over this verdict.
+            lock.lock()
+            _validationGeneration[kind, default: 0] += 1
+            _validation[kind] = .invalid(
+                reason: "Your session has expired. Sign in again in Settings → AI Providers."
+            )
+            lock.unlock()
+        } catch {
+            // Transient (offline, 5xx, Keychain hiccup): leave state alone so a
+            // momentary failure doesn't demote a working credential.
+        }
+    }
+
     @discardableResult
     public func validate(_ kind: ProviderInfo.Kind) async -> ValidationState {
+        await refreshCredentialsIfNeeded(kind)
         let token = beginValidation(for: kind)
 
         let info = ProviderCatalog.models(for: kind)
@@ -392,7 +490,7 @@ public final class ProviderManager: @unchecked Sendable {
 
     /// The kinds that are currently usable. Local is always included.
     public func availableKinds() -> [ProviderInfo.Kind] {
-        let allKinds: [ProviderInfo.Kind] = [.anthropic, .openAI, .local]
+        let allKinds: [ProviderInfo.Kind] = [.anthropic, .openAI, .chatGPT, .openRouter, .local]
         return allKinds.filter { isConfigured($0) }
     }
 

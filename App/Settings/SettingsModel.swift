@@ -8,7 +8,11 @@ final class SettingsModel: ObservableObject {
     @Published private(set) var configured: [ProviderInfo.Kind: Bool] = [:]
     @Published var activeSelection: ProviderSelection?
     @Published var errorMessage: String?
-    @Published var isSigningIn = false
+    /// The kind whose OAuth flow is in flight, or nil. Non-nil disables every
+    /// sign-in button (one loopback flow at a time); only the matching card
+    /// shows the spinner.
+    @Published var signingInKind: ProviderInfo.Kind?
+    var isSigningIn: Bool { signingInKind != nil }
     /// Latest validation/readiness state per kind, mirrored from the manager so
     /// the cards can show Validating… / Connected / an error inline (A2/A3).
     @Published private(set) var validation: [ProviderInfo.Kind: ProviderManager.ValidationState] = [:]
@@ -23,8 +27,10 @@ final class SettingsModel: ObservableObject {
     private let skipValidation = ProcessInfo.processInfo.arguments
         .contains("-uiTestSkipProviderValidation")
 
-    /// Every provider kind the app knows about, in display order.
-    static let allKinds: [ProviderInfo.Kind] = [.anthropic, .openAI, .local]
+    /// Every provider kind the app knows about, in display order: the two
+    /// sign-in paths lead (lowest-friction first-run), then the key-only
+    /// cloud providers, then Local.
+    static let allKinds: [ProviderInfo.Kind] = [.chatGPT, .openRouter, .anthropic, .openAI, .local]
 
     let kinds: [ProviderInfo.Kind] = SettingsModel.allKinds
 
@@ -183,8 +189,9 @@ final class SettingsModel: ObservableObject {
 
     func signIn(_ kind: ProviderInfo.Kind) async {
         guard let config = Self.oauthConfig(for: kind) else { return }
-        isSigningIn = true
-        defer { isSigningIn = false }
+        guard signingInKind == nil else { return }
+        signingInKind = kind
+        defer { signingInKind = nil }
         do {
             let credentials = try await OAuthCoordinator().signIn(config: config)
             try store.save(credentials, for: kind)
@@ -226,27 +233,13 @@ final class SettingsModel: ObservableObject {
         Self.oauthConfig(for: kind) != nil
     }
 
+    /// Delegates to `OAuthProviderConfig.config(for:)` — the single source of
+    /// truth shared with the token refresher. `.chatGPT` and `.openRouter`
+    /// offer sign-in; `.openAI` is API-key-only by design; Anthropic
+    /// subscription OAuth is intentionally NOT offered (Anthropic's Consumer
+    /// Terms prohibit Free/Pro/Max OAuth tokens in third-party apps — use an
+    /// Anthropic API key instead; docs/AUTH.md).
     static func oauthConfig(for kind: ProviderInfo.Kind) -> OAuthProviderConfig? {
-        switch kind {
-        // OpenAI subscription OAuth stays hidden until it's verified
-        // end-to-end: the flow borrows the Codex CLI's client registration
-        // and its tokens are not expected to authenticate against
-        // api.openai.com, and no token-refresh path is wired up yet
-        // (`OAuthClient.refresh` has no call sites). The iOS in-process
-        // browser plumbing IS now implemented — OAuthCoordinator presents an
-        // SFSafariViewController so the app stays foregrounded and the
-        // loopback server can answer the 127.0.0.1:1455 redirect — but it
-        // can't be exercised without a signed build on a physical device
-        // (developer account not yet verified). Re-enable by returning
-        // `.openAI` once the whole flow is verified on-device — the sign-in
-        // button reappears automatically (see `supportsOAuth`), and flip
-        // testProviderSettingsOffersNoOAuthSignIn to match.
-        case .openAI: return nil
-        // Anthropic subscription OAuth is intentionally NOT offered: Anthropic's
-        // Consumer Terms prohibit using Free/Pro/Max OAuth tokens in third-party
-        // apps. Use an Anthropic API key instead. See docs/AUTH.md.
-        case .anthropic: return nil
-        case .local: return nil
-        }
+        OAuthProviderConfig.config(for: kind)
     }
 }
