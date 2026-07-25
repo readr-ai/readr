@@ -146,8 +146,24 @@ final class SettingsModel: ObservableObject {
     /// its card would stay stuck on the stale failure forever.
     func validateDisplayed() async {
         for kind in displayedKinds where kind == .local || (hasCredential[kind] ?? false) {
-            await validate(kind)
+            await validateIfStale(kind)
         }
+    }
+
+    /// How long a successful check stays trusted for the on-open sweep.
+    /// Long enough that reopening Settings a few times doesn't re-probe (each
+    /// probe costs a token); short enough to notice a revoked key or exhausted
+    /// balance within one session.
+    private static let validationFreshness: TimeInterval = 300
+
+    /// Sweep-friendly validation: skips a provider that verified recently.
+    /// Explicit user actions ("Check again", saving a key) call `validate`.
+    private func validateIfStale(_ kind: ProviderInfo.Kind) async {
+        guard !skipValidation else { return }
+        await manager.validateIfStale(kind, maxAge: Self.validationFreshness)
+        validation[kind] = manager.validationState(kind)
+        configured[kind] = manager.isConfigured(kind)
+        hasCredential[kind] = manager.hasStoredCredential(kind)
     }
 
     func models(for kind: ProviderInfo.Kind) -> [ProviderInfo] {

@@ -165,6 +165,113 @@ final class ProviderManagerTests: XCTestCase {
         XCTAssertFalse(manager.hasStoredCredential(.local))
     }
 
+    // MARK: - Validation freshness
+
+    /// Counts credential checks so tests can assert probes are skipped.
+    private final class CountingValidator: LLMProvider, CredentialValidating, @unchecked Sendable {
+        let info = ProviderInfo.fixture(kind: .openAI)
+        private let lock = NSLock()
+        private var _checks = 0
+        private let failure: Error?
+        var checks: Int { lock.lock(); defer { lock.unlock() }; return _checks }
+
+        init(failure: Error? = nil) { self.failure = failure }
+
+        func validateCredential() async throws {
+            lock.lock(); _checks += 1; lock.unlock()
+            if let failure { throw failure }
+        }
+        func stream(_ request: ChatRequest) -> AsyncThrowingStream<ChatChunk, Error> {
+            AsyncThrowingStream { $0.finish() }
+        }
+        func countTokens(_ text: String) throws -> Int { 1 }
+    }
+
+    private func makeClockedManager(
+        store: FakeCredentialStore,
+        provider: LLMProvider,
+        now: @escaping @Sendable () -> Date
+    ) -> ProviderManager {
+        ProviderManager(store: store, factory: { _, _ in provider }, now: now)
+    }
+
+    /// The probe now costs a token, so a provider verified moments ago isn't
+    /// re-checked when the settings sheet reopens.
+    func testFreshSuccessIsNotRevalidated() async throws {
+        let store = FakeCredentialStore()
+        try store.save(.apiKey("sk-x"), for: .openAI)
+        let provider = CountingValidator()
+        let clock = MutableClock(Date(timeIntervalSince1970: 1_000_000))
+        let manager = makeClockedManager(store: store, provider: provider, now: clock.read)
+
+        await manager.validateIfStale(.openAI, maxAge: 300)
+        XCTAssertEqual(provider.checks, 1)
+
+        clock.advance(by: 60)
+        await manager.validateIfStale(.openAI, maxAge: 300)
+        XCTAssertEqual(provider.checks, 1, "still fresh — no second probe")
+    }
+
+    func testStaleSuccessIsRevalidated() async throws {
+        let store = FakeCredentialStore()
+        try store.save(.apiKey("sk-x"), for: .openAI)
+        let provider = CountingValidator()
+        let clock = MutableClock(Date(timeIntervalSince1970: 1_000_000))
+        let manager = makeClockedManager(store: store, provider: provider, now: clock.read)
+
+        await manager.validateIfStale(.openAI, maxAge: 300)
+        clock.advance(by: 301)
+        await manager.validateIfStale(.openAI, maxAge: 300)
+        XCTAssertEqual(provider.checks, 2)
+    }
+
+    /// Failures are never cached: the reader may have just fixed billing, and
+    /// caching one would resurrect the sticky-failure bug.
+    func testFailedValidationIsAlwaysRetried() async throws {
+        let store = FakeCredentialStore()
+        try store.save(.apiKey("sk-x"), for: .openAI)
+        let provider = CountingValidator(
+            failure: HTTPError.status(429, body: #"{"code":"rate_limit_exceeded"}"#)
+        )
+        let clock = MutableClock(Date(timeIntervalSince1970: 1_000_000))
+        let manager = makeClockedManager(store: store, provider: provider, now: clock.read)
+
+        await manager.validateIfStale(.openAI, maxAge: 300)
+        await manager.validateIfStale(.openAI, maxAge: 300)
+        XCTAssertEqual(provider.checks, 2, "a failed check must not be cached")
+    }
+
+    /// An explicit "Check again" bypasses the cache entirely.
+    func testExplicitValidateIgnoresFreshness() async throws {
+        let store = FakeCredentialStore()
+        try store.save(.apiKey("sk-x"), for: .openAI)
+        let provider = CountingValidator()
+        let clock = MutableClock(Date(timeIntervalSince1970: 1_000_000))
+        let manager = makeClockedManager(store: store, provider: provider, now: clock.read)
+
+        await manager.validateIfStale(.openAI, maxAge: 300)
+        _ = await manager.validate(.openAI)
+        XCTAssertEqual(provider.checks, 2)
+    }
+
+    /// Saving a new credential must invalidate the freshness stamp, or the
+    /// replacement would inherit the old key's verdict unchecked.
+    func testNewCredentialClearsFreshness() async throws {
+        let store = FakeCredentialStore()
+        try store.save(.apiKey("sk-old"), for: .openAI)
+        let provider = CountingValidator()
+        let clock = MutableClock(Date(timeIntervalSince1970: 1_000_000))
+        let manager = makeClockedManager(store: store, provider: provider, now: clock.read)
+
+        await manager.validateIfStale(.openAI, maxAge: 300)
+        XCTAssertEqual(provider.checks, 1)
+
+        try store.save(.apiKey("sk-new"), for: .openAI)
+        manager.clearValidation(.openAI)
+        await manager.validateIfStale(.openAI, maxAge: 300)
+        XCTAssertEqual(provider.checks, 2, "a replaced key is unproven")
+    }
+
     // MARK: - Selection model defaulting
 
     func testSetActiveDefaultsToCatalogDefaultModel() {

@@ -98,6 +98,7 @@ public final class ProviderManager: @unchecked Sendable {
     private let store: CredentialStore
     private let factory: ProviderFactory
     private let tokenRefresher: TokenRefresher?
+    private let now: @Sendable () -> Date
     private let defaults: UserDefaults?
     private var _selection: ProviderSelection?
     /// In-flight refresh per kind so concurrent callers share one exchange —
@@ -112,6 +113,12 @@ public final class ProviderManager: @unchecked Sendable {
     /// and only commits its result if the counter still matches, so a stale
     /// request can't resurrect a replaced/deleted credential's state.
     private var _validationGeneration: [ProviderInfo.Kind: Int] = [:]
+    /// When each kind last verified successfully. Credential checks now cost a
+    /// token (they post a one-token completion to prove quota, not just
+    /// authenticity), so `validateIfStale` uses this to skip re-probing a
+    /// provider that passed moments ago. Only successes are stamped —
+    /// caching a failure would make it sticky.
+    private var _lastVerifiedAt: [ProviderInfo.Kind: Date] = [:]
 
     /// UserDefaults key under which the active selection is persisted.
     static let selectionDefaultsKey = "readr.activeProviderSelection"
@@ -132,12 +139,14 @@ public final class ProviderManager: @unchecked Sendable {
         factory: @escaping ProviderFactory,
         selection: ProviderSelection? = nil,
         persistingIn defaults: UserDefaults? = nil,
-        tokenRefresher: TokenRefresher? = nil
+        tokenRefresher: TokenRefresher? = nil,
+        now: @escaping @Sendable () -> Date = { Date() }
     ) {
         self.store = store
         self.factory = factory
         self.defaults = defaults
         self.tokenRefresher = tokenRefresher
+        self.now = now
         self._selection = selection ?? Self.loadSelection(from: defaults)
     }
 
@@ -158,6 +167,9 @@ public final class ProviderManager: @unchecked Sendable {
         // of `isConfigured`. Reverting to nil keeps it optimistically usable.
         _validationGeneration[kind, default: 0] += 1
         _validation[kind] = nil
+        // The freshness stamp described the previous model — a new one is
+        // unproven, so the next sweep must re-probe rather than skip.
+        _lastVerifiedAt[kind] = nil
         _selection = selection
         Self.save(selection, to: defaults)
     }
@@ -268,6 +280,12 @@ public final class ProviderManager: @unchecked Sendable {
         guard token == _validationGeneration[kind, default: 0] else {
             return _validation[kind]
         }
+        // Stamp successes only — see `_lastVerifiedAt`.
+        if state == .active {
+            _lastVerifiedAt[kind] = now()
+        } else {
+            _lastVerifiedAt[kind] = nil
+        }
         _validation[kind] = state
         return state
     }
@@ -283,6 +301,7 @@ public final class ProviderManager: @unchecked Sendable {
     public func clearValidation(_ kind: ProviderInfo.Kind) {
         lock.lock(); defer { lock.unlock() }
         _validation[kind] = nil
+        _lastVerifiedAt[kind] = nil
         // Bump the generation so any validate() already in flight for this kind
         // (started against the old credential) discards its result instead of
         // overwriting the fresh "never checked" state.
@@ -384,6 +403,29 @@ public final class ProviderManager: @unchecked Sendable {
             // Transient (offline, 5xx, Keychain hiccup): leave state alone so a
             // momentary failure doesn't demote a working credential.
         }
+    }
+
+    /// Validate `kind` unless it verified successfully within `maxAge`.
+    ///
+    /// For sweeps that run on their own (the settings sheet re-checking every
+    /// connected provider on open). A credential check posts a one-token
+    /// completion, so repeating it on each sheet open would burn tokens and
+    /// stall the UI for no new information. Only a prior **success** counts as
+    /// fresh: failures are always retried, since the reader may have just
+    /// fixed billing or come back online.
+    ///
+    /// User-initiated checks should call `validate(_:)`, which never skips.
+    public func validateIfStale(_ kind: ProviderInfo.Kind, maxAge: TimeInterval) async {
+        lock.lock()
+        let verifiedAt = _lastVerifiedAt[kind]
+        let state = _validation[kind]
+        lock.unlock()
+
+        if state == .active, let verifiedAt,
+           now().timeIntervalSince(verifiedAt) < maxAge {
+            return
+        }
+        await validate(kind)
     }
 
     @discardableResult
