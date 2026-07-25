@@ -9,19 +9,21 @@ import Foundation
 /// before shipping — they drift as new models launch and older ones retire.
 public enum ProviderCatalog {
 
-    /// Anthropic (Claude) models. Prompt caching is supported across the line.
+    /// Anthropic (Claude) models. Prompt caching is supported across the line,
+    /// which is what makes Tier-1 whole-book context affordable to re-ask.
+    /// The Claude 5 line carries a 1M-token window; Haiku 4.5 stays at 200K.
     public static let anthropicModels: [ProviderInfo] = [
         ProviderInfo(
             kind: .anthropic,
-            modelID: "claude-opus-4-8",
-            contextBudget: 200_000,
+            modelID: "claude-opus-5",
+            contextBudget: 1_000_000,
             supportsPromptCaching: true,
             isLocal: false
         ),
         ProviderInfo(
             kind: .anthropic,
-            modelID: "claude-sonnet-4-6",
-            contextBudget: 200_000,
+            modelID: "claude-sonnet-5",
+            contextBudget: 1_000_000,
             supportsPromptCaching: true,
             isLocal: false
         ),
@@ -34,28 +36,41 @@ public enum ProviderCatalog {
         ),
     ]
 
-    /// OpenAI models. No prompt-caching support assumed here.
+    /// OpenAI models (API-key path). The GPT-5.6 line — Sol is the most
+    /// capable, Terra the balanced default, Luna the cheap/fast option — all
+    /// with a ~1M-token window. GPT-4.x is retired from ChatGPT and superseded
+    /// here; don't reintroduce it as a default. No prompt-caching support
+    /// assumed (OpenAI caches implicitly).
     public static let openAIModels: [ProviderInfo] = [
         ProviderInfo(
             kind: .openAI,
-            modelID: "gpt-4.1",
-            contextBudget: 128_000,
+            modelID: "gpt-5.6-terra",
+            contextBudget: 1_000_000,
             supportsPromptCaching: false,
             isLocal: false
         ),
         ProviderInfo(
             kind: .openAI,
-            modelID: "gpt-4.1-mini",
-            contextBudget: 128_000,
+            modelID: "gpt-5.6-sol",
+            contextBudget: 1_000_000,
+            supportsPromptCaching: false,
+            isLocal: false
+        ),
+        ProviderInfo(
+            kind: .openAI,
+            modelID: "gpt-5.6-luna",
+            contextBudget: 1_000_000,
             supportsPromptCaching: false,
             isLocal: false
         ),
     ]
 
     /// ChatGPT subscription models, served by ChatGPT's backend (not
-    /// api.openai.com). The default slug is the one verified working in
-    /// third-party wham clients (Muesli); NEEDS-VERIFICATION: confirm the full
-    /// accepted slug list with a live subscription sign-in before shipping.
+    /// api.openai.com). These slugs track what ChatGPT itself offers, which
+    /// is a *different* list from the API's — so they deliberately lag the
+    /// `openAIModels` line above rather than matching it. The default is the
+    /// slug verified working in third-party wham clients (Muesli);
+    /// NEEDS-VERIFICATION: confirm the accepted list with a live sign-in.
     public static let chatGPTModels: [ProviderInfo] = [
         ProviderInfo(
             kind: .chatGPT,
@@ -80,15 +95,15 @@ public enum ProviderCatalog {
     public static let openRouterModels: [ProviderInfo] = [
         ProviderInfo(
             kind: .openRouter,
-            modelID: "anthropic/claude-sonnet-4-6",
-            contextBudget: 200_000,
+            modelID: "anthropic/claude-sonnet-5",
+            contextBudget: 1_000_000,
             supportsPromptCaching: false,
             isLocal: false
         ),
         ProviderInfo(
             kind: .openRouter,
-            modelID: "openai/gpt-4.1",
-            contextBudget: 128_000,
+            modelID: "openai/gpt-5.6",
+            contextBudget: 1_000_000,
             supportsPromptCaching: false,
             isLocal: false
         ),

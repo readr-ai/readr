@@ -13,9 +13,25 @@ public struct OpenAIProvider: LLMProvider, CredentialValidating {
     /// cheapest authenticated URL for key validation, and the `Kind` it
     /// reports so routing and persistence stay per-host.
     public struct Endpoints: Sendable, Equatable {
+
+        /// How a credential is checked.
+        public enum ValidationStyle: Sendable, Equatable {
+            /// Authenticated GET against a metadata URL. Proves the key is
+            /// genuine — but not that it can actually generate, so a key with
+            /// no quota passes and then fails every real request.
+            case metadata(URL)
+            /// A one-token completion. Costs a token, but proves the whole
+            /// path the reader depends on: auth, quota, and model
+            /// availability. The associated value is the request's
+            /// output-cap field, which differs across OpenAI-compatible
+            /// hosts (OpenAI moved to `max_completion_tokens`; OpenRouter
+            /// normalizes `max_tokens`).
+            case minimalCompletion(maxTokensField: String)
+        }
+
         public let kind: ProviderInfo.Kind
         public let chatURL: URL
-        public let validationURL: URL
+        public let validation: ValidationStyle
         /// Extra static headers sent on every request (none for OpenAI;
         /// OpenRouter recognizes optional attribution headers).
         public let extraHeaders: [String: String]
@@ -23,16 +39,14 @@ public struct OpenAIProvider: LLMProvider, CredentialValidating {
         public static let openAI = Endpoints(
             kind: .openAI,
             chatURL: URL(string: "https://api.openai.com/v1/chat/completions")!,
-            validationURL: URL(string: "https://api.openai.com/v1/models")!,
+            validation: .minimalCompletion(maxTokensField: "max_completion_tokens"),
             extraHeaders: [:]
         )
 
         public static let openRouter = Endpoints(
             kind: .openRouter,
             chatURL: URL(string: "https://openrouter.ai/api/v1/chat/completions")!,
-            // GET /api/v1/key describes the presented key — the cheapest
-            // authenticated call; 401 on a revoked/invalid key.
-            validationURL: URL(string: "https://openrouter.ai/api/v1/key")!,
+            validation: .minimalCompletion(maxTokensField: "max_tokens"),
             extraHeaders: [:]
         )
     }
@@ -98,18 +112,40 @@ public struct OpenAIProvider: LLMProvider, CredentialValidating {
 
     // MARK: - Validation
 
-    /// Cheapest possible credential check: an authenticated GET against the
-    /// host's validation URL (`/v1/models` for OpenAI, `/api/v1/key` for
-    /// OpenRouter). Returns normally when the key is accepted (HTTP 200);
-    /// throws `HTTPError.status(401/403, …)` when the provider rejects the
-    /// key, or the underlying transport error for network failures. Reuses the
-    /// injected `HTTPClient`, so it is fully mockable in tests.
+    /// Check that the credential can actually be used, not merely that it
+    /// authenticates. A metadata GET only proves the key is genuine — a key
+    /// with no quota passes it and then fails every question the reader asks,
+    /// so the default is a one-token completion covering auth, quota, and
+    /// model availability in one call.
+    ///
+    /// Returns normally on HTTP 200; throws `HTTPError.status(…)` otherwise
+    /// (the caller classifies: 401/403 and quota-exhausted 429s are proven
+    /// bad, everything else transient), or the transport error for network
+    /// failures. Reuses the injected `HTTPClient`, so it is fully mockable.
     public func validateCredential() async throws {
         var headers = endpoints.extraHeaders
         headers["authorization"] = "Bearer \(authToken)"
-        let response = try await http.send(
-            HTTPRequest(url: endpoints.validationURL, method: .get, headers: headers)
-        )
+
+        let request: HTTPRequest
+        switch endpoints.validation {
+        case let .metadata(url):
+            request = HTTPRequest(url: url, method: .get, headers: headers)
+        case let .minimalCompletion(maxTokensField):
+            headers["content-type"] = "application/json"
+            let payload: [String: Any] = [
+                "model": model,
+                "messages": [["role": "user", "content": "hi"]],
+                maxTokensField: 1,
+            ]
+            request = HTTPRequest(
+                url: endpoints.chatURL,
+                method: .post,
+                headers: headers,
+                body: try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])
+            )
+        }
+
+        let response = try await http.send(request)
         try response.throwIfUnsuccessful()
     }
 

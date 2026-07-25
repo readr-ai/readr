@@ -457,8 +457,16 @@ public final class ProviderManager: @unchecked Sendable {
     /// key that may still be valid.
     private static func remoteValidationState(for error: Error) -> ValidationState {
         let reason = (error as? LocalizedError)?.errorDescription ?? "\(error)"
-        if case let HTTPError.status(code, _) = error, code == 401 || code == 403 {
-            return .invalid(reason: reason)
+        if case let HTTPError.status(code, body) = error {
+            if code == 401 || code == 403 {
+                return .invalid(reason: reason)
+            }
+            // An exhausted quota is proven-unusable, not transient: retrying
+            // never helps until billing changes, so don't leave Ask
+            // optimistically firing requests that can only fail.
+            if code == 429, HTTPError.indicatesQuotaExhausted(body) {
+                return .invalid(reason: reason)
+            }
         }
         return .unavailable(reason: reason)
     }
@@ -486,6 +494,16 @@ public final class ProviderManager: @unchecked Sendable {
         // `try?` yields `Credentials??`; flatten and test for a stored value.
         let stored = (try? store.load(for: kind)) ?? nil
         return stored != nil
+    }
+
+    /// Whether a credential is stored for this kind, regardless of whether it
+    /// has been verified. Distinct from `isConfigured`, which reports verified
+    /// usability: a key that fails a live check is still *present*, and the UI
+    /// needs that to keep offering Disconnect and the model picker rather than
+    /// stranding the reader with an unusable, unremovable credential.
+    /// Always false for `.local`, which stores nothing.
+    public func hasStoredCredential(_ kind: ProviderInfo.Kind) -> Bool {
+        ((try? store.load(for: kind)) ?? nil) != nil
     }
 
     /// The kinds that are currently usable. Local is always included.

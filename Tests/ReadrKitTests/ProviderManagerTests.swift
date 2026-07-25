@@ -130,6 +130,41 @@ final class ProviderManagerTests: XCTestCase {
         )
     }
 
+    // MARK: - Stored-credential check
+
+    /// `hasStoredCredential` reports what's in the store, independent of
+    /// validation state — so a key that fails a live check can still be
+    /// disconnected and its model changed (the card would otherwise dead-end).
+    func testHasStoredCredentialIgnoresValidationState() async throws {
+        /// Always fails its credential check with a plain rate limit.
+        struct RateLimited: LLMProvider, CredentialValidating {
+            let info = ProviderInfo.fixture(kind: .openAI)
+            func validateCredential() async throws {
+                throw HTTPError.status(429, body: #"{"code":"rate_limit_exceeded"}"#)
+            }
+            func stream(_ request: ChatRequest) -> AsyncThrowingStream<ChatChunk, Error> {
+                AsyncThrowingStream { $0.finish() }
+            }
+            func countTokens(_ text: String) throws -> Int { 1 }
+        }
+
+        let store = FakeCredentialStore()
+        let manager = ProviderManager(store: store, factory: { _, _ in RateLimited() })
+
+        XCTAssertFalse(manager.hasStoredCredential(.openAI))
+        try store.save(.apiKey("sk-x"), for: .openAI)
+        XCTAssertTrue(manager.hasStoredCredential(.openAI))
+
+        // A failed live check must not hide the stored credential — otherwise
+        // the settings card loses Disconnect and the model picker.
+        _ = await manager.validate(.openAI)
+        XCTAssertFalse(manager.isConfigured(.openAI), "isConfigured still tracks verification")
+        XCTAssertTrue(manager.hasStoredCredential(.openAI), "the key is still there to remove")
+
+        // Local never stores credentials.
+        XCTAssertFalse(manager.hasStoredCredential(.local))
+    }
+
     // MARK: - Selection model defaulting
 
     func testSetActiveDefaultsToCatalogDefaultModel() {

@@ -6,6 +6,11 @@ import ReadrKit
 @MainActor
 final class SettingsModel: ObservableObject {
     @Published private(set) var configured: [ProviderInfo.Kind: Bool] = [:]
+    /// Whether a credential is *stored* per kind — independent of whether it
+    /// validated. Drives Disconnect and the model picker so a key that fails a
+    /// live check (rate limit, outage, quota) can still be removed or
+    /// re-pointed; `configured` alone would hide both and strand the reader.
+    @Published private(set) var hasCredential: [ProviderInfo.Kind: Bool] = [:]
     @Published var activeSelection: ProviderSelection?
     @Published var errorMessage: String?
     /// The kind whose OAuth flow is in flight, or nil. Non-nil disables every
@@ -101,6 +106,7 @@ final class SettingsModel: ObservableObject {
     func refresh() {
         for kind in kinds {
             configured[kind] = manager.isConfigured(kind)
+            hasCredential[kind] = manager.hasStoredCredential(kind)
             validation[kind] = manager.validationState(kind)
         }
         activeSelection = manager.selection
@@ -128,13 +134,18 @@ final class SettingsModel: ObservableObject {
         // stale result in the published map.
         validation[kind] = manager.validationState(kind)
         configured[kind] = manager.isConfigured(kind)
+        hasCredential[kind] = manager.hasStoredCredential(kind)
     }
 
     /// Validate every displayed kind that has something to check: remote kinds
     /// with a stored credential, and Local always (its readiness is derived
     /// from a live probe). Called from the view's `.task`.
+    ///
+    /// Keys off *stored* credentials, not verified ones — a key whose last
+    /// check failed transiently must be re-checked when the sheet reopens, or
+    /// its card would stay stuck on the stale failure forever.
     func validateDisplayed() async {
-        for kind in displayedKinds where kind == .local || (configured[kind] ?? false) {
+        for kind in displayedKinds where kind == .local || (hasCredential[kind] ?? false) {
             await validate(kind)
         }
     }
@@ -184,6 +195,7 @@ final class SettingsModel: ObservableObject {
         _ = await manager.validateAndActivate(kind)
         validation[kind] = manager.validationState(kind)
         configured[kind] = manager.isConfigured(kind)
+        hasCredential[kind] = manager.hasStoredCredential(kind)
         activeSelection = manager.selection
     }
 

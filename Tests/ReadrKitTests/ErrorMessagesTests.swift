@@ -88,6 +88,34 @@ final class ErrorMessagesTests: XCTestCase {
         XCTAssertTrue(openRouter.contains("OpenRouter"), openRouter)
     }
 
+    // MARK: 429 — quota exhaustion vs rate limiting
+
+    /// OpenAI returns 429 for two opposite conditions. A rate limit clears on
+    /// its own; an exhausted quota never does, so "try again" is wrong advice.
+    func testRateLimitSaysWaitButQuotaExhaustionSaysBilling() {
+        let rateLimited = HTTPError
+            .status(429, body: #"{"error":{"code":"rate_limit_exceeded"}}"#)
+            .localizedDescription
+        XCTAssertTrue(rateLimited.localizedCaseInsensitiveContains("try again"), rateLimited)
+
+        let outOfQuota = HTTPError.status(
+            429,
+            body: #"{"error":{"message":"You exceeded your current quota, please check your plan and billing details.","type":"insufficient_quota"}}"#
+        ).localizedDescription
+        XCTAssertTrue(outOfQuota.localizedCaseInsensitiveContains("billing"), outOfQuota)
+        XCTAssertFalse(
+            outOfQuota.localizedCaseInsensitiveContains("try again"),
+            "waiting never clears an exhausted quota: \(outOfQuota)"
+        )
+    }
+
+    func testQuotaExhaustionDetection() {
+        XCTAssertTrue(HTTPError.indicatesQuotaExhausted(#"{"type":"insufficient_quota"}"#))
+        XCTAssertTrue(HTTPError.indicatesQuotaExhausted("You exceeded your current quota"))
+        XCTAssertFalse(HTTPError.indicatesQuotaExhausted(#"{"code":"rate_limit_exceeded"}"#))
+        XCTAssertFalse(HTTPError.indicatesQuotaExhausted(""))
+    }
+
     func testLocalMismatchIsReadable() {
         let message = ProviderManager.ProviderError.localMismatch.localizedDescription
         XCTAssertFalse(message.contains("operation couldn't be completed"), message)

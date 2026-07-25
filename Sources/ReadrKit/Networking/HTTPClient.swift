@@ -51,6 +51,16 @@ public struct HTTPResponse: Sendable {
 }
 
 public enum HTTPError: Error, Sendable, Equatable {
+
+    /// Whether a 429 body reports an exhausted quota (permanent until the user
+    /// fixes billing) rather than an ordinary rate limit (transient). Providers
+    /// reuse the status code for both, so the body is the only signal.
+    public static func indicatesQuotaExhausted(_ body: String) -> Bool {
+        let lowered = body.lowercased()
+        return lowered.contains("insufficient_quota")
+            || lowered.contains("exceeded your current quota")
+    }
+
     case status(Int, body: String)
     case nonHTTPResponse
     /// A Foundation `URLError` (timeout, offline, host unreachable, …) raised by
@@ -73,7 +83,14 @@ extension HTTPError: LocalizedError {
             case 401, 403:
                 message = "The provider rejected your API key (HTTP \(code)). Check the key in Settings → AI Providers."
             case 429:
-                message = "The provider rate-limited this request (HTTP 429). Wait a moment and try again."
+                // 429 covers two opposite conditions. A rate limit clears on
+                // its own; an exhausted quota needs a billing change, so
+                // "try again" would send the reader in circles.
+                if HTTPError.indicatesQuotaExhausted(body) {
+                    message = "Your provider account is out of quota (HTTP 429). Check your plan and billing details — waiting won't clear this."
+                } else {
+                    message = "The provider rate-limited this request (HTTP 429). Wait a moment and try again."
+                }
             case 400, 413:
                 message = "The provider rejected the request (HTTP \(code)) — the book or question may be too large for this model."
             case 500...:

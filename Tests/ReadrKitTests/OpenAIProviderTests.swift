@@ -111,21 +111,82 @@ final class OpenAIProviderTests: XCTestCase {
         XCTAssertFalse(provider.info.isLocal)
     }
 
-    func testOpenRouterValidationHitsKeyEndpointAndSurfacesRejection() async {
+    func testOpenRouterValidationSurfacesRejection() async {
         let mock = MockHTTPClient()
         mock.sendHandler = { request in
-            XCTAssertEqual(request.url.absoluteString, "https://openrouter.ai/api/v1/key")
             XCTAssertEqual(request.headers["authorization"], "Bearer sk-or-bad")
             return HTTPResponse(status: 401, body: Data())
         }
         let provider = OpenAIProvider(
-            credentials: .apiKey("sk-or-bad"), model: "openai/gpt-4.1", http: mock, endpoints: .openRouter
+            credentials: .apiKey("sk-or-bad"), model: "openai/gpt-5.6", http: mock, endpoints: .openRouter
         )
         do {
             try await provider.validateCredential()
             XCTFail("expected a 401 to throw")
         } catch let HTTPError.status(code, _) {
             XCTAssertEqual(code, 401)
+        } catch {
+            XCTFail("unexpected error: \(error)")
+        }
+    }
+
+    // MARK: - Validation exercises generation
+
+    /// A metadata GET would pass for a key with no quota and then fail every
+    /// real question; the probe posts a 1-token completion instead.
+    func testValidationPostsMinimalCompletionToChatEndpoint() async throws {
+        let mock = MockHTTPClient()
+        mock.sendHandler = { request in
+            XCTAssertEqual(request.url.absoluteString, "https://api.openai.com/v1/chat/completions")
+            XCTAssertEqual(request.method, .post)
+            let body = try XCTUnwrap(request.body)
+            let object = try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? [String: Any])
+            // OpenAI's current output-cap field.
+            XCTAssertEqual(object["max_completion_tokens"] as? Int, 1)
+            XCTAssertNil(object["max_tokens"], "the deprecated field is rejected by newer models")
+            XCTAssertEqual(object["model"] as? String, "gpt-5.6-terra")
+            return HTTPResponse(status: 200, body: Data())
+        }
+        let provider = OpenAIProvider(
+            credentials: .apiKey("sk-abc"), model: "gpt-5.6-terra", http: mock
+        )
+        try await provider.validateCredential()
+        XCTAssertEqual(mock.requests.count, 1)
+    }
+
+    /// OpenRouter normalizes the older field name, so the preset sends that.
+    func testOpenRouterValidationUsesMaxTokensField() async throws {
+        let mock = MockHTTPClient()
+        mock.sendHandler = { request in
+            let body = try XCTUnwrap(request.body)
+            let object = try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? [String: Any])
+            XCTAssertEqual(object["max_tokens"] as? Int, 1)
+            return HTTPResponse(status: 200, body: Data())
+        }
+        let provider = OpenAIProvider(
+            credentials: .apiKey("sk-or"), model: "openai/gpt-5.6", http: mock, endpoints: .openRouter
+        )
+        try await provider.validateCredential()
+    }
+
+    /// The exhausted-quota case the metadata probe used to miss entirely.
+    func testValidationSurfacesQuotaExhaustion() async {
+        let mock = MockHTTPClient()
+        mock.sendHandler = { _ in
+            HTTPResponse(
+                status: 429,
+                body: Data(#"{"error":{"type":"insufficient_quota"}}"#.utf8)
+            )
+        }
+        let provider = OpenAIProvider(
+            credentials: .apiKey("sk-nocredit"), model: "gpt-5.6-terra", http: mock
+        )
+        do {
+            try await provider.validateCredential()
+            XCTFail("expected the quota error to throw")
+        } catch let HTTPError.status(code, body) {
+            XCTAssertEqual(code, 429)
+            XCTAssertTrue(HTTPError.indicatesQuotaExhausted(body))
         } catch {
             XCTFail("unexpected error: \(error)")
         }

@@ -99,6 +99,9 @@ struct ProviderSettingsView: View {
     @ViewBuilder
     private func providerCard(_ kind: ProviderInfo.Kind) -> some View {
         let isConfigured = model.configured[kind] ?? false
+        // Present ≠ verified: a key that failed a live check must stay
+        // removable and re-pointable, so these two controls key off storage.
+        let hasCredential = model.hasCredential[kind] ?? false
         let state = model.validation[kind]
         let status = cardStatus(for: kind, isConfigured: isConfigured, state: state)
 
@@ -115,7 +118,7 @@ struct ProviderSettingsView: View {
                     activeBadge(for: kind)
                 }
                 Spacer(minLength: 0)
-                if isConfigured {
+                if hasCredential {
                     Button("Disconnect", role: .destructive) { model.disconnect(kind) }
                         .buttonStyle(.plain)
                         .font(.caption)
@@ -185,7 +188,7 @@ struct ProviderSettingsView: View {
                 kind: kind,
                 models: model.models(for: kind),
                 selection: model.activeSelection,
-                enabled: isConfigured
+                enabled: hasCredential || kind == .local
             ) { modelID in
                 model.makeActive(kind: kind, modelID: modelID)
             }
