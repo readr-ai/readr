@@ -20,10 +20,25 @@ public struct ResolvedStyle: Equatable, Sendable {
     public var hidden: Bool?
     /// `font-variant` / `font-variant-caps`: `small-caps`.
     public var smallCaps: Bool?
+    /// `vertical-align`: `super` → `.raised`, `sub` → `.lowered`,
+    /// `baseline` → `.baseline` (so an inner rule can cancel an outer
+    /// super/sub). Box-alignment values (top/middle/lengths/percentages)
+    /// stay undeclared — they align table cells, not text runs.
+    public var verticalAlign: VerticalAlign?
+
+    /// Text-run vertical alignment relative to the baseline.
+    public enum VerticalAlign: Equatable, Sendable {
+        case baseline
+        /// `vertical-align: super` — footnote markers, ordinals.
+        case raised
+        /// `vertical-align: sub` — chemical formulas.
+        case lowered
+    }
 
     public init(
         italic: Bool? = nil, bold: Bool? = nil, alignment: TextAlignment? = nil,
-        inset: Bool? = nil, hidden: Bool? = nil, smallCaps: Bool? = nil
+        inset: Bool? = nil, hidden: Bool? = nil, smallCaps: Bool? = nil,
+        verticalAlign: VerticalAlign? = nil
     ) {
         self.italic = italic
         self.bold = bold
@@ -31,12 +46,14 @@ public struct ResolvedStyle: Equatable, Sendable {
         self.inset = inset
         self.hidden = hidden
         self.smallCaps = smallCaps
+        self.verticalAlign = verticalAlign
     }
 
     /// True when no fact is declared at all.
     public var isEmpty: Bool {
         italic == nil && bold == nil && alignment == nil
             && inset == nil && hidden == nil && smallCaps == nil
+            && verticalAlign == nil
     }
 
     /// Overlay a higher-precedence source: its non-nil facts win, its nil
@@ -48,6 +65,7 @@ public struct ResolvedStyle: Equatable, Sendable {
         if let value = other.inset { inset = value }
         if let value = other.hidden { hidden = value }
         if let value = other.smallCaps { smallCaps = value }
+        if let value = other.verticalAlign { verticalAlign = value }
     }
 }
 
@@ -406,6 +424,17 @@ public struct CSSStyleResolver: Sendable {
                     style.smallCaps = true
                 } else if value == "normal" {
                     style.smallCaps = false
+                }
+            case "vertical-align":
+                // Only the text-run keywords map; box-alignment values
+                // (top/middle/bottom/lengths/percentages) align table cells
+                // and stay undeclared. `baseline` is declared explicitly so
+                // an inner rule can cancel an outer super/sub.
+                switch value {
+                case "super": style.verticalAlign = .raised
+                case "sub": style.verticalAlign = .lowered
+                case "baseline": style.verticalAlign = .baseline
+                default: break
                 }
             case "text-indent":
                 // Parsed (recognized) but IGNORED for v1: FormatSpan has no
