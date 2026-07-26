@@ -290,6 +290,10 @@ final class ProviderManagerTests: XCTestCase {
             "A retired mid-tier selection must not resolve to the flagship"
         )
 
+        // Retired flagship → flagship successor (same price, same context).
+        manager.setActive(kind: .anthropic, modelID: "claude-opus-4-8")
+        XCTAssertEqual(try manager.activeProvider()?.info.modelID, "claude-opus-5")
+
         // Retired cheap-tier OpenAI model → cheap-tier successor.
         try store.save(.apiKey("sk-test"), for: .openAI)
         manager.setActive(kind: .openAI, modelID: "gpt-4.1-mini")

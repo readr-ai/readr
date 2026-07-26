@@ -15,7 +15,7 @@ public struct AnthropicProvider: LLMProvider, CredentialValidating {
 
     public init(
         credentials: Credentials,
-        model: String = "claude-opus-4-8",
+        model: String = "claude-opus-5",
         http: HTTPClient = URLSessionHTTPClient(),
         contextBudget: Int = 200_000
     ) {
