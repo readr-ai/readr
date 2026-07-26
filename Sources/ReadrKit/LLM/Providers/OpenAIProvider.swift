@@ -12,9 +12,9 @@ public struct OpenAIProvider: LLMProvider, CredentialValidating {
 
     public init(
         credentials: Credentials,
-        model: String = "gpt-4.1",
+        model: String = "gpt-5.6-sol",
         http: HTTPClient = URLSessionHTTPClient(),
-        contextBudget: Int = 128_000
+        contextBudget: Int = 200_000
     ) {
         self.credentials = credentials
         self.model = model

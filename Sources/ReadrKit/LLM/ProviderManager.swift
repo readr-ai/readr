@@ -293,9 +293,7 @@ public final class ProviderManager: @unchecked Sendable {
     public func validate(_ kind: ProviderInfo.Kind) async -> ValidationState {
         let token = beginValidation(for: kind)
 
-        let info = ProviderCatalog.models(for: kind)
-            .first { $0.modelID == selection?.modelID }
-            ?? ProviderCatalog.defaultModel(for: kind)
+        let info = ProviderCatalog.resolve(modelID: selection?.modelID, for: kind)
 
         func commit(_ state: ValidationState) -> ValidationState {
             commitValidation(state, for: kind, token: token) ?? state
@@ -417,11 +415,11 @@ public final class ProviderManager: @unchecked Sendable {
             throw ProviderError.notConfigured(selection.kind)
         }
 
-        // Resolve the concrete model: prefer an exact modelID match, else the
-        // catalog default for the kind.
-        let info = ProviderCatalog.models(for: selection.kind)
-            .first { $0.modelID == selection.modelID }
-            ?? ProviderCatalog.defaultModel(for: selection.kind)
+        // Resolve the concrete model: exact match, then the same-tier legacy
+        // replacement for retired IDs, then the catalog default for the kind.
+        let info = ProviderCatalog.resolve(
+            modelID: selection.modelID, for: selection.kind
+        )
 
         // Local providers need no credentials; remote kinds require them.
         let credentials: Credentials?

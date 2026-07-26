@@ -121,6 +121,47 @@ final class ProviderManagerTests: XCTestCase {
 
     // MARK: - Selection model defaulting
 
+    func testStalePersistedModelIDResolvesToSameTierReplacement() throws {
+        // A catalog refresh can retire a model ID that a user's persisted
+        // selection still names. Resolution must land on the SAME-TIER
+        // successor — never silently jump the user to a pricier tier.
+        let store = FakeCredentialStore()
+        let factory = CapturingFactory()
+        let manager = makeManager(store: store, factory: factory)
+
+        // Retired mid-tier Anthropic model → mid-tier successor, not Opus.
+        try store.save(.apiKey("sk-test"), for: .anthropic)
+        manager.setActive(kind: .anthropic, modelID: "claude-sonnet-4-6")
+        XCTAssertEqual(
+            try manager.activeProvider()?.info.modelID, "claude-sonnet-5",
+            "A retired mid-tier selection must not resolve to the flagship"
+        )
+
+        // Retired cheap-tier OpenAI model → cheap-tier successor.
+        try store.save(.apiKey("sk-test"), for: .openAI)
+        manager.setActive(kind: .openAI, modelID: "gpt-4.1-mini")
+        XCTAssertEqual(try manager.activeProvider()?.info.modelID, "gpt-5.6-luna")
+
+        // Retired flagship → flagship successor (also the default).
+        manager.setActive(kind: .openAI, modelID: "gpt-4.1")
+        XCTAssertEqual(try manager.activeProvider()?.info.modelID, "gpt-5.6-sol")
+    }
+
+    func testUnknownPersistedModelIDResolvesToCatalogDefault() throws {
+        // An ID with no legacy mapping (corrupt data, far-future write-back)
+        // still falls back to the kind's default rather than failing.
+        let store = FakeCredentialStore()
+        let factory = CapturingFactory()
+        let manager = makeManager(store: store, factory: factory)
+
+        try store.save(.apiKey("sk-test"), for: .openAI)
+        manager.setActive(kind: .openAI, modelID: "not-a-model")
+        XCTAssertEqual(
+            try manager.activeProvider()?.info.modelID,
+            ProviderCatalog.defaultModel(for: .openAI).modelID
+        )
+    }
+
     func testSetActiveDefaultsToCatalogDefaultModel() {
         let store = FakeCredentialStore()
         let factory = CapturingFactory()
