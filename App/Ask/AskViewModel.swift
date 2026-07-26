@@ -66,7 +66,7 @@ final class AskViewModel: ObservableObject {
         guard !isStreaming else { return }
         // Keep the question so a Retry can re-run it verbatim after a failure.
         lastQuestion = trimmed
-        guard let service else {
+        guard self.service != nil else {
             errorMessage = "Connect an AI provider in settings to ask questions."
             errorRecovery = nil
             return
@@ -80,6 +80,15 @@ final class AskViewModel: ObservableObject {
         defer { isStreaming = false }
 
         await prepare()
+        // `prepare` renews expired OAuth tokens (see AskPanelView); providers
+        // capture credentials by value, so re-resolve the service to bake the
+        // refreshed tokens into the one that streams.
+        refresh()
+        guard let service else {
+            errorMessage = "Connect an AI provider in settings to ask questions."
+            errorRecovery = nil
+            return
+        }
         do {
             for try await event in service.ask(trimmed, about: book, selection: selection) {
                 switch event {

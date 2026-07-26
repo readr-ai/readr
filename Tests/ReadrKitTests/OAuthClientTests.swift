@@ -141,4 +141,133 @@ final class OAuthClientTests: XCTestCase {
         let bodyString = String(decoding: body, as: UTF8.self)
         XCTAssertTrue(bodyString.contains("grant_type=refresh_token"), bodyString)
     }
+
+    // MARK: - Extra authorize params (ChatGPT / Codex flow)
+
+    func testOpenAIAuthorizeURLCarriesCodexFlowParams() {
+        let client = OAuthClient(config: .openAI, http: MockHTTPClient())
+        let pkce = PKCE(codeVerifier: "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk")
+        let items = queryItems(client.authorizationURL(pkce: pkce, state: "s"))
+
+        XCTAssertEqual(items["codex_cli_simplified_flow"], "true")
+        XCTAssertEqual(items["id_token_add_organizations"], "true")
+        XCTAssertNotNil(items["originator"])
+    }
+
+    // MARK: - Key-exchange flow (OpenRouter)
+
+    private let openRouter = OAuthProviderConfig.openRouter
+
+    func testKeyExchangeAuthorizeURLUsesCallbackURLShape() {
+        let client = OAuthClient(config: openRouter, http: MockHTTPClient())
+        let pkce = PKCE(codeVerifier: "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk")
+        let url = client.authorizationURL(pkce: pkce, state: "xyz-state")
+        let items = queryItems(url)
+
+        XCTAssertEqual(url.host, "openrouter.ai")
+        XCTAssertEqual(items["callback_url"], openRouter.redirectURI)
+        XCTAssertEqual(items["code_challenge"], pkce.codeChallenge)
+        XCTAssertEqual(items["code_challenge_method"], "S256")
+        XCTAssertEqual(items["state"], "xyz-state")
+        // The key-exchange style has no OAuth client registration.
+        XCTAssertNil(items["client_id"])
+        XCTAssertNil(items["redirect_uri"])
+        XCTAssertNil(items["response_type"])
+        XCTAssertNil(items["scope"])
+    }
+
+    func testKeyExchangeReturnsAPIKeyCredentials() async throws {
+        let mock = MockHTTPClient()
+        mock.sendHandler = { request in
+            XCTAssertEqual(request.url.absoluteString, "https://openrouter.ai/api/v1/auth/keys")
+            XCTAssertEqual(request.headers["Content-Type"], "application/json")
+            let body = try XCTUnwrap(request.body)
+            let object = try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? [String: String])
+            XCTAssertEqual(object["code"], "the-code")
+            XCTAssertEqual(object["code_verifier"], "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk")
+            XCTAssertEqual(object["code_challenge_method"], "S256")
+            return HTTPResponse(status: 200, body: Data(#"{"key":"sk-or-v1-abc"}"#.utf8))
+        }
+        let client = OAuthClient(config: openRouter, http: mock)
+        let pkce = PKCE(codeVerifier: "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk")
+
+        let credentials = try await client.exchangeCode("the-code", pkce: pkce)
+        XCTAssertEqual(credentials, .apiKey("sk-or-v1-abc"))
+    }
+
+    func testKeyExchangeThrowsOnNonSuccess() async {
+        let mock = MockHTTPClient()
+        mock.sendHandler = { _ in HTTPResponse(status: 403, body: Data("denied".utf8)) }
+        let client = OAuthClient(config: openRouter, http: mock)
+        let pkce = PKCE(codeVerifier: "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk")
+        do {
+            _ = try await client.exchangeCode("the-code", pkce: pkce)
+            XCTFail("expected tokenExchangeFailed")
+        } catch let AuthError.tokenExchangeFailed(message) {
+            XCTAssertEqual(message, "denied")
+        } catch {
+            XCTFail("expected tokenExchangeFailed, got \(error)")
+        }
+    }
+
+    func testKeyExchangeThrowsWhenKeyFieldMissing() async {
+        let mock = MockHTTPClient()
+        mock.sendHandler = { _ in HTTPResponse(status: 200, body: Data(#"{"ok":true}"#.utf8)) }
+        let client = OAuthClient(config: openRouter, http: mock)
+        let pkce = PKCE(codeVerifier: "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk")
+        do {
+            _ = try await client.exchangeCode("the-code", pkce: pkce)
+            XCTFail("expected tokenExchangeFailed")
+        } catch AuthError.tokenExchangeFailed {
+            // expected
+        } catch {
+            XCTFail("expected tokenExchangeFailed, got \(error)")
+        }
+    }
+
+    /// OpenRouter may not echo `state` back on the callback; the PKCE verifier
+    /// still binds the exchange, so a missing state is tolerated for the
+    /// key-exchange style — but an explicitly different state never is.
+    func testKeyExchangeCallbackToleratesMissingStateButNotMismatch() throws {
+        let client = OAuthClient(config: openRouter, http: MockHTTPClient())
+
+        let missing = URL(string: "http://127.0.0.1:1456/callback?code=c1")!
+        XCTAssertEqual(try client.handleCallback(url: missing, expectedState: "expected"), "c1")
+
+        let mismatched = URL(string: "http://127.0.0.1:1456/callback?code=c1&state=wrong")!
+        XCTAssertThrowsError(try client.handleCallback(url: mismatched, expectedState: "expected")) {
+            XCTAssertEqual($0 as? AuthError, AuthError.stateMismatch)
+        }
+    }
+
+    /// The token-style flow must NOT inherit that tolerance: a missing state
+    /// on the standard flow stays a hard mismatch.
+    func testTokenFlowCallbackStillRequiresState() {
+        let client = OAuthClient(config: .openAI, http: MockHTTPClient())
+        let url = URL(string: "http://localhost:1455/auth/callback?code=c1")!
+        XCTAssertThrowsError(try client.handleCallback(url: url, expectedState: "expected")) {
+            XCTAssertEqual($0 as? AuthError, AuthError.stateMismatch)
+        }
+    }
+
+    // MARK: - Kind → config mapping
+
+    func testConfigForKindMapsSignInKindsOnly() {
+        XCTAssertEqual(OAuthProviderConfig.config(for: .chatGPT), .openAI)
+        XCTAssertEqual(OAuthProviderConfig.config(for: .openRouter), .openRouter)
+        XCTAssertNil(OAuthProviderConfig.config(for: .anthropic), "prohibited by ToS — docs/AUTH.md")
+        XCTAssertNil(OAuthProviderConfig.config(for: .openAI), "API-key path by design")
+        XCTAssertNil(OAuthProviderConfig.config(for: .local))
+    }
+
+    func testRefreshThrowsForKeyExchangeStyle() async {
+        let client = OAuthClient(config: openRouter, http: MockHTTPClient())
+        let credentials = Credentials.oauth(accessToken: "at", refreshToken: "rt", expiresAt: nil)
+        do {
+            _ = try await client.refresh(credentials)
+            XCTFail("expected refreshFailed")
+        } catch {
+            XCTAssertEqual(error as? AuthError, AuthError.refreshFailed)
+        }
+    }
 }

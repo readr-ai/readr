@@ -23,6 +23,23 @@ public enum DefaultProviderFactory {
                 credentials: credentials, model: info.modelID,
                 http: http, contextBudget: info.contextBudget
             )
+        case .chatGPT:
+            // This kind only works with subscription OAuth tokens — an API key
+            // stored under it can't drive the ChatGPT backend.
+            guard let credentials, case .oauth = credentials else {
+                throw ProviderManager.ProviderError.notConfigured(.chatGPT)
+            }
+            return ChatGPTSubscriptionProvider(
+                credentials: credentials, model: info.modelID,
+                http: http, contextBudget: info.contextBudget
+            )
+        case .openRouter:
+            guard let credentials else { throw ProviderManager.ProviderError.notConfigured(.openRouter) }
+            return OpenAIProvider(
+                credentials: credentials, model: info.modelID,
+                http: http, contextBudget: info.contextBudget,
+                endpoints: .openRouter
+            )
         case .local:
             return LocalLLMProvider(
                 model: info.modelID, http: http, contextBudget: info.contextBudget

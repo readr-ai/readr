@@ -22,11 +22,17 @@ final class ArticleViewModel: ObservableObject {
     /// Kick off (or re-run) composition. Always starts fresh: "Recompose" is
     /// an explicit studio action, so discarding the previous text is the
     /// intent. The provider is resolved by the caller at compose time so a key
-    /// configured while the sheet is open is picked up.
-    func startComposing(highlights: [Highlight], guidance: String, provider: LLMProvider?) {
+    /// configured while the sheet is open is picked up. The provider is
+    /// resolved asynchronously inside the task so expired OAuth tokens can be
+    /// renewed before the stream starts (see `AppModel.refreshedActiveProvider`).
+    func startComposing(
+        highlights: [Highlight],
+        guidance: String,
+        provider: @escaping () async -> LLMProvider?
+    ) {
         guard !isComposing else { return }
         composeTask = Task {
-            await compose(highlights: highlights, guidance: guidance, provider: provider)
+            await compose(highlights: highlights, guidance: guidance, provider: await provider())
         }
     }
 

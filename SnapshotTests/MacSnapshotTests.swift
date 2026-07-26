@@ -538,14 +538,14 @@ final class MacSnapshotTests: XCTestCase {
 
     // MARK: - First-run copy logic (A6)
 
-    /// On macOS the Local row is shown and OAuth is hidden, so the setup copy
-    /// advertises the API-key and local-model paths but never "sign in".
+    /// On macOS all three connection paths exist — API key, ChatGPT/OpenRouter
+    /// sign-in, and the Local row — so the setup copy advertises each of them.
     func testSetupGuidanceMatchesAvailablePathsOnMac() {
         let paths = SettingsModel.availableSetupPaths
         XCTAssertTrue(paths.contains("Add an API key"))
-        XCTAssertFalse(
+        XCTAssertTrue(
             paths.contains("sign in"),
-            "Subscription OAuth is hidden, so 'sign in' must not be advertised"
+            "ChatGPT/OpenRouter sign-in is offered, so the copy must advertise it"
         )
         XCTAssertTrue(
             paths.contains("pick a local model"),
@@ -554,12 +554,11 @@ final class MacSnapshotTests: XCTestCase {
 
         let guidance = SettingsModel.setupGuidance(toDo: "ask questions")
         XCTAssertTrue(guidance.hasSuffix("to ask questions."))
-        XCTAssertFalse(
-            guidance.lowercased().contains("sign in"),
-            "Guidance must not advertise the hidden OAuth path"
+        // Three paths join with an Oxford "or".
+        XCTAssertEqual(
+            guidance,
+            "Add an API key, sign in, or pick a local model to ask questions."
         )
-        // Two paths join with a plain "or" (no Oxford comma).
-        XCTAssertEqual(guidance, "Add an API key or pick a local model to ask questions.")
     }
 
     // MARK: - Library

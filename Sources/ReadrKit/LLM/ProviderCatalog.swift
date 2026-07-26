@@ -10,16 +10,27 @@ import Foundation
 ///
 /// `contextBudget` is the ROUTER budget (drives whole-book vs retrieval in
 /// `AdaptiveContextStrategy`), deliberately capped below some models' real
-/// context windows (Opus 4.8 / Sonnet 5 / GPT-5.6 all offer ~1M): a 1M
+/// context windows (Opus 5 / Sonnet 5 / GPT-5.6 all offer ~1M): a 1M
 /// budget would route nearly every book whole-book, multiplying per-question
 /// cost. Raising the caps is a product decision, not a data fix.
+///
+/// Two consequences worth knowing before changing it: Tier 1 sends no
+/// citations (Tier 2 does), so a higher budget silently drops citations for
+/// more books; and long-context recall is not monotonic — targeted retrieval
+/// often beats stuffing a whole book for a specific question.
 public enum ProviderCatalog {
 
-    /// Anthropic (Claude) models. Prompt caching is supported across the line.
+    /// Anthropic (Claude) models — flagship, balanced, and cheap/fast tiers.
+    /// Prompt caching is supported across the line, which is what makes Tier-1
+    /// whole-book context affordable to re-ask within a cache window.
+    ///
+    /// Note the budgets below are the router policy, not the models' ceilings:
+    /// Opus 5 and Sonnet 5 both offer ~1M, while Haiku 4.5's real maximum is
+    /// 200K — so Haiku is the only row where budget and ceiling coincide.
     public static let anthropicModels: [ProviderInfo] = [
         ProviderInfo(
             kind: .anthropic,
-            modelID: "claude-opus-4-8",
+            modelID: "claude-opus-5",
             contextBudget: 200_000,
             supportsPromptCaching: true,
             isLocal: false
@@ -66,6 +77,57 @@ public enum ProviderCatalog {
         ),
     ]
 
+    /// ChatGPT subscription models, served by ChatGPT's backend (not
+    /// api.openai.com). These slugs track what ChatGPT itself offers, which
+    /// is a *different* list from the API's — so they deliberately lag the
+    /// `openAIModels` line above rather than matching it. The default is the
+    /// slug verified working in third-party wham clients (Muesli);
+    /// NEEDS-VERIFICATION: confirm the accepted list with a live sign-in.
+    public static let chatGPTModels: [ProviderInfo] = [
+        ProviderInfo(
+            kind: .chatGPT,
+            modelID: "gpt-5.4-mini",
+            contextBudget: 128_000,
+            supportsPromptCaching: false,
+            isLocal: false
+        ),
+        ProviderInfo(
+            kind: .chatGPT,
+            modelID: "gpt-5.4",
+            contextBudget: 128_000,
+            supportsPromptCaching: false,
+            isLocal: false
+        ),
+    ]
+
+    /// OpenRouter models (OpenAI-compatible API; slugs are namespaced).
+    /// A deliberately small starter set: one strong default, one budget
+    /// option, one free-tier model users can try before adding credits.
+    /// NEEDS-VERIFICATION: slugs drift — especially the `:free` lineup.
+    public static let openRouterModels: [ProviderInfo] = [
+        ProviderInfo(
+            kind: .openRouter,
+            modelID: "anthropic/claude-sonnet-5",
+            contextBudget: 200_000,
+            supportsPromptCaching: false,
+            isLocal: false
+        ),
+        ProviderInfo(
+            kind: .openRouter,
+            modelID: "openai/gpt-5.6",
+            contextBudget: 200_000,
+            supportsPromptCaching: false,
+            isLocal: false
+        ),
+        ProviderInfo(
+            kind: .openRouter,
+            modelID: "meta-llama/llama-3.3-70b-instruct:free",
+            contextBudget: 65_536,
+            supportsPromptCaching: false,
+            isLocal: false
+        ),
+    ]
+
     /// On-device models — enable the zero-egress privacy mode.
     public static let localModels: [ProviderInfo] = [
         ProviderInfo(
@@ -86,13 +148,15 @@ public enum ProviderCatalog {
 
     /// Every selectable model, across all kinds.
     public static let all: [ProviderInfo] =
-        anthropicModels + openAIModels + localModels
+        anthropicModels + openAIModels + chatGPTModels + openRouterModels + localModels
 
     /// The models available for a given provider kind.
     public static func models(for kind: ProviderInfo.Kind) -> [ProviderInfo] {
         switch kind {
         case .anthropic: return anthropicModels
         case .openAI: return openAIModels
+        case .chatGPT: return chatGPTModels
+        case .openRouter: return openRouterModels
         case .local: return localModels
         }
     }
@@ -102,6 +166,9 @@ public enum ProviderCatalog {
     /// tiers (a stored mid-tier sonnet-4-6 must not resolve to flagship Opus).
     static let legacyReplacements: [String: String] = [
         "claude-sonnet-4-6": "claude-sonnet-5",
+        // Flagship → flagship: Opus 4.8 is superseded by Opus 5 at identical
+        // pricing and context, so this stays same-tier.
+        "claude-opus-4-8": "claude-opus-5",
         "gpt-4.1": "gpt-5.6-sol",
         "gpt-4.1-mini": "gpt-5.6-luna",
     ]

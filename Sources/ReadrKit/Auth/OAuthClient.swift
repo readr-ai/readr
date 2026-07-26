@@ -2,34 +2,90 @@ import Foundation
 
 /// Static configuration for one provider's OAuth 2.0 + PKCE flow.
 public struct OAuthProviderConfig: Sendable, Equatable {
+
+    /// The two browser-flow shapes Readr speaks.
+    public enum FlowStyle: Sendable, Equatable {
+        /// Standard authorization-code + PKCE: registered client, form-encoded
+        /// token endpoint returning access/refresh tokens.
+        case authorizationCodeToken
+        /// OpenRouter-style PKCE key exchange: no client registration, the
+        /// authorize URL takes `callback_url`, and the exchange POSTs JSON
+        /// returning a long-lived API key (stored as `Credentials.apiKey`;
+        /// nothing to refresh).
+        case pkceKeyExchange
+    }
+
     public let authorizationEndpoint: URL
     public let tokenEndpoint: URL
     public let clientID: String
     public let redirectURI: String
     public let scopes: [String]
+    /// Provider-specific query items appended to the authorize URL verbatim.
+    public let extraAuthorizeParams: [String: String]
+    public let flow: FlowStyle
 
     public init(
         authorizationEndpoint: URL,
         tokenEndpoint: URL,
         clientID: String,
         redirectURI: String,
-        scopes: [String]
+        scopes: [String],
+        extraAuthorizeParams: [String: String] = [:],
+        flow: FlowStyle = .authorizationCodeToken
     ) {
         self.authorizationEndpoint = authorizationEndpoint
         self.tokenEndpoint = tokenEndpoint
         self.clientID = clientID
         self.redirectURI = redirectURI
         self.scopes = scopes
+        self.extraAuthorizeParams = extraAuthorizeParams
+        self.flow = flow
     }
 
-    /// OpenAI / Codex CLI public client configuration.
+    /// OpenAI / Codex CLI public client configuration ("Sign in with ChatGPT").
+    /// The redirect host is `localhost` (not 127.0.0.1) and the extra params
+    /// mirror the working third-party implementations (Muesli, opencode) of
+    /// the Codex simplified flow — the registration is only verified for this
+    /// exact shape. NEEDS-VERIFICATION on first live sign-in: whether an
+    /// `originator` naming Readr is accepted; until then we send the
+    /// known-working value.
     public static let openAI = OAuthProviderConfig(
         authorizationEndpoint: URL(string: "https://auth.openai.com/oauth/authorize")!,
         tokenEndpoint: URL(string: "https://auth.openai.com/oauth/token")!,
         clientID: "app_EMoamEEZ73f0CkXaXp7hrann",
-        redirectURI: "http://127.0.0.1:1455/auth/callback",
-        scopes: ["openid", "profile", "email", "offline_access"]
+        redirectURI: "http://localhost:1455/auth/callback",
+        scopes: ["openid", "profile", "email", "offline_access"],
+        extraAuthorizeParams: [
+            "codex_cli_simplified_flow": "true",
+            "id_token_add_organizations": "true",
+            "originator": "opencode",
+        ]
     )
+
+    /// OpenRouter's PKCE key exchange ("Sign in with OpenRouter") — the
+    /// officially documented third-party flow. Port 1456 keeps it clear of the
+    /// ChatGPT flow's 1455.
+    public static let openRouter = OAuthProviderConfig(
+        authorizationEndpoint: URL(string: "https://openrouter.ai/auth")!,
+        tokenEndpoint: URL(string: "https://openrouter.ai/api/v1/auth/keys")!,
+        clientID: "",
+        redirectURI: "http://127.0.0.1:1456/callback",
+        scopes: [],
+        flow: .pkceKeyExchange
+    )
+
+    /// The OAuth configuration for a provider kind, or nil for kinds that
+    /// connect some other way (API key, local). Single source of truth —
+    /// Settings' sign-in buttons and the token refresher both derive from it.
+    public static func config(for kind: ProviderInfo.Kind) -> OAuthProviderConfig? {
+        switch kind {
+        case .chatGPT: return .openAI
+        case .openRouter: return .openRouter
+        // Anthropic: prohibited by ToS (docs/AUTH.md); openAI kind is
+        // API-key-only by design; local needs no credentials.
+        case .anthropic, .openAI, .local: return nil
+        }
+    }
 
     /// Anthropic does NOT offer a supported subscription-OAuth path for Readr:
     /// Anthropic's Consumer Terms prohibit using Free/Pro/Max OAuth tokens in any
@@ -40,7 +96,7 @@ public struct OAuthProviderConfig: Sendable, Equatable {
         authorizationEndpoint: URL(string: "https://claude.ai/oauth/authorize")!,
         tokenEndpoint: URL(string: "https://console.anthropic.com/v1/oauth/token")!,
         clientID: "UNSUPPORTED_ANTHROPIC_OAUTH_PROHIBITED_BY_TOS",
-        redirectURI: "http://127.0.0.1:1456/auth/callback",
+        redirectURI: "http://127.0.0.1:1457/auth/callback",
         scopes: []
     )
 }
@@ -72,15 +128,31 @@ public struct OAuthClient: Sendable {
     /// Build the browser authorization URL with the PKCE challenge and CSRF state.
     public func authorizationURL(pkce: PKCE, state: String) -> URL {
         var components = URLComponents(url: config.authorizationEndpoint, resolvingAgainstBaseURL: false)!
-        components.queryItems = [
-            URLQueryItem(name: "response_type", value: "code"),
-            URLQueryItem(name: "client_id", value: config.clientID),
-            URLQueryItem(name: "redirect_uri", value: config.redirectURI),
-            URLQueryItem(name: "scope", value: config.scopes.joined(separator: " ")),
-            URLQueryItem(name: "code_challenge", value: pkce.codeChallenge),
-            URLQueryItem(name: "code_challenge_method", value: "S256"),
-            URLQueryItem(name: "state", value: state),
-        ]
+        var items: [URLQueryItem]
+        switch config.flow {
+        case .authorizationCodeToken:
+            items = [
+                URLQueryItem(name: "response_type", value: "code"),
+                URLQueryItem(name: "client_id", value: config.clientID),
+                URLQueryItem(name: "redirect_uri", value: config.redirectURI),
+                URLQueryItem(name: "scope", value: config.scopes.joined(separator: " ")),
+                URLQueryItem(name: "code_challenge", value: pkce.codeChallenge),
+                URLQueryItem(name: "code_challenge_method", value: "S256"),
+                URLQueryItem(name: "state", value: state),
+            ]
+        case .pkceKeyExchange:
+            items = [
+                URLQueryItem(name: "callback_url", value: config.redirectURI),
+                URLQueryItem(name: "code_challenge", value: pkce.codeChallenge),
+                URLQueryItem(name: "code_challenge_method", value: "S256"),
+                URLQueryItem(name: "state", value: state),
+            ]
+        }
+        // Sorted for deterministic URLs (and stable tests).
+        items += config.extraAuthorizeParams
+            .sorted { $0.key < $1.key }
+            .map { URLQueryItem(name: $0.key, value: $0.value) }
+        components.queryItems = items
         return components.url!
     }
 
@@ -92,8 +164,18 @@ public struct OAuthClient: Sendable {
         let components = URLComponents(url: url, resolvingAgainstBaseURL: false)
         let items = components?.queryItems ?? []
         let returnedState = items.first(where: { $0.name == "state" })?.value
-        guard returnedState == expectedState else {
-            throw AuthError.stateMismatch
+        switch config.flow {
+        case .authorizationCodeToken:
+            guard returnedState == expectedState else {
+                throw AuthError.stateMismatch
+            }
+        case .pkceKeyExchange:
+            // The provider may not echo `state` at all (the PKCE verifier still
+            // binds the exchange, and the loopback accepts a single request) —
+            // but an explicitly different state is always a mismatch.
+            if let returnedState, returnedState != expectedState {
+                throw AuthError.stateMismatch
+            }
         }
         // The provider may redirect with an error (e.g. the user denied consent)
         // while still echoing a valid state — surface that, don't report "missing code".
@@ -110,24 +192,32 @@ public struct OAuthClient: Sendable {
 
     // MARK: - Token exchange
 
-    /// Exchange an authorization code for OAuth credentials.
+    /// Exchange an authorization code for credentials: OAuth tokens for the
+    /// standard flow, an API key for the key-exchange flow.
     public func exchangeCode(_ code: String, pkce: PKCE) async throws -> Credentials {
-        let form: [String: String] = [
-            "grant_type": "authorization_code",
-            "code": code,
-            "redirect_uri": config.redirectURI,
-            "client_id": config.clientID,
-            "code_verifier": pkce.codeVerifier,
-        ]
-        return try await postTokenRequest(form: form, existingRefreshToken: nil)
+        switch config.flow {
+        case .authorizationCodeToken:
+            let form: [String: String] = [
+                "grant_type": "authorization_code",
+                "code": code,
+                "redirect_uri": config.redirectURI,
+                "client_id": config.clientID,
+                "code_verifier": pkce.codeVerifier,
+            ]
+            return try await postTokenRequest(form: form, existingRefreshToken: nil)
+        case .pkceKeyExchange:
+            return try await postKeyExchange(code: code, pkce: pkce)
+        }
     }
 
     /// Renew credentials using the stored refresh token.
     ///
     /// - Throws: `AuthError.refreshFailed` if the credentials are not an
-    ///   `.oauth` value carrying a refresh token.
+    ///   `.oauth` value carrying a refresh token, or if this flow style has
+    ///   nothing to refresh (key-exchange keys are long-lived).
     public func refresh(_ credentials: Credentials) async throws -> Credentials {
-        guard case let .oauth(_, refreshToken?, _) = credentials else {
+        guard config.flow == .authorizationCodeToken,
+              case let .oauth(_, refreshToken?, _) = credentials else {
             throw AuthError.refreshFailed
         }
         let form: [String: String] = [
@@ -145,6 +235,36 @@ public struct OAuthClient: Sendable {
         let access_token: String
         let refresh_token: String?
         let expires_in: Double?
+    }
+
+    /// JSON key-exchange response (OpenRouter `POST /api/v1/auth/keys`).
+    private struct KeyExchangeResponse: Decodable {
+        let key: String
+    }
+
+    /// POST the PKCE key exchange and decode the returned API key.
+    private func postKeyExchange(code: String, pkce: PKCE) async throws -> Credentials {
+        let payload: [String: String] = [
+            "code": code,
+            "code_verifier": pkce.codeVerifier,
+            "code_challenge_method": "S256",
+        ]
+        let request = HTTPRequest(
+            url: config.tokenEndpoint,
+            method: .post,
+            headers: ["Content-Type": "application/json"],
+            body: try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])
+        )
+        let response = try await http.send(request)
+        guard response.isSuccess else {
+            let body = String(data: response.body, encoding: .utf8) ?? ""
+            throw AuthError.tokenExchangeFailed(body)
+        }
+        guard let decoded = try? JSONDecoder().decode(KeyExchangeResponse.self, from: response.body),
+              !decoded.key.isEmpty else {
+            throw AuthError.tokenExchangeFailed("invalid key-exchange response")
+        }
+        return .apiKey(decoded.key)
     }
 
     /// POST a form-urlencoded body to the token endpoint and decode credentials.

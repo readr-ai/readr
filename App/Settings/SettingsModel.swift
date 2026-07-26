@@ -6,9 +6,18 @@ import ReadrKit
 @MainActor
 final class SettingsModel: ObservableObject {
     @Published private(set) var configured: [ProviderInfo.Kind: Bool] = [:]
+    /// Whether a credential is *stored* per kind — independent of whether it
+    /// validated. Drives Disconnect and the model picker so a key that fails a
+    /// live check (rate limit, outage, quota) can still be removed or
+    /// re-pointed; `configured` alone would hide both and strand the reader.
+    @Published private(set) var hasCredential: [ProviderInfo.Kind: Bool] = [:]
     @Published var activeSelection: ProviderSelection?
     @Published var errorMessage: String?
-    @Published var isSigningIn = false
+    /// The kind whose OAuth flow is in flight, or nil. Non-nil disables every
+    /// sign-in button (one loopback flow at a time); only the matching card
+    /// shows the spinner.
+    @Published var signingInKind: ProviderInfo.Kind?
+    var isSigningIn: Bool { signingInKind != nil }
     /// Latest validation/readiness state per kind, mirrored from the manager so
     /// the cards can show Validating… / Connected / an error inline (A2/A3).
     @Published private(set) var validation: [ProviderInfo.Kind: ProviderManager.ValidationState] = [:]
@@ -23,8 +32,10 @@ final class SettingsModel: ObservableObject {
     private let skipValidation = ProcessInfo.processInfo.arguments
         .contains("-uiTestSkipProviderValidation")
 
-    /// Every provider kind the app knows about, in display order.
-    static let allKinds: [ProviderInfo.Kind] = [.anthropic, .openAI, .local]
+    /// Every provider kind the app knows about, in display order: the two
+    /// sign-in paths lead (lowest-friction first-run), then the key-only
+    /// cloud providers, then Local.
+    static let allKinds: [ProviderInfo.Kind] = [.chatGPT, .openRouter, .anthropic, .openAI, .local]
 
     let kinds: [ProviderInfo.Kind] = SettingsModel.allKinds
 
@@ -95,6 +106,7 @@ final class SettingsModel: ObservableObject {
     func refresh() {
         for kind in kinds {
             configured[kind] = manager.isConfigured(kind)
+            hasCredential[kind] = manager.hasStoredCredential(kind)
             validation[kind] = manager.validationState(kind)
         }
         activeSelection = manager.selection
@@ -122,15 +134,36 @@ final class SettingsModel: ObservableObject {
         // stale result in the published map.
         validation[kind] = manager.validationState(kind)
         configured[kind] = manager.isConfigured(kind)
+        hasCredential[kind] = manager.hasStoredCredential(kind)
     }
 
     /// Validate every displayed kind that has something to check: remote kinds
     /// with a stored credential, and Local always (its readiness is derived
     /// from a live probe). Called from the view's `.task`.
+    ///
+    /// Keys off *stored* credentials, not verified ones — a key whose last
+    /// check failed transiently must be re-checked when the sheet reopens, or
+    /// its card would stay stuck on the stale failure forever.
     func validateDisplayed() async {
-        for kind in displayedKinds where kind == .local || (configured[kind] ?? false) {
-            await validate(kind)
+        for kind in displayedKinds where kind == .local || (hasCredential[kind] ?? false) {
+            await validateIfStale(kind)
         }
+    }
+
+    /// How long a successful check stays trusted for the on-open sweep.
+    /// Long enough that reopening Settings a few times doesn't re-probe (each
+    /// probe costs a token); short enough to notice a revoked key or exhausted
+    /// balance within one session.
+    private static let validationFreshness: TimeInterval = 300
+
+    /// Sweep-friendly validation: skips a provider that verified recently.
+    /// Explicit user actions ("Check again", saving a key) call `validate`.
+    private func validateIfStale(_ kind: ProviderInfo.Kind) async {
+        guard !skipValidation else { return }
+        await manager.validateIfStale(kind, maxAge: Self.validationFreshness)
+        validation[kind] = manager.validationState(kind)
+        configured[kind] = manager.isConfigured(kind)
+        hasCredential[kind] = manager.hasStoredCredential(kind)
     }
 
     func models(for kind: ProviderInfo.Kind) -> [ProviderInfo] {
@@ -178,13 +211,15 @@ final class SettingsModel: ObservableObject {
         _ = await manager.validateAndActivate(kind)
         validation[kind] = manager.validationState(kind)
         configured[kind] = manager.isConfigured(kind)
+        hasCredential[kind] = manager.hasStoredCredential(kind)
         activeSelection = manager.selection
     }
 
     func signIn(_ kind: ProviderInfo.Kind) async {
         guard let config = Self.oauthConfig(for: kind) else { return }
-        isSigningIn = true
-        defer { isSigningIn = false }
+        guard signingInKind == nil else { return }
+        signingInKind = kind
+        defer { signingInKind = nil }
         do {
             let credentials = try await OAuthCoordinator().signIn(config: config)
             try store.save(credentials, for: kind)
@@ -226,27 +261,13 @@ final class SettingsModel: ObservableObject {
         Self.oauthConfig(for: kind) != nil
     }
 
+    /// Delegates to `OAuthProviderConfig.config(for:)` — the single source of
+    /// truth shared with the token refresher. `.chatGPT` and `.openRouter`
+    /// offer sign-in; `.openAI` is API-key-only by design; Anthropic
+    /// subscription OAuth is intentionally NOT offered (Anthropic's Consumer
+    /// Terms prohibit Free/Pro/Max OAuth tokens in third-party apps — use an
+    /// Anthropic API key instead; docs/AUTH.md).
     static func oauthConfig(for kind: ProviderInfo.Kind) -> OAuthProviderConfig? {
-        switch kind {
-        // OpenAI subscription OAuth stays hidden until it's verified
-        // end-to-end: the flow borrows the Codex CLI's client registration
-        // and its tokens are not expected to authenticate against
-        // api.openai.com, and no token-refresh path is wired up yet
-        // (`OAuthClient.refresh` has no call sites). The iOS in-process
-        // browser plumbing IS now implemented — OAuthCoordinator presents an
-        // SFSafariViewController so the app stays foregrounded and the
-        // loopback server can answer the 127.0.0.1:1455 redirect — but it
-        // can't be exercised without a signed build on a physical device
-        // (developer account not yet verified). Re-enable by returning
-        // `.openAI` once the whole flow is verified on-device — the sign-in
-        // button reappears automatically (see `supportsOAuth`), and flip
-        // testProviderSettingsOffersNoOAuthSignIn to match.
-        case .openAI: return nil
-        // Anthropic subscription OAuth is intentionally NOT offered: Anthropic's
-        // Consumer Terms prohibit using Free/Pro/Max OAuth tokens in third-party
-        // apps. Use an Anthropic API key instead. See docs/AUTH.md.
-        case .anthropic: return nil
-        case .local: return nil
-        }
+        OAuthProviderConfig.config(for: kind)
     }
 }

@@ -94,6 +94,27 @@ final class MockLLMProvider: LLMProvider, @unchecked Sendable {
     func countTokens(_ text: String) throws -> Int { max(1, text.count / 4) }
 }
 
+// MARK: - Time
+
+/// A hand-advanced clock for testing time-dependent behavior (validation
+/// freshness, token expiry) without sleeping.
+final class MutableClock: @unchecked Sendable {
+    private let lock = NSLock()
+    private var current: Date
+
+    init(_ start: Date) { self.current = start }
+
+    /// Pass as a `now` closure: `MutableClock(...).read`.
+    var read: @Sendable () -> Date {
+        { [self] in lock.lock(); defer { lock.unlock() }; return current }
+    }
+
+    func advance(by interval: TimeInterval) {
+        lock.lock(); defer { lock.unlock() }
+        current = current.addingTimeInterval(interval)
+    }
+}
+
 extension ProviderInfo {
     /// Convenience fixture.
     static func fixture(

@@ -27,7 +27,10 @@ struct AskPanelView: View {
         self.selection = selection
         _vm = StateObject(wrappedValue: AskViewModel(
             makeService: { app.makeAskService() },
-            prepare: { await app.ensureIndexed(book) },
+            prepare: {
+                await app.ensureIndexed(book)
+                await app.refreshActiveProviderCredentialsIfNeeded()
+            },
             book: book,
             selection: selection
         ))

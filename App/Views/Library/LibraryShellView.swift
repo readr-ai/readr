@@ -268,7 +268,9 @@ struct LibraryShellView: View {
         switch kind {
         case .local: return "Local model"
         case .anthropic: return "Claude"
-        case .openAI: return "ChatGPT"
+        case .openAI: return "OpenAI"
+        case .chatGPT: return "ChatGPT"
+        case .openRouter: return "OpenRouter"
         }
     }
 

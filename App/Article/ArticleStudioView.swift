@@ -421,7 +421,7 @@ struct ArticleStudioView: View {
         article.startComposing(
             highlights: composeSelection.map(Self.composerHighlight(for:)),
             guidance: guidance,
-            provider: model.activeProvider()
+            provider: { await model.refreshedActiveProvider() }
         )
     }
 

@@ -30,6 +30,41 @@ final class DefaultProviderFactoryTests: XCTestCase {
         }
     }
 
+    func testOpenRouterBuildsWithCredentials() throws {
+        let info = ProviderCatalog.defaultModel(for: .openRouter)
+        let provider = try DefaultProviderFactory.make(
+            info: info, credentials: .apiKey("sk-or-test"), http: http
+        )
+        XCTAssertEqual(provider.info.kind, .openRouter)
+        XCTAssertFalse(provider.info.isLocal)
+    }
+
+    func testOpenRouterWithoutCredentialsThrows() {
+        let info = ProviderCatalog.defaultModel(for: .openRouter)
+        XCTAssertThrowsError(try DefaultProviderFactory.make(info: info, credentials: nil, http: http)) {
+            XCTAssertEqual($0 as? ProviderManager.ProviderError, .notConfigured(.openRouter))
+        }
+    }
+
+    func testChatGPTBuildsWithOAuthCredentials() throws {
+        let info = ProviderCatalog.defaultModel(for: .chatGPT)
+        let provider = try DefaultProviderFactory.make(
+            info: info,
+            credentials: .oauth(accessToken: "at", refreshToken: "rt", expiresAt: nil),
+            http: http
+        )
+        XCTAssertEqual(provider.info.kind, .chatGPT)
+    }
+
+    func testChatGPTRejectsAPIKeyCredentials() {
+        let info = ProviderCatalog.defaultModel(for: .chatGPT)
+        XCTAssertThrowsError(
+            try DefaultProviderFactory.make(info: info, credentials: .apiKey("sk-x"), http: http)
+        ) {
+            XCTAssertEqual($0 as? ProviderManager.ProviderError, .notConfigured(.chatGPT))
+        }
+    }
+
     func testIntegratesWithProviderManager() throws {
         let store = FakeCredentialStore()
         let manager = ProviderManager(store: store, factory: DefaultProviderFactory.factory(http: http))

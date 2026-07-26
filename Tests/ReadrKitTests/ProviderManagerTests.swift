@@ -117,6 +117,159 @@ final class ProviderManagerTests: XCTestCase {
             Set(manager.availableKinds()),
             Set([.anthropic, .openAI, .local])
         )
+
+        // The sign-in kinds surface once their credentials exist: OpenRouter
+        // stores the key its PKCE exchange returns, ChatGPT stores OAuth tokens.
+        try store.save(.apiKey("sk-or-key"), for: .openRouter)
+        try store.save(
+            .oauth(accessToken: "at", refreshToken: "rt", expiresAt: nil), for: .chatGPT
+        )
+        XCTAssertEqual(
+            Set(manager.availableKinds()),
+            Set([.anthropic, .openAI, .openRouter, .chatGPT, .local])
+        )
+    }
+
+    // MARK: - Stored-credential check
+
+    /// `hasStoredCredential` reports what's in the store, independent of
+    /// validation state — so a key that fails a live check can still be
+    /// disconnected and its model changed (the card would otherwise dead-end).
+    func testHasStoredCredentialIgnoresValidationState() async throws {
+        /// Always fails its credential check with a plain rate limit.
+        struct RateLimited: LLMProvider, CredentialValidating {
+            let info = ProviderInfo.fixture(kind: .openAI)
+            func validateCredential() async throws {
+                throw HTTPError.status(429, body: #"{"code":"rate_limit_exceeded"}"#)
+            }
+            func stream(_ request: ChatRequest) -> AsyncThrowingStream<ChatChunk, Error> {
+                AsyncThrowingStream { $0.finish() }
+            }
+            func countTokens(_ text: String) throws -> Int { 1 }
+        }
+
+        let store = FakeCredentialStore()
+        let manager = ProviderManager(store: store, factory: { _, _ in RateLimited() })
+
+        XCTAssertFalse(manager.hasStoredCredential(.openAI))
+        try store.save(.apiKey("sk-x"), for: .openAI)
+        XCTAssertTrue(manager.hasStoredCredential(.openAI))
+
+        // A failed live check must not hide the stored credential — otherwise
+        // the settings card loses Disconnect and the model picker.
+        _ = await manager.validate(.openAI)
+        XCTAssertFalse(manager.isConfigured(.openAI), "isConfigured still tracks verification")
+        XCTAssertTrue(manager.hasStoredCredential(.openAI), "the key is still there to remove")
+
+        // Local never stores credentials.
+        XCTAssertFalse(manager.hasStoredCredential(.local))
+    }
+
+    // MARK: - Validation freshness
+
+    /// Counts credential checks so tests can assert probes are skipped.
+    private final class CountingValidator: LLMProvider, CredentialValidating, @unchecked Sendable {
+        let info = ProviderInfo.fixture(kind: .openAI)
+        private let lock = NSLock()
+        private var _checks = 0
+        private let failure: Error?
+        var checks: Int { lock.lock(); defer { lock.unlock() }; return _checks }
+
+        init(failure: Error? = nil) { self.failure = failure }
+
+        func validateCredential() async throws {
+            lock.lock(); _checks += 1; lock.unlock()
+            if let failure { throw failure }
+        }
+        func stream(_ request: ChatRequest) -> AsyncThrowingStream<ChatChunk, Error> {
+            AsyncThrowingStream { $0.finish() }
+        }
+        func countTokens(_ text: String) throws -> Int { 1 }
+    }
+
+    private func makeClockedManager(
+        store: FakeCredentialStore,
+        provider: LLMProvider,
+        now: @escaping @Sendable () -> Date
+    ) -> ProviderManager {
+        ProviderManager(store: store, factory: { _, _ in provider }, now: now)
+    }
+
+    /// The probe now costs a token, so a provider verified moments ago isn't
+    /// re-checked when the settings sheet reopens.
+    func testFreshSuccessIsNotRevalidated() async throws {
+        let store = FakeCredentialStore()
+        try store.save(.apiKey("sk-x"), for: .openAI)
+        let provider = CountingValidator()
+        let clock = MutableClock(Date(timeIntervalSince1970: 1_000_000))
+        let manager = makeClockedManager(store: store, provider: provider, now: clock.read)
+
+        await manager.validateIfStale(.openAI, maxAge: 300)
+        XCTAssertEqual(provider.checks, 1)
+
+        clock.advance(by: 60)
+        await manager.validateIfStale(.openAI, maxAge: 300)
+        XCTAssertEqual(provider.checks, 1, "still fresh — no second probe")
+    }
+
+    func testStaleSuccessIsRevalidated() async throws {
+        let store = FakeCredentialStore()
+        try store.save(.apiKey("sk-x"), for: .openAI)
+        let provider = CountingValidator()
+        let clock = MutableClock(Date(timeIntervalSince1970: 1_000_000))
+        let manager = makeClockedManager(store: store, provider: provider, now: clock.read)
+
+        await manager.validateIfStale(.openAI, maxAge: 300)
+        clock.advance(by: 301)
+        await manager.validateIfStale(.openAI, maxAge: 300)
+        XCTAssertEqual(provider.checks, 2)
+    }
+
+    /// Failures are never cached: the reader may have just fixed billing, and
+    /// caching one would resurrect the sticky-failure bug.
+    func testFailedValidationIsAlwaysRetried() async throws {
+        let store = FakeCredentialStore()
+        try store.save(.apiKey("sk-x"), for: .openAI)
+        let provider = CountingValidator(
+            failure: HTTPError.status(429, body: #"{"code":"rate_limit_exceeded"}"#)
+        )
+        let clock = MutableClock(Date(timeIntervalSince1970: 1_000_000))
+        let manager = makeClockedManager(store: store, provider: provider, now: clock.read)
+
+        await manager.validateIfStale(.openAI, maxAge: 300)
+        await manager.validateIfStale(.openAI, maxAge: 300)
+        XCTAssertEqual(provider.checks, 2, "a failed check must not be cached")
+    }
+
+    /// An explicit "Check again" bypasses the cache entirely.
+    func testExplicitValidateIgnoresFreshness() async throws {
+        let store = FakeCredentialStore()
+        try store.save(.apiKey("sk-x"), for: .openAI)
+        let provider = CountingValidator()
+        let clock = MutableClock(Date(timeIntervalSince1970: 1_000_000))
+        let manager = makeClockedManager(store: store, provider: provider, now: clock.read)
+
+        await manager.validateIfStale(.openAI, maxAge: 300)
+        _ = await manager.validate(.openAI)
+        XCTAssertEqual(provider.checks, 2)
+    }
+
+    /// Saving a new credential must invalidate the freshness stamp, or the
+    /// replacement would inherit the old key's verdict unchecked.
+    func testNewCredentialClearsFreshness() async throws {
+        let store = FakeCredentialStore()
+        try store.save(.apiKey("sk-old"), for: .openAI)
+        let provider = CountingValidator()
+        let clock = MutableClock(Date(timeIntervalSince1970: 1_000_000))
+        let manager = makeClockedManager(store: store, provider: provider, now: clock.read)
+
+        await manager.validateIfStale(.openAI, maxAge: 300)
+        XCTAssertEqual(provider.checks, 1)
+
+        try store.save(.apiKey("sk-new"), for: .openAI)
+        manager.clearValidation(.openAI)
+        await manager.validateIfStale(.openAI, maxAge: 300)
+        XCTAssertEqual(provider.checks, 2, "a replaced key is unproven")
     }
 
     // MARK: - Selection model defaulting
@@ -136,6 +289,10 @@ final class ProviderManagerTests: XCTestCase {
             try manager.activeProvider()?.info.modelID, "claude-sonnet-5",
             "A retired mid-tier selection must not resolve to the flagship"
         )
+
+        // Retired flagship → flagship successor (same price, same context).
+        manager.setActive(kind: .anthropic, modelID: "claude-opus-4-8")
+        XCTAssertEqual(try manager.activeProvider()?.info.modelID, "claude-opus-5")
 
         // Retired cheap-tier OpenAI model → cheap-tier successor.
         try store.save(.apiKey("sk-test"), for: .openAI)
@@ -194,6 +351,8 @@ final class ProviderManagerTests: XCTestCase {
     func testCatalogAllCountEqualsSum() {
         let expected = ProviderCatalog.anthropicModels.count
             + ProviderCatalog.openAIModels.count
+            + ProviderCatalog.chatGPTModels.count
+            + ProviderCatalog.openRouterModels.count
             + ProviderCatalog.localModels.count
         XCTAssertEqual(ProviderCatalog.all.count, expected)
     }

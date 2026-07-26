@@ -73,7 +73,47 @@ final class ErrorMessagesTests: XCTestCase {
 
         let openAI = ProviderManager.ProviderError
             .notConfigured(.openAI).localizedDescription
-        XCTAssertTrue(openAI.contains("ChatGPT"), openAI)
+        XCTAssertTrue(openAI.contains("OpenAI"), openAI)
+        XCTAssertTrue(openAI.localizedCaseInsensitiveContains("API key"), openAI)
+
+        // ChatGPT is the subscription path — its fix is signing in, not a key.
+        let chatGPT = ProviderManager.ProviderError
+            .notConfigured(.chatGPT).localizedDescription
+        XCTAssertTrue(chatGPT.contains("ChatGPT"), chatGPT)
+        XCTAssertTrue(chatGPT.localizedCaseInsensitiveContains("sign in"), chatGPT)
+        XCTAssertFalse(chatGPT.localizedCaseInsensitiveContains("API key"), chatGPT)
+
+        let openRouter = ProviderManager.ProviderError
+            .notConfigured(.openRouter).localizedDescription
+        XCTAssertTrue(openRouter.contains("OpenRouter"), openRouter)
+    }
+
+    // MARK: 429 — quota exhaustion vs rate limiting
+
+    /// OpenAI returns 429 for two opposite conditions. A rate limit clears on
+    /// its own; an exhausted quota never does, so "try again" is wrong advice.
+    func testRateLimitSaysWaitButQuotaExhaustionSaysBilling() {
+        let rateLimited = HTTPError
+            .status(429, body: #"{"error":{"code":"rate_limit_exceeded"}}"#)
+            .localizedDescription
+        XCTAssertTrue(rateLimited.localizedCaseInsensitiveContains("try again"), rateLimited)
+
+        let outOfQuota = HTTPError.status(
+            429,
+            body: #"{"error":{"message":"You exceeded your current quota, please check your plan and billing details.","type":"insufficient_quota"}}"#
+        ).localizedDescription
+        XCTAssertTrue(outOfQuota.localizedCaseInsensitiveContains("billing"), outOfQuota)
+        XCTAssertFalse(
+            outOfQuota.localizedCaseInsensitiveContains("try again"),
+            "waiting never clears an exhausted quota: \(outOfQuota)"
+        )
+    }
+
+    func testQuotaExhaustionDetection() {
+        XCTAssertTrue(HTTPError.indicatesQuotaExhausted(#"{"type":"insufficient_quota"}"#))
+        XCTAssertTrue(HTTPError.indicatesQuotaExhausted("You exceeded your current quota"))
+        XCTAssertFalse(HTTPError.indicatesQuotaExhausted(#"{"code":"rate_limit_exceeded"}"#))
+        XCTAssertFalse(HTTPError.indicatesQuotaExhausted(""))
     }
 
     func testLocalMismatchIsReadable() {

@@ -51,8 +51,11 @@ final class ReviewFixesLaunchTests: XCTestCase {
         let provider = OpenAIProvider(credentials: .apiKey("sk-test"), http: mock)
         try await provider.validateCredential()
         let recorded = try XCTUnwrap(mock.requests.first)
-        XCTAssertEqual(recorded.url.absoluteString, "https://api.openai.com/v1/models")
-        XCTAssertEqual(recorded.method, .get)
+        // Validation posts a 1-token completion rather than listing models: a
+        // metadata GET passes for a key with no quota, which then fails every
+        // real question. See OpenAIProviderTests for the body assertions.
+        XCTAssertEqual(recorded.url.absoluteString, "https://api.openai.com/v1/chat/completions")
+        XCTAssertEqual(recorded.method, .post)
         XCTAssertEqual(recorded.headers["authorization"], "Bearer sk-test")
     }
 

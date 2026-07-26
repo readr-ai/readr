@@ -104,12 +104,10 @@ final class ReadrAppUITests: XCTestCase {
         )
     }
 
-    // M6 (TestFlight beta) — subscription OAuth stays hidden until the flow is
-    // verified end-to-end on iOS (the loopback redirect needs the in-process
-    // browser work tracked for M7). The beta must only surface working paths,
-    // so the settings screen offers API-key fields but no sign-in button.
-    // M7 flips this assertion when it re-enables OAuth.
-    func testProviderSettingsOffersNoOAuthSignIn() {
+    // Provider sign-in — the settings screen surfaces both OAuth paths with
+    // per-provider labels, and the ChatGPT card carries its ToS caveat. The
+    // generic "Sign in with subscription" label must never reappear.
+    func testProviderSettingsOffersOAuthSignIn() {
         let app = launchSeeded()
         let settingsButton = button(app, id: "library.settings", label: "AI providers")
         XCTAssertTrue(settingsButton.waitForExistence(timeout: 10))
@@ -119,16 +117,28 @@ final class ReadrAppUITests: XCTestCase {
             app.staticTexts["AI Providers"].waitForExistence(timeout: 5)
             || app.navigationBars["AI Providers"].waitForExistence(timeout: 5)
         )
+        XCTAssertTrue(
+            app.buttons["Sign in with ChatGPT"].firstMatch.waitForExistence(timeout: 5),
+            "The ChatGPT card must offer its sign-in button"
+        )
+        XCTAssertTrue(
+            app.buttons["Sign in with OpenRouter"].firstMatch.exists,
+            "The OpenRouter card must offer its sign-in button"
+        )
+        XCTAssertTrue(
+            app.staticTexts["settings.tosCaveat.chatgpt"].firstMatch.exists,
+            "The ChatGPT sign-in must carry the ToS caveat caption"
+        )
         XCTAssertFalse(
             app.buttons["Sign in with subscription"].firstMatch.exists,
-            "Subscription OAuth is not beta-ready; the sign-in button must stay hidden"
+            "The generic sign-in label was replaced by per-provider labels"
         )
     }
 
     // A6 — first-run copy must never advertise a connection path this build
     // doesn't expose. On iOS the Local row is hidden, so "pick a local model"
-    // must not appear; subscription OAuth is hidden, so "sign in" must not
-    // appear either. The Ask/compose empty states derive their copy from
+    // must not appear; ChatGPT/OpenRouter sign-in IS offered, so "sign in"
+    // must appear. The Ask/compose empty states derive their copy from
     // SettingsModel.setupGuidance, so this asserts on the compose empty state
     // (reached from the Notes panel) which is provider-less by default.
     func testFirstRunCopyOmitsUnavailablePaths() {
@@ -155,9 +165,9 @@ final class ReadrAppUITests: XCTestCase {
             guidance.label.contains("pick a local model"),
             "iOS hides the Local provider, so the copy must not advertise it (got: \(guidance.label))"
         )
-        XCTAssertFalse(
+        XCTAssertTrue(
             guidance.label.lowercased().contains("sign in"),
-            "Subscription OAuth is hidden, so the copy must not advertise 'sign in' (got: \(guidance.label))"
+            "Sign-in is offered (ChatGPT/OpenRouter), so the copy must advertise it (got: \(guidance.label))"
         )
     }
 
