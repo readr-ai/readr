@@ -17,6 +17,8 @@ built for the love of reading.
   <a href="#ios--ipad-beta-testflight">iPhone &amp; iPad beta (TestFlight)</a>
   &nbsp;·&nbsp;
   <a href="#building-from-source">Build from source</a>
+  &nbsp;·&nbsp;
+  <a href="https://readr-ai.github.io/">Website</a>
 </p>
 
 > Status: **feature-complete core, pre-1.0.** All features below are implemented,

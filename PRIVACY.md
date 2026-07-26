@@ -1,7 +1,8 @@
 # Readr Privacy Policy
 
-_Last updated: July 2026. Also available at
-<https://readr-ai.github.io/readr/privacy.html>._
+_Last updated: July 2026. Published at
+<https://readr-ai.github.io/privacy.html>
+(source: [readr-ai/readr-ai.github.io](https://github.com/readr-ai/readr-ai.github.io))._
 
 Readr is a local-first ebook reader. This policy is short because the app is
 built not to collect anything.
