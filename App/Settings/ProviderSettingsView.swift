@@ -113,6 +113,13 @@ struct ProviderSettingsView: View {
                 badge(for: kind)
                 if status.isActive {
                     activeBadge(for: kind)
+                } else if isConfigured {
+                    // The explicit "use this provider" control (#45): the
+                    // status dot reads as a radio button but is decorative,
+                    // and the only other activation path — the model picker —
+                    // is undiscoverable. This also gives users an in-app
+                    // recovery from a stale selection without a relaunch.
+                    makeActiveButton(for: kind)
                 }
                 Spacer(minLength: 0)
                 if isConfigured {
@@ -200,6 +207,30 @@ struct ProviderSettingsView: View {
                 .foregroundStyle(status.textColor)
         }
         .accessibilityIdentifier("settings.status.\(status.kindRawValue)")
+    }
+
+    /// Capsule button on a configured-but-inactive card that makes it the
+    /// active provider with the kind's catalog-default model (the selection
+    /// is a single global pair, so an inactive kind has no stored model
+    /// choice to preserve). Occupies the same header slot as the Active
+    /// badge, so the control and the state it produces read as one
+    /// affordance.
+    private func makeActiveButton(for kind: ProviderInfo.Kind) -> some View {
+        Button {
+            model.makeActive(
+                kind: kind,
+                modelID: ProviderCatalog.defaultModel(for: kind).modelID
+            )
+        } label: {
+            Text("Make Active")
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(theme.muted)
+                .padding(.vertical, 2)
+                .padding(.horizontal, 7)
+                .overlay(Capsule().strokeBorder(theme.line, lineWidth: 1))
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("settings.makeActive.\(kind.rawValue)")
     }
 
     /// The green "Active" pill on the currently-selected connected provider (A7).

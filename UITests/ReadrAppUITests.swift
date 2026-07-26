@@ -200,6 +200,55 @@ final class ReadrAppUITests: XCTestCase {
         )
     }
 
+    // #45 — a configured-but-inactive provider card carries an explicit
+    // "Make Active" button, and tapping it moves the Active badge. This is
+    // also the in-app recovery path for a selection stuck on the wrong
+    // provider (#44's UX gap): no relaunch, no model-picker hunting.
+    // -uiTestSeedProviderKeys pre-stores keys for both providers (Anthropic
+    // active), so the test never types — typing into a second SecureField
+    // mid-sheet is a chronic XCUITest focus flake.
+    func testMakeActiveButtonMovesActiveBadge() {
+        let app = XCUIApplication()
+        app.launchArguments += [
+            "-uiTestSeed", "-uiTestInMemoryCredentials",
+            "-uiTestSkipProviderValidation", "-uiTestSeedProviderKeys",
+        ]
+        app.launch()
+
+        let settingsButton = button(app, id: "library.settings", label: "AI providers")
+        XCTAssertTrue(settingsButton.waitForExistence(timeout: 10))
+        settingsButton.tap()
+
+        // Seeded state: Anthropic active, OpenAI configured but inactive —
+        // the OpenAI card must offer Make Active instead of the badge.
+        XCTAssertTrue(
+            app.staticTexts["settings.activeBadge.anthropic"].firstMatch
+                .waitForExistence(timeout: 5)
+        )
+        let makeActive = app.buttons["settings.makeActive.openAI"].firstMatch
+        XCTAssertTrue(
+            makeActive.waitForExistence(timeout: 5),
+            "A configured, inactive provider should offer an explicit Make Active control"
+        )
+
+        // Tapping it moves the badge — and the roles swap.
+        makeActive.tap()
+        XCTAssertTrue(
+            app.staticTexts["settings.activeBadge.openAI"].firstMatch
+                .waitForExistence(timeout: 5),
+            "Make Active should move the Active badge to the tapped provider"
+        )
+        XCTAssertFalse(
+            app.staticTexts["settings.activeBadge.anthropic"].firstMatch.exists,
+            "Only one provider carries the Active badge"
+        )
+        XCTAssertTrue(
+            app.buttons["settings.makeActive.anthropic"].firstMatch
+                .waitForExistence(timeout: 5),
+            "The displaced provider should now offer Make Active"
+        )
+    }
+
     // Launch-friction guard: a first-run user must be able to get from the
     // key field to the provider's key console without hunting for the URL.
     // SwiftUI `Link` surfaces as a link or a button depending on platform,
