@@ -266,6 +266,31 @@ final class CSSStyleResolverTests: XCTestCase {
         XCTAssertEqual(style(".a { font-variant: normal }", classAttr: "a").smallCaps, false)
     }
 
+    func testVerticalAlignSuperSubAndBaseline() {
+        // The footnote-marker pattern (#43): InDesign-produced EPUBs mark
+        // note refs with a classed span + `vertical-align: super`, no <sup>.
+        XCTAssertEqual(
+            style(".a { vertical-align: super }", classAttr: "a").verticalAlign, .raised
+        )
+        XCTAssertEqual(
+            style(".a { vertical-align: sub }", classAttr: "a").verticalAlign, .lowered
+        )
+        // An explicit baseline must be able to cancel an outer super/sub.
+        XCTAssertEqual(
+            style(".a { vertical-align: baseline }", classAttr: "a").verticalAlign, .baseline
+        )
+    }
+
+    func testVerticalAlignBoxValuesStayUndeclared() {
+        // top/middle/bottom (and lengths/percentages) are table-cell/box
+        // alignment, not text super/sub — they must not declare the fact.
+        XCTAssertNil(style(".a { vertical-align: top }", classAttr: "a").verticalAlign)
+        XCTAssertNil(style(".a { vertical-align: middle }", classAttr: "a").verticalAlign)
+        XCTAssertNil(style(".a { vertical-align: text-bottom }", classAttr: "a").verticalAlign)
+        XCTAssertNil(style(".a { vertical-align: 20% }", classAttr: "a").verticalAlign)
+        XCTAssertNil(style(".a { vertical-align: -0.2em }", classAttr: "a").verticalAlign)
+    }
+
     // MARK: - Cascade order
 
     func testCascadeOrderElementThenClassThenElementClassThenInline() {
