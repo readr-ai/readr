@@ -106,62 +106,6 @@ jobs:
           -skipPackagePluginValidation
           -resultBundlePath MacResults
           CODE_SIGNING_ALLOWED=NO
-      # The Mac app's own XCUITest run. Snapshot tests render SwiftUI surfaces
-      # offscreen and explicitly cannot reach real toolbar/window chrome, which
-      # is where macOS-only regressions live: the reader shipped with NO
-      # typeface, line-spacing or justification control because
-      # testAppearanceOffersFontSpacingAndJustification asserted only the iOS
-      # shape and ran only on simulators. This job is what closes that gap.
-      - name: Import Developer ID certificate (macOS UI tests)
-        if: env.HAS_SIGNING == 'true'
-        env:
-          MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
-          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
-        run: |
-          KEYCHAIN_PASSWORD="$(uuidgen)"
-          security create-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
-          security default-keychain -s build.keychain
-          security unlock-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
-          echo "$MACOS_CERT_P12" | base64 --decode > cert.p12
-          security import cert.p12 -k build.keychain -P "$MACOS_CERT_PASSWORD" \
-            -T /usr/bin/codesign
-          rm cert.p12
-          security set-key-partition-list -S apple-tool:,apple: \
-            -s -k "$KEYCHAIN_PASSWORD" build.keychain
-      #
-      # SCOPED ON PURPOSE. A full macOS run is 21 failures / 2 skipped / 2
-      # passed out of 25: the rest assume iOS shapes — swipe gestures, the
-      # split-view idiom, tap-to-toggle chrome — and fail for reasons unrelated
-      # to the code under test. A permanently red job is worse than no job; it
-      # teaches everyone to ignore the signal.
-      #
-      # These three are verified to pass together on macOS. Note the typography
-      # test passes scoped but FAILS inside a full run, so there is also
-      # cross-test interference to fix before `-only-testing` can go away —
-      # growing this list is not merely a matter of porting each test.
-      - name: UI tests (macOS)
-        if: env.HAS_SIGNING == 'true'
-        run: |
-          set -o pipefail
-          IDENTITY=$(security find-identity -v -p codesigning build.keychain \
-            | awk -F'"' '/Developer ID Application/ {print $2; exit}')
-          echo "Signing UI test runner as: $IDENTITY"
-          xcodebuild test \
-            -project Readr.xcodeproj \
-            -scheme Readr \
-            -destination 'platform=macOS' \
-            -only-testing:ReadrAppUITests/ReadrFlowUITests/testAppearanceOffersFontSpacingAndJustification \
-            -only-testing:ReadrAppUITests/ReadrFlowUITests/testEmptyLibraryCopyIsPlatformCorrect \
-            -only-testing:ReadrAppUITests/ReadrFlowUITests/testTOCJumpToChapterTwoUpdatesReader \
-            -skipPackagePluginValidation \
-            -resultBundlePath MacUIResults \
-            CODE_SIGN_STYLE=Manual \
-            CODE_SIGN_IDENTITY="$IDENTITY"
-      # -retry-tests-on-failure + -test-iterations 3: XCUITest on the
-      # simulator is timing-sensitive and occasionally flakes (sheet/inspector
-      # presentation races). Retrying a *failed* test up to twice rescues
-      # intermittent flakes while a real regression still fails all three
-      # attempts and reddens the build.
       - name: UI tests (iPhone Simulator)
         run: >
           set -o pipefail &&
@@ -189,6 +133,64 @@ jobs:
           -test-iterations 3
           -resultBundlePath IPadResults
           CODE_SIGNING_ALLOWED=NO
+      # The Mac app's own XCUITest run. Snapshot tests render SwiftUI surfaces
+      # offscreen and explicitly cannot reach real toolbar/window chrome, which
+      # is where macOS-only regressions live: the reader shipped with NO
+      # typeface, line-spacing or justification control because
+      # testAppearanceOffersFontSpacingAndJustification asserted only the iOS
+      # shape and ran only on simulators. This job is what closes that gap.
+      - name: Import Developer ID certificate (macOS UI tests)
+        if: env.HAS_SIGNING == 'true'
+        env:
+          MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+        run: |
+          KEYCHAIN_PASSWORD="$(uuidgen)"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+          echo "$MACOS_CERT_P12" | base64 --decode > cert.p12
+          security import cert.p12 -k build.keychain -P "$MACOS_CERT_PASSWORD" \
+            -T /usr/bin/codesign
+          rm cert.p12
+          security set-key-partition-list -S apple-tool:,apple: \
+            -s -k "$KEYCHAIN_PASSWORD" build.keychain
+      #
+      # SCOPED TO ONE TEST ON PURPOSE. A full macOS run is 21 failures / 2
+      # skipped / 2 passed out of 25: the rest assume iOS shapes — swipe
+      # gestures, the split-view idiom, tap-to-toggle chrome. A permanently red
+      # job is worse than no job; it teaches everyone to ignore the signal.
+      #
+      # This is the ONLY test demonstrated green on a clean runner. Two others
+      # (testEmptyLibraryCopyIsPlatformCorrect, testTOCJumpToChapterTwoUpdates-
+      # Reader) pass on a developer Mac and FAIL here, because a dev machine
+      # carries persisted UserDefaults — reading layout, theme — that a fresh
+      # runner does not. Passing locally is not evidence for this list; only a
+      # green CI run is.
+      #
+      # Growing the list also needs cross-test interference fixed: the test
+      # below passes scoped but fails inside a full macOS run.
+      - name: UI tests (macOS)
+        if: env.HAS_SIGNING == 'true'
+        run: |
+          set -o pipefail
+          IDENTITY=$(security find-identity -v -p codesigning build.keychain \
+            | awk -F'"' '/Developer ID Application/ {print $2; exit}')
+          echo "Signing UI test runner as: $IDENTITY"
+          xcodebuild test \
+            -project Readr.xcodeproj \
+            -scheme Readr \
+            -destination 'platform=macOS' \
+            -only-testing:ReadrAppUITests/ReadrFlowUITests/testAppearanceOffersFontSpacingAndJustification \
+            -skipPackagePluginValidation \
+            -resultBundlePath MacUIResults \
+            CODE_SIGN_STYLE=Manual \
+            CODE_SIGN_IDENTITY="$IDENTITY"
+      # -retry-tests-on-failure + -test-iterations 3: XCUITest on the
+      # simulator is timing-sensitive and occasionally flakes (sheet/inspector
+      # presentation races). Retrying a *failed* test up to twice rescues
+      # intermittent flakes while a real regression still fails all three
+      # attempts and reddens the build.
       - name: Extract screenshots
         if: always()
         run: |
