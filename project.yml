@@ -125,6 +125,11 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.readrai.uitests
         SWIFT_VERSION: "5.9"
+        # The macOS UI-test runner is a real signed .app; without a generated
+        # Info.plist codesign refuses it ("target does not have an Info.plist
+        # file"), so the suite could never run on macOS. Harmless on iOS, where
+        # the simulator run signs with CODE_SIGNING_ALLOWED=NO.
+        GENERATE_INFOPLIST_FILE: "YES"
 
   # macOS-only visual coverage: app-hosted unit tests that render the key
   # SwiftUI surfaces offscreen and attach PNGs (published to ci-screenshots

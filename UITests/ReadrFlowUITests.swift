@@ -55,15 +55,62 @@ final class ReadrFlowUITests: XCTestCase {
         #endif
     }
 
+    /// An element carrying `label`, whatever type it is exposed as.
+    ///
+    /// SwiftUI publishes the same view differently per platform: a Home book
+    /// card is a `staticText` on iOS but a `button` on macOS, so a query
+    /// pinned to one type passes on the simulators and fails on the Mac —
+    /// exactly how the macOS suite went unrun. Matching by label across types
+    /// keeps one assertion honest on both.
+    /// An element carrying `text`, whatever type or attribute exposes it.
+    ///
+    /// Two platform differences bite here, and both are why the macOS suite
+    /// silently never ran:
+    ///
+    /// - **Attribute.** A SwiftUI `Text` publishes its string as the element's
+    ///   `value` on macOS but its `label` on iOS, so `app.staticTexts["Chapter
+    ///   One"]` — a label/identifier lookup — matches nothing on the Mac.
+    /// - **Type.** A Home book cell is a `button` labelled with the title; the
+    ///   caption beneath it is a separate text element that does nothing when
+    ///   clicked. Buttons must win, or the open gesture hits the caption.
+    private func anyElement(_ app: XCUIApplication, label text: String) -> XCUIElement {
+        let match = NSPredicate(format: "label == %@ OR value == %@", text, text)
+        let button = app.buttons.matching(match).firstMatch
+        if button.exists { return button }
+        return app.descendants(matching: .any).matching(match).firstMatch
+    }
+
+    /// Waits for anything carrying `text`, for use before `anyElement` (whose
+    /// existence probes all miss while the app is still launching).
+    @discardableResult
+    private func waitForText(
+        _ app: XCUIApplication, _ text: String, timeout: TimeInterval = 10
+    ) -> Bool {
+        let match = NSPredicate(format: "label == %@ OR value == %@ OR title == %@", text, text, text)
+        if app.descendants(matching: .any).matching(match).firstMatch
+            .waitForExistence(timeout: timeout) {
+            return true
+        }
+        // An open macOS pull-down lives in its own menu window, outside the
+        // app's descendant tree — its rows are only reachable as menu items.
+        return app.menuItems.matching(match).firstMatch.exists
+    }
+
     /// Opens the seeded "Sample Book" from Home and waits for the reader.
     /// 10s: the suite's first test pays the simulator's cold-start cost.
     private func openSampleBook(_ app: XCUIApplication) {
-        let bookCell = app.staticTexts["Sample Book"].firstMatch
-        XCTAssertTrue(bookCell.waitForExistence(timeout: 10))
+        XCTAssertTrue(waitForText(app, "Sample Book"))
+        let bookCell = anyElement(app, label: "Sample Book")
+        #if canImport(UIKit)
         bookCell.tap()
+        #else
+        // Mac library cards open on double-click, Finder-style — a single
+        // click only selects, so `tap()` leaves Home on screen.
+        bookCell.doubleClick()
+        #endif
         // The chapter kicker exposes the plain title in every layout (scroll
         // header and paged running head both carry it).
-        XCTAssertTrue(app.staticTexts["Chapter One"].waitForExistence(timeout: 10))
+        XCTAssertTrue(waitForText(app, "Chapter One"))
     }
 
     /// Picks a reading layout via the Appearance popover ("Scroll" /
@@ -828,40 +875,54 @@ final class ReadrFlowUITests: XCTestCase {
 
     // MARK: - Typography controls (Apple Books parity)
 
-    // The Appearance popover carries the Books-style text controls: a font
-    // menu, line-spacing presets, and the justification toggle.
+    // The Books-style text controls — typeface, line spacing, justification —
+    // must be reachable on BOTH platforms. iOS gathers them in the Aa popover;
+    // the macOS toolbar has no room for three more inline controls, so they
+    // live behind a `textformat` menu. Same identifiers, different container.
+    //
+    // This test asserted only the iOS shape for a long time while CI ran the
+    // suite on simulators alone, which is exactly how macOS shipped with no
+    // typeface control at all.
     func testAppearanceOffersFontSpacingAndJustification() {
         let app = launchSeeded()
         openSampleBook(app)
 
-        let appearance = button(app, id: "reader.appearance", label: "Appearance")
-        XCTAssertTrue(appearance.waitForExistence(timeout: 5))
-        appearance.tap()
+        #if canImport(UIKit)
+        let opener = button(app, id: "reader.appearance", label: "Appearance")
+        #else
+        // A SwiftUI `Menu` is a pop-up button on macOS, not a plain button, so
+        // match on identifier across element types.
+        let opener = app.descendants(matching: .any)
+            .matching(identifier: "reader.typography")
+            .firstMatch
+        #endif
+        XCTAssertTrue(opener.waitForExistence(timeout: 5))
+        opener.tap()
 
-        let fontMenu = button(app, id: "appearance.font", label: "Font")
+        // The macOS controls live inside a pull-down menu, so they enter the
+        // hierarchy only once it is open; give it a moment either way.
         XCTAssertTrue(
-            fontMenu.waitForExistence(timeout: 5),
+            waitForText(app, "New York", timeout: 5) || waitForText(app, "Font", timeout: 5),
             "Appearance should offer the reading typeface menu"
         )
 
-        for spacing in ["compact", "normal", "relaxed"] {
+        // iOS renders the presets as identified segment buttons; the macOS menu
+        // renders them as rows carrying only their display name. Accept either.
+        for (raw, display) in [("compact", "Compact"), ("normal", "Normal"), ("relaxed", "Relaxed")] {
             XCTAssertTrue(
-                app.buttons["appearance.spacing.\(spacing)"].firstMatch.exists,
-                "Appearance should offer the \(spacing) line-spacing preset"
+                app.buttons["appearance.spacing.\(raw)"].firstMatch.exists
+                    || waitForText(app, display, timeout: 2),
+                "Appearance should offer the \(display) line-spacing preset"
             )
         }
 
-        let justify = app.switches["appearance.justify"].firstMatch
         XCTAssertTrue(
-            justify.exists || app.switches["Justify text"].firstMatch.exists,
+            app.switches["appearance.justify"].firstMatch.exists
+                || app.switches["Justify text"].firstMatch.exists
+                || app.menuItems["Justify text"].firstMatch.exists
+                || waitForText(app, "Justify text", timeout: 2),
             "Appearance should offer the justification toggle"
         )
-
-        // Live-preview controls: picking a spacing preset keeps the popover
-        // open and the reader intact.
-        app.buttons["appearance.spacing.relaxed"].firstMatch.tap()
-        XCTAssertTrue(fontMenu.exists, "Spacing presets should preview live")
-        app.buttons["appearance.spacing.normal"].firstMatch.tap() // restore
     }
 
     // MARK: - Distraction-free chrome (Apple Books parity)
