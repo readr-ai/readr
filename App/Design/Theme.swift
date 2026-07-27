@@ -328,6 +328,17 @@ struct ReaderStyle: Equatable {
     /// height so a figure can never exceed a page and break pagination).
     /// nil ⇒ uncapped (scroll mode, where the column just grows).
     var maxImageHeight: CGFloat? = nil
+    /// Render this chapter as a full-page plate: its single image scales UP to
+    /// fill the page (aspect preserved) and centers.
+    ///
+    /// Only set for a chapter whose entire content is one image — covers,
+    /// volume title pages, full-page illustrations. Publishers declare those
+    /// at their bitmap's pixel size (the Hitchhiker title plate is a 300×413
+    /// JPEG declared `width:300px; height:413px`), which honored literally
+    /// renders a postage stamp in an 860pt column. Deliberately NOT applied to
+    /// figures inside a text chapter: the no-upscale rule is what keeps a 40pt
+    /// ornament or inline icon from ballooning to fill the page.
+    var platePresentation = false
 
     static let fontSizeRange: ClosedRange<CGFloat> = 13...30
 
