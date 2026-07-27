@@ -30,6 +30,13 @@ import Foundation
 /// the same Keychain items concurrently; that value would be served stale
 /// until relaunch. Readr owns these items exclusively, so that trade is safe.
 ///
+/// Two concurrent first reads of the SAME kind can both miss and both hit the
+/// Keychain — the lock is released across the backing call on purpose, since
+/// holding it would stall every other kind behind a modal ACL dialog. In
+/// practice the settings refresh loads each kind once, so the duplicate is a
+/// theoretical extra prompt rather than an observed one; collapsing it would
+/// need per-kind in-flight tasks, which is not worth the machinery here.
+///
 /// Named for its job rather than its shape — collapsing Keychain reads is the
 /// entire reason it exists.
 public final class KeychainReadCache: CredentialStore, @unchecked Sendable {

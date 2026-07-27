@@ -26,6 +26,15 @@ final class ReadrFlowUITests: XCTestCase {
     ) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchArguments += ["-uiTestSeed"]
+        #if !canImport(UIKit)
+        // Keep the macOS run off the real Keychain. A signature/ACL mismatch
+        // there raises a modal "Readr wants to use your confidential
+        // information" dialog on launch, which steals focus and makes clicks
+        // land on nothing — the suite fails nondeterministically for reasons
+        // that have nothing to do with the code under test. The simulator has
+        // no such prompt, so iOS keeps the real store.
+        app.launchArguments += ["-uiTestInMemoryCredentials"]
+        #endif
         if stubLLM { app.launchArguments += ["-uiTestStubLLM"] }
         app.launchArguments += extraArguments
         app.launch()
@@ -74,9 +83,13 @@ final class ReadrFlowUITests: XCTestCase {
     ///   caption beneath it is a separate text element that does nothing when
     ///   clicked. Buttons must win, or the open gesture hits the caption.
     private func anyElement(_ app: XCUIApplication, label text: String) -> XCUIElement {
-        let match = NSPredicate(format: "label == %@ OR value == %@", text, text)
+        let match = NSPredicate(format: "label == %@ OR value == %@ OR title == %@", text, text, text)
+        // Wait for the button rather than probing once: a container (the
+        // enclosing ScrollView) can carry the same label and win the generic
+        // query if the buttons have not rendered yet, and a ScrollView has no
+        // hit point — the click then fails with "Unable to find hit point".
         let button = app.buttons.matching(match).firstMatch
-        if button.exists { return button }
+        if button.waitForExistence(timeout: 3) { return button }
         return app.descendants(matching: .any).matching(match).firstMatch
     }
 
@@ -106,7 +119,15 @@ final class ReadrFlowUITests: XCTestCase {
         #else
         // Mac library cards open on double-click, Finder-style — a single
         // click only selects, so `tap()` leaves Home on screen.
+        //
+        // Retried once: the first double-click after launch occasionally lands
+        // while the window is still taking key focus and is swallowed, leaving
+        // Home on screen. One retry makes the open deterministic instead of
+        // relying on CI's blanket -retry-tests-on-failure to hide it.
         bookCell.doubleClick()
+        if !waitForText(app, "Chapter One", timeout: 5) {
+            anyElement(app, label: "Sample Book").doubleClick()
+        }
         #endif
         // The chapter kicker exposes the plain title in every layout (scroll
         // header and paged running head both carry it).
@@ -923,6 +944,19 @@ final class ReadrFlowUITests: XCTestCase {
                 || waitForText(app, "Justify text", timeout: 2),
             "Appearance should offer the justification toggle"
         )
+
+        #if canImport(UIKit)
+        // Live-preview controls: picking a spacing preset keeps the popover
+        // open and the reader intact. iOS only — selecting a row in the macOS
+        // pull-down dismisses the menu by design, so "stays open" is not the
+        // contract there.
+        app.buttons["appearance.spacing.relaxed"].firstMatch.tap()
+        XCTAssertTrue(
+            button(app, id: "appearance.font", label: "Font").exists,
+            "Spacing presets should preview live"
+        )
+        app.buttons["appearance.spacing.normal"].firstMatch.tap() // restore
+        #endif
     }
 
     // MARK: - Distraction-free chrome (Apple Books parity)
