@@ -36,3 +36,6 @@ secrets.plist
 # Python bytecode (scripts/)
 __pycache__/
 *.pyc
+
+# Local signed builds (see docs/AUTH.md live-verification steps)
+build-signed/

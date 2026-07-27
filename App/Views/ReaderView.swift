@@ -600,6 +600,7 @@ struct ReaderView: View {
             }
             layoutSegmentControl
             fontStepperControl
+            typographyMenu
             themeDotsControl
             if model.isPDF(book) {
                 pdfDisplayMenu
@@ -904,6 +905,42 @@ struct ReaderView: View {
         .accessibilityLabel(option.displayName)
         .accessibilityIdentifier("appearance.theme.\(option.rawValue)")
         .accessibilityAddTraits(selected ? .isSelected : [])
+    }
+
+    /// Typeface, line spacing and justification. iOS reaches these through the
+    /// Aa popover; the macOS toolbar has no room for three more inline
+    /// controls, so they live behind one `textformat` menu next to the stepper.
+    /// Identifiers match the popover's so the same assertions work on either
+    /// platform.
+    private var typographyMenu: some View {
+        Menu {
+            Picker("Font", selection: $fontRaw) {
+                ForEach(ReaderFont.allCases) { option in
+                    Text(option.displayName).tag(option.rawValue)
+                }
+            }
+            .pickerStyle(.inline)
+            .accessibilityIdentifier("appearance.font")
+
+            Picker("Line spacing", selection: $lineSpacingRaw) {
+                ForEach(ReaderLineSpacing.allCases) { option in
+                    Text(option.displayName)
+                        .tag(option.rawValue)
+                        .accessibilityIdentifier("appearance.spacing.\(option.rawValue)")
+                }
+            }
+            .pickerStyle(.inline)
+
+            Divider()
+
+            Toggle("Justify text", isOn: $isJustified)
+                .accessibilityIdentifier("appearance.justify")
+        } label: {
+            Label("Text", systemImage: "textformat")
+        }
+        .help("Typeface, line spacing and justification")
+        .accessibilityLabel("Text options")
+        .accessibilityIdentifier("reader.typography")
     }
 
     /// PDFs keep their display switch in the appearance area: original pages
