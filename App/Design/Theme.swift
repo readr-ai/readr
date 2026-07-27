@@ -342,6 +342,29 @@ struct ReaderStyle: Equatable {
 
     static let fontSizeRange: ClosedRange<CGFloat> = 13...30
 
+    /// True when `text` is nothing but a single image — a cover, a volume
+    /// title page, a full-page illustration. Those are presented as plates
+    /// (see `platePresentation`) rather than as an inline figure at the
+    /// publisher's declared pixel size.
+    ///
+    /// Deliberately strict: ONE attachment placeholder and no other visible
+    /// character. A chapter with a caption, a heading, or a second figure is
+    /// ordinary flowing content and keeps the no-upscale rule. Shared by the
+    /// paged and scroll surfaces so a plate cannot render full-page in one
+    /// layout and postage-stamp-sized in the other.
+    static func isPlate(_ text: String) -> Bool {
+        var sawPlaceholder = false
+        for character in text {
+            if character == "\u{FFFC}" {
+                if sawPlaceholder { return false } // more than one image
+                sawPlaceholder = true
+            } else if !character.isWhitespace {
+                return false
+            }
+        }
+        return sawPlaceholder
+    }
+
     var contentFont: PlatformFont {
         let system = PlatformFont.systemFont(ofSize: fontSize)
         if let family = font.familyName,

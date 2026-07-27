@@ -245,26 +245,7 @@ struct PagedChapterView: View {
         return adjusted
     }
 
-    /// True when the chapter is nothing but a single image — a cover, a volume
-    /// title page, a full-page illustration. Those are presented as plates
-    /// (scaled to fill the page, centered) rather than as an inline figure at
-    /// the publisher's declared pixel size.
-    ///
-    /// Deliberately strict: ONE attachment placeholder and no other visible
-    /// character. A chapter with a caption, a heading, or a second figure is
-    /// ordinary flowing content and keeps the no-upscale rule.
-    private var isPlateChapter: Bool {
-        var sawPlaceholder = false
-        for character in chapter.text {
-            if character == "\u{FFFC}" {
-                if sawPlaceholder { return false } // more than one image
-                sawPlaceholder = true
-            } else if !character.isWhitespace {
-                return false
-            }
-        }
-        return sawPlaceholder
-    }
+    private var isPlateChapter: Bool { ReaderStyle.isPlate(chapter.text) }
 
     private func paginate(for size: CGSize) -> [Page] {
         // The page's TEXT area, from the same terms the body renders with:

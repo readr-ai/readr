@@ -1518,6 +1518,20 @@ struct ScrollReadingColumn: View {
     /// A tapped internal link — the host resolves and jumps.
     var onLinkTap: ((LinkTarget) -> Void)? = nil
 
+    /// The shared appearance plus plate presentation for an image-only
+    /// chapter, so a cover fills the column here exactly as it fills the page
+    /// in paged layout — switching layout must not resize the artwork.
+    ///
+    /// `maxImageHeight` stays nil: a scrolling column has no page to overflow,
+    /// so the plate sizes to the column width and grows as tall as its aspect
+    /// requires, which is what a scrolling reader should do with a cover.
+    private var renderStyle: ReaderStyle {
+        guard ReaderStyle.isPlate(chapter.text) else { return style }
+        var plate = style
+        plate.platePresentation = true
+        return plate
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             if let title = chapter.title ?? displayTitle {
@@ -1537,7 +1551,7 @@ struct ScrollReadingColumn: View {
             SelectableTextView(
                 text: chapter.text,
                 highlights: highlights,
-                style: style,
+                style: renderStyle,
                 inlineImages: inlineImages,
                 formatSpans: chapter.formatSpans ?? [],
                 scrollToOffset: scrollTarget,
