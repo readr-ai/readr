@@ -727,6 +727,19 @@ final class PDFReaderController: NSObject, ObservableObject {
         // Programmatic selection must not raise the annotation menu.
         suppressSelectionMenu = true
         pdfView.setCurrentSelection(result.match, animate: true)
+        // Land on the hit's page BEFORE scrolling to the selection.
+        // `go(to: PDFSelection)` resolves the selection's rect against the
+        // current layout and silently does nothing when that layout isn't
+        // ready — which is the case while the search sheet is still on screen,
+        // as it is when the user submits with the Return key. The result was a
+        // Return that appeared to do nothing at all, while the same jump from
+        // a tapped result row worked because dismissing the sheet re-laid out
+        // the view first. Paging by index has no such dependency, so it
+        // guarantees the right page; the selection scroll that follows still
+        // fine-tunes the offset whenever it can.
+        if let page = result.match.pages.first {
+            pdfView.go(to: page)
+        }
         pdfView.go(to: result.match)
     }
 
