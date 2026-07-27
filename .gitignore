@@ -37,5 +37,5 @@ secrets.plist
 __pycache__/
 *.pyc
 
-# Local signed builds (see docs/AUTH.md live-verification steps)
-build-signed/
+# Local build/derived-data output (signed builds, UI-test runs)
+build-*/
