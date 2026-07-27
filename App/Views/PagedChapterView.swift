@@ -241,8 +241,11 @@ struct PagedChapterView: View {
             1, size.height - (pageInsets.top + pageInsets.bottom) - labelAllowance
         )
         adjusted.maxImageHeight = max(1, pageHeight - Self.kickerAllowance - 4)
+        adjusted.platePresentation = isPlateChapter
         return adjusted
     }
+
+    private var isPlateChapter: Bool { ReaderStyle.isPlate(chapter.text) }
 
     private func paginate(for size: CGSize) -> [Page] {
         // The page's TEXT area, from the same terms the body renders with:

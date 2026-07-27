@@ -36,3 +36,6 @@ secrets.plist
 # Python bytecode (scripts/)
 __pycache__/
 *.pyc
+
+# Local build/derived-data output (signed builds, UI-test runs)
+build-*/

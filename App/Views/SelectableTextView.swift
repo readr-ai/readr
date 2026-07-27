@@ -306,7 +306,15 @@ enum TextRangeConvert {
         let paragraph = NSMutableParagraphStyle()
         paragraph.lineSpacing = style.lineSpacing
         paragraph.paragraphSpacing = style.paragraphSpacing
-        if style.isJustified {
+        if style.platePresentation {
+            // A plate is one centered image. Center unconditionally: the
+            // markup's own centering often lives in an embedded <style> block
+            // (`body { text-align: center }` in a calibre titlepage.xhtml),
+            // which produces no alignment span, so a cover would otherwise
+            // hug the left margin. Justifying a lone attachment is meaningless.
+            paragraph.alignment = .center
+            paragraph.hyphenationFactor = 0
+        } else if style.isJustified {
             // Book-style justification needs hyphenation or long words tear
             // rivers into narrow phone columns (Apple Books does the same).
             paragraph.alignment = .justified
@@ -348,6 +356,7 @@ enum TextRangeConvert {
             attachment.declaredWidth = inline.displayWidth
             attachment.declaredHeight = inline.displayHeight
             attachment.maxHeight = style.maxImageHeight
+            attachment.scalesToFill = style.platePresentation
             attributed.addAttribute(.attachment, value: attachment, range: ns)
         }
         return attributed
@@ -592,6 +601,10 @@ final class ColumnFittingAttachment: NSTextAttachment {
     /// caps it. nil ⇒ size from the bitmap, never upscaled past native.
     var declaredWidth: CGFloat?
     var declaredHeight: CGFloat?
+    /// Plate mode: ignore the declared/native size and scale to FILL the
+    /// column and `maxHeight`, aspect preserved. Set only for a chapter that
+    /// is nothing but this image — see `ReaderStyle.platePresentation`.
+    var scalesToFill = false
 
     /// The shared sizing rule: width = min(declared ?? native, column),
     /// height from the declared aspect when both dimensions are declared
@@ -610,7 +623,16 @@ final class ColumnFittingAttachment: NSTextAttachment {
         // A height-only declaration (height="200" with no width — common in
         // EPUB markup) still expresses a size intent: derive the width from
         // it through the bitmap's aspect.
-        let baseWidth = declared ?? declaredH.map { $0 / aspect } ?? native.width
+        // A plate fills its page: start from the full column rather than the
+        // declared size, so a publisher's pixel-sized cover scales up instead
+        // of rendering as a stamp. The maxHeight clamp below still applies, so
+        // the result is a true aspect-preserving fit inside the page.
+        let baseWidth: CGFloat
+        if scalesToFill, proposedWidth > 0 {
+            baseWidth = proposedWidth
+        } else {
+            baseWidth = declared ?? declaredH.map { $0 / aspect } ?? native.width
+        }
         var width = proposedWidth > 0 ? min(baseWidth, proposedWidth) : baseWidth
         var height = width * aspect
         if let maxHeight, maxHeight > 0, height > maxHeight {

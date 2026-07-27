@@ -116,7 +116,14 @@ final class AppModel: ObservableObject {
             return InMemoryCredentialStore()
         }
         #if canImport(Security)
-        return KeychainCredentialStore()
+        // Wrapped so each kind's secret is read from the Keychain once per
+        // launch. On macOS a signature/ACL mismatch turns every read into a
+        // "Readr wants to use your confidential information" prompt, and the
+        // settings surface reads each kind three or more times per refresh —
+        // see `KeychainReadCache`. The cache must wrap the store the WHOLE app
+        // shares (the settings layer writes credentials directly), which is
+        // exactly what this composition root hands out.
+        return KeychainReadCache(wrapping: KeychainCredentialStore())
         #else
         return InMemoryCredentialStore()
         #endif

@@ -328,8 +328,42 @@ struct ReaderStyle: Equatable {
     /// height so a figure can never exceed a page and break pagination).
     /// nil ⇒ uncapped (scroll mode, where the column just grows).
     var maxImageHeight: CGFloat? = nil
+    /// Render this chapter as a full-page plate: its single image scales UP to
+    /// fill the page (aspect preserved) and centers.
+    ///
+    /// Only set for a chapter whose entire content is one image — covers,
+    /// volume title pages, full-page illustrations. Publishers declare those
+    /// at their bitmap's pixel size (the Hitchhiker title plate is a 300×413
+    /// JPEG declared `width:300px; height:413px`), which honored literally
+    /// renders a postage stamp in an 860pt column. Deliberately NOT applied to
+    /// figures inside a text chapter: the no-upscale rule is what keeps a 40pt
+    /// ornament or inline icon from ballooning to fill the page.
+    var platePresentation = false
 
     static let fontSizeRange: ClosedRange<CGFloat> = 13...30
+
+    /// True when `text` is nothing but a single image — a cover, a volume
+    /// title page, a full-page illustration. Those are presented as plates
+    /// (see `platePresentation`) rather than as an inline figure at the
+    /// publisher's declared pixel size.
+    ///
+    /// Deliberately strict: ONE attachment placeholder and no other visible
+    /// character. A chapter with a caption, a heading, or a second figure is
+    /// ordinary flowing content and keeps the no-upscale rule. Shared by the
+    /// paged and scroll surfaces so a plate cannot render full-page in one
+    /// layout and postage-stamp-sized in the other.
+    static func isPlate(_ text: String) -> Bool {
+        var sawPlaceholder = false
+        for character in text {
+            if character == "\u{FFFC}" {
+                if sawPlaceholder { return false } // more than one image
+                sawPlaceholder = true
+            } else if !character.isWhitespace {
+                return false
+            }
+        }
+        return sawPlaceholder
+    }
 
     var contentFont: PlatformFont {
         let system = PlatformFont.systemFont(ofSize: fontSize)
