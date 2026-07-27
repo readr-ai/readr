@@ -30,8 +30,21 @@ jobs:
     env:
       # Simulator names drift across Xcode images; keep them in one place and
       # check `xcrun simctl list devicetypes` when a rename breaks the job.
-      IPHONE_SIM: iPhone 16
-      IPAD_SIM: iPad Pro 13-inch (M4)
+      #
+      # iPhone 17 Pro deliberately: it runs the iOS 26 runtime, which is the
+      # SDK testflight.yml ships on. Until this changed, CI built with the
+      # image's default Xcode 16.4 / iOS 18 SDK while TestFlight shipped an
+      # Xcode 26 binary — so no job ever compiled or exercised the toolchain
+      # users actually get. That gap hid a real bug: Return in PDF search did
+      # nothing on the iOS 26 runtime and worked on iOS 18, so the iPhone 16
+      # job stayed green through it.
+      IPHONE_SIM: iPhone 17 Pro
+      # The iPad rides the same (now iOS 26) toolchain for regular-width layout
+      # coverage; it is the split-view/two-page canary, not an SDK one. M5, not
+      # M4: Xcode 26 images pre-create the M5 instance, and an M4 destination
+      # fails to resolve at all ("Unable to find a device matching the provided
+      # destination specifier") even though the M4 device *type* still exists.
+      IPAD_SIM: iPad Pro 13-inch (M5)
       # macOS XCUITest needs a REAL signature: the runner app is launched by
       # the system, which refuses the automation connection to an unsigned
       # bundle ("the test runner hung before establishing connection"). The
@@ -41,6 +54,20 @@ jobs:
       HAS_SIGNING: ${{ secrets.MACOS_CERT_P12 != '' && 'true' || 'false' }}
     steps:
       - uses: actions/checkout@v4
+      # Test the toolchain we SHIP. testflight.yml pins Xcode 26 because App
+      # Store Connect rejects anything built against an older SDK; if CI stays
+      # on the image default (16.4 / iOS 18) it validates a binary nobody
+      # receives. Same selection logic as testflight.yml — fail loudly rather
+      # than silently testing the wrong SDK.
+      - name: Select Xcode 26
+        run: |
+          ls -d /Applications/Xcode*.app || true
+          XCODE=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -1)
+          if [ -z "$XCODE" ]; then
+            echo "::error::No Xcode 26.x on this runner image (see listing above) — move this job to a newer macos image."
+            exit 1
+          fi
+          sudo xcode-select -s "$XCODE"
       - name: Show Xcode version
         run: xcodebuild -version
       - name: Install XcodeGen
@@ -102,15 +129,16 @@ jobs:
           security set-key-partition-list -S apple-tool:,apple: \
             -s -k "$KEYCHAIN_PASSWORD" build.keychain
       #
-      # SCOPED ON PURPOSE. Only 4 of the suite's 25 tests currently pass on
-      # macOS: the rest assume iOS shapes — swipe gestures, the split-view
-      # idiom, tap-to-toggle chrome — and fail for reasons unrelated to the
-      # code under test. Running the whole suite here would be permanently red
-      # and would teach everyone to ignore it.
+      # SCOPED ON PURPOSE. A full macOS run is 21 failures / 2 skipped / 2
+      # passed out of 25: the rest assume iOS shapes — swipe gestures, the
+      # split-view idiom, tap-to-toggle chrome — and fail for reasons unrelated
+      # to the code under test. A permanently red job is worse than no job; it
+      # teaches everyone to ignore the signal.
       #
-      # So this runs the tests actually verified cross-platform. Add to the
-      # list as tests are made macOS-safe; the goal is to delete `-only-testing`
-      # entirely. See the "macOS-compatible UI tests" task.
+      # These three are verified to pass together on macOS. Note the typography
+      # test passes scoped but FAILS inside a full run, so there is also
+      # cross-test interference to fix before `-only-testing` can go away —
+      # growing this list is not merely a matter of porting each test.
       - name: UI tests (macOS)
         if: env.HAS_SIGNING == 'true'
         run: |
@@ -123,6 +151,8 @@ jobs:
             -scheme Readr \
             -destination 'platform=macOS' \
             -only-testing:ReadrAppUITests/ReadrFlowUITests/testAppearanceOffersFontSpacingAndJustification \
+            -only-testing:ReadrAppUITests/ReadrFlowUITests/testEmptyLibraryCopyIsPlatformCorrect \
+            -only-testing:ReadrAppUITests/ReadrFlowUITests/testTOCJumpToChapterTwoUpdatesReader \
             -skipPackagePluginValidation \
             -resultBundlePath MacUIResults \
             CODE_SIGN_STYLE=Manual \
