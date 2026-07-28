@@ -33,7 +33,13 @@ struct UITestStubProvider: LLMProvider {
                     continuation.finish(throwing: HTTPError.transport(.timedOut))
                     return
                 }
-                let answer = """
+                // `-uiTestStubAnswer <text>` overrides the canned answer (same
+                // UserDefaults launch-arg mapping as `-uiTestOpenURL`). The
+                // default is written for the seeded Sample Book; screenshot
+                // walks that import a REAL public-domain book pass an answer
+                // written for the passage actually on screen, so the capture
+                // never shows a response about a different book.
+                let answer = UserDefaults.standard.string(forKey: "uiTestStubAnswer") ?? """
                 The opening line signals that something is wrong with this \
                 world: clocks striking thirteen breaks ordinary time, and the \
                 vile wind and gritty dust Winston shelters from set the \
