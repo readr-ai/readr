@@ -39,8 +39,11 @@ struct LayoutPaginator {
     var formatSpans: [FormatSpan] = []
 
     /// Split `text` into pages, where page `i`'s text area is
-    /// `containerSize(i)` (sizes vary per page: the spread's first page
-    /// reserves the kicker band). `Page` semantics mirror
+    /// `containerSize(i)`. (The API allows per-page sizes; the reader now
+    /// passes a UNIFORM size — the kicker band is reserved on every page so
+    /// facing pages share one text rectangle. Do not reintroduce per-index
+    /// sizing without re-deriving the facing-page alignment.) `Page`
+    /// semantics mirror
     /// `ReadrKit.Paginator`: ranges are contiguous and cover the whole text,
     /// and boundary whitespace is covered by a `range` but excluded from
     /// `text`. Interior page ranges END at their last visible character —
