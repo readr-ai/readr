@@ -276,7 +276,7 @@ struct PagedChapterView: View {
         // The page's TEXT area, from the same terms the body renders with:
         // column width capped at the measure minus interior side insets;
         // height minus vertical insets and the bottom label band. The kicker
-        // band is subtracted per page below (only pages that show it).
+        // band is subtracted uniformly below (every page, when one exists).
         let columnWidth = columnWidth(for: size)
         let textWidth = max(1, columnWidth - (pageInsets.leading + pageInsets.trailing))
         let pageHeight = max(
@@ -306,13 +306,17 @@ struct PagedChapterView: View {
             style: renderStyle(for: size), inlineImages: inlineImages,
             formatSpans: chapter.formatSpans ?? []
         )
-        var pages = paginator.paginate(chapter.text) { index in
-            // The kicker renders on each spread's FIRST page (every page in
-            // single-page layout; even indices in double, since spreads
-            // start on even indices).
-            let showsKicker = hasKicker
-                && (layout != .doublePage || index.isMultiple(of: 2))
-            let height = pageHeight - (showsKicker ? Self.kickerAllowance : 0) - 4
+        var pages = paginator.paginate(chapter.text) { _ in
+            // UNIFORM height for every page of the chapter. The kicker band is
+            // reserved on ALL pages whenever the chapter has a kicker — not
+            // just the pages that draw the title. Reserving it only on the
+            // spread's first page gave the facing page a taller text column
+            // that started a full band higher and ended on a different line
+            // grid: visibly mismatched "page heights" on every spread. The
+            // live view renders a fixed-height kicker SLOT on every page
+            // (title drawn only on the spread's first page), so body text on
+            // facing pages starts at the identical y by construction.
+            let height = pageHeight - (hasKicker ? Self.kickerAllowance : 0) - 4
             return CGSize(width: textWidth, height: max(1, height))
         }
         if pages.isEmpty, !chapter.text.isEmpty {
@@ -470,15 +474,25 @@ struct PagedChapterView: View {
             // original title so UI tests (and VoiceOver) still find e.g.
             // "Chapter One" on ANY page — the seeded reading position lands
             // mid-chapter. (Capacity reserves a fixed allowance for it.)
-            if showsKicker, let title = kickerTitle {
-                Text(title.uppercased())
-                    .font(.system(size: 11))
-                    .kerning(2)
-                    .foregroundStyle(style.theme.faint)
-                    .lineLimit(1)
-                    .accessibilityLabel(title)
-                    .accessibilityIdentifier("reader.kicker")
-                    .padding(.bottom, 22)
+            if let title = kickerTitle {
+                // Fixed-height slot on EVERY page, title only on the spread's
+                // first. The slot is exactly the allowance the paginator
+                // reserves, so body text starts at the identical y on both
+                // facing pages — and exactly where measurement assumed, not
+                // "text height + 22pt padding ≈ the allowance".
+                ZStack(alignment: .topLeading) {
+                    Color.clear
+                    if showsKicker {
+                        Text(title.uppercased())
+                            .font(.system(size: 11))
+                            .kerning(2)
+                            .foregroundStyle(style.theme.faint)
+                            .lineLimit(1)
+                            .accessibilityLabel(title)
+                            .accessibilityIdentifier("reader.kicker")
+                    }
+                }
+                .frame(height: Self.kickerAllowance)
             }
             SelectableTextView(
                 text: page.text,
