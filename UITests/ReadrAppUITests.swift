@@ -118,17 +118,32 @@ final class ReadrAppUITests: XCTestCase {
             || app.navigationBars["AI Providers"].waitForExistence(timeout: 5)
         )
         XCTAssertTrue(
-            app.buttons["Sign in with ChatGPT"].firstMatch.waitForExistence(timeout: 5),
-            "The ChatGPT card must offer its sign-in button"
-        )
-        XCTAssertTrue(
-            app.buttons["Sign in with OpenRouter"].firstMatch.exists,
+            app.buttons["Sign in with OpenRouter"].firstMatch.waitForExistence(timeout: 5),
             "The OpenRouter card must offer its sign-in button"
+        )
+        #if canImport(UIKit)
+        // The App Store build must NOT surface the ChatGPT subscription card:
+        // it rides an unofficial backend (ToS gray area) and is gated to the
+        // direct-download macOS build. This absence assertion IS the store
+        // gate's regression test — it runs on the iOS simulators in CI.
+        XCTAssertFalse(
+            app.buttons["Sign in with ChatGPT"].firstMatch.exists,
+            "ChatGPT sign-in must not appear in the iOS (App Store) build"
+        )
+        XCTAssertFalse(
+            app.staticTexts["settings.tosCaveat.chatgpt"].firstMatch.exists,
+            "The ChatGPT ToS caveat should be absent with the card gated off iOS"
+        )
+        #else
+        XCTAssertTrue(
+            app.buttons["Sign in with ChatGPT"].firstMatch.waitForExistence(timeout: 5),
+            "The ChatGPT card must offer its sign-in button on macOS"
         )
         XCTAssertTrue(
             app.staticTexts["settings.tosCaveat.chatgpt"].firstMatch.exists,
             "The ChatGPT sign-in must carry the ToS caveat caption"
         )
+        #endif
         XCTAssertFalse(
             app.buttons["Sign in with subscription"].firstMatch.exists,
             "The generic sign-in label was replaced by per-provider labels"
@@ -280,7 +295,14 @@ final class ReadrAppUITests: XCTestCase {
             let present = app.links[id].firstMatch.waitForExistence(timeout: 2)
                 || app.buttons[id].firstMatch.exists
                 || app.otherElements[id].firstMatch.exists
+            #if canImport(UIKit)
+            // Inverted on iOS: a link to a page selling API credits is a
+            // Guideline 3.1.1 liability, so the App Store build must not carry
+            // it. This absence IS the gate's regression test.
+            XCTAssertFalse(present, "Get-a-key link for \(slug) must not appear on iOS")
+            #else
             XCTAssertTrue(present, "Missing get-a-key link for \(slug)")
+            #endif
         }
     }
 

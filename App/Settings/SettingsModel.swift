@@ -39,14 +39,26 @@ final class SettingsModel: ObservableObject {
 
     let kinds: [ProviderInfo.Kind] = SettingsModel.allKinds
 
-    /// The provider rows the settings screen renders. On iOS the Local row is
-    /// hidden: LocalLLMProvider defaults to loopback Ollama
-    /// (http://127.0.0.1:11434), and nothing listens on a phone's loopback —
-    /// the row would be a dead end. macOS keeps it; pointing at a LAN-hosted
-    /// Ollama from iOS is a tracked fast-follow.
+    /// The provider rows the settings screen renders. On iOS two rows are
+    /// hidden:
+    ///
+    /// - **Local**: LocalLLMProvider defaults to loopback Ollama
+    ///   (http://127.0.0.1:11434), and nothing listens on a phone's loopback —
+    ///   the row would be a dead end. Pointing at a LAN-hosted Ollama from iOS
+    ///   is a tracked fast-follow.
+    /// - **ChatGPT**: the subscription sign-in rides an unofficial backend
+    ///   (see docs/AUTH.md's ToS caveat) — acceptable as a labeled opt-in on
+    ///   the direct-download macOS build, but an App Review liability on the
+    ///   App Store build, and the flow has not yet been verified against a
+    ///   live account. iOS keeps the fully sanctioned paths: OpenRouter
+    ///   sign-in and Anthropic/OpenAI keys. An iOS user who connected ChatGPT
+    ///   in an earlier beta keeps a working provider (credentials and routing
+    ///   are untouched); only the card is absent.
+    ///
+    /// macOS shows everything.
     static var displayedKinds: [ProviderInfo.Kind] {
         #if os(iOS)
-        return allKinds.filter { $0 != .local }
+        return allKinds.filter { $0 != .local && $0 != .chatGPT }
         #else
         return allKinds
         #endif

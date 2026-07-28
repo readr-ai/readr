@@ -166,6 +166,11 @@ struct ProviderSettingsView: View {
                     APIKeyField(kind: kind, theme: theme) { model.saveAPIKey($0, for: kind) }
                     // First-run users stall at the key field with no idea where
                     // keys come from — link straight to the provider's console.
+                    // macOS only: on iOS an outbound link to a page where the
+                    // user can buy API credits is an App Review liability
+                    // (Guideline 3.1.1 — purchases outside IAP), and the App
+                    // Store build must not carry it.
+                    #if os(macOS)
                     if let console = keyConsole(for: kind) {
                         Link(destination: console.url) {
                             Label("Get an API key", systemImage: "arrow.up.right.square")
@@ -174,6 +179,7 @@ struct ProviderSettingsView: View {
                         }
                         .accessibilityIdentifier("settings.getKey.\(console.slug)")
                     }
+                    #endif
                 }
             } else {
                 // Local: a manual re-check for when the reader has just started
