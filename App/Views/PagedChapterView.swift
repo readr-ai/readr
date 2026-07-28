@@ -260,8 +260,14 @@ struct PagedChapterView: View {
     /// Internal (not private) so tests can pin the spine arithmetic — the
     /// live width is SwiftUI's own HStack division, which no unit test can
     /// read directly, so the formula that mirrors it must stay honest.
+    /// The facing-page gutter hairline's width. One constant shared by the
+    /// spine view AND the measurement helper below — hardcoding it in both
+    /// places is how a future "make the spine 2pt" would silently reintroduce
+    /// the measure/render drift this helper exists to prevent.
+    static let spineWidth: CGFloat = 1
+
     func columnWidth(for size: CGSize) -> CGFloat {
-        let spine: CGFloat = layout == .doublePage ? 1 : 0
+        let spine: CGFloat = layout == .doublePage ? Self.spineWidth : 0
         let block = min(size.width, measure * columns)
         return (block - spine) / columns
     }
@@ -438,7 +444,7 @@ struct PagedChapterView: View {
     /// Facing-page gutter: a hairline at reduced opacity. Full-bleed paper has
     /// no card edge for a hard 1pt rule to sit against, so it stays quiet.
     private var spine: some View {
-        Rectangle().fill(style.theme.line.opacity(0.5)).frame(width: 1)
+        Rectangle().fill(style.theme.line.opacity(0.5)).frame(width: Self.spineWidth)
     }
 
     @ViewBuilder

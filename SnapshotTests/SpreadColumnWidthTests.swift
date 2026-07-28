@@ -36,7 +36,7 @@ final class SpreadColumnWidthTests: XCTestCase {
         for width in [640.0, 700.0, 731.5, 800.0] {
             let column = spread.columnWidth(for: CGSize(width: width, height: 700))
             XCTAssertEqual(
-                column * 2 + 1, width, accuracy: 0.001,
+                column * 2 + PagedChapterView.spineWidth, width, accuracy: 0.001,
                 "At \(width)pt the two cells and the 1pt spine must fill the block exactly"
             )
         }
