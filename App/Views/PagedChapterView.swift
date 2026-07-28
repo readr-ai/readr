@@ -247,12 +247,31 @@ struct PagedChapterView: View {
 
     private var isPlateChapter: Bool { ReaderStyle.isPlate(chapter.text) }
 
+    /// Width of one page cell, matching `pageColumns`' HStack EXACTLY. The
+    /// block caps at `measure * columns`, and in double-page layout a 1pt
+    /// spine hairline sits BETWEEN the cells — inside the block — so the two
+    /// pages share `block − 1`, not `block`. Measuring without the spine laid
+    /// text out 0.5pt wider than the live page renders it; a justified line
+    /// whose natural width fell inside that half-point re-wrapped at render
+    /// time, pushed one extra line onto the page, and the top-aligned,
+    /// clipped page sliced that line mid-glyph at the bottom. Content-
+    /// dependent, so most spreads looked fine while some clipped.
+    ///
+    /// Internal (not private) so tests can pin the spine arithmetic — the
+    /// live width is SwiftUI's own HStack division, which no unit test can
+    /// read directly, so the formula that mirrors it must stay honest.
+    func columnWidth(for size: CGSize) -> CGFloat {
+        let spine: CGFloat = layout == .doublePage ? 1 : 0
+        let block = min(size.width, measure * columns)
+        return (block - spine) / columns
+    }
+
     private func paginate(for size: CGSize) -> [Page] {
         // The page's TEXT area, from the same terms the body renders with:
         // column width capped at the measure minus interior side insets;
         // height minus vertical insets and the bottom label band. The kicker
         // band is subtracted per page below (only pages that show it).
-        let columnWidth = min(measure, size.width / columns)
+        let columnWidth = columnWidth(for: size)
         let textWidth = max(1, columnWidth - (pageInsets.leading + pageInsets.trailing))
         let pageHeight = max(
             1, size.height - (pageInsets.top + pageInsets.bottom) - labelAllowance
@@ -331,11 +350,10 @@ struct PagedChapterView: View {
     /// visually full; this estimate under-fills but never overflows.
     private func capacity(for size: CGSize) -> Int {
         let pointSize = style.fontSize
-        // Per-column text width: the body caps each column at `measure` and
-        // centers the block; a window narrower than the cap shrinks the columns
-        // to `size.width / columns` (there is no gutter to subtract — the arrow
-        // strips overlay the paper). Then remove the interior side insets.
-        let columnWidth = min(measure, size.width / columns)
+        // Per-column text width, from the shared helper so the estimate and
+        // the layout-accurate paginator agree on geometry (including the
+        // double-page spine). Then remove the interior side insets.
+        let columnWidth = columnWidth(for: size)
         let textWidth = max(1, columnWidth - (pageInsets.leading + pageInsets.trailing))
         // Height minus the top/bottom insets, the reserved bottom label band,
         // and the first-page kicker allowance — every vertical term the body
