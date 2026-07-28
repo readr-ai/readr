@@ -96,11 +96,12 @@ targets:
         # Must match the App ID registered in the Apple Developer portal.
         PRODUCT_BUNDLE_IDENTIFIER: com.readrai.app
         GENERATE_INFOPLIST_FILE: "YES"
-        # Tracks the last shipped tag. Both release lanes override this from the
-        # tag they build, so shipped artifacts are unaffected — but a local or
-        # CI build otherwise reports 0.1.0, which makes crash and feedback
-        # triage lie about which version a report came from.
-        MARKETING_VERSION: "2.13.0"
+        # Tracks the current shipping version. Both release lanes override this
+        # from the tag they build, so shipped artifacts are unaffected — but a
+        # local or CI build otherwise reported 0.1.0, which made crash and
+        # feedback triage lie about which version a report came from. Bump this
+        # with each release tag.
+        MARKETING_VERSION: "2.14.0"
         CURRENT_PROJECT_VERSION: "1"
         SWIFT_VERSION: "5.9"
         INFOPLIST_KEY_CFBundleDisplayName: Readr
