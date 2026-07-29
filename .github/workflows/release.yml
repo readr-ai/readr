@@ -110,21 +110,60 @@ jobs:
         run: |
           cd build/Build/Products/Release
           ditto -c -k --sequesterRsrc --keepParent Readr.app "Readr-macOS-${VERSION}.zip"
+      # The classic Mac install: mount, drag the app onto the Applications
+      # alias. The zip stays alongside for scripted/curl installs. Built from
+      # the app AFTER stapling, so the DMG carries the notarized app; the DMG
+      # itself is then signed, notarized, and stapled below so Gatekeeper
+      # clears it offline too.
+      - name: Package as DMG (drag-to-Applications)
+        run: |
+          cd build/Build/Products/Release
+          rm -rf dmg-stage && mkdir dmg-stage
+          # ditto, not cp -R: metadata-faithful bundle copies are what the
+          # rest of this workflow uses, and the stapled app's integrity is
+          # the whole point of the artifact.
+          ditto Readr.app dmg-stage/Readr.app
+          ln -s /Applications dmg-stage/Applications
+          hdiutil create -volname "Readr" -srcfolder dmg-stage -ov \
+            -format UDZO -fs HFS+ "Readr-macOS-${VERSION}.dmg"
+          rm -rf dmg-stage
+          hdiutil verify "Readr-macOS-${VERSION}.dmg"
+      - name: Sign, notarize & staple the DMG
+        if: env.HAS_SIGNING == 'true'
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: |
+          cd build/Build/Products/Release
+          IDENTITY=$(security find-identity -v -p codesigning build.keychain \
+            | awk -F'"' '/Developer ID Application/ {print $2; exit}')
+          codesign --sign "$IDENTITY" --timestamp "Readr-macOS-${VERSION}.dmg"
+          xcrun notarytool submit "Readr-macOS-${VERSION}.dmg" \
+            --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" \
+            --password "$APPLE_APP_PASSWORD" --wait
+          xcrun stapler staple "Readr-macOS-${VERSION}.dmg"
       - name: Create GitHub release (notarized)
         if: env.HAS_SIGNING == 'true'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.VERSION }}
-          files: build/Build/Products/Release/Readr-macOS-*.zip
+          files: |
+            build/Build/Products/Release/Readr-macOS-*.dmg
+            build/Build/Products/Release/Readr-macOS-*.zip
           generate_release_notes: true
           body: |
-            Signed and notarized — download, unzip, drag to Applications, open.
+            Signed and notarized. **Recommended:** download the `.dmg`, open
+            it, and drag Readr into Applications. The `.zip` is the same app
+            for scripted installs.
       - name: Create GitHub release (unsigned)
         if: env.HAS_SIGNING == 'false'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.VERSION }}
-          files: build/Build/Products/Release/Readr-macOS-*.zip
+          files: |
+            build/Build/Products/Release/Readr-macOS-*.dmg
+            build/Build/Products/Release/Readr-macOS-*.zip
           generate_release_notes: true
           body: |
             ## Opening the app (unsigned build)
