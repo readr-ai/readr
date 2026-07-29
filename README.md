@@ -95,11 +95,13 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## Installing (macOS)
 
-Grab `Readr.app` from the
+Grab the `.dmg` from the
 [latest GitHub Release](https://github.com/readr-ai/readr/releases/latest)
-(built by CI). From **v2.9.0** releases are **Developer-ID signed and
-notarized** — download, unzip, drag to Applications, open. No security
-warnings.
+(built by CI), open it, and drag Readr into Applications — the classic Mac
+install. A `.zip` of the same app ships alongside for scripted installs.
+From **v2.9.0** releases are **Developer-ID signed and notarized**; no
+security warnings. (The `.dmg` ships from **v2.15.0**; earlier releases are
+zip-only.)
 
 (Releases *older* than v2.9.0 were unsigned and need a one-time
 right-click → **Open**, or **System Settings → Privacy & Security → Open
