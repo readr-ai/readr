@@ -105,6 +105,81 @@ struct LibraryHeaderButtons: View {
     }
 }
 
+/// Title + author under a jacket, at a height that does not depend on the
+/// book: two lines are always reserved for the title and one for the author,
+/// whether or not the text fills them.
+///
+/// Cards sit side by side on Home's shelves and in the library grid, so a
+/// caption that shrinks to fit its own text drags everything beneath it —
+/// the progress hairline, the percentage, the Continue pill — out of line
+/// with its neighbours. A one-line title next to a two-line one, or a book
+/// with no author next to one with, was enough to break the row.
+///
+/// An author-less book still reserves its line, and the empty text stays out
+/// of the accessibility tree — the surrounding button already carries the
+/// book's name.
+struct CardCaption: View {
+    let book: Book
+    let theme: ReadingTheme
+
+    /// Gap between the title block and the author line. Home's shelves keep
+    /// the 8pt card rhythm; the denser library grid passes its own 3pt.
+    var spacing: CGFloat = 8
+
+    /// Joined for the grid's wider cells, first-only for the 150pt shelf
+    /// cards, matching what each surface showed before.
+    var showsAllAuthors = false
+
+    // Computed, not stored: a private STORED property would drop the
+    // synthesized memberwise initializer to private and hide it from the
+    // call sites in HomeView and LibraryGridView.
+    private var titleFont: Font { .system(size: 13, weight: .semibold, design: .serif) }
+    private var authorFont: Font { .system(size: 11) }
+
+    private var authorLine: String {
+        if showsAllAuthors { return book.metadata.authors.joined(separator: ", ") }
+        return book.metadata.authors.first ?? ""
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: spacing) {
+            title
+            // A blank space, not "", so the line survives however SwiftUI
+            // measures empty text; hidden from VoiceOver so it never reads as
+            // an empty element.
+            Text(authorLine.isEmpty ? " " : authorLine)
+                .font(authorFont)
+                .foregroundStyle(theme.muted)
+                .lineLimit(1, reservesSpace: true)
+                .accessibilityHidden(authorLine.isEmpty)
+        }
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+    }
+
+    /// The title over an invisible two-line sizer.
+    ///
+    /// The sizer, not `reservesSpace:`, is what fixes the height AND the
+    /// position: a Text given more height than it needs centres its lines in
+    /// the space, so a one-line title would sit half a line below its
+    /// two-line neighbour's first line and drop the author line with it. The
+    /// ZStack pins the real title to the top of a box that is always exactly
+    /// two lines tall.
+    private var title: some View {
+        ZStack(alignment: .topLeading) {
+            Text("A\nA")
+                .font(titleFont)
+                .hidden()
+                .accessibilityHidden(true)
+            Text(book.metadata.title)
+                .font(titleFont)
+                .foregroundStyle(theme.inkColor)
+                .multilineTextAlignment(.leading)
+                .lineLimit(2)
+        }
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+    }
+}
+
 /// The Marginalia progress mark under every cover: a 2px hairline track with
 /// an ink fill at the reading fraction, and an 11px muted caption ("34%",
 /// "Not started", or "Finished").

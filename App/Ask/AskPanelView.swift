@@ -6,13 +6,17 @@ import ReadrKit
 /// answer grounded in the book's context. Wears the design's ask popover: ✦
 /// caps header, iris-edged quote, quiet paper input, iris suggestion chips,
 /// three thinking dots, and citation pills.
+///
+/// It is a CONVERSATION, not a single exchange: the transcript scrolls above a
+/// composer pinned to the bottom, each question shows as sent the moment it is
+/// sent, and follow-ups carry the earlier turns with them.
 struct AskPanelView: View {
     let book: Book
     let selection: Selection?
 
     @StateObject private var vm: AskViewModel
     @State private var question = ""
-    @State private var expandedCitation: Int?
+    @State private var expandedCitation: ExpandedCitation?
     /// Provider settings sheet, reachable from the no-provider empty state so
     /// the guidance is actionable (J4: "guided to set up a provider first").
     @State private var showProviders = false
@@ -21,6 +25,13 @@ struct AskPanelView: View {
 
     @AppStorage("readingTheme") private var themeRaw = ReadingTheme.paper.rawValue
     private var theme: ReadingTheme { ReadingTheme(rawValue: themeRaw) ?? .paper }
+
+    /// Which citation pill is open, scoped to its exchange — two answers can
+    /// both have a "Ch. 1" pill and they must not toggle each other.
+    private struct ExpandedCitation: Equatable {
+        var exchangeID: UUID
+        var index: Int
+    }
 
     init(app: AppModel, book: Book, selection: Selection?) {
         self.book = book
@@ -97,51 +108,134 @@ struct AskPanelView: View {
     }
 
     private var askContent: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            if let selection, !selection.quotedText.isEmpty {
-                Text(selection.quotedText)
-                    .font(.system(.footnote, design: .serif))
-                    .italic()
-                    .lineSpacing(4)
-                    .foregroundStyle(theme.muted)
-                    .lineLimit(2)
-                    .padding(.leading, 10)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .overlay(alignment: .leading) {
-                        RoundedRectangle(cornerRadius: 1).fill(theme.iris).frame(width: 2)
-                    }
-            } else {
-                // No selection: the panel was opened for whole-book questions —
-                // say so instead of showing an empty quote box.
-                Label("Ask anything about this book", systemImage: "book")
-                    .font(.footnote)
-                    .foregroundStyle(theme.muted)
-            }
+        VStack(spacing: 0) {
+            transcript
+            composer
+        }
+    }
 
-            HStack(spacing: 8) {
-                TextField("Ask a question about this book…", text: $question, axis: .vertical)
-                    .textFieldStyle(.plain)
-                    .font(.footnote)
-                    .foregroundStyle(theme.inkColor)
-                    .padding(.vertical, 9)
-                    .padding(.horizontal, 11)
-                    .background(theme.paper, in: RoundedRectangle(cornerRadius: 9))
-                    .overlay(RoundedRectangle(cornerRadius: 9).strokeBorder(theme.line, lineWidth: 1))
-                    .onSubmit(submit)
-                Button(action: submit) {
-                    Image(systemName: "arrow.up.circle.fill")
-                        .font(.title2)
-                        .foregroundStyle(theme.iris)
+    // MARK: - Transcript
+
+    /// The conversation so far. Anchored to the newest exchange so a streaming
+    /// answer stays in view without the reader chasing it.
+    private var transcript: some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    contextHeader
+                    ForEach(vm.exchanges) { exchange in
+                        exchangeView(exchange)
+                            .id(exchange.id)
+                    }
+                    if vm.isStreaming, vm.exchanges.last?.answerText.isEmpty == true {
+                        ThinkingDots(color: theme.iris)
+                    }
+                    // Scroll anchor: a zero-height marker that is always the
+                    // last thing in the stack, so "scroll to the bottom" works
+                    // while the final answer is still growing.
+                    Color.clear
+                        .frame(height: 1)
+                        .id(Self.bottomAnchor)
                 }
-                .buttonStyle(.plain)
-                .disabled(vm.isStreaming || question.trimmingCharacters(in: .whitespaces).isEmpty)
-                .accessibilityLabel("Send")
-                .accessibilityIdentifier("ask.send")
+                .padding(.horizontal)
+                .padding(.top, 12)
+                .padding(.bottom, 8)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .onChange(of: vm.exchanges.count) { scrollToBottom(proxy) }
+            .onChange(of: vm.exchanges.last?.answerText) { scrollToBottom(proxy) }
+        }
+    }
+
+    private static let bottomAnchor = "ask.bottom"
+
+    private func scrollToBottom(_ proxy: ScrollViewProxy) {
+        proxy.scrollTo(Self.bottomAnchor, anchor: .bottom)
+    }
+
+    /// What the question is anchored to: the selected sentence, or a note that
+    /// the whole book is in scope.
+    @ViewBuilder
+    private var contextHeader: some View {
+        if let selection, !selection.quotedText.isEmpty {
+            Text(selection.quotedText)
+                .font(.system(.footnote, design: .serif))
+                .italic()
+                .lineSpacing(4)
+                .foregroundStyle(theme.muted)
+                .lineLimit(2)
+                .padding(.leading, 10)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .overlay(alignment: .leading) {
+                    RoundedRectangle(cornerRadius: 1).fill(theme.iris).frame(width: 2)
+                }
+        } else {
+            // No selection: the panel was opened for whole-book questions —
+            // say so instead of showing an empty quote box.
+            Label("Ask anything about this book", systemImage: "book")
+                .font(.footnote)
+                .foregroundStyle(theme.muted)
+        }
+    }
+
+    private func exchangeView(_ exchange: AskViewModel.Exchange) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            sentQuestion(exchange.question)
+            if !exchange.answerText.isEmpty {
+                AnswerMarkdownView(markdown: exchange.answerText, theme: theme)
+            }
+            // A4: retrieval tier lists real, tappable sources; the whole-book
+            // tier explains — honestly — that there is no citation list
+            // because nothing was retrieved.
+            if exchange.tier?.providesCitations == true, !exchange.citations.isEmpty {
+                citationsSection(exchange)
+            } else if exchange.tier?.providesCitations == false, !exchange.answerText.isEmpty {
+                wholeBookNote
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// The reader's own message, right-aligned in an ink-tinted bubble — the
+    /// question has to look SENT, distinct from the answer under it.
+    private func sentQuestion(_ text: String) -> some View {
+        HStack {
+            Spacer(minLength: 40)
+            Text(text)
+                .font(.callout)
+                .lineSpacing(4)
+                .foregroundStyle(theme.inkColor)
+                .multilineTextAlignment(.leading)
+                .padding(.vertical, 8)
+                .padding(.horizontal, 12)
+                .background(theme.iris.opacity(0.12), in: RoundedRectangle(cornerRadius: 14))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 14)
+                        .strokeBorder(theme.iris.opacity(0.22), lineWidth: 1)
+                )
+                .textSelection(.enabled)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("You asked: \(text)")
+    }
+
+    // MARK: - Composer
+
+    /// The input, its suggestions, the grounding caption, and the error card —
+    /// pinned below the transcript so they stay reachable inside the iPhone
+    /// medium sheet detent no matter how long the conversation runs.
+    private var composer: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            // The error card sits ABOVE the input rather than in the
+            // transcript so its Retry button never scrolls out of the visible
+            // area of the medium detent.
+            if let error = vm.errorMessage {
+                errorCard(error)
             }
 
             // Suggested questions get first-time users past the blank field;
             // tapping inserts the text (still editable) rather than submitting.
-            if vm.answer.isEmpty && !vm.isStreaming {
+            if vm.exchanges.isEmpty && !vm.isStreaming {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 6) {
                         ForEach(suggestedQuestions, id: \.self) { suggestion in
@@ -163,53 +257,60 @@ struct AskPanelView: View {
                 }
             }
 
+            HStack(spacing: 8) {
+                TextField(composerPrompt, text: $question, axis: .vertical)
+                    .textFieldStyle(.plain)
+                    .font(.footnote)
+                    .foregroundStyle(theme.inkColor)
+                    .lineLimit(1...4)
+                    .padding(.vertical, 9)
+                    .padding(.horizontal, 11)
+                    .background(theme.paper, in: RoundedRectangle(cornerRadius: 9))
+                    .overlay(RoundedRectangle(cornerRadius: 9).strokeBorder(theme.line, lineWidth: 1))
+                    .onSubmit(submit)
+                Button(action: submit) {
+                    Image(systemName: "arrow.up.circle.fill")
+                        .font(.title2)
+                        .foregroundStyle(theme.iris)
+                }
+                .buttonStyle(.plain)
+                .disabled(vm.isStreaming || question.trimmingCharacters(in: .whitespaces).isEmpty)
+                .accessibilityLabel("Send")
+                .accessibilityIdentifier("ask.send")
+            }
+
             // A4: the grounding promise is derived from the tier signal, not
             // hardcoded — the whole-book tier returns no per-passage sources,
             // so it must not promise citations it can't deliver.
-            Text(groundingCaption)
-                .font(.caption2)
-                .foregroundStyle(theme.faint)
-
-            if let tier = vm.tier {
-                Label(
-                    tier.providesCitations ? "Using relevant passages" : "Using the whole book",
-                    systemImage: tier.providesCitations ? "doc.text.magnifyingglass" : "book.closed"
-                )
-                .font(.caption2)
-                .foregroundStyle(theme.faint)
-            }
-
-            // The error card sits above the answer scroll region so its Retry
-            // button stays within the visible area of the iPhone medium sheet
-            // detent, ahead of the answer/citations content.
-            if let error = vm.errorMessage {
-                errorCard(error)
-            }
-
-            ScrollView {
-                VStack(alignment: .leading, spacing: 12) {
-                    Text(vm.answer)
-                        .font(.callout)
-                        .lineSpacing(7)
-                        .foregroundStyle(theme.inkColor)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .textSelection(.enabled)
-
-                    // A4: retrieval tier lists real, tappable sources; the
-                    // whole-book tier explains — honestly — that there is no
-                    // citation list because nothing was retrieved.
-                    if vm.tier?.providesCitations == true, !vm.citations.isEmpty {
-                        citationsSection
-                    } else if vm.tier?.providesCitations == false, !vm.answer.isEmpty {
-                        wholeBookNote
-                    }
+            // Stacked, not side by side: the caption is a full sentence and
+            // the iPhone composer has no width to spare.
+            VStack(alignment: .leading, spacing: 4) {
+                Text(groundingCaption)
+                    .font(.caption2)
+                    .foregroundStyle(theme.faint)
+                    .fixedSize(horizontal: false, vertical: true)
+                if let tier = vm.tier {
+                    Label(
+                        tier.providesCitations ? "Using relevant passages" : "Using the whole book",
+                        systemImage: tier.providesCitations ? "doc.text.magnifyingglass" : "book.closed"
+                    )
+                    .font(.caption2)
+                    .foregroundStyle(theme.faint)
                 }
             }
-
-            if vm.isStreaming { ThinkingDots(color: theme.iris) }
-            Spacer()
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .padding()
+        .padding(.horizontal)
+        .padding(.top, 10)
+        .padding(.bottom, 12)
+        .background(theme.background)
+        .overlay(alignment: .top) { theme.line.frame(height: 1) }
+    }
+
+    /// The placeholder shifts once the conversation is under way: the field is
+    /// for follow-ups from then on.
+    private var composerPrompt: String {
+        vm.exchanges.isEmpty ? "Ask a question about this book…" : "Ask a follow-up…"
     }
 
     /// A4: the grounding caption promises citations only when the answer will
@@ -301,7 +402,7 @@ struct AskPanelView: View {
 
     /// Citations as tappable iris pills labeled by locator; tapping one opens
     /// its quoted passage beneath the row (tap again to collapse).
-    private var citationsSection: some View {
+    private func citationsSection(_ exchange: AskViewModel.Exchange) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("SOURCES")
                 .font(.caption2.weight(.semibold))
@@ -310,10 +411,13 @@ struct AskPanelView: View {
 
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 6) {
-                    ForEach(Array(vm.citations.enumerated()), id: \.offset) { index, citation in
-                        let isExpanded = expandedCitation == index
+                    ForEach(Array(exchange.citations.enumerated()), id: \.offset) { index, citation in
+                        let isExpanded = expandedCitation
+                            == ExpandedCitation(exchangeID: exchange.id, index: index)
                         Button {
-                            expandedCitation = isExpanded ? nil : index
+                            expandedCitation = isExpanded
+                                ? nil
+                                : ExpandedCitation(exchangeID: exchange.id, index: index)
                         } label: {
                             Text(citation.locator)
                                 .font(.caption2.weight(.semibold))
@@ -330,8 +434,10 @@ struct AskPanelView: View {
                 .padding(.vertical, 1)
             }
 
-            if let index = expandedCitation, vm.citations.indices.contains(index) {
-                let citation = vm.citations[index]
+            if let expanded = expandedCitation,
+               expanded.exchangeID == exchange.id,
+               exchange.citations.indices.contains(expanded.index) {
+                let citation = exchange.citations[expanded.index]
                 Text("\u{201C}\(citation.quotedText)\u{201D}")
                     .font(.system(.footnote, design: .serif))
                     .italic()
@@ -365,8 +471,13 @@ struct AskPanelView: View {
         ]
     }
 
+    /// Sends the question and empties the field — the text belongs to the
+    /// transcript from here on, and leaving it in the input made a sent
+    /// message look unsent.
     private func submit() {
-        let q = question
+        let q = question.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !q.isEmpty, !vm.isStreaming else { return }
+        question = ""
         Task { await vm.ask(q) }
     }
 

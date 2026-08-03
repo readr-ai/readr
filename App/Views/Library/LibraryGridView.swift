@@ -253,19 +253,9 @@ struct LibraryGridView: View {
         } label: {
             VStack(alignment: .leading, spacing: 10) {
                 cover(for: book)
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(book.metadata.title)
-                        .font(.system(size: 13, weight: .semibold, design: .serif))
-                        .foregroundStyle(theme.inkColor)
-                        .multilineTextAlignment(.leading)
-                        .lineLimit(2)
-                    if !book.metadata.authors.isEmpty {
-                        Text(book.metadata.authors.joined(separator: ", "))
-                            .font(.system(size: 11))
-                            .foregroundStyle(theme.muted)
-                            .lineLimit(1)
-                    }
-                }
+                // Fixed-height caption so every hairline in a grid row lands
+                // on the same line, whatever the titles do (see CardCaption).
+                CardCaption(book: book, theme: theme, spacing: 3, showsAllAuthors: true)
                 LibraryProgressHairline(
                     fraction: LibraryProgress.fraction(
                         for: book, position: model.position(for: book)
@@ -308,7 +298,7 @@ struct LibraryGridView: View {
         // cover.
         return Color.clear
             .aspectRatio(2.0 / 3.0, contentMode: .fit)
-            .overlay(alignment: .bottom) {
+            .overlay(alignment: .bottomLeading) {
                 BookCoverView(book: book, coverImage: model.coverImage(for: book))
                     .overlay(alignment: .topLeading) {
                         if model.isPDF(book) {

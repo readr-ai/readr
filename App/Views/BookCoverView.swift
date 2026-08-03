@@ -75,11 +75,15 @@ struct BookCoverView: View {
     }
 
     /// A fixed-proportion 2:3 shelf slot with the jacket resting on its
-    /// bottom edge. Grids and shelf rows use this so every cell is the same
-    /// size while covers keep their true shapes — bottoms aligned, like books
-    /// standing on a shelf (the Apple Books grid convention). A cover wider
-    /// than 2:3 fits the slot's width and leaves air above; a (clamped)
-    /// narrower one fits the height.
+    /// bottom-leading corner. Grids and shelf rows use this so every cell is
+    /// the same size while covers keep their true shapes — bottoms aligned,
+    /// like books standing on a shelf (the Apple Books grid convention). A
+    /// cover wider than 2:3 fits the slot's width and leaves air above; a
+    /// (clamped) narrower one fits the height.
+    ///
+    /// Leading, not centered: a narrower-than-2:3 jacket centered in its slot
+    /// sits a few points in from the card's title and author, and from its
+    /// neighbours' jackets — the spine edges stop lining up down the shelf.
     struct Slot: View {
         let book: Book
         var coverImage: PlatformImage?
@@ -89,7 +93,7 @@ struct BookCoverView: View {
             Color.clear
                 .aspectRatio(2.0 / 3.0, contentMode: .fit)
                 .frame(width: width)
-                .overlay(alignment: .bottom) {
+                .overlay(alignment: .bottomLeading) {
                     BookCoverView(book: book, coverImage: coverImage)
                 }
         }
