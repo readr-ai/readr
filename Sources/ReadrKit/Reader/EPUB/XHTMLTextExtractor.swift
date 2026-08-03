@@ -647,9 +647,10 @@ public enum XHTMLTextExtractor {
             // renderer's per-span 0.75× shrink: the stylesheet saying
             // `vertical-align: super` (handled just above), a literal <sup>
             // wrapper, and a <sup> anywhere up the open stack.
+            let raisedByStylesheet = resolved.map { $0.verticalAlign == .raised } ?? false
             if name == "a",
                hasAttributes,
-               resolved?.verticalAlign != .raised,
+               !raisedByStylesheet,
                !isRaisedContext(),
                XHTMLTextExtractor.isNoteReference(tagMarkup) {
                 openCSSSpan(name + "@sup", kind: .superscript, into: &atSpanKeys)
@@ -1168,6 +1169,11 @@ public enum XHTMLTextExtractor {
     /// reference reads as "text.¹²³" rather than sitting full-size in the
     /// line (#43 covered the classed-span pattern; this covers the
     /// semantics-only one).
+    ///
+    /// Note references ONLY. `doc-biblioref` is deliberately excluded: a
+    /// bibliography reference is conventionally set inline — "(Smith 2009)",
+    /// "[4]" — and raising one would be the same defect in the other
+    /// direction.
     static func isNoteReference(_ tagMarkup: String) -> Bool {
         if tagMarkup.contains("epub:type"),
            let type = attribute("epub:type", in: tagMarkup),
@@ -1176,7 +1182,7 @@ public enum XHTMLTextExtractor {
         }
         if tagMarkup.contains("role"),
            let role = attribute("role", in: tagMarkup),
-           hasToken(of: ["doc-noteref", "doc-biblioref"], in: role) {
+           hasToken(of: ["doc-noteref"], in: role) {
             return true
         }
         return false

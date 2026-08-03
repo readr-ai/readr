@@ -282,10 +282,13 @@ struct AskPanelView: View {
             // A4: the grounding promise is derived from the tier signal, not
             // hardcoded — the whole-book tier returns no per-passage sources,
             // so it must not promise citations it can't deliver.
-            HStack(spacing: 8) {
+            // Stacked, not side by side: the caption is a full sentence and
+            // the iPhone composer has no width to spare.
+            VStack(alignment: .leading, spacing: 4) {
                 Text(groundingCaption)
                     .font(.caption2)
                     .foregroundStyle(theme.faint)
+                    .fixedSize(horizontal: false, vertical: true)
                 if let tier = vm.tier {
                     Label(
                         tier.providesCitations ? "Using relevant passages" : "Using the whole book",
@@ -293,10 +296,9 @@ struct AskPanelView: View {
                     )
                     .font(.caption2)
                     .foregroundStyle(theme.faint)
-                    .layoutPriority(1)
                 }
             }
-            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(.horizontal)
         .padding(.top, 10)

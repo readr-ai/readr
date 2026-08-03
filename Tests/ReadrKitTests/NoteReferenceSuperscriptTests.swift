@@ -34,7 +34,7 @@ final class NoteReferenceSuperscriptTests: XCTestCase {
         XCTAssertEqual(result.text, "right there.123")
         let raised = superscripts(result)
         XCTAssertEqual(raised.count, 1, "expected exactly one superscript span")
-        XCTAssertEqual(slice(result.text, raised[0]), "123")
+        XCTAssertEqual(raised.first.map { slice(result.text, $0) }, "123")
     }
 
     func testDocNoterefRoleIsRaised() {
@@ -43,16 +43,15 @@ final class NoteReferenceSuperscriptTests: XCTestCase {
 
         let raised = superscripts(result)
         XCTAssertEqual(raised.count, 1)
-        XCTAssertEqual(slice(result.text, raised[0]), "7")
+        XCTAssertEqual(raised.first.map { slice(result.text, $0) }, "7")
     }
 
-    func testBiblioRefIsRaised() {
+    /// A bibliography reference is set inline by convention — "(Smith 2009)",
+    /// "[4]" — so it must stay on the baseline.
+    func testBiblioRefIsNotRaised() {
         let html = #"<p>as shown<a role="doc-biblioref" href="#b4">[4]</a></p>"#
         let result = XHTMLTextExtractor.extract(from: html)
-
-        let raised = superscripts(result)
-        XCTAssertEqual(raised.count, 1)
-        XCTAssertEqual(slice(result.text, raised[0]), "[4]")
+        XCTAssertTrue(superscripts(result).isEmpty)
     }
 
     /// The marker keeps being a link — raising it must not cost the tap
@@ -66,8 +65,8 @@ final class NoteReferenceSuperscriptTests: XCTestCase {
             return false
         }
         XCTAssertEqual(links.count, 1)
-        XCTAssertEqual(slice(result.text, links[0]), "9")
-        XCTAssertEqual(links[0].kind, .link(href: "#fn9"))
+        XCTAssertEqual(links.first.map { slice(result.text, $0) }, "9")
+        XCTAssertEqual(links.first?.kind, .link(href: "#fn9"))
     }
 
     /// Word-boundary match, same as the note-body types: a class-ish value
@@ -98,7 +97,7 @@ final class NoteReferenceSuperscriptTests: XCTestCase {
             raised.count, 1,
             "a <sup> wrapper plus epub:type=noteref must yield ONE raise, not two"
         )
-        XCTAssertEqual(slice(result.text, raised[0]), "1")
+        XCTAssertEqual(raised.first.map { slice(result.text, $0) }, "1")
     }
 
     /// A literal `<sup>` inside the anchor is the same situation the other
@@ -113,18 +112,18 @@ final class NoteReferenceSuperscriptTests: XCTestCase {
     /// A stylesheet that already raises the anchor wins; the semantic
     /// attribute must not stack on top of it.
     func testStylesheetRaisedNoterefIsRaisedOnlyOnce() {
-        let html = #"""
-        <html><head><style>
-        a.noteref { vertical-align: super; font-size: 0.7em; }
-        </style></head>
-        <body><p>text<a class="noteref" epub:type="noteref" href="#fn1">1</a></p></body></html>
-        """#
-        let result = XHTMLTextExtractor.extract(from: html)
+        let styles = CSSStyleResolver(css: ".noteref { vertical-align: super }")
+        let result = XHTMLTextExtractor.extract(
+            from: #"<p>text<a class="noteref" epub:type="noteref" href="#fn1">1</a></p>"#,
+            styles: styles
+        )
 
         XCTAssertEqual(
             superscripts(result).count, 1,
-            "vertical-align plus epub:type=noteref must yield ONE raise"
+            "vertical-align plus epub:type=noteref must yield ONE raise "
+                + "(spans: \(result.spans))"
         )
+        XCTAssertEqual(superscripts(result).first.map { slice(result.text, $0) }, "1")
     }
 
     // MARK: - The collapse backstop, directly
@@ -198,6 +197,6 @@ final class NoteReferenceSuperscriptTests: XCTestCase {
         XCTAssertEqual(result.footnotes, [.init(id: "fn1", text: "The note body.")])
         let raised = superscripts(result)
         XCTAssertEqual(raised.count, 1)
-        XCTAssertEqual(slice(result.text, raised[0]), "1")
+        XCTAssertEqual(raised.first.map { slice(result.text, $0) }, "1")
     }
 }
