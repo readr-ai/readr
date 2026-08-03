@@ -293,7 +293,10 @@ struct HomeView: View {
 /// A large resume card: cover, title, hairline progress, minutes-left
 /// estimate, and the ink-pill Continue affordance. The whole card is one
 /// button — one click resumes at the exact saved position.
-private struct ContinueReadingCard: View {
+///
+/// Internal (not private) so the macOS snapshot suite can measure two cards
+/// side by side and assert the shelf stays aligned.
+struct ContinueReadingCard: View {
     let book: Book
     let coverImage: PlatformImage?
     let progress: Double?
@@ -306,20 +309,15 @@ private struct ContinueReadingCard: View {
             VStack(alignment: .leading, spacing: 8) {
                 // Same slot width as Recently Added — the two shelves must
                 // read as ONE bookshelf (mismatched jacket sizes looked like
-                // a layout bug), and the slot bottom-aligns covers of any
-                // aspect (see BookCoverView.Slot).
+                // a layout bug), and the slot rests covers of any aspect on
+                // its bottom-leading corner (see BookCoverView.Slot).
                 BookCoverView.Slot(book: book, coverImage: coverImage, width: 150)
-                Text(book.metadata.title)
-                    .font(.system(size: 13, weight: .semibold, design: .serif))
-                    .foregroundStyle(theme.inkColor)
-                    .multilineTextAlignment(.leading)
-                    .lineLimit(2)
-                if let author = book.metadata.authors.first {
-                    Text(author)
-                        .font(.system(size: 11))
-                        .foregroundStyle(theme.muted)
-                        .lineLimit(1)
-                }
+                // Every row below the jacket keeps a fixed height, so the
+                // hairline, the percentage and the Continue pill sit on the
+                // same line across the whole shelf. Without the reserved
+                // space a one-line title (or a book with no author) pulls its
+                // card's controls up and the row reads as broken.
+                CardCaption(book: book, theme: theme)
                 LibraryProgressHairline(
                     fraction: progress,
                     isFinished: false,
@@ -353,7 +351,10 @@ private struct ContinueReadingCard: View {
 }
 
 /// A standard cover card for the Recently Added row.
-private struct RecentlyAddedCard: View {
+///
+/// Internal for the same reason as `ContinueReadingCard` — the alignment
+/// snapshot test measures it.
+struct RecentlyAddedCard: View {
     let book: Book
     let coverImage: PlatformImage?
     let theme: ReadingTheme
@@ -365,17 +366,7 @@ private struct RecentlyAddedCard: View {
                 // Matches the Continue Reading slot exactly — one shelf, one
                 // jacket size (see the note there).
                 BookCoverView.Slot(book: book, coverImage: coverImage, width: 150)
-                Text(book.metadata.title)
-                    .font(.system(size: 13, weight: .semibold, design: .serif))
-                    .foregroundStyle(theme.inkColor)
-                    .multilineTextAlignment(.leading)
-                    .lineLimit(2)
-                if let author = book.metadata.authors.first {
-                    Text(author)
-                        .font(.system(size: 11))
-                        .foregroundStyle(theme.muted)
-                        .lineLimit(1)
-                }
+                CardCaption(book: book, theme: theme)
             }
             .frame(width: 150, alignment: .leading)
         }
