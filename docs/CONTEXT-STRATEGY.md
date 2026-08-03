@@ -44,6 +44,19 @@ Every query also includes:
 This guarantees the model always knows *where the reader is*, even when retrieval
 or truncation drops the rest.
 
+### Conversation history (both tiers)
+Ask is a conversation, so the earlier turns of the same session ride along as
+plain user/assistant messages between the system prompt and the new question.
+Without them a follow-up ("but roads are technically 3D") reaches the model
+with nothing to object to.
+
+Two bounds keep the chat from crowding out the book, which is the point of the
+context: only the most recent `maxHistoryTurns` answered turns are replayed,
+and each earlier answer is abridged to `maxHistoryAnswerCharacters` — it is
+context for what was already said, not evidence. Turns still streaming, or that
+failed, carry no answer and are skipped, so the model is never handed a
+question that looks unanswered.
+
 ### Local-LLM mode
 Always Tier 2, with **on-device** embeddings (e.g. MLX embedding model) and a
 local SQLite vector store. Nothing leaves the device.
@@ -60,8 +73,9 @@ local SQLite vector store. Nothing leaves the device.
 
 All of this lives behind `ContextStrategy` in `ReadrKit` (see
 `Sources/ReadrKit/Context/`). The reader UI just calls
-`assembleContext(for: query, in: book, selection:)` and gets a ready-to-send
-payload; the routing is invisible to callers and swappable.
+`assembleContext(for: query, in: book, selection:history:)` and gets a
+ready-to-send payload; the routing is invisible to callers and swappable. A
+convenience overload drops `history:` for one-shot questions.
 
 ## References
 

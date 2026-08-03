@@ -26,10 +26,14 @@ public struct AskService: Sendable {
     ///
     /// Emits `.contextAssembled` once routing is decided, then a `.token` for
     /// each streamed delta, then a final `.completed` with the full text.
+    ///
+    /// - Parameter history: earlier turns of this conversation, oldest first,
+    ///   so a follow-up can lean on what was already asked and answered.
     public func ask(
         _ question: String,
         about book: Book,
-        selection: Selection?
+        selection: Selection?,
+        history: [ConversationTurn] = []
     ) -> AsyncThrowingStream<AskEvent, Error> {
         let strategy = self.strategy
         let provider = self.provider
@@ -40,6 +44,7 @@ public struct AskService: Sendable {
                         for: question,
                         in: book,
                         selection: selection,
+                        history: history,
                         provider: provider.info
                     )
                     try Task.checkCancellation()

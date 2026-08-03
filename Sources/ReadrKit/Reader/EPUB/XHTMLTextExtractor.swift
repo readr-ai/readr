@@ -636,6 +636,24 @@ public enum XHTMLTextExtractor {
                     openCSSSpan(name + "@sub", kind: .subscript, into: &atSpanKeys)
                 }
             }
+            // A semantically-marked note reference (`epub:type="noteref"`,
+            // `role="doc-noteref"`) with nothing raising it: EPUB 3 producers
+            // often leave the marker's presentation to the reading system, so
+            // "…cost per mile right there.123" came out full-size and inline.
+            // Raise it here.
+            //
+            // Every path that ALREADY raises this run is excluded, because a
+            // second superscript span over the same characters compounds the
+            // renderer's per-span 0.75× shrink: the stylesheet saying
+            // `vertical-align: super` (handled just above), a literal <sup>
+            // wrapper, and a <sup> anywhere up the open stack.
+            if name == "a",
+               hasAttributes,
+               resolved?.verticalAlign != .raised,
+               !isRaisedContext(),
+               XHTMLTextExtractor.isNoteReference(tagMarkup) {
+                openCSSSpan(name + "@sup", kind: .superscript, into: &atSpanKeys)
+            }
             // Record which @-keyed spans this open created so ITS close tag
             // (and only its close tag) closes them. Opens that created none
             // still push an (empty) entry while same-name @-spans are open —
@@ -887,6 +905,14 @@ public enum XHTMLTextExtractor {
             keys.append(key)
         }
 
+        /// True when a superscript span is already open over the position
+        /// about to be written — a `<sup>` wrapper, or a classed span the
+        /// stylesheet raised. Guards against stacking a second raise on the
+        /// same run, which would shrink it twice.
+        private func isRaisedContext() -> Bool {
+            openStack.contains { working[$0].kind == .superscript }
+        }
+
         /// The canonical span key for a formatting tag (b/strong share one key
         /// so sloppy `<b>…</strong>` pairs still close), or nil for tags that
         /// don't open spans.
@@ -1025,6 +1051,7 @@ public enum XHTMLTextExtractor {
                 guard start < end else { continue }
                 spans.append(Span(start: start, end: end, kind: span.kind))
             }
+            spans = XHTMLTextExtractor.collapsingNestedBaselineShifts(spans)
             // Ids that never saw content resolve to the end of the text.
             for id in unresolvedAnchors where anchors[id] == nil {
                 anchors[id] = length
@@ -1094,6 +1121,66 @@ public enum XHTMLTextExtractor {
         "footnote", "endnote", "rearnote", "note",
     ]
     private static let noteRoles: Set<String> = ["doc-footnote", "doc-endnote"]
+
+    /// Drops superscript/subscript spans that are fully covered by another
+    /// span of the same kind, keeping the outermost.
+    ///
+    /// The renderer shrinks a raised run to 0.75× of the size it would
+    /// otherwise have, PER SPAN — so two spans over the same characters
+    /// compound to 0.56× and a note marker turns into a speck. The open-tag
+    /// path already refuses to raise a run it can see is raised, but it
+    /// cannot see a `<sup>` that has not been read yet
+    /// (`<a epub:type="noteref"><sup>1</sup></a>`). This is the backstop, and
+    /// it is exact: only spans of the SAME kind, only when one contains the
+    /// other, so a genuine sup-then-sub sequence is untouched.
+    static func collapsingNestedBaselineShifts(_ spans: [Span]) -> [Span] {
+        let shifted = spans.indices.filter {
+            spans[$0].kind == .superscript || spans[$0].kind == .`subscript`
+        }
+        guard shifted.count > 1 else { return spans }
+
+        var covered = Set<Int>()
+        for outer in shifted {
+            for inner in shifted where inner != outer && !covered.contains(inner) {
+                guard spans[inner].kind == spans[outer].kind,
+                      !covered.contains(outer),
+                      spans[outer].start <= spans[inner].start,
+                      spans[inner].end <= spans[outer].end else { continue }
+                // Identical ranges: keep exactly one — the earlier index, so
+                // the choice doesn't depend on iteration order.
+                if spans[outer].start == spans[inner].start,
+                   spans[outer].end == spans[inner].end,
+                   inner < outer { continue }
+                covered.insert(inner)
+            }
+        }
+        guard !covered.isEmpty else { return spans }
+        return spans.indices.filter { !covered.contains($0) }.map { spans[$0] }
+    }
+
+    /// True when an `<a>` is a NOTE REFERENCE — the little marker in the body
+    /// text that points at a note, not the note body itself.
+    ///
+    /// EPUB 3 marks these semantically (`epub:type="noteref"`,
+    /// `role="doc-noteref"`) and many producers then rely on the reading
+    /// system to raise them, shipping no `<sup>` wrapper and no
+    /// `vertical-align` in the stylesheet. Readr raises them itself, so a
+    /// reference reads as "text.¹²³" rather than sitting full-size in the
+    /// line (#43 covered the classed-span pattern; this covers the
+    /// semantics-only one).
+    static func isNoteReference(_ tagMarkup: String) -> Bool {
+        if tagMarkup.contains("epub:type"),
+           let type = attribute("epub:type", in: tagMarkup),
+           hasToken(of: ["noteref"], in: type) {
+            return true
+        }
+        if tagMarkup.contains("role"),
+           let role = attribute("role", in: tagMarkup),
+           hasToken(of: ["doc-noteref", "doc-biblioref"], in: role) {
+            return true
+        }
+        return false
+    }
 
     /// True when an open tag starts a footnote/hidden region whose content
     /// belongs in the footnote store (or the void) rather than the main text.

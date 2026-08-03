@@ -61,12 +61,30 @@ public struct AssembledContext: Sendable {
 /// Assembles the optimal prompt context for a question about a book.
 /// See docs/CONTEXT-STRATEGY.md for the rationale.
 public protocol ContextStrategy: Sendable {
+    /// - Parameter history: earlier turns of the same conversation, oldest
+    ///   first. Without it a follow-up ("but roads are technically 3D") reads
+    ///   as a brand-new question with no idea what it is objecting to.
+    func assembleContext(
+        for question: String,
+        in book: Book,
+        selection: Selection?,
+        history: [ConversationTurn],
+        provider: ProviderInfo
+    ) async throws -> AssembledContext
+}
+
+public extension ContextStrategy {
+    /// Single-shot convenience: a question with no conversation behind it.
     func assembleContext(
         for question: String,
         in book: Book,
         selection: Selection?,
         provider: ProviderInfo
-    ) async throws -> AssembledContext
+    ) async throws -> AssembledContext {
+        try await assembleContext(
+            for: question, in: book, selection: selection, history: [], provider: provider
+        )
+    }
 }
 
 /// Default adaptive router:
@@ -88,9 +106,15 @@ public struct AdaptiveContextStrategy: ContextStrategy {
         for question: String,
         in book: Book,
         selection: Selection?,
+        history: [ConversationTurn],
         provider: ProviderInfo
     ) async throws -> AssembledContext {
         let anchor = Self.anchor(for: book, selection: selection)
+        // System prompt, then the conversation so far, then the new question:
+        // the model reads the earlier turns as what was already said and the
+        // last message as what it has to answer.
+        let systemMessage = ChatMessage(role: .system, content: Self.systemPrompt)
+        let priorTurns = Self.historyMessages(from: history)
         let budget = Int(Double(provider.contextBudget) * wholeBookBudgetFraction)
         let fitsWholeBook = !provider.isLocal && book.estimatedTokenCount <= budget
 
@@ -99,11 +123,11 @@ public struct AdaptiveContextStrategy: ContextStrategy {
             // anchor. Providers that support prompt caching cache the prefix,
             // the rest send it as a plain system message — either way the
             // answer must be grounded in the book.
+            let ask = ChatMessage(
+                role: .user, content: anchor + "\n\nQuestion: " + question
+            )
             let request = ChatRequest(
-                messages: [
-                    .init(role: .system, content: Self.systemPrompt),
-                    .init(role: .user, content: anchor + "\n\nQuestion: " + question),
-                ],
+                messages: [systemMessage] + priorTurns + [ask],
                 cacheableSystemPrefix: book.fullText,
                 maxOutputTokens: 1024
             )
@@ -125,26 +149,65 @@ public struct AdaptiveContextStrategy: ContextStrategy {
                 quotedText: Self.snippet(from: passage.text)
             )
         }
+        let ask = ChatMessage(
+            role: .user,
+            content: anchor
+                + "\n\nRelevant passages from elsewhere in the book:\n"
+                + retrieved
+                + "\n\nQuestion: " + question
+        )
         let request = ChatRequest(
-            messages: [
-                .init(role: .system, content: Self.systemPrompt),
-                .init(
-                    role: .user,
-                    content: anchor
-                        + "\n\nRelevant passages from elsewhere in the book:\n"
-                        + retrieved
-                        + "\n\nQuestion: " + question
-                ),
-            ],
+            messages: [systemMessage] + priorTurns + [ask],
             maxOutputTokens: 1024
         )
         return AssembledContext(tier: .retrieval, request: request, citations: citations)
     }
 
+    /// How many earlier turns ride along. Enough for a real back-and-forth,
+    /// bounded so a long session can't crowd out the book itself — the book
+    /// is the point, the chat is not.
+    static let maxHistoryTurns = 6
+    /// Earlier answers are replayed abridged: they are context for what was
+    /// already said, not evidence, and a full one can run to a thousand
+    /// tokens.
+    static let maxHistoryAnswerCharacters = 700
+
+    /// Answered turns, oldest first, as alternating user/assistant messages.
+    /// Unanswered turns (in flight, or failed) are skipped — replaying a
+    /// question with no answer would invite the model to answer it twice.
+    static func historyMessages(from history: [ConversationTurn]) -> [ChatMessage] {
+        history
+            .filter { $0.answer != nil }
+            .suffix(maxHistoryTurns)
+            .flatMap { turn -> [ChatMessage] in
+                guard let answer = turn.answer else { return [] }
+                let abridged = snippet(
+                    from: answer.text, maxLength: maxHistoryAnswerCharacters
+                )
+                return [
+                    ChatMessage(role: .user, content: turn.question),
+                    ChatMessage(role: .assistant, content: abridged),
+                ]
+            }
+    }
+
     static let systemPrompt = """
-    You are a reading companion embedded in an ebook reader. Answer the reader's \
-    question using the provided book context. Be precise, cite the relevant part \
-    of the text when useful, and say so if the answer is not in the book.
+    You are a reading companion inside an ebook reader. Answer the reader's \
+    question from the book context provided.
+
+    Be brief. Two or three short paragraphs at most, and often one is enough. \
+    Lead with the answer: no preamble, no restating the question, no summary \
+    of what you are about to say, no closing recap.
+
+    Quote the book only where the exact wording carries the point — at most \
+    one short quotation, as a Markdown blockquote.
+
+    Write in Markdown, sparingly: bold at most one genuinely key phrase (never \
+    a whole sentence), bullets only for a real list, no headings.
+
+    If the answer is not in the book, say so in one line before answering from \
+    what you otherwise know. When earlier turns of the conversation are \
+    included, answer the new question without repeating what you already said.
     """
 
     /// A short, trimmed preview of a retrieved passage for display as a citation.
