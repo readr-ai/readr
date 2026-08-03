@@ -84,32 +84,61 @@ final class ShelfCardAlignmentTests: XCTestCase {
         return rep
     }
 
-    /// True when the pixel is near-black — the Continue pill's ink fill. The
-    /// generated placeholder jackets are tinted but nowhere near this dark,
-    /// so the threshold isolates the pill.
-    private func isPillInk(_ rep: NSBitmapImageRep, x: Int, y: Int) -> Bool {
-        guard let color = rep.colorAt(x: x, y: y)?.usingColorSpace(.sRGB) else { return false }
-        let luminance = 0.299 * color.redComponent
+    private func luminance(_ rep: NSBitmapImageRep, x: Int, y: Int) -> CGFloat? {
+        guard let color = rep.colorAt(x: x, y: y)?.usingColorSpace(.sRGB) else { return nil }
+        return 0.299 * color.redComponent
             + 0.587 * color.greenComponent
             + 0.114 * color.blueComponent
-        return luminance < 0.22
     }
 
-    /// The topmost row carrying pill ink within a vertical strip. Scanned
-    /// from the bottom of the render upward and stopped at the first clear
-    /// row above the pill, so the ink title and the jacket further up are
-    /// never reached.
-    private func pillTopRow(_ rep: NSBitmapImageRep, xRange: Range<Int>) -> Int? {
+    /// Text ink, sitting in the gap between the muted author line (0.47) and
+    /// the darkest a jacket's drop shadow can make the paper background
+    /// (0.92 × (1 − 0.16) ≈ 0.77) — so a scan that starts just below a cover
+    /// never mistakes its shadow for the title.
+    private func isText(_ rep: NSBitmapImageRep, x: Int, y: Int) -> Bool {
+        (luminance(rep, x: x, y: y) ?? 1) < 0.65
+    }
+
+    /// Near-black: the Continue pill's ink fill. The generated placeholder
+    /// jackets are tinted but nowhere near this dark.
+    private func isPillInk(_ rep: NSBitmapImageRep, x: Int, y: Int) -> Bool {
+        (luminance(rep, x: x, y: y) ?? 1) < 0.22
+    }
+
+    /// Top row of the LOWEST matching run in a vertical strip: scanned from
+    /// the bottom of the render upward and stopped at the first clear row
+    /// above the run, so whatever sits higher up the card is never reached.
+    private func topRowOfLowestRun(
+        _ rep: NSBitmapImageRep,
+        xRange: Range<Int>,
+        matching: (Int, Int) -> Bool
+    ) -> Int? {
         var top: Int?
         for y in stride(from: rep.pixelsHigh - 1, through: 0, by: -1) {
-            let hasInk = xRange.contains { isPillInk(rep, x: $0, y: y) }
-            if hasInk {
+            let hit = xRange.contains { matching($0, y) }
+            if hit {
                 top = y
             } else if top != nil {
                 return top
             }
         }
         return top
+    }
+
+    /// First matching row at or below `fromRow` — used to find the title's
+    /// first line by starting the scan just under the cover slot.
+    private func firstRow(
+        _ rep: NSBitmapImageRep,
+        xRange: Range<Int>,
+        fromRow: Int,
+        matching: (Int, Int) -> Bool
+    ) -> Int? {
+        let start = max(0, fromRow)
+        guard start < rep.pixelsHigh else { return nil }
+        for y in start..<rep.pixelsHigh where xRange.contains(where: { matching($0, y) }) {
+            return y
+        }
+        return nil
     }
 
     // MARK: - Continue Reading
@@ -228,42 +257,139 @@ final class ShelfCardAlignmentTests: XCTestCase {
 
     // MARK: - Pixels
 
-    /// Renders the real two-card row and checks the Continue pills share a
-    /// top edge — the thing the screenshot showed going wrong.
+    /// Card geometry shared by the rendered-row tests: 24pt of padding, two
+    /// 150pt cards, a 24pt gap.
+    private let rowPadding: CGFloat = 24
+    private let cardWidth: CGFloat = 150
+    private let cardGap: CGFloat = 24
+    /// The 2:3 cover slot at the top of every card.
+    private var coverSlotHeight: CGFloat { cardWidth * 1.5 }
+
+    private var rowWidth: CGFloat { rowPadding * 2 + cardWidth * 2 + cardGap }
+
+    private func cardLeading(_ index: Int) -> CGFloat {
+        rowPadding + CGFloat(index) * (cardWidth + cardGap)
+    }
+
+    /// Renders `row` at exactly its ideal height, so the content starts at the
+    /// top of the bitmap instead of being centred in a taller frame — point
+    /// coordinates below the cover can then be computed, not guessed.
+    private func renderRow(_ row: some View) throws -> (NSBitmapImageRep, CGFloat) {
+        let height = fittingHeight(row)
+        let rep = try render(row, size: CGSize(width: rowWidth, height: height))
+        return (rep, CGFloat(rep.pixelsWide) / rowWidth)
+    }
+
+    /// Full-width band over one card, for finding its text.
+    private func textBand(_ index: Int, scale: CGFloat) -> Range<Int> {
+        Int(cardLeading(index) * scale)..<Int((cardLeading(index) + cardWidth) * scale)
+    }
+
+    /// The reported bug: a one-line title next to a two-line one moved the
+    /// author beneath it. Both authors must render on the same row.
+    func testAuthorLinesShareATopEdgeAcrossRecentlyAddedCards() throws {
+        let row = HStack(alignment: .top, spacing: cardGap) {
+            RecentlyAddedCard(book: wrappingBook, coverImage: nil, theme: theme, action: {})
+            RecentlyAddedCard(book: shortBook, coverImage: nil, theme: theme, action: {})
+        }
+        .padding(rowPadding)
+
+        let (rep, scale) = try renderRow(row)
+
+        // The author is the last thing on a Recently Added card, so the lowest
+        // text run in each band is it.
+        let left = try XCTUnwrap(
+            topRowOfLowestRun(rep, xRange: textBand(0, scale: scale)) { isText(rep, x: $0, y: $1) },
+            "no author text found under the two-line-title card"
+        )
+        let right = try XCTUnwrap(
+            topRowOfLowestRun(rep, xRange: textBand(1, scale: scale)) { isText(rep, x: $0, y: $1) },
+            "no author text found under the one-line-title card"
+        )
+
+        XCTAssertEqual(
+            CGFloat(left), CGFloat(right), accuracy: 2 * scale,
+            "Author lines must sit on the same row whatever the titles do "
+                + "(left y=\(left), right y=\(right))"
+        )
+
+        attach(rep, named: "m-home-recently-added-alignment")
+    }
+
+    /// The titles themselves must start on the same row too: a reserved-space
+    /// Text centres a short title in its box, which would drop the first line
+    /// of the one-line card.
+    func testTitlesShareATopEdgeAcrossRecentlyAddedCards() throws {
+        let row = HStack(alignment: .top, spacing: cardGap) {
+            RecentlyAddedCard(book: wrappingBook, coverImage: nil, theme: theme, action: {})
+            RecentlyAddedCard(book: shortBook, coverImage: nil, theme: theme, action: {})
+        }
+        .padding(rowPadding)
+
+        let (rep, scale) = try renderRow(row)
+
+        // Start below the jacket so the tinted placeholder cover is skipped.
+        let belowCover = Int((rowPadding + coverSlotHeight + 4) * scale)
+        let left = try XCTUnwrap(
+            firstRow(rep, xRange: textBand(0, scale: scale), fromRow: belowCover) {
+                isText(rep, x: $0, y: $1)
+            },
+            "no title text found under the left jacket"
+        )
+        let right = try XCTUnwrap(
+            firstRow(rep, xRange: textBand(1, scale: scale), fromRow: belowCover) {
+                isText(rep, x: $0, y: $1)
+            },
+            "no title text found under the right jacket"
+        )
+
+        XCTAssertEqual(
+            CGFloat(left), CGFloat(right), accuracy: 2 * scale,
+            "Titles must start on the same row — a short title must sit at the "
+                + "TOP of its two-line box, not centred (left y=\(left), right y=\(right))"
+        )
+    }
+
+    /// Renders the real two-card Continue Reading row and checks the pills
+    /// share a top edge — the first thing the screenshots showed going wrong.
     func testContinuePillsShareATopEdgeAcrossCards() throws {
-        let row = HStack(alignment: .top, spacing: 24) {
+        let row = HStack(alignment: .top, spacing: cardGap) {
             continueCard(shortBook, minutesLeft: 9)
             continueCard(wrappingBook, minutesLeft: 8)
         }
-        .padding(24)
+        .padding(rowPadding)
 
-        // 24pt padding + two 150pt cards + the 24pt gap.
-        let size = CGSize(width: 372, height: 460)
-        let rep = try render(row, size: size)
+        let (rep, scale) = try renderRow(row)
 
-        let scale = CGFloat(rep.pixelsWide) / size.width
         // Identical 20…60pt bands measured from each card's leading edge —
         // inside the capsule's flat top, clear of its rounded ends, and clear
         // of the "~N min left" text trailing it.
-        func band(cardLeading: CGFloat) -> Range<Int> {
-            Int((cardLeading + 20) * scale)..<Int((cardLeading + 60) * scale)
+        func pillBand(_ index: Int) -> Range<Int> {
+            Int((cardLeading(index) + 20) * scale)..<Int((cardLeading(index) + 60) * scale)
         }
-        let leftBand = band(cardLeading: 24)
-        let rightBand = band(cardLeading: 24 + 150 + 24)
 
-        let left = try XCTUnwrap(pillTopRow(rep, xRange: leftBand), "no pill in the left card")
-        let right = try XCTUnwrap(pillTopRow(rep, xRange: rightBand), "no pill in the right card")
+        let left = try XCTUnwrap(
+            topRowOfLowestRun(rep, xRange: pillBand(0)) { isPillInk(rep, x: $0, y: $1) },
+            "no pill in the left card"
+        )
+        let right = try XCTUnwrap(
+            topRowOfLowestRun(rep, xRange: pillBand(1)) { isPillInk(rep, x: $0, y: $1) },
+            "no pill in the right card"
+        )
 
         XCTAssertEqual(
             CGFloat(left), CGFloat(right), accuracy: 2 * scale,
             "Continue pills must sit on the same row (left y=\(left), right y=\(right))"
         )
 
-        if let png = rep.representation(using: .png, properties: [:]) {
-            let attachment = XCTAttachment(data: png, uniformTypeIdentifier: "public.png")
-            attachment.name = "m-home-shelf-card-alignment"
-            attachment.lifetime = .keepAlways
-            add(attachment)
-        }
+        attach(rep, named: "m-home-continue-reading-alignment")
+    }
+
+    private func attach(_ rep: NSBitmapImageRep, named name: String) {
+        guard let png = rep.representation(using: .png, properties: [:]) else { return }
+        let attachment = XCTAttachment(data: png, uniformTypeIdentifier: "public.png")
+        attachment.name = name
+        attachment.lifetime = .keepAlways
+        add(attachment)
     }
 }

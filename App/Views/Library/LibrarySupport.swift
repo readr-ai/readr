@@ -130,6 +130,12 @@ struct CardCaption: View {
     /// cards, matching what each surface showed before.
     var showsAllAuthors = false
 
+    // Computed, not stored: a private STORED property would drop the
+    // synthesized memberwise initializer to private and hide it from the
+    // call sites in HomeView and LibraryGridView.
+    private var titleFont: Font { .system(size: 13, weight: .semibold, design: .serif) }
+    private var authorFont: Font { .system(size: 11) }
+
     private var authorLine: String {
         if showsAllAuthors { return book.metadata.authors.joined(separator: ", ") }
         return book.metadata.authors.first ?? ""
@@ -137,19 +143,38 @@ struct CardCaption: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: spacing) {
-            Text(book.metadata.title)
-                .font(.system(size: 13, weight: .semibold, design: .serif))
-                .foregroundStyle(theme.inkColor)
-                .multilineTextAlignment(.leading)
-                .lineLimit(2, reservesSpace: true)
-            // A blank space, not "", so the line is reserved even if a future
-            // SwiftUI collapses empty text; hidden from VoiceOver so it never
-            // reads as an empty element.
+            title
+            // A blank space, not "", so the line survives however SwiftUI
+            // measures empty text; hidden from VoiceOver so it never reads as
+            // an empty element.
             Text(authorLine.isEmpty ? " " : authorLine)
-                .font(.system(size: 11))
+                .font(authorFont)
                 .foregroundStyle(theme.muted)
                 .lineLimit(1, reservesSpace: true)
                 .accessibilityHidden(authorLine.isEmpty)
+        }
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+    }
+
+    /// The title over an invisible two-line sizer.
+    ///
+    /// The sizer, not `reservesSpace:`, is what fixes the height AND the
+    /// position: a Text given more height than it needs centres its lines in
+    /// the space, so a one-line title would sit half a line below its
+    /// two-line neighbour's first line and drop the author line with it. The
+    /// ZStack pins the real title to the top of a box that is always exactly
+    /// two lines tall.
+    private var title: some View {
+        ZStack(alignment: .topLeading) {
+            Text("A\nA")
+                .font(titleFont)
+                .hidden()
+                .accessibilityHidden(true)
+            Text(book.metadata.title)
+                .font(titleFont)
+                .foregroundStyle(theme.inkColor)
+                .multilineTextAlignment(.leading)
+                .lineLimit(2)
         }
         .frame(maxWidth: .infinity, alignment: .topLeading)
     }
