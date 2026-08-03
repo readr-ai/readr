@@ -28,7 +28,7 @@ final class NoteReferenceSuperscriptTests: XCTestCase {
     // MARK: - Semantics-only markers
 
     func testEpubTypeNoterefIsRaised() {
-        let html = #"<p>right there.<a epub:type="noteref" href="#fn123">123</a></p>"#
+        let html = ##"<p>right there.<a epub:type="noteref" href="#fn123">123</a></p>"##
         let result = XHTMLTextExtractor.extract(from: html)
 
         XCTAssertEqual(result.text, "right there.123")
@@ -38,7 +38,7 @@ final class NoteReferenceSuperscriptTests: XCTestCase {
     }
 
     func testDocNoterefRoleIsRaised() {
-        let html = #"<p>text<a role="doc-noteref" href="#n1">7</a></p>"#
+        let html = ##"<p>text<a role="doc-noteref" href="#n1">7</a></p>"##
         let result = XHTMLTextExtractor.extract(from: html)
 
         let raised = superscripts(result)
@@ -49,7 +49,7 @@ final class NoteReferenceSuperscriptTests: XCTestCase {
     /// A bibliography reference is set inline by convention — "(Smith 2009)",
     /// "[4]" — so it must stay on the baseline.
     func testBiblioRefIsNotRaised() {
-        let html = #"<p>as shown<a role="doc-biblioref" href="#b4">[4]</a></p>"#
+        let html = ##"<p>as shown<a role="doc-biblioref" href="#b4">[4]</a></p>"##
         let result = XHTMLTextExtractor.extract(from: html)
         XCTAssertTrue(superscripts(result).isEmpty)
     }
@@ -57,7 +57,7 @@ final class NoteReferenceSuperscriptTests: XCTestCase {
     /// The marker keeps being a link — raising it must not cost the tap
     /// target that opens the note.
     func testRaisedNoterefKeepsItsLinkSpan() {
-        let html = #"<p>text<a epub:type="noteref" href="#fn9">9</a></p>"#
+        let html = ##"<p>text<a epub:type="noteref" href="#fn9">9</a></p>"##
         let result = XHTMLTextExtractor.extract(from: html)
 
         let links = result.spans.filter {
@@ -72,14 +72,14 @@ final class NoteReferenceSuperscriptTests: XCTestCase {
     /// Word-boundary match, same as the note-body types: a class-ish value
     /// that merely CONTAINS the substring must not raise.
     func testTokenMatchDoesNotRaiseOnSubstring() {
-        let html = #"<p>text<a epub:type="noterefx" href="#fn1">1</a></p>"#
+        let html = ##"<p>text<a epub:type="noterefx" href="#fn1">1</a></p>"##
         let result = XHTMLTextExtractor.extract(from: html)
         XCTAssertTrue(superscripts(result).isEmpty)
     }
 
     /// Ordinary links stay on the baseline.
     func testPlainLinkIsNotRaised() {
-        let html = #"<p>see <a href="chapter2.xhtml">Chapter 2</a></p>"#
+        let html = ##"<p>see <a href="chapter2.xhtml">Chapter 2</a></p>"##
         let result = XHTMLTextExtractor.extract(from: html)
         XCTAssertTrue(superscripts(result).isEmpty)
     }
@@ -89,7 +89,7 @@ final class NoteReferenceSuperscriptTests: XCTestCase {
     /// A `<sup>` wrapper already raises the marker; the semantic attribute
     /// must not add a second span over the same characters.
     func testNoterefInsideSupIsRaisedOnlyOnce() {
-        let html = #"<p>text<sup><a epub:type="noteref" href="#fn1">1</a></sup></p>"#
+        let html = ##"<p>text<sup><a epub:type="noteref" href="#fn1">1</a></sup></p>"##
         let result = XHTMLTextExtractor.extract(from: html)
 
         let raised = superscripts(result)
@@ -103,7 +103,7 @@ final class NoteReferenceSuperscriptTests: XCTestCase {
     /// A literal `<sup>` inside the anchor is the same situation the other
     /// way round.
     func testSupInsideNoterefIsRaisedOnlyOnce() {
-        let html = #"<p>text<a epub:type="noteref" href="#fn1"><sup>1</sup></a></p>"#
+        let html = ##"<p>text<a epub:type="noteref" href="#fn1"><sup>1</sup></a></p>"##
         let result = XHTMLTextExtractor.extract(from: html)
 
         XCTAssertEqual(superscripts(result).count, 1)
@@ -114,7 +114,7 @@ final class NoteReferenceSuperscriptTests: XCTestCase {
     func testStylesheetRaisedNoterefIsRaisedOnlyOnce() {
         let styles = CSSStyleResolver(css: ".noteref { vertical-align: super }")
         let result = XHTMLTextExtractor.extract(
-            from: #"<p>text<a class="noteref" epub:type="noteref" href="#fn1">1</a></p>"#,
+            from: ##"<p>text<a class="noteref" epub:type="noteref" href="#fn1">1</a></p>"##,
             styles: styles
         )
 
