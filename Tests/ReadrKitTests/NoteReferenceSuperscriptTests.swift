@@ -166,6 +166,27 @@ final class NoteReferenceSuperscriptTests: XCTestCase {
         XCTAssertEqual(XHTMLTextExtractor.collapsingNestedBaselineShifts(spans), spans)
     }
 
+    /// Overlapping is not containing: neither span is inside the other, so
+    /// both survive. (The sweep tracks the widest span opened so far, which is
+    /// exactly where an off-by-one here would show up.)
+    func testCollapseKeepsPartiallyOverlappingRaises() {
+        let spans = [span(0, 10, .superscript), span(5, 15, .superscript)]
+        XCTAssertEqual(XHTMLTextExtractor.collapsingNestedBaselineShifts(spans), spans)
+    }
+
+    /// A span contained by a LATER, wider one is still dropped.
+    func testCollapseDropsSpansCoveredByALaterWiderRun() {
+        let collapsed = XHTMLTextExtractor.collapsingNestedBaselineShifts([
+            span(0, 4, .superscript),
+            span(10, 20, .superscript),
+            span(12, 16, .superscript),
+        ])
+        XCTAssertEqual(
+            collapsed,
+            [span(0, 4, .superscript), span(10, 20, .superscript)]
+        )
+    }
+
     /// Different kinds never collapse into each other, even nested.
     func testCollapseDoesNotMixSuperscriptAndSubscript() {
         let spans = [span(0, 10, .superscript), span(2, 4, .`subscript`)]

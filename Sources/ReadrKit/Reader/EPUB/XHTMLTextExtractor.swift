@@ -1133,26 +1133,35 @@ public enum XHTMLTextExtractor {
     /// cannot see a `<sup>` that has not been read yet
     /// (`<a epub:type="noteref"><sup>1</sup></a>`). This is the backstop, and
     /// it is exact: only spans of the SAME kind, only when one contains the
-    /// other, so a genuine sup-then-sub sequence is untouched.
+    /// other, so a genuine sup-then-sub sequence, or two markers side by side,
+    /// are both untouched.
+    ///
+    /// One sweep per kind rather than comparing every raised span with every
+    /// other: a densely annotated chapter can carry hundreds of note markers,
+    /// and this runs on every content document at import.
     static func collapsingNestedBaselineShifts(_ spans: [Span]) -> [Span] {
-        let shifted = spans.indices.filter {
-            spans[$0].kind == .superscript || spans[$0].kind == .`subscript`
-        }
-        guard shifted.count > 1 else { return spans }
-
         var covered = Set<Int>()
-        for outer in shifted {
-            for inner in shifted where inner != outer && !covered.contains(inner) {
-                guard spans[inner].kind == spans[outer].kind,
-                      !covered.contains(outer),
-                      spans[outer].start <= spans[inner].start,
-                      spans[inner].end <= spans[outer].end else { continue }
-                // Identical ranges: keep exactly one — the earlier index, so
-                // the choice doesn't depend on iteration order.
-                if spans[outer].start == spans[inner].start,
-                   spans[outer].end == spans[inner].end,
-                   inner < outer { continue }
-                covered.insert(inner)
+        for kind in [Span.Kind.superscript, .`subscript`] {
+            let ofKind = spans.indices.filter { spans[$0].kind == kind }
+            guard ofKind.count > 1 else { continue }
+            // Outermost first at each start position: sorting by start
+            // ascending, end DESCENDING means a span is contained by an
+            // earlier one exactly when it ends no later than the widest span
+            // opened so far. Ties break on index so the result never depends
+            // on the sort's stability.
+            let ordered = ofKind.sorted {
+                let (a, b) = (spans[$0], spans[$1])
+                if a.start != b.start { return a.start < b.start }
+                if a.end != b.end { return a.end > b.end }
+                return $0 < $1
+            }
+            var outermostEnd = Int.min
+            for index in ordered {
+                if spans[index].end <= outermostEnd {
+                    covered.insert(index)
+                } else {
+                    outermostEnd = spans[index].end
+                }
             }
         }
         guard !covered.isEmpty else { return spans }
