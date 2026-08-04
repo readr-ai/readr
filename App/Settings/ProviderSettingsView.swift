@@ -1,13 +1,23 @@
 import SwiftUI
 import ReadrKit
 
-/// Provider settings (J5): connect Claude, ChatGPT, or a local model and pick
-/// the active one. Per docs/AUTH.md, API keys are the default path; OAuth is an
-/// opt-in "use your subscription" option. Styled as the design's Settings:
-/// caps section labels, provider cards on the elevated surface with a status
+/// Provider settings (J5): connect Claude, OpenAI, OpenRouter or a local model
+/// and pick the active one. Per docs/AUTH.md, API keys are the default path;
+/// OAuth is an opt-in "use your subscription" option. Styled as the design's
+/// Settings: caps section labels, cards on the elevated surface with a status
 /// dot + badge, and the privacy footer.
 ///
-/// A2/A3: each card mirrors `ProviderManager.validate(_:)` — a stored remote
+/// One card per COMPANY, not per connection method: the ChatGPT subscription
+/// and an OpenAI API key are two doors into the same account, and as two
+/// sibling cards they read as two separate services (see `ProviderVendor`).
+/// Inside a card each method keeps its own status, credential, and
+/// Active/Make Active/Disconnect controls — only the presentation is merged.
+///
+/// Every action here wears a filled or bordered pill (`CardActionLabel`).
+/// They used to be bare muted captions, which left no sign of what was
+/// tappable; the card now also opens with a line saying what to do.
+///
+/// A2/A3: each method mirrors `ProviderManager.validate(_:)` — a stored remote
 /// key shows Validating… while it's checked and only reads "Connected" once
 /// the test call succeeds; a rejected key or a down/unpopulated Ollama shows an
 /// actionable message. A7: the currently-selected connected provider carries an
@@ -32,11 +42,14 @@ struct ProviderSettingsView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 10) {
                     sectionLabel("MODEL")
-                    // displayedKinds, not kinds: the Local row is hidden on
-                    // iOS (loopback Ollama is unreachable on-device — see
-                    // SettingsModel.displayedKinds).
-                    ForEach(model.displayedKinds, id: \.self) { kind in
-                        providerCard(kind)
+                    // One card per company, not per connection method: the
+                    // ChatGPT subscription and an OpenAI API key are two doors
+                    // into the same account and used to sit here as two
+                    // sibling cards (see ProviderVendor). Vendors and their
+                    // methods are both filtered to what this build exposes —
+                    // no Local row on iOS, no ChatGPT sign-in on iOS.
+                    ForEach(model.displayedVendors) { vendor in
+                        vendorCard(vendor)
                     }
 
                     sectionLabel("PRIVACY")
@@ -96,8 +109,65 @@ struct ProviderSettingsView: View {
 
     // MARK: Provider cards
 
+    private func vendorCard(_ vendor: ProviderVendor) -> some View {
+        let pickerKind = modelPickerKind(for: vendor)
+        return VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 10) {
+                Circle()
+                    .fill(vendorDotColor(vendor))
+                    .frame(width: 8, height: 8)
+                Text(vendor.title)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(theme.inkColor)
+                badge(vendor.badge)
+                Spacer(minLength: 0)
+            }
+
+            // What to do here, said plainly. Without it the card states a
+            // problem ("Not connected") and leaves the reader to infer that
+            // the greyed-out field below is the fix — reported as "there's no
+            // indication to show where we should click".
+            if let hint = connectHint(vendor) {
+                Text(hint)
+                    .font(.caption)
+                    .foregroundStyle(theme.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier("settings.hint.\(vendor.id)")
+            }
+
+            ForEach(Array(vendor.methods.enumerated()), id: \.element) { index, kind in
+                if index > 0 {
+                    // Two ways into one account read as one card with a seam,
+                    // not as two cards.
+                    theme.line.frame(height: 1).padding(.vertical, 2)
+                }
+                method(kind, in: vendor)
+            }
+
+            ModelPicker(
+                kind: pickerKind,
+                models: model.models(for: pickerKind),
+                selection: model.activeSelection,
+                enabled: vendor.methods.contains {
+                    (model.hasCredential[$0] ?? false) || $0 == .local
+                }
+            ) { modelID in
+                model.makeActive(kind: pickerKind, modelID: modelID)
+            }
+        }
+        .padding(15)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(theme.elevated, in: RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(theme.line, lineWidth: 1))
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("settings.card.\(vendor.id)")
+    }
+
+    /// One connection method inside a vendor card: its own status, its own
+    /// controls, and its own Active/Make Active/Disconnect — the kinds stay
+    /// independently connected and activated even though they share a card.
     @ViewBuilder
-    private func providerCard(_ kind: ProviderInfo.Kind) -> some View {
+    private func method(_ kind: ProviderInfo.Kind, in vendor: ProviderVendor) -> some View {
         let isConfigured = model.configured[kind] ?? false
         // Present ≠ verified: a key that failed a live check must stay
         // removable and re-pointable, so these two controls key off storage.
@@ -105,15 +175,19 @@ struct ProviderSettingsView: View {
         let state = model.validation[kind]
         let status = cardStatus(for: kind, isConfigured: isConfigured, state: state)
 
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 10) {
-                Circle()
-                    .fill(status.dotColor)
-                    .frame(width: 8, height: 8)
-                Text(title(for: kind))
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(theme.inkColor)
-                badge(for: kind)
+        VStack(alignment: .leading, spacing: 10) {
+            // Only when the card offers a choice — a lone method needs no
+            // label to distinguish it from itself. On its own line, not
+            // inline: the status row already has to fit a badge, Make Active
+            // and Disconnect on a phone.
+            if vendor.hasMultipleMethods {
+                Text(methodLabel(for: kind))
+                    .font(.caption2.weight(.semibold))
+                    .tracking(1.2)
+                    .foregroundStyle(theme.faint)
+            }
+            HStack(spacing: 8) {
+                statusLine(status)
                 if status.isActive {
                     activeBadge(for: kind)
                 } else if isConfigured {
@@ -133,20 +207,39 @@ struct ProviderSettingsView: View {
                 }
             }
 
-            statusLine(status)
-
-            if kind != .local {
+            if kind == .local {
+                // Local: a manual re-check for when the reader has just started
+                // Ollama or pulled the model (mirrors the mockup's "Check
+                // again"). Re-probes and refreshes the status inline.
+                Button {
+                    Task { await model.validate(kind) }
+                } label: {
+                    CardActionLabel(
+                        title: "Check again",
+                        systemImage: "arrow.clockwise",
+                        theme: theme
+                    )
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("settings.recheck.local")
+                .disabled(state == .validating)
+            } else {
                 if model.supportsOAuth(kind) {
                     Button {
                         Task { await model.signIn(kind) }
                     } label: {
                         if model.signingInKind == kind {
-                            ProgressView()
-                                .controlSize(.small)
+                            ProgressView().controlSize(.small)
                         } else {
-                            Label(signInLabel(for: kind), systemImage: "person.badge.key")
-                                .font(.caption)
-                                .foregroundStyle(theme.muted)
+                            // Prominent: signing in is the fastest way to a
+                            // working provider, so it should look like the
+                            // button it is.
+                            CardActionLabel(
+                                title: signInLabel(for: kind),
+                                systemImage: "person.badge.key",
+                                theme: theme,
+                                prominent: true
+                            )
                         }
                     }
                     .buttonStyle(.plain)
@@ -159,10 +252,11 @@ struct ProviderSettingsView: View {
                         Text("Uses your ChatGPT subscription. This unofficial path may be subject to OpenAI's terms.")
                             .font(.caption2)
                             .foregroundStyle(theme.faint)
+                            .fixedSize(horizontal: false, vertical: true)
                             .accessibilityIdentifier("settings.tosCaveat.chatgpt")
                     }
                 }
-                if usesAPIKey(kind) {
+                if kind.usesAPIKey {
                     APIKeyField(kind: kind, theme: theme) { model.saveAPIKey($0, for: kind) }
                     // First-run users stall at the key field with no idea where
                     // keys come from — link straight to the provider's console.
@@ -173,45 +267,86 @@ struct ProviderSettingsView: View {
                     #if os(macOS)
                     if let console = keyConsole(for: kind) {
                         Link(destination: console.url) {
-                            Label("Get an API key", systemImage: "arrow.up.right.square")
-                                .font(.caption)
-                                .foregroundStyle(theme.muted)
+                            CardActionLabel(
+                                title: "Get an API key",
+                                systemImage: "arrow.up.right.square",
+                                theme: theme
+                            )
                         }
+                        // Plain, so the pill keeps its own colours instead of
+                        // the platform's blue link tint.
+                        .buttonStyle(.plain)
                         .accessibilityIdentifier("settings.getKey.\(console.slug)")
                     }
                     #endif
                 }
-            } else {
-                // Local: a manual re-check for when the reader has just started
-                // Ollama or pulled the model (mirrors the mockup's "Check
-                // again"). Re-probes and refreshes the status inline.
-                Button {
-                    Task { await model.validate(kind) }
-                } label: {
-                    Label("Check again", systemImage: "arrow.clockwise")
-                        .font(.caption)
-                        .foregroundStyle(theme.muted)
-                }
-                .buttonStyle(.plain)
-                .accessibilityIdentifier("settings.recheck.local")
-                .disabled(state == .validating)
-            }
-
-            ModelPicker(
-                kind: kind,
-                models: model.models(for: kind),
-                selection: model.activeSelection,
-                enabled: hasCredential || kind == .local
-            ) { modelID in
-                model.makeActive(kind: kind, modelID: modelID)
             }
         }
-        .padding(15)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(theme.elevated, in: RoundedRectangle(cornerRadius: 12))
-        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(theme.line, lineWidth: 1))
-        .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("settings.card.\(kind.rawValue)")
+    }
+
+    /// Names one door into a vendor, used only on cards that offer more than
+    /// one.
+    private func methodLabel(for kind: ProviderInfo.Kind) -> String {
+        switch kind {
+        case .chatGPT: return "SUBSCRIPTION"
+        case .openRouter: return "SIGN IN OR KEY"
+        case .anthropic, .openAI: return "API KEY"
+        case .local: return "ON-DEVICE"
+        }
+    }
+
+    /// A single sentence telling a disconnected card what to do, phrased from
+    /// the methods it actually offers. Nil once something is connected (the
+    /// status line takes over) and for Local, whose readiness is a probe
+    /// rather than a thing the reader supplies.
+    private func connectHint(_ vendor: ProviderVendor) -> String? {
+        guard !vendor.methods.contains(where: { model.hasCredential[$0] ?? false }) else {
+            return nil
+        }
+        let signIn = vendor.methods.contains(where: \.offersSignIn)
+        let key = vendor.methods.contains(where: \.usesAPIKey)
+        switch (signIn, key) {
+        case (true, true):
+            return "Sign in to use your existing subscription, or paste an API key."
+        case (true, false):
+            return "Sign in to connect."
+        case (false, true):
+            return "Paste an API key to connect."
+        case (false, false):
+            return nil
+        }
+    }
+
+    /// Which method's model list the card's picker shows. The active method
+    /// wins so the picker always reflects what Ask will use; otherwise the
+    /// first connected one, else the vendor's primary method.
+    private func modelPickerKind(for vendor: ProviderVendor) -> ProviderInfo.Kind {
+        if let active = model.activeKind, vendor.methods.contains(active) { return active }
+        if let connected = vendor.methods.first(where: { model.hasCredential[$0] ?? false }) {
+            return connected
+        }
+        return vendor.methods[0]
+    }
+
+    /// The card's dot: green once any of its methods is usable; otherwise the
+    /// state of the first method that has a credential to be unhappy about
+    /// (red for a rejected key, amber for a transient failure); grey while
+    /// nothing is connected at all.
+    private func vendorDotColor(_ vendor: ProviderVendor) -> Color {
+        var fallback: Color?
+        for kind in vendor.methods {
+            let status = cardStatus(
+                for: kind,
+                isConfigured: model.configured[kind] ?? false,
+                state: model.validation[kind]
+            )
+            if status.isConnected { return status.dotColor }
+            if model.hasCredential[kind] ?? false, fallback == nil {
+                fallback = status.dotColor
+            }
+        }
+        return fallback ?? theme.faint.opacity(0.55)
     }
 
     /// The status line under the title: a spinner + "Validating…" while a check
@@ -232,9 +367,8 @@ struct ProviderSettingsView: View {
     /// Capsule button on a configured-but-inactive card that makes it the
     /// active provider with the kind's catalog-default model (the selection
     /// is a single global pair, so an inactive kind has no stored model
-    /// choice to preserve). Occupies the same header slot as the Active
-    /// badge, so the control and the state it produces read as one
-    /// affordance.
+    /// choice to preserve). Sits in the same slot as the Active badge it
+    /// produces, so the control and its result read as one affordance.
     private func makeActiveButton(for kind: ProviderInfo.Kind) -> some View {
         Button {
             model.makeActive(
@@ -266,13 +400,6 @@ struct ProviderSettingsView: View {
             .accessibilityIdentifier("settings.activeBadge.\(kind.rawValue)")
     }
 
-    /// Whether the card offers a paste-a-key path. ChatGPT is
-    /// subscription-only (its backend can't be driven by an API key); Local
-    /// needs no credentials at all.
-    private func usesAPIKey(_ kind: ProviderInfo.Kind) -> Bool {
-        kind != .chatGPT && kind != .local
-    }
-
     /// The per-provider sign-in button title — also the accessibility label
     /// the UI tests assert.
     private func signInLabel(for kind: ProviderInfo.Kind) -> String {
@@ -283,24 +410,16 @@ struct ProviderSettingsView: View {
         }
     }
 
-    /// Small pill naming how this provider connects, derived from the flow it
-    /// offers: keys for cloud providers, on-device for the local model.
-    private func badge(for kind: ProviderInfo.Kind) -> some View {
-        Text(badgeLabel(for: kind))
+    /// Small pill naming how this vendor connects. The text comes from
+    /// `ProviderVendor.badge`, which derives it from the methods actually on
+    /// offer, so a gated-off path is never advertised.
+    private func badge(_ label: String) -> some View {
+        Text(label)
             .font(.caption2.weight(.semibold))
             .foregroundStyle(theme.faint)
             .padding(.vertical, 2)
             .padding(.horizontal, 7)
             .overlay(Capsule().strokeBorder(theme.line, lineWidth: 1))
-    }
-
-    private func badgeLabel(for kind: ProviderInfo.Kind) -> String {
-        switch kind {
-        case .local: return "Local"
-        case .chatGPT: return "Subscription"
-        case .openRouter: return "Sign in or key"
-        case .anthropic, .openAI: return "API key"
-        }
     }
 
     /// The provider console where a key is created, or nil for kinds that
@@ -319,16 +438,6 @@ struct ProviderSettingsView: View {
         }
     }
 
-    private func title(for kind: ProviderInfo.Kind) -> String {
-        switch kind {
-        case .anthropic: return "Claude (Anthropic)"
-        case .openAI: return "OpenAI (API key)"
-        case .chatGPT: return "ChatGPT (subscription)"
-        case .openRouter: return "OpenRouter"
-        case .local: return "Local model (on-device)"
-        }
-    }
-
     // MARK: - Card status derivation
 
     /// The visible state of one provider card, derived from whether it's
@@ -340,6 +449,8 @@ struct ProviderSettingsView: View {
         var dotColor: Color
         var showsSpinner: Bool
         var isActive: Bool
+        /// Usable right now — what the vendor dot goes green for.
+        var isConnected: Bool
     }
 
     private func cardStatus(
@@ -359,7 +470,8 @@ struct ProviderSettingsView: View {
                 textColor: theme.muted,
                 dotColor: theme.faint.opacity(0.55),
                 showsSpinner: true,
-                isActive: false
+                isActive: false,
+                isConnected: false
             )
         case .active:
             return CardStatus(
@@ -368,7 +480,8 @@ struct ProviderSettingsView: View {
                 textColor: theme.muted,
                 dotColor: green,
                 showsSpinner: false,
-                isActive: isActive
+                isActive: isActive,
+                isConnected: true
             )
         case let .invalid(reason):
             return CardStatus(
@@ -377,7 +490,8 @@ struct ProviderSettingsView: View {
                 textColor: .red,
                 dotColor: .red.opacity(0.85),
                 showsSpinner: false,
-                isActive: false
+                isActive: false,
+                isConnected: false
             )
         case let .unavailable(reason):
             // A transient failure (offline, rate-limit, provider outage, local
@@ -390,7 +504,8 @@ struct ProviderSettingsView: View {
                 textColor: .orange,
                 dotColor: .orange.opacity(0.85),
                 showsSpinner: false,
-                isActive: false
+                isActive: false,
+                isConnected: false
             )
         case .none:
             // Never validated this session: fall back to the stored-key
@@ -402,9 +517,50 @@ struct ProviderSettingsView: View {
                 textColor: theme.muted,
                 dotColor: isConfigured ? green : theme.faint.opacity(0.55),
                 showsSpinner: false,
-                isActive: isActive
+                isActive: isActive,
+                isConnected: isConfigured
             )
         }
+    }
+}
+
+/// The look of a tappable action inside a provider card.
+///
+/// These used to be bare `Label`s in muted caption grey with
+/// `.buttonStyle(.plain)` — indistinguishable from the explanatory captions
+/// beside them, so the screen gave no sign of where to click (user-reported).
+/// They now carry a filled or bordered shape, which is the only thing that
+/// says "control" rather than "text".
+///
+/// `prominent` is the ink-filled treatment, for the one action that connects
+/// a provider fastest; everything else is bordered and quieter, so a card
+/// never shows two primary buttons.
+private struct CardActionLabel: View {
+    let title: String
+    let systemImage: String
+    let theme: ReadingTheme
+    var prominent = false
+
+    var body: some View {
+        Label(title, systemImage: systemImage)
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(prominent ? theme.background : theme.inkColor)
+            .padding(.vertical, 7)
+            .padding(.horizontal, 12)
+            .background {
+                if prominent {
+                    Capsule().fill(theme.inkColor)
+                } else {
+                    Capsule().fill(theme.paper)
+                }
+            }
+            .overlay {
+                if !prominent {
+                    Capsule().strokeBorder(theme.line, lineWidth: 1)
+                }
+            }
+            // The whole pill is the hit target, not just the glyphs.
+            .contentShape(Capsule())
     }
 }
 

@@ -66,6 +66,17 @@ final class SettingsModel: ObservableObject {
 
     var displayedKinds: [ProviderInfo.Kind] { Self.displayedKinds }
 
+    /// The cards the settings screen renders: one per company, each carrying
+    /// only the connection methods this build exposes. `.chatGPT` and
+    /// `.openAI` are the same account, so they share a card (see
+    /// `ProviderVendor`); on iOS, where the subscription path is gated off,
+    /// that card is simply an API-key card.
+    static var displayedVendors: [ProviderVendor] {
+        ProviderVendor.displayed(forKinds: displayedKinds)
+    }
+
+    var displayedVendors: [ProviderVendor] { Self.displayedVendors }
+
     // MARK: - First-run guidance (A6)
 
     /// The ways a user can actually connect a provider in *this* build, phrased
