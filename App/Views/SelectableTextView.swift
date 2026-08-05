@@ -329,9 +329,26 @@ enum TextRangeConvert {
 
         for span in highlights {
             guard let ns = nsRange(from: span.range, in: text) else { continue }
-            attributed.addAttribute(
-                .backgroundColor, value: style.theme.marker(span.color), range: ns
-            )
+            let marker = style.theme.marker(span.color)
+            attributed.addAttribute(.backgroundColor, value: marker, range: ns)
+            // The reader's marker replaces whatever background the book's own
+            // stylesheet painted (#47) — but the ink chosen to sit on that
+            // background came with it, and it was picked for a colour that is
+            // no longer there. Put the theme's ink back wherever the book's
+            // choice would now be hard to read on the marker.
+            if let markerColor = CSSColor(platform: marker),
+               let themeInk = CSSColor(platform: style.theme.ink) {
+                attributed.enumerateAttribute(.foregroundColor, in: ns) { value, subrange, _ in
+                    guard let current = (value as? PlatformColor)
+                        .flatMap(CSSColor.init(platform:)),
+                          current != themeInk,
+                          !current.isReadable(on: markerColor)
+                    else { return }
+                    attributed.addAttribute(
+                        .foregroundColor, value: style.theme.ink, range: subrange
+                    )
+                }
+            }
             if span.hasNote {
                 // Note indicator: a single underline in the marker's base
                 // color. Chosen over a superscript glyph because underline
