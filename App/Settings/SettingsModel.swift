@@ -216,7 +216,9 @@ final class SettingsModel: ObservableObject {
             // (or an invalid-key message) rather than a premature "Connected".
             Task { await validateAndActivate(kind) }
         } catch {
-            errorMessage = "Couldn't save the key. \(error.readerFacingMessage)"
+            // The error says what failed and what to do — a prefix here just
+            // repeats it ("Couldn't save the key. …nothing was saved.").
+            errorMessage = error.readerFacingMessage
         }
     }
 

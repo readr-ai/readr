@@ -42,7 +42,10 @@ a shareable article.
   facing pages** like an open book — with page turns via buttons or arrow keys,
   reflowing on window resize (macOS).
 - 🤖 **Ask the book**: select a sentence, ask a question, get a streamed answer
-  with full book context and **source citations**.
+  with full book context and **source citations** — and ask follow-ups. The
+  book is the context, not the ceiling: questions that reach past it (later
+  research, the film adaptation) get real answers, marked as coming from
+  beyond the book.
 - ✍️ **Highlights → article**: auto-compose your highlights and notes into an
   editable, exportable Markdown article (streams in live).
 - 🔌 **Bring your own LLM**: paste an **Anthropic** or **OpenAI** API key, or
