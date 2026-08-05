@@ -43,6 +43,9 @@ highlights→article) together, per project direction.
 - [x] On-device deterministic embeddings (`LocalEmbeddingProvider`, zero-network)
 - [x] `AskService`: assemble context → stream answer → emit tier (tested)
 - [x] Select text → Ask panel → streamed answer (app)
+- [x] Answers are book-*contextual*, not book-*limited*: questions reaching past
+  the book get answered from world knowledge, labelled inline, with the
+  no-invention guarantee scoped to claims about the book (#54)
 - [ ] SQLite (sqlite-vec + FTS5) persistence for the index (currently in-memory)
 - [ ] Citations surfaced in the Ask panel; manual J4 walk on a Mac
 
@@ -60,6 +63,11 @@ highlights→article) together, per project direction.
 - [x] Accessibility: VoiceOver labels on icon controls; Dynamic Type in the reader
 - [x] Background indexing: build the RAG index on book open (faster first ask)
 - [x] Citations surfaced in the Ask panel; streamed article composition
+- [x] Reader-facing error copy: every error type carries a plain-language
+  sentence plus a next step, with codes/wire detail split off into
+  `diagnosticSummary` for triage (#48)
+- [x] In-app bug report with redacted session diagnostics, and a Share Readr
+  action (#41, #40) — Settings → Help
 - [ ] iCloud sync of library/annotations
 - [ ] Localization (`Localizable.strings`), issue templates, release process
 - [ ] SQLite (`sqlite-vec` + FTS5) RAG persistence; PDF article export
