@@ -67,7 +67,7 @@ struct ArticleStudioView: View {
                     defaultFilename: exportFilename
                 ) { result in
                     if case .failure(let error) = result {
-                        article.errorMessage = error.localizedDescription
+                        article.errorMessage = error.readerFacingMessage
                     }
                 }
         }

@@ -216,7 +216,7 @@ final class SettingsModel: ObservableObject {
             // (or an invalid-key message) rather than a premature "Connected".
             Task { await validateAndActivate(kind) }
         } catch {
-            errorMessage = "Couldn't save the key: \(error.localizedDescription)"
+            errorMessage = "Couldn't save the key. \(error.readerFacingMessage)"
         }
     }
 
@@ -256,7 +256,7 @@ final class SettingsModel: ObservableObject {
         } catch AuthError.userCancelled {
             // user backed out — no error to show
         } catch {
-            errorMessage = "Sign-in failed: \(error.localizedDescription)"
+            errorMessage = error.readerFacingMessage
         }
     }
 

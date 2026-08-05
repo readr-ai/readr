@@ -74,51 +74,153 @@ public enum HTTPError: Error, Sendable, Equatable {
 /// These errors render verbatim in the Ask panel and Article Studio, so each
 /// case maps to a sentence a reader can act on rather than Foundation's
 /// generic "The operation couldn't be completed".
-extension HTTPError: LocalizedError {
+///
+/// Nothing from the wire appears here. Status codes and raw bodies are real
+/// triage material but they are not something a reader can act on, so they
+/// live in `diagnosticSummary` and travel with bug reports instead
+/// (#48). Pinned by `PlainLanguageErrorTests`.
+extension HTTPError: LocalizedError, DiagnosticallyDescribable {
     public var errorDescription: String? {
         switch self {
         case .status(let code, let body):
             var message: String
             switch code {
             case 401, 403:
-                message = "The provider rejected your API key (HTTP \(code)). Check the key in Settings → AI Providers."
+                message = "Your API key was rejected. Check it in Settings → AI Providers."
             case 429:
                 // 429 covers two opposite conditions. A rate limit clears on
                 // its own; an exhausted quota needs a billing change, so
                 // "try again" would send the reader in circles.
                 if HTTPError.indicatesQuotaExhausted(body) {
-                    message = "Your provider account is out of quota (HTTP 429). Check your plan and billing details — waiting won't clear this."
+                    message = "Your provider account is out of credit. Check your plan and billing — waiting won't clear this one."
                 } else {
-                    message = "The provider rate-limited this request (HTTP 429). Wait a moment and try again."
+                    message = "You're sending questions faster than this provider allows. Wait a moment and try again."
                 }
             case 400, 413:
-                message = "The provider rejected the request (HTTP \(code)) — the book or question may be too large for this model."
+                message = "This book or question is too large for the model you've picked. Try a shorter question or a model with a bigger context window."
             case 500...:
-                message = "The provider had trouble responding (HTTP \(code)). Try again shortly."
+                message = "The provider is having trouble right now. Try again in a moment."
             default:
-                message = "The provider returned HTTP \(code)."
+                message = "The provider couldn't handle that request."
             }
-            let detail = body.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !detail.isEmpty {
-                message += " Details: \(detail.prefix(200))"
+            if let detail = HTTPError.readableDetail(from: body) {
+                message += " The provider said: \(detail)"
             }
             return message
         case .nonHTTPResponse:
-            return "Unexpected response from the provider — check your network connection and try again."
+            return "Got an unexpected reply from the provider. Check your connection and try again."
         case .transport(let code):
             switch code {
             case .timedOut:
-                return "The request to the provider timed out."
+                return "The provider took too long to reply."
             case .notConnectedToInternet:
                 return "You appear to be offline."
             case .cannotConnectToHost, .cannotFindHost:
                 return "Couldn't reach the provider."
             case .networkConnectionLost:
-                return "The network connection was lost while talking to the provider."
+                return "The connection dropped while waiting for the provider."
             default:
-                return "The network request failed (\(code.rawValue))."
+                return "Couldn't complete the request to the provider."
             }
         }
+    }
+
+    /// The wire detail, for logs and bug reports — never shown in the UI.
+    /// Secrets are stripped here too: this string is written to disk and
+    /// attached to reports (CLAUDE.md — secrets never in logs).
+    public var diagnosticSummary: String {
+        switch self {
+        case .status(let code, let body):
+            let trimmed = body.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { return "HTTP \(code)" }
+            let safe = HTTPError.redactingSecrets(in: trimmed)
+            return "HTTP \(code) — \(safe.prefix(500))"
+        case .nonHTTPResponse:
+            return "Non-HTTP response"
+        case .transport(let code):
+            return "Transport failure: \(HTTPError.transportName(code)) (\(code.rawValue))"
+        }
+    }
+
+    /// A readable name for a `URLError.Code`, so diagnostics don't reduce to a
+    /// bare negative number that means nothing without a lookup table.
+    static func transportName(_ code: URLError.Code) -> String {
+        switch code {
+        case .timedOut: return "timed out"
+        case .notConnectedToInternet: return "not connected to internet"
+        case .cannotConnectToHost: return "cannot connect to host"
+        case .cannotFindHost: return "cannot find host"
+        case .networkConnectionLost: return "network connection lost"
+        case .badServerResponse: return "bad server response"
+        case .secureConnectionFailed: return "secure connection failed"
+        default: return "URLError"
+        }
+    }
+
+    /// The one useful sentence inside a provider's error body.
+    ///
+    /// Providers wrap it in a JSON envelope (`{"error":{"message":"…"}}`) or,
+    /// on a bad gateway, in HTML. Neither belongs in front of a reader, so this
+    /// returns the message field when there is one and `nil` otherwise —
+    /// showing nothing beats showing an envelope.
+    static func readableDetail(from body: String) -> String? {
+        let trimmed = body.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+
+        var candidate: String?
+        if let data = trimmed.data(using: .utf8),
+           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            candidate = Self.messageField(in: json)
+        } else if !trimmed.contains("<"), !trimmed.contains("{") {
+            // A provider that answered in plain prose.
+            candidate = trimmed
+        }
+
+        guard var message = candidate?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !message.isEmpty
+        else { return nil }
+
+        message = redactingSecrets(in: message)
+        if message.count > 200 {
+            message = String(message.prefix(200)).trimmingCharacters(in: .whitespaces) + "…"
+        }
+        // Keep it a sentence — these are appended after a colon.
+        if let last = message.last, !".!?…".contains(last) { message += "." }
+        return message
+    }
+
+    /// Digs `message` out of the shapes providers actually send: a top-level
+    /// field, or one nested under `error`.
+    private static func messageField(in json: [String: Any]) -> String? {
+        if let message = json["message"] as? String { return message }
+        if let error = json["error"] as? [String: Any] {
+            return error["message"] as? String
+        }
+        if let error = json["error"] as? String { return error }
+        return nil
+    }
+
+    /// Blanks anything key-shaped. Providers echo the rejected credential back
+    /// in their message, and this text ends up in logs and bug reports.
+    static func redactingSecrets(in text: String) -> String {
+        let patterns = [
+            // Vendor-prefixed keys: sk-…, sk-ant-api03-…, and friends.
+            "\\b(sk|rk|pk|key)-[A-Za-z0-9_-]{8,}",
+            // Bearer tokens.
+            "\\bBearer\\s+[A-Za-z0-9._-]{16,}",
+            // Long opaque runs that carry no spaces — key material by shape.
+            "\\b[A-Za-z0-9_-]{40,}\\b",
+        ]
+        var redacted = text
+        for pattern in patterns {
+            guard let regex = try? NSRegularExpression(pattern: pattern) else { continue }
+            redacted = regex.stringByReplacingMatches(
+                in: redacted,
+                range: NSRange(redacted.startIndex..., in: redacted),
+                withTemplate: "[redacted]"
+            )
+        }
+        return redacted
     }
 
     /// A concrete next step for the reader, shown beneath `errorDescription`.

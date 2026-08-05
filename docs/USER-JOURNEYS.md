@@ -49,8 +49,15 @@ book context, without leaving the page.**
   **retrieval** and the answer cites relevant passages. `[unit][integration]`
 - **Given** any question, **then** the prompt always includes my selected
   sentence, its surrounding text, the chapter, and the book's TOC. `[unit]`
-- **Given** the answer isn't in the book, **then** the model is instructed to say
-  so rather than invent. `[manual]`
+- **Given** a question the book doesn't answer (later research, the film
+  adaptation, how an idea aged), **then** I get a real answer from the model's
+  wider knowledge — the book is the context, not the ceiling. `[unit][manual]`
+- **Given** an answer drawing on both the book and outside knowledge, **then**
+  it signals inline which part came from where, without a disclaimer preamble.
+  `[unit][manual]`
+- **Given** any answer, **then** nothing is attributed to the book that isn't in
+  the supplied context — the no-invention guarantee is scoped to what the book
+  *says*, not to what may be discussed. `[unit][manual]`
 - **Expected:** answers stream token-by-token; a follow-up question reuses cached
   book context (Tier 1) without re-sending the whole book. `[integration]`
 

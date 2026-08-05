@@ -414,10 +414,11 @@ final class AppModel: ObservableObject {
                 roadmap.
                 """
             }
-        } catch let error as BookParserError {
-            importError = Self.message(for: error)
         } catch {
-            importError = "Couldn't import this file: \(error.localizedDescription)"
+            // `readerFacingMessage` carries the recovery suggestion too — the
+            // banner is one string, and the next step is the half that matters
+            // (#48). Every error ReadrKit throws here is a `LocalizedError`.
+            importError = error.readerFacingMessage
         }
     }
 
@@ -779,14 +780,4 @@ final class AppModel: ObservableObject {
         )
     }
 
-    private static func message(for error: BookParserError) -> String {
-        switch error {
-        case .drmProtected:
-            return "This book is DRM-protected. Readr only supports DRM-free books you own."
-        case .unsupportedFormat:
-            return "Unsupported file type. Readr reads EPUB, PDF, and plain-text/Markdown."
-        case .corrupted(let why):
-            return "This file couldn't be read (\(why))."
-        }
-    }
 }
