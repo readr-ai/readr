@@ -233,6 +233,54 @@ final class BugReportTests: XCTestCase {
         XCTAssertEqual(body.count, BugReportComposer.maxURLBodyLength)
     }
 
+    // MARK: - Budgeting
+
+    /// Found in review: the description was never budgeted, only the
+    /// diagnostics were. A long one ate the whole allowance and the final
+    /// truncation took the environment block, the diagnostics header, the
+    /// events *and* the "N omitted" notice with it — so triage received a
+    /// report with no version, no device and no evidence, and nothing saying
+    /// any of it had been dropped.
+    func testALongDescriptionCannotStarveTheRestOfTheReport() {
+        let log = DiagnosticsLog(capacity: 200)
+        for index in 0..<200 {
+            log.record(.error, .reader, "a reasonably wordy diagnostic line \(index)")
+        }
+        let body = BugReportComposer.compose(
+            environment: environment,
+            events: log.entries,
+            userDescription: String(repeating: "verbose ", count: 2_000)
+        )
+
+        XCTAssertTrue(body.contains("2.15.0"), "the version must survive")
+        XCTAssertTrue(body.contains("iPhone17,1"), "the device must survive")
+        XCTAssertTrue(
+            body.localizedCaseInsensitiveContains("Recent diagnostics"),
+            "the diagnostics section must survive"
+        )
+        XCTAssertLessThanOrEqual(body.count, BugReportComposer.maxReportLength)
+    }
+
+    /// And the reader is told their words were cut rather than left to wonder.
+    func testAnOverlongDescriptionSaysItWasTruncated() {
+        let body = BugReportComposer.compose(
+            environment: environment,
+            events: [],
+            userDescription: String(repeating: "x", count: 10_000)
+        )
+        XCTAssertTrue(body.localizedCaseInsensitiveContains("truncated"), body)
+    }
+
+    /// An ordinary description is untouched.
+    func testANormalDescriptionIsNotTruncated() {
+        let described = "The last line of every page is cut off in two-page mode."
+        let body = BugReportComposer.compose(
+            environment: environment, events: [], userDescription: described
+        )
+        XCTAssertTrue(body.contains(described))
+        XCTAssertFalse(body.localizedCaseInsensitiveContains("truncated"))
+    }
+
     /// Mail bodies go into a `mailto:` URL; an unbounded log would blow past
     /// what the OS will open.
     func testReportIsBounded() {

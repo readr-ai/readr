@@ -87,6 +87,38 @@ final class PlainLanguageErrorTests: XCTestCase {
         XCTAssertEqual(HTTPError.redactingSecrets(in: sentence), sentence)
     }
 
+    /// Found in review: the catch-all pattern included `-` in its character
+    /// class, so any hyphen-joined run of 40+ characters was destroyed. This
+    /// redaction also runs over the reader's own words in a bug report, so a
+    /// long hyphenated phrase came back as `[redacted]` in their preview.
+    func testRedactionLeavesLongHyphenatedProseAlone() {
+        for prose in [
+            "state-of-the-art-transformer-language-model-name here",
+            "a-really-long-kebab-case-identifier-in-a-sentence",
+            "/Users/someone/Library/Application Support/Readr/books",
+        ] {
+            XCTAssertEqual(
+                HTTPError.redactingSecrets(in: prose), prose,
+                "ordinary prose was redacted"
+            )
+        }
+    }
+
+    /// It must still catch the opaque runs it exists for: a long unbroken
+    /// alphanumeric mixing letters and digits is key material by shape.
+    func testRedactionStillCatchesUnprefixedKeyMaterial() {
+        let token = "aB3dE5fG7hI9jK1lM3nO5pQ7rS9tU1vW3xY5zA7b"
+        let redacted = HTTPError.redactingSecrets(in: "token \(token) sent")
+        XCTAssertFalse(redacted.contains(token), redacted)
+        XCTAssertTrue(redacted.contains("[redacted]"), redacted)
+    }
+
+    /// A long run of letters alone is a word, not a secret.
+    func testRedactionLeavesLongWordsAlone() {
+        let word = "pneumonoultramicroscopicsilicovolcanoconiosis"
+        XCTAssertEqual(HTTPError.redactingSecrets(in: word), word)
+    }
+
     // MARK: - Every message still reads as plain language
 
     func testEveryMessageIsASentenceAReaderCanActOn() {

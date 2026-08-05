@@ -336,13 +336,18 @@ enum TextRangeConvert {
             // background came with it, and it was picked for a colour that is
             // no longer there. Put the theme's ink back wherever the book's
             // choice would now be hard to read on the marker.
-            if let markerColor = CSSColor(platform: marker),
+            // Markers are alpha washes on the dark theme, so they have to be
+            // resolved against the page before anything is judged against
+            // them — measured raw, a 30%-opacity wash reads as its undiluted
+            // colour and the verdict is meaningless.
+            if let markerColor = CSSColor(platform: marker)?
+                .composited(over: style.theme.pageColor),
                let themeInk = CSSColor(platform: style.theme.ink) {
                 attributed.enumerateAttribute(.foregroundColor, in: ns) { value, subrange, _ in
                     guard let current = (value as? PlatformColor)
                         .flatMap(CSSColor.init(platform:)),
                           current != themeInk,
-                          !current.isReadable(on: markerColor)
+                          !current.composited(over: markerColor).isReadable(on: markerColor)
                     else { return }
                     attributed.addAttribute(
                         .foregroundColor, value: style.theme.ink, range: subrange
@@ -445,7 +450,30 @@ enum TextRangeConvert {
             }
         }
 
-        for (ns, kind) in character.sorted(by: { phase($0.kind) < phase($1.kind) }) {
+        // What each coloured run will actually sit on. A book that declares
+        // both a colour and a background picked the pair together, so judging
+        // the colour against the theme's page would reject a combination that
+        // reads perfectly on the background it was authored for.
+        let backdrops: [(ns: NSRange, color: CSSColor)] = character.compactMap {
+            guard case let .highlighted(color) = $0.kind else { return nil }
+            return ($0.ns, color)
+        }
+        func backdrop(under ns: NSRange) -> CSSColor {
+            let page = style.theme.pageColor
+            guard let hit = backdrops.first(where: {
+                NSIntersectionRange($0.ns, ns).length > 0
+            }) else { return page }
+            return hit.color.composited(over: page)
+        }
+
+        // Widest first within a phase, so a narrow inner run lands last and
+        // wins — two nested highlights otherwise resolved in sort order.
+        let ordered = character.sorted {
+            phase($0.kind) != phase($1.kind)
+                ? phase($0.kind) < phase($1.kind)
+                : $0.ns.length > $1.ns.length
+        }
+        for (ns, kind) in ordered {
             switch kind {
             case let .heading(level):
                 attributed.addAttribute(
@@ -512,11 +540,18 @@ enum TextRangeConvert {
 
             case let .colored(color):
                 // The book's own text colour, kept only where it stays
-                // readable on the theme the reader actually chose (#47). A
-                // heading set in dark blue against the book's cream page is
-                // invisible on the dark theme, so below AA contrast the
-                // theme's ink wins and the colour is simply dropped.
-                if color.isReadable(on: style.theme.pageColor) {
+                // readable on the surface it will really sit on (#47) — the
+                // highlight behind it if there is one, the theme's page if
+                // not. A heading set in dark blue against the book's cream
+                // page is invisible on the dark theme, so below AA contrast
+                // the theme's ink wins and the colour is simply dropped.
+                //
+                // Both sides are composited first: a translucent colour is
+                // painted as a wash but measures as its undiluted self, so
+                // judging it raw would wave through text that renders
+                // invisible.
+                let surface = backdrop(under: ns)
+                if color.composited(over: surface).isReadable(on: surface) {
                     attributed.addAttribute(
                         .foregroundColor, value: PlatformColor(color), range: ns
                     )
@@ -529,14 +564,19 @@ enum TextRangeConvert {
                 attributed.addAttribute(
                     .backgroundColor, value: PlatformColor(color), range: ns
                 )
+                // Judged on what the highlight actually looks like once its
+                // alpha is resolved against the page, not on the raw colour.
+                let painted = color.composited(over: style.theme.pageColor)
                 // A book that declared both a colour and a background usually
                 // picked a pair that works — keep its colour where it really
                 // does. Sub-runs are enumerated because a `.colored` span need
                 // not cover the whole highlight.
-                let fallback = PlatformColor(color.legibleInk)
+                let fallback = PlatformColor(painted.legibleInk)
                 attributed.enumerateAttribute(.foregroundColor, in: ns) { value, subrange, _ in
-                    let declared = (value as? PlatformColor).flatMap(CSSColor.init(platform:))
-                    guard let declared, declared.isReadable(on: color) else {
+                    let declared = (value as? PlatformColor)
+                        .flatMap(CSSColor.init(platform:))?
+                        .composited(over: painted)
+                    guard let declared, declared.isReadable(on: painted) else {
                         attributed.addAttribute(
                             .foregroundColor, value: fallback, range: subrange
                         )

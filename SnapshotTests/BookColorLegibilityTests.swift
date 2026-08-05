@@ -74,6 +74,35 @@ final class BookColorLegibilityTests: XCTestCase {
         }
     }
 
+    /// Reader markers are alpha washes on the dark theme, so anything judged
+    /// against them has to resolve them against the page first. Measured raw,
+    /// a 30%-opacity wash reads as its undiluted colour.
+    func testReaderMarkersAreJudgedAsPaintedNotAsDeclared() throws {
+        for theme in allThemes {
+            for color in HighlightColor.allCases {
+                let declared = try XCTUnwrap(CSSColor(platform: theme.marker(color)))
+                let painted = declared.composited(over: theme.pageColor)
+
+                XCTAssertEqual(painted.alpha, 1, "a painted marker is opaque")
+                XCTAssertTrue(
+                    painted.legibleInk.isReadable(on: painted),
+                    "\(theme)/\(color): no legible ink for the painted marker"
+                )
+            }
+        }
+    }
+
+    /// The bug this rule exists for: a translucent wash measured raw picks the
+    /// wrong ink entirely.
+    func testATranslucentWashIsNotJudgedByItsUndilutedColour() {
+        let wash = CSSColor(red: 0, green: 0, blue: 0, alpha: 0.05)
+        XCTAssertEqual(wash.legibleInk, .white, "raw, it measures as black")
+
+        let painted = wash.composited(over: ReadingTheme.paper.pageColor)
+        XCTAssertEqual(painted.legibleInk, .black, "painted, it is nearly the page")
+        XCTAssertTrue(painted.legibleInk.isReadable(on: painted))
+    }
+
     /// Whatever a book declares as a highlight, the ink the renderer picks for
     /// it must be legible — that choice is unconditional, so it must hold for
     /// every colour a stylesheet could name.

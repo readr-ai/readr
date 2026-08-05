@@ -208,8 +208,14 @@ extension HTTPError: LocalizedError, DiagnosticallyDescribable {
             "\\b(sk|rk|pk|key)-[A-Za-z0-9_-]{8,}",
             // Bearer tokens.
             "\\bBearer\\s+[A-Za-z0-9._-]{16,}",
-            // Long opaque runs that carry no spaces — key material by shape.
-            "\\b[A-Za-z0-9_-]{40,}\\b",
+            // Long opaque runs — key material by shape. Deliberately narrower
+            // than "40+ word characters": including `-` in that class made it
+            // eat ordinary hyphenated prose, and this runs over the reader's
+            // own free text in a bug report, so
+            // "state-of-the-art-transformer-language-model" came back as
+            // `[redacted]`. Real key material is an unbroken alphanumeric run
+            // mixing both cases or digits, so require that instead.
+            "\\b(?=[A-Za-z0-9]*[0-9])(?=[A-Za-z0-9]*[A-Za-z])[A-Za-z0-9]{32,}\\b",
         ]
         var redacted = text
         for pattern in patterns {

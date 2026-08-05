@@ -1089,6 +1089,9 @@ public enum XHTMLTextExtractor {
                 spans.append(Span(start: start, end: end, kind: span.kind))
             }
             spans = XHTMLTextExtractor.collapsingNestedBaselineShifts(spans)
+            spans = XHTMLTextExtractor.droppingDocumentWideColorSpans(
+                spans, length: length
+            )
             // Ids that never saw content resolve to the end of the text.
             for id in unresolvedAnchors where anchors[id] == nil {
                 anchors[id] = length
@@ -1175,6 +1178,41 @@ public enum XHTMLTextExtractor {
     /// One sweep per kind rather than comparing every raised span with every
     /// other: a densely annotated chapter can carry hundreds of note markers,
     /// and this runs on every content document at import.
+    /// Fraction of a document a colour span may cover before it is read as
+    /// page furniture rather than as a mark on a passage.
+    static let documentWideColorSpanThreshold = 0.9
+
+    /// Below this length the fraction test is meaningless and the rule is
+    /// skipped: on a title page or a one-line section head a colour genuinely
+    /// does cover everything, and that is the author's intent rather than a
+    /// wrapper's background leaking through.
+    static let documentWideColorSpanMinimumLength = 200
+
+    /// Drops colour spans that cover essentially the whole document (#47).
+    ///
+    /// Excluding `html`/`body` is not enough on its own: calibre and InDesign
+    /// exports habitually wrap the content in `<div class="calibre">` or
+    /// similar carrying the same `background-color: #fff` copied off the body
+    /// rule. That opens one highlight over every character, so the reader gets
+    /// a full page of white paint with forced black ink — which on the dark
+    /// theme is a glaring white block in a dark app.
+    ///
+    /// A highlight is a mark on a passage. Something covering the entire
+    /// document is the page's own colour by definition, whatever element
+    /// declared it, so the shape of the span decides rather than its tag name.
+    static func droppingDocumentWideColorSpans(_ spans: [Span], length: Int) -> [Span] {
+        guard length >= documentWideColorSpanMinimumLength else { return spans }
+        let ceiling = Double(length) * documentWideColorSpanThreshold
+        return spans.filter { span in
+            switch span.kind {
+            case .highlighted, .colored:
+                return Double(span.end - span.start) < ceiling
+            default:
+                return true
+            }
+        }
+    }
+
     static func collapsingNestedBaselineShifts(_ spans: [Span]) -> [Span] {
         var covered = Set<Int>()
         for kind in [Span.Kind.superscript, .`subscript`] {

@@ -8,10 +8,18 @@ public struct CSSColor: Hashable, Sendable, Codable {
     public var alpha: Double
 
     public init(red: Double, green: Double, blue: Double, alpha: Double = 1) {
-        self.red = red
-        self.green = green
-        self.blue = blue
-        self.alpha = alpha
+        // Non-finite channels can't be clamped into range and can't be
+        // encoded: `JSONEncoder` refuses `Double.nan`, and these ride inside
+        // `FormatSpan`, which is persisted. One book declaring `rgb(nan,0,0)`
+        // would otherwise throw on every subsequent library save for the rest
+        // of the session, silently ending all persistence.
+        func sanitize(_ value: Double) -> Double {
+            value.isFinite ? min(max(value, 0), 1) : 0
+        }
+        self.red = sanitize(red)
+        self.green = sanitize(green)
+        self.blue = sanitize(blue)
+        self.alpha = alpha.isFinite ? min(max(alpha, 0), 1) : 1
     }
 
     /// Nothing to paint — `transparent`, or any colour at zero alpha. Declared
@@ -30,7 +38,29 @@ public struct CSSColor: Hashable, Sendable, Codable {
         return 0.2126 * linear(red) + 0.7152 * linear(green) + 0.0722 * linear(blue)
     }
 
+    /// This colour as the eye actually sees it once laid over `backdrop`.
+    ///
+    /// Every judgement below reads `red`/`green`/`blue` and ignores `alpha`,
+    /// which is right for opaque colours and badly wrong for translucent ones:
+    /// `rgba(0, 0, 0, 0.05)` — the "subtle grey panel" idiom books use
+    /// constantly — is *painted* as a near-white wash but measures as pure
+    /// black, so a legibility check run on it picks white ink and the
+    /// paragraph disappears. Composite first, judge second.
+    public func composited(over backdrop: CSSColor) -> CSSColor {
+        guard alpha < 1 else { return self }
+        let opacity = alpha
+        return CSSColor(
+            red: red * opacity + backdrop.red * (1 - opacity),
+            green: green * opacity + backdrop.green * (1 - opacity),
+            blue: blue * opacity + backdrop.blue * (1 - opacity),
+            alpha: 1
+        )
+    }
+
     /// WCAG contrast ratio against another colour, 1…21.
+    ///
+    /// Assumes both colours are opaque — composite with `composited(over:)`
+    /// first if either might not be.
     public func contrastRatio(against other: CSSColor) -> Double {
         let lighter = max(luminance, other.luminance)
         let darker = min(luminance, other.luminance)
@@ -512,14 +542,7 @@ public struct CSSStyleResolver: Sendable {
             case "background-color":
                 if let color = color(value) { style.background = color }
             case "background":
-                // Shorthand: the colour is one slot among image/repeat/
-                // position. Take the first slot that parses as a colour.
-                for slot in value.split(whereSeparator: \.isWhitespace) {
-                    if let color = self.color(String(slot)) {
-                        style.background = color
-                        break
-                    }
-                }
+                if let color = shorthandColor(in: value) { style.background = color }
             case "display":
                 style.hidden = value.hasPrefix("none")
             case "visibility":
@@ -571,7 +594,10 @@ public struct CSSStyleResolver: Sendable {
         let value = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard !value.isEmpty else { return nil }
 
-        if value == "transparent" || value == "none" {
+        // `transparent` is a real colour keyword; `none` is not one (it is the
+        // background-*image* slot of the shorthand) and must stay undeclared
+        // rather than register as a declared-but-clear colour in the cascade.
+        if value == "transparent" {
             return CSSColor(red: 0, green: 0, blue: 0, alpha: 0)
         }
         if let named = namedColors[value] { return named }
@@ -582,9 +608,44 @@ public struct CSSStyleResolver: Sendable {
         return nil
     }
 
+    /// The colour slot of a `background` shorthand.
+    ///
+    /// Splitting the value on whitespace and testing each slot looks
+    /// sufficient and isn't: `background: rgba(255, 235, 59, 0.6)` is a single
+    /// colour containing spaces, so every slot is a fragment and the whole
+    /// declaration parses as nothing — silently dropping exactly the highlight
+    /// this feature exists to show (#47). Functional notation is lifted out
+    /// whole, by balanced parenthesis, before the slot scan runs.
+    static func shorthandColor(in value: String) -> CSSColor? {
+        if let open = value.range(of: "rgba(") ?? value.range(of: "rgb(") {
+            var depth = 0
+            var index = open.lowerBound
+            while index < value.endIndex {
+                if value[index] == "(" { depth += 1 }
+                if value[index] == ")" {
+                    depth -= 1
+                    if depth == 0 {
+                        let function = value[open.lowerBound...index]
+                        if let color = self.color(String(function)) { return color }
+                        break
+                    }
+                }
+                index = value.index(after: index)
+            }
+        }
+        // `#fff`, a named colour, or `none` — the remaining slots.
+        for slot in value.split(whereSeparator: \.isWhitespace) {
+            if let color = self.color(String(slot)) { return color }
+        }
+        return nil
+    }
+
     private static func hexColor(_ digits: String) -> CSSColor? {
         func component(_ slice: Substring) -> Double? {
-            guard let value = UInt8(slice, radix: 16) else { return nil }
+            // `UInt8(_:radix:)` accepts a leading sign, so "#+f0f0f" would
+            // otherwise parse as a colour.
+            guard slice.allSatisfy(\.isHexDigit),
+                  let value = UInt8(slice, radix: 16) else { return nil }
             return Double(value) / 255
         }
         // #rgb / #rgba expand each digit: f → ff.

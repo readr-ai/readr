@@ -31,6 +31,14 @@ public enum BugReportComposer {
 
     public static let subject = "Readr bug report"
 
+    /// How much of the report the reader's own description may occupy.
+    ///
+    /// It used to be unbudgeted, so a long description ate the whole allowance
+    /// and the final `prefix` took the environment block, the diagnostics and
+    /// even the "N events omitted" notice with it — leaving a report with no
+    /// version, no device and no evidence, and nothing saying so.
+    public static let maxDescriptionLength = 2_000
+
     public static func compose(
         environment: BugReportEnvironment,
         events: [DiagnosticEvent],
@@ -40,7 +48,11 @@ public enum BugReportComposer {
 
         // The reader's description leads. Everything below it is evidence.
         let described = userDescription?.trimmingCharacters(in: .whitespacesAndNewlines)
-        if let described, !described.isEmpty {
+        if var described, !described.isEmpty {
+            if described.count > maxDescriptionLength {
+                described = String(described.prefix(maxDescriptionLength))
+                    + "\n…(description truncated)"
+            }
             body += described + "\n\n"
         } else {
             body += "<!-- What went wrong? What did you expect instead? -->\n\n"

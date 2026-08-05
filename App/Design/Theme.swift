@@ -172,7 +172,7 @@ enum ReadingTheme: String, CaseIterable, Codable, Identifiable {
 
     /// `paper` as a `CSSColor`, so a book's declared text colour can be
     /// contrast-checked against the surface it will actually sit on (#47).
-    /// Kept in step with `paper` by `ReadingThemeContrastTests`.
+    /// Kept in step with `paper` by `BookColorLegibilityTests`.
     var pageColor: CSSColor {
         switch self {
         case .paper: return CSSColor(hex: 0xFAF7F0)

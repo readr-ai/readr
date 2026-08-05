@@ -144,6 +144,56 @@ public struct Chapter: Identifiable, Hashable, Sendable, Codable {
         self.footnotes = footnotes
         self.isLinear = isLinear
     }
+
+    // MARK: Codable
+
+    private enum CodingKeys: String, CodingKey {
+        case id, title, order, text, images, formatSpans, sourcePath
+        case anchors, footnotes, isLinear
+        /// Colour spans, split out so a build predating them still decodes the
+        /// rest — see `FormatSpan.postdatesV1SpanVocabulary`.
+        case colorSpans
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        title = try container.decodeIfPresent(String.self, forKey: .title)
+        order = try container.decode(Int.self, forKey: .order)
+        text = try container.decode(String.self, forKey: .text)
+        images = try container.decodeIfPresent([ChapterImage].self, forKey: .images)
+        sourcePath = try container.decodeIfPresent(String.self, forKey: .sourcePath)
+        anchors = try container.decodeIfPresent([String: Int].self, forKey: .anchors)
+        footnotes = try container.decodeIfPresent([Footnote].self, forKey: .footnotes)
+        isLinear = try container.decodeIfPresent(Bool.self, forKey: .isLinear)
+
+        let legacy = try container.decodeIfPresent([FormatSpan].self, forKey: .formatSpans)
+        // Tolerated rather than required: a *future* build may add span kinds
+        // this one has never heard of, and losing the colours it doesn't
+        // understand beats losing the reader's whole library.
+        let colors = try? container.decodeIfPresent([FormatSpan].self, forKey: .colorSpans)
+        let combined = (legacy ?? []) + (colors ?? [])
+        formatSpans = combined.isEmpty ? nil : combined
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encodeIfPresent(title, forKey: .title)
+        try container.encode(order, forKey: .order)
+        try container.encode(text, forKey: .text)
+        try container.encodeIfPresent(images, forKey: .images)
+        try container.encodeIfPresent(sourcePath, forKey: .sourcePath)
+        try container.encodeIfPresent(anchors, forKey: .anchors)
+        try container.encodeIfPresent(footnotes, forKey: .footnotes)
+        try container.encodeIfPresent(isLinear, forKey: .isLinear)
+
+        let spans = formatSpans ?? []
+        let legacy = spans.filter { !$0.postdatesV1SpanVocabulary }
+        let colors = spans.filter(\.postdatesV1SpanVocabulary)
+        try container.encodeIfPresent(legacy.isEmpty ? nil : legacy, forKey: .formatSpans)
+        try container.encodeIfPresent(colors.isEmpty ? nil : colors, forKey: .colorSpans)
+    }
 }
 
 /// A footnote/endnote body extracted out of the reading flow, shown as a
@@ -160,6 +210,34 @@ public struct Footnote: Hashable, Sendable, Codable {
         self.id = id
         self.text = text
         self.formatSpans = formatSpans
+    }
+
+    // MARK: Codable
+
+    // Same split as `Chapter` — a note body can carry colour spans too.
+    private enum CodingKeys: String, CodingKey {
+        case id, text, formatSpans, colorSpans
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        text = try container.decode(String.self, forKey: .text)
+        let legacy = try container.decodeIfPresent([FormatSpan].self, forKey: .formatSpans)
+        let colors = try? container.decodeIfPresent([FormatSpan].self, forKey: .colorSpans)
+        let combined = (legacy ?? []) + (colors ?? [])
+        formatSpans = combined.isEmpty ? nil : combined
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(text, forKey: .text)
+        let spans = formatSpans ?? []
+        let legacy = spans.filter { !$0.postdatesV1SpanVocabulary }
+        let colors = spans.filter(\.postdatesV1SpanVocabulary)
+        try container.encodeIfPresent(legacy.isEmpty ? nil : legacy, forKey: .formatSpans)
+        try container.encodeIfPresent(colors.isEmpty ? nil : colors, forKey: .colorSpans)
     }
 }
 
@@ -207,6 +285,26 @@ public struct FormatSpan: Hashable, Sendable, Codable {
         self.start = start
         self.end = end
         self.kind = kind
+    }
+
+    /// Whether this span's kind postdates the persisted v1 span vocabulary.
+    ///
+    /// Swift's synthesized enum `Codable` writes the case name as the key and
+    /// refuses anything it doesn't recognise, so a build that predates a case
+    /// cannot decode a library containing one — and `FileLibraryStore` treats a
+    /// failed decode as corruption, moving `library.json` aside and starting
+    /// empty. Adding `highlighted`/`colored` to `Kind` therefore made a
+    /// downgrade (a tester rolling back a TestFlight build) wipe the shelf.
+    ///
+    /// `Chapter` and `Footnote` keep these out of the `formatSpans` array and
+    /// persist them under a separate optional key instead — unknown keys are
+    /// ignored by `Codable`, which is how every other field added to this file
+    /// stayed safe. See `Chapter.encode(to:)`.
+    var postdatesV1SpanVocabulary: Bool {
+        switch kind {
+        case .highlighted, .colored: return true
+        default: return false
+        }
     }
 }
 
