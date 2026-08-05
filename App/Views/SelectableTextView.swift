@@ -403,7 +403,8 @@ enum TextRangeConvert {
                 paragraphLevel.append((ns, span.kind))
             case .alignment:
                 paragraphLevel.append((ns, span.kind))
-            case .bold, .italic, .link, .superscript, .`subscript`, .smallCaps:
+            case .bold, .italic, .link, .superscript, .`subscript`, .smallCaps,
+                 .highlighted:
                 character.append((ns, span.kind))
             }
         }
@@ -418,6 +419,10 @@ enum TextRangeConvert {
             case .superscript, .`subscript`: return 5
             case .link: return 6
             case .alignment: return 7
+            // Last of the character phases: it sets a foreground colour to sit
+            // legibly on the book's background, and must not be overwritten by
+            // the blockquote/link inks that run earlier.
+            case .highlighted: return 8
             }
         }
 
@@ -484,6 +489,20 @@ enum TextRangeConvert {
                 )
                 attributed.addAttribute(
                     .underlineStyle, value: NSUnderlineStyle.single.rawValue, range: ns
+                )
+
+            case let .highlighted(color):
+                // The book's own highlight styling (#47). Its foreground was
+                // chosen against the book's paper, and Readr renders in paper,
+                // sepia, and dark — so the background is honoured and the ink
+                // is chosen here to sit on it legibly, whatever the theme.
+                attributed.addAttribute(
+                    .backgroundColor, value: PlatformColor(color), range: ns
+                )
+                attributed.addAttribute(
+                    .foregroundColor,
+                    value: color.luminance > 0.5 ? PlatformColor.black : PlatformColor.white,
+                    range: ns
                 )
 
             case .alignment:

@@ -414,11 +414,19 @@ final class AppModel: ObservableObject {
                 roadmap.
                 """
             }
+            DiagnosticsLog.shared.recordBookOpened(
+                book, format: url.pathExtension.lowercased()
+            )
         } catch {
             // `readerFacingMessage` carries the recovery suggestion too — the
             // banner is one string, and the next step is the half that matters
             // (#48). Every error ReadrKit throws here is a `LocalizedError`.
             importError = error.readerFacingMessage
+            // The extension, never the filename — that's usually title+author
+            // and a report is a public issue (#41).
+            DiagnosticsLog.shared.recordImportFailure(
+                fileExtension: url.pathExtension.lowercased(), error: error
+            )
         }
     }
 

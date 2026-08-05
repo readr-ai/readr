@@ -35,6 +35,10 @@ public enum XHTMLTextExtractor {
         "base", "embed", "source", "track", "wbr",
     ]
 
+    /// Elements whose `background-color` is the page's own colour rather than
+    /// a highlight on a run of text (#47).
+    private static let pageLevelTags: Set<String> = ["html", "body"]
+
     /// The placeholder each `<img>` becomes in extracted text: U+FFFC OBJECT
     /// REPLACEMENT CHARACTER — the same character `NSAttributedString` uses for
     /// attachments, so renderers can attach the image in place and every other
@@ -86,6 +90,11 @@ public enum XHTMLTextExtractor {
             /// Small-caps run (CSS `font-variant: small-caps`, via class or
             /// element stylesheet rules).
             case smallCaps
+            /// A run the book's own stylesheet paints a background behind
+            /// (#47) — how books mark "this is what a highlight looks like".
+            /// Carries the declared colour; the renderer picks a legible ink
+            /// to sit on it.
+            case highlighted(CSSColor)
         }
     }
 
@@ -621,6 +630,19 @@ public enum XHTMLTextExtractor {
                 }
                 if resolved.smallCaps == true {
                     openCSSSpan(name + "@sc", kind: .smallCaps, into: &atSpanKeys)
+                }
+                // A painted background is how a book marks a highlighted run
+                // (#47). `body`/`html` are the page's own colour, not a
+                // highlight — painting those would put a block of the book's
+                // paper colour behind every paragraph and fight the reader's
+                // theme. A clear colour declares "no highlight" and opens
+                // nothing; it exists to cancel an inherited one.
+                if let background = resolved.background,
+                   !background.isClear,
+                   !XHTMLTextExtractor.pageLevelTags.contains(name) {
+                    openCSSSpan(
+                        name + "@bg", kind: .highlighted(background), into: &atSpanKeys
+                    )
                 }
                 // `vertical-align: super/sub` — the footnote-marker pattern
                 // (#43): InDesign-produced EPUBs raise note refs with a

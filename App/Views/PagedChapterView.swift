@@ -612,7 +612,8 @@ struct PagedChapterView: View {
                 // doesn't snap into the following paragraph.
                 end = breaks.first(where: { $0 >= end - 1 }).map { $0 + 1 }
                     ?? chapterText.count
-            case .bold, .italic, .link, .superscript, .`subscript`, .smallCaps:
+            case .bold, .italic, .link, .superscript, .`subscript`, .smallCaps,
+                 .highlighted:
                 break
             }
             let lower = max(start, origin)

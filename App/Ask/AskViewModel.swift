@@ -56,15 +56,26 @@ final class AskViewModel: ObservableObject {
     private let makeService: () -> AskService?
     private var service: AskService?
     private let prepare: () async -> Void
+    /// Which provider answered, for diagnostics only (#41). A closure because
+    /// the active provider can change while the panel is open, same as
+    /// `makeService`.
+    private let providerName: () -> String
     private let book: Book
     private let selection: Selection?
     /// The last question submitted, kept so a Retry can re-run it after an
     /// error (A5) without the reader retyping.
     private(set) var lastQuestion: String?
 
-    init(makeService: @escaping () -> AskService?, prepare: @escaping () async -> Void, book: Book, selection: Selection?) {
+    init(
+        makeService: @escaping () -> AskService?,
+        prepare: @escaping () async -> Void,
+        book: Book,
+        selection: Selection?,
+        providerName: @escaping () -> String = { "unknown" }
+    ) {
         self.makeService = makeService
         self.prepare = prepare
+        self.providerName = providerName
         self.book = book
         self.selection = selection
         let resolved = makeService()
@@ -165,6 +176,13 @@ final class AskViewModel: ObservableObject {
             } else {
                 fail(id, error.localizedDescription, recovery: nil)
             }
+            // The provider and routing tier, never the question — that's the
+            // reader's, and a bug report is public (#41).
+            DiagnosticsLog.shared.recordAskFailure(
+                provider: providerName(),
+                tier: (exchanges.first { $0.id == id }?.tier)?.rawValue ?? "unrouted",
+                error: error
+            )
         }
     }
 

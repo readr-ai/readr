@@ -1,5 +1,36 @@
 import Foundation
 
+/// An sRGB colour parsed from a stylesheet, components in 0…1.
+public struct CSSColor: Hashable, Sendable, Codable {
+    public var red: Double
+    public var green: Double
+    public var blue: Double
+    public var alpha: Double
+
+    public init(red: Double, green: Double, blue: Double, alpha: Double = 1) {
+        self.red = red
+        self.green = green
+        self.blue = blue
+        self.alpha = alpha
+    }
+
+    /// Nothing to paint — `transparent`, or any colour at zero alpha. Declared
+    /// but invisible, which is how a rule cancels an inherited highlight.
+    public var isClear: Bool { alpha <= 0.001 }
+
+    /// Perceived lightness (WCAG relative luminance). The renderer picks a
+    /// legible ink for a highlighted run from this rather than trusting the
+    /// reader's theme colour to contrast with the book's chosen background.
+    public var luminance: Double {
+        func linear(_ component: Double) -> Double {
+            component <= 0.03928
+                ? component / 12.92
+                : pow((component + 0.055) / 1.055, 2.4)
+        }
+        return 0.2126 * linear(red) + 0.7152 * linear(green) + 0.0722 * linear(blue)
+    }
+}
+
 /// The formatting facts a stylesheet (or inline `style`) resolves to for one
 /// element, as tri-state optionals: `nil` means "not declared", so overlaying
 /// a higher-precedence source only replaces what that source actually
@@ -25,6 +56,19 @@ public struct ResolvedStyle: Equatable, Sendable {
     /// super/sub). Box-alignment values (top/middle/lengths/percentages)
     /// stay undeclared — they align table cells, not text runs.
     public var verticalAlign: VerticalAlign?
+    /// `background-color` (or the `background` shorthand's colour slot).
+    ///
+    /// Books mark "this is what a highlight looks like" runs with it, and
+    /// without it those runs rendered as plain body text (#47). A clear value
+    /// is *declared*, not absent — that's how `transparent` cancels.
+    ///
+    /// The matching `color` property is deliberately **not** parsed. A book's
+    /// foreground colour is chosen against the book's own page, and Readr
+    /// renders in paper, sepia, and dark themes; honouring it would turn a
+    /// dark-blue heading invisible on the dark theme. The background is safe
+    /// to honour because the renderer picks its own legible ink for the run
+    /// (see `CSSColor.luminance`).
+    public var background: CSSColor?
 
     /// Text-run vertical alignment relative to the baseline.
     public enum VerticalAlign: Equatable, Sendable {
@@ -38,7 +82,7 @@ public struct ResolvedStyle: Equatable, Sendable {
     public init(
         italic: Bool? = nil, bold: Bool? = nil, alignment: TextAlignment? = nil,
         inset: Bool? = nil, hidden: Bool? = nil, smallCaps: Bool? = nil,
-        verticalAlign: VerticalAlign? = nil
+        verticalAlign: VerticalAlign? = nil, background: CSSColor? = nil
     ) {
         self.italic = italic
         self.bold = bold
@@ -47,13 +91,14 @@ public struct ResolvedStyle: Equatable, Sendable {
         self.hidden = hidden
         self.smallCaps = smallCaps
         self.verticalAlign = verticalAlign
+        self.background = background
     }
 
     /// True when no fact is declared at all.
     public var isEmpty: Bool {
         italic == nil && bold == nil && alignment == nil
             && inset == nil && hidden == nil && smallCaps == nil
-            && verticalAlign == nil
+            && verticalAlign == nil && background == nil
     }
 
     /// Overlay a higher-precedence source: its non-nil facts win, its nil
@@ -66,6 +111,7 @@ public struct ResolvedStyle: Equatable, Sendable {
         if let value = other.hidden { hidden = value }
         if let value = other.smallCaps { smallCaps = value }
         if let value = other.verticalAlign { verticalAlign = value }
+        if let value = other.background { background = value }
     }
 }
 
@@ -75,9 +121,13 @@ public struct ResolvedStyle: Equatable, Sendable {
 /// through classes and stylesheets — italics as `<span class="char-override-1">`,
 /// centered paragraphs as `<p class="center">`, insets as
 /// `<div class="extract">`, hidden content via classes. This resolver parses
-/// just enough CSS to recover those STRUCTURAL facts (never fonts, colors, or
-/// sizes) so `XHTMLTextExtractor` can emit the same format spans it already
-/// produces for presentational markup.
+/// just enough CSS to recover those STRUCTURAL facts (never fonts or sizes) so
+/// `XHTMLTextExtractor` can emit the same format spans it already produces for
+/// presentational markup.
+///
+/// `background-color` is the one colour it reads, because some books *describe*
+/// their own highlight styling and show an example of it (#47). Foreground
+/// `color` stays unread — see `ResolvedStyle.background`.
 ///
 /// Supported selectors: `element`, `.class`, and `element.class` (single
 /// class). Selectors containing whitespace, `>`, `+`, `~`, `:`, `[`, or `#`
@@ -411,6 +461,17 @@ public struct CSSStyleResolver: Sendable {
                 default:
                     break
                 }
+            case "background-color":
+                if let color = color(value) { style.background = color }
+            case "background":
+                // Shorthand: the colour is one slot among image/repeat/
+                // position. Take the first slot that parses as a colour.
+                for slot in value.split(whereSeparator: \.isWhitespace) {
+                    if let color = self.color(String(slot)) {
+                        style.background = color
+                        break
+                    }
+                }
             case "display":
                 style.hidden = value.hasPrefix("none")
             case "visibility":
@@ -453,6 +514,124 @@ public struct CSSStyleResolver: Sendable {
 
     /// `font-weight` → bold?: keywords, or the numeric 600+ threshold.
     /// Unmappable values (`inherit`, `revert`, …) contribute nothing.
+    /// Parses the colour notations EPUB stylesheets actually use: `#rgb`,
+    /// `#rrggbb`, `#rrggbbaa`, `rgb()`/`rgba()` with numbers or percentages,
+    /// and the CSS named colours. Anything else — `inherit`, `currentColor`,
+    /// `url(…)`, a malformed hex — returns nil rather than guessing, leaving
+    /// the property undeclared so the cascade is unaffected.
+    static func color(_ raw: String) -> CSSColor? {
+        let value = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !value.isEmpty else { return nil }
+
+        if value == "transparent" || value == "none" {
+            return CSSColor(red: 0, green: 0, blue: 0, alpha: 0)
+        }
+        if let named = namedColors[value] { return named }
+        if value.hasPrefix("#") { return hexColor(String(value.dropFirst())) }
+        if value.hasPrefix("rgb(") || value.hasPrefix("rgba(") {
+            return functionalColor(value)
+        }
+        return nil
+    }
+
+    private static func hexColor(_ digits: String) -> CSSColor? {
+        func component(_ slice: Substring) -> Double? {
+            guard let value = UInt8(slice, radix: 16) else { return nil }
+            return Double(value) / 255
+        }
+        // #rgb / #rgba expand each digit: f → ff.
+        let expanded: String
+        switch digits.count {
+        case 3, 4:
+            expanded = digits.map { "\($0)\($0)" }.joined()
+        case 6, 8:
+            expanded = digits
+        default:
+            return nil
+        }
+        let characters = Array(expanded)
+        func pair(_ index: Int) -> Substring {
+            expanded[
+                expanded.index(expanded.startIndex, offsetBy: index)
+                ..< expanded.index(expanded.startIndex, offsetBy: index + 2)
+            ]
+        }
+        guard characters.count >= 6,
+              let red = component(pair(0)),
+              let green = component(pair(2)),
+              let blue = component(pair(4))
+        else { return nil }
+        let alpha = characters.count == 8 ? component(pair(6)) : 1
+        guard let alpha else { return nil }
+        return CSSColor(red: red, green: green, blue: blue, alpha: alpha)
+    }
+
+    private static func functionalColor(_ value: String) -> CSSColor? {
+        guard let open = value.firstIndex(of: "("),
+              let close = value.lastIndex(of: ")"), open < close
+        else { return nil }
+        // Both comma and space separated forms are legal CSS.
+        let arguments = value[value.index(after: open)..<close]
+            .split(whereSeparator: { $0 == "," || $0 == "/" || $0.isWhitespace })
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+        guard arguments.count == 3 || arguments.count == 4 else { return nil }
+
+        func channel(_ text: String) -> Double? {
+            if text.hasSuffix("%") {
+                guard let percent = Double(text.dropLast()) else { return nil }
+                return min(max(percent / 100, 0), 1)
+            }
+            guard let number = Double(text) else { return nil }
+            return min(max(number / 255, 0), 1)
+        }
+        guard let red = channel(arguments[0]),
+              let green = channel(arguments[1]),
+              let blue = channel(arguments[2])
+        else { return nil }
+
+        var alpha = 1.0
+        if arguments.count == 4 {
+            let text = arguments[3]
+            if text.hasSuffix("%") {
+                guard let percent = Double(text.dropLast()) else { return nil }
+                alpha = min(max(percent / 100, 0), 1)
+            } else {
+                guard let number = Double(text) else { return nil }
+                alpha = min(max(number, 0), 1)
+            }
+        }
+        return CSSColor(red: red, green: green, blue: blue, alpha: alpha)
+    }
+
+    /// The CSS named colours that turn up in book stylesheets. Not the full
+    /// 148-entry table — the long tail is vanishingly rare in EPUBs, and an
+    /// unrecognised name leaves the property undeclared, which is safe.
+    private static let namedColors: [String: CSSColor] = {
+        func rgb(_ red: Int, _ green: Int, _ blue: Int) -> CSSColor {
+            CSSColor(
+                red: Double(red) / 255, green: Double(green) / 255, blue: Double(blue) / 255
+            )
+        }
+        return [
+            "black": rgb(0, 0, 0), "silver": rgb(192, 192, 192),
+            "gray": rgb(128, 128, 128), "grey": rgb(128, 128, 128),
+            "white": rgb(255, 255, 255), "maroon": rgb(128, 0, 0),
+            "red": rgb(255, 0, 0), "purple": rgb(128, 0, 128),
+            "fuchsia": rgb(255, 0, 255), "magenta": rgb(255, 0, 255),
+            "green": rgb(0, 128, 0), "lime": rgb(0, 255, 0),
+            "olive": rgb(128, 128, 0), "yellow": rgb(255, 255, 0),
+            "navy": rgb(0, 0, 128), "blue": rgb(0, 0, 255),
+            "teal": rgb(0, 128, 128), "aqua": rgb(0, 255, 255),
+            "cyan": rgb(0, 255, 255), "orange": rgb(255, 165, 0),
+            "gold": rgb(255, 215, 0), "pink": rgb(255, 192, 203),
+            "beige": rgb(245, 245, 220), "ivory": rgb(255, 255, 240),
+            "khaki": rgb(240, 230, 140), "lavender": rgb(230, 230, 250),
+            "lightyellow": rgb(255, 255, 224), "lightgray": rgb(211, 211, 211),
+            "lightgrey": rgb(211, 211, 211), "whitesmoke": rgb(245, 245, 245),
+        ]
+    }()
+
     private static func boldWeight(_ value: String) -> Bool? {
         switch value {
         case "bold", "bolder": return true

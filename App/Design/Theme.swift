@@ -48,6 +48,18 @@ private extension PlatformColor {
     }
 }
 
+extension PlatformColor {
+    /// A colour a book's own stylesheet declared (#47).
+    convenience init(_ color: CSSColor) {
+        self.init(
+            red: CGFloat(color.red),
+            green: CGFloat(color.green),
+            blue: CGFloat(color.blue),
+            alpha: CGFloat(color.alpha)
+        )
+    }
+}
+
 enum AppTheme {
     /// The reserved AI accent ("Iris"). Used ONLY for AI moments — the ✦
     /// glyph, Ask affordances, citation chips, streaming carets — never for

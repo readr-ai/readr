@@ -43,7 +43,8 @@ struct AskPanelView: View {
                 await app.refreshActiveProviderCredentialsIfNeeded()
             },
             book: book,
-            selection: selection
+            selection: selection,
+            providerName: { app.providerManager.selection?.kind.rawValue ?? "none" }
         ))
     }
 

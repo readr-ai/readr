@@ -30,6 +30,8 @@ struct ProviderSettingsView: View {
     @AppStorage("readingTheme") private var themeRaw = ReadingTheme.paper.rawValue
     private var theme: ReadingTheme { ReadingTheme(rawValue: themeRaw) ?? .paper }
 
+    @State private var showingBugReport = false
+
     init(app: AppModel) {
         _model = StateObject(wrappedValue: SettingsModel(
             manager: app.providerManager,
@@ -63,6 +65,10 @@ struct ProviderSettingsView: View {
                         .font(.caption)
                         .lineSpacing(4)
                         .foregroundStyle(theme.faint)
+
+                    sectionLabel("HELP")
+                        .padding(.top, 18)
+                    helpSection
                 }
                 .padding(20)
                 // Extra bottom air: on iPad's shorter form sheet the last
@@ -73,7 +79,7 @@ struct ProviderSettingsView: View {
                 .frame(maxWidth: .infinity)
             }
             .background(theme.background)
-            .navigationTitle("AI Providers")
+            .navigationTitle("Settings")
             .task {
                 model.refresh()
                 // Verify stored keys / probe Ollama so the cards reflect real
@@ -97,6 +103,80 @@ struct ProviderSettingsView: View {
                 Text(model.errorMessage ?? "")
             }
         }
+    }
+
+    // MARK: Help
+
+    /// Reporting a bug (#41) and passing Readr on (#40). Both were missing
+    /// entirely: the EPUB bugs this cycle were only caught by manual
+    /// screenshots because a reader had no way to tell us anything.
+    private var helpSection: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Button {
+                showingBugReport = true
+            } label: {
+                helpRow(
+                    "Report a bug",
+                    detail: "Send what went wrong, with app and device details attached.",
+                    systemImage: "ladybug"
+                )
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("settings.reportBug")
+
+            theme.line.frame(height: 1)
+
+            ShareLink(item: ReadrShare.joinURL, message: Text(ReadrShare.message)) {
+                helpRow(
+                    "Share Readr",
+                    detail: "Send someone the free beta.",
+                    systemImage: "square.and.arrow.up"
+                )
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("settings.shareReadr")
+
+            Text(versionLine)
+                .font(.caption2)
+                .foregroundStyle(theme.faint)
+                .padding(.top, 2)
+                .accessibilityIdentifier("settings.version")
+        }
+        .sheet(isPresented: $showingBugReport) {
+            ReportBugView(log: .shared)
+        }
+    }
+
+    private func helpRow(
+        _ title: String, detail: String, systemImage: String
+    ) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: systemImage)
+                .font(.system(size: 13))
+                .foregroundStyle(theme.muted)
+                .frame(width: 18)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(theme.inkColor)
+                Text(detail)
+                    .font(.caption)
+                    .foregroundStyle(theme.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 0)
+            Image(systemName: "chevron.right")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(theme.faint)
+        }
+        .contentShape(Rectangle())
+    }
+
+    /// Shown so a reader filing a report can quote it even if they'd rather
+    /// not send diagnostics.
+    private var versionLine: String {
+        let environment = BugReportEnvironment.current
+        return "Readr \(environment.appVersion) (\(environment.build)) — \(environment.osVersion)"
     }
 
     private func sectionLabel(_ text: String) -> some View {

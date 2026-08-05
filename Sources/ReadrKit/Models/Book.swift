@@ -195,6 +195,9 @@ public struct FormatSpan: Hashable, Sendable, Codable {
         case alignment(TextAlignment)
         /// Small-caps run (CSS `font-variant: small-caps`).
         case smallCaps
+        /// A run the book's stylesheet paints a background behind (#47).
+        /// Carries the declared colour; the renderer supplies a legible ink.
+        case highlighted(CSSColor)
     }
 
     public init(start: Int, end: Int, kind: Kind) {

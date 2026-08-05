@@ -73,9 +73,9 @@ struct LibraryHeaderButtons: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .help("AI provider settings")
-            // The UI tests tap `buttons["AI providers"]` — keep this label.
-            .accessibilityLabel("AI providers")
+            .help("Settings")
+            // The UI tests tap `buttons["Settings"]` — keep this label.
+            .accessibilityLabel("Settings")
             .accessibilityIdentifier("library.settings")
 
             Button {
