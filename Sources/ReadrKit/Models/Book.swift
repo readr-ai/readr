@@ -198,6 +198,9 @@ public struct FormatSpan: Hashable, Sendable, Codable {
         /// A run the book's stylesheet paints a background behind (#47).
         /// Carries the declared colour; the renderer supplies a legible ink.
         case highlighted(CSSColor)
+        /// A run the book's stylesheet colours (#47). Kept by the renderer
+        /// only where it stays readable against the reader's theme.
+        case colored(CSSColor)
     }
 
     public init(start: Int, end: Int, kind: Kind) {

@@ -131,8 +131,12 @@ final class CSSStyleResolverTests: XCTestCase {
     }
 
     func testUnknownPropertiesAreSkipped() {
+        // `color` used to sit in this list; it is honoured now, conditionally,
+        // for the book-describes-its-own-highlight case (#47). Fonts, sizes
+        // and spacing remain the reader's to control.
         let css = """
-        .a { color: red; font-family: "Bembo", serif; font-style: italic; line-height: 1.4 }
+        .a { font-family: "Bembo", serif; font-style: italic; line-height: 1.4; \
+        letter-spacing: 0.02em; text-shadow: 1px 1px #000 }
         """
         let resolved = style(css, classAttr: "a")
         XCTAssertEqual(resolved.italic, true)

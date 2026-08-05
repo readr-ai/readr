@@ -397,6 +397,7 @@ public struct EPUBBookParser {
             case .alignment(let alignment): kind = .alignment(alignment)
             case .smallCaps: kind = .smallCaps
             case .highlighted(let color): kind = .highlighted(color)
+            case .colored(let color): kind = .colored(color)
             case .link(let href):
                 kind = .link(linkTarget(
                     href: href, documentPath: documentPath, documentDir: documentDir

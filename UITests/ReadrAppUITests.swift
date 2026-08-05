@@ -487,9 +487,10 @@ final class ReadrAppUITests: XCTestCase {
         XCTAssertTrue(send.waitForExistence(timeout: 3))
         send.tap()
 
-        // Mapped HTTPError sentence, not Foundation's generic message.
+        // Mapped HTTPError sentence, not Foundation's generic message — and
+        // in the reader's words, not the wire's (#48).
         XCTAssertTrue(
-            app.staticTexts["The request to the provider timed out."]
+            app.staticTexts["The provider took too long to reply."]
                 .waitForExistence(timeout: 10),
             "The error state should show the mapped, actionable sentence"
         )
@@ -502,7 +503,7 @@ final class ReadrAppUITests: XCTestCase {
         XCTAssertTrue(errorCard.waitForExistence(timeout: 3))
         retry.tap()
         XCTAssertTrue(
-            app.staticTexts["The request to the provider timed out."]
+            app.staticTexts["The provider took too long to reply."]
                 .waitForExistence(timeout: 10),
             "Retry should re-run the same question and surface the error again"
         )

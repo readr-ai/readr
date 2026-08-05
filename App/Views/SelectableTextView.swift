@@ -404,7 +404,7 @@ enum TextRangeConvert {
             case .alignment:
                 paragraphLevel.append((ns, span.kind))
             case .bold, .italic, .link, .superscript, .`subscript`, .smallCaps,
-                 .highlighted:
+                 .highlighted, .colored:
                 character.append((ns, span.kind))
             }
         }
@@ -419,10 +419,12 @@ enum TextRangeConvert {
             case .superscript, .`subscript`: return 5
             case .link: return 6
             case .alignment: return 7
-            // Last of the character phases: it sets a foreground colour to sit
-            // legibly on the book's background, and must not be overwritten by
-            // the blockquote/link inks that run earlier.
-            case .highlighted: return 8
+            // The book's own text colour, after the inks that run earlier
+            // (blockquote, link) so an explicit colour wins over them...
+            case .colored: return 8
+            // ...and the highlight last of all: it repaints the ink to sit on
+            // the background it just laid down.
+            case .highlighted: return 9
             }
         }
 
@@ -491,19 +493,39 @@ enum TextRangeConvert {
                     .underlineStyle, value: NSUnderlineStyle.single.rawValue, range: ns
                 )
 
+            case let .colored(color):
+                // The book's own text colour, kept only where it stays
+                // readable on the theme the reader actually chose (#47). A
+                // heading set in dark blue against the book's cream page is
+                // invisible on the dark theme, so below AA contrast the
+                // theme's ink wins and the colour is simply dropped.
+                if color.isReadable(on: style.theme.pageColor) {
+                    attributed.addAttribute(
+                        .foregroundColor, value: PlatformColor(color), range: ns
+                    )
+                }
+
             case let .highlighted(color):
-                // The book's own highlight styling (#47). Its foreground was
-                // chosen against the book's paper, and Readr renders in paper,
-                // sepia, and dark — so the background is honoured and the ink
-                // is chosen here to sit on it legibly, whatever the theme.
+                // The book's own highlight styling (#47). The background is
+                // honoured as declared; the ink on top has to be legible on
+                // it whatever the reader's theme is.
                 attributed.addAttribute(
                     .backgroundColor, value: PlatformColor(color), range: ns
                 )
-                attributed.addAttribute(
-                    .foregroundColor,
-                    value: color.luminance > 0.5 ? PlatformColor.black : PlatformColor.white,
-                    range: ns
-                )
+                // A book that declared both a colour and a background usually
+                // picked a pair that works — keep its colour where it really
+                // does. Sub-runs are enumerated because a `.colored` span need
+                // not cover the whole highlight.
+                let fallback = PlatformColor(color.legibleInk)
+                attributed.enumerateAttribute(.foregroundColor, in: ns) { value, subrange, _ in
+                    let declared = (value as? PlatformColor).flatMap(CSSColor.init(platform:))
+                    guard let declared, declared.isReadable(on: color) else {
+                        attributed.addAttribute(
+                            .foregroundColor, value: fallback, range: subrange
+                        )
+                        return
+                    }
+                }
 
             case .alignment:
                 break // paragraph channel only

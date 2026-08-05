@@ -95,6 +95,9 @@ public enum XHTMLTextExtractor {
             /// Carries the declared colour; the renderer picks a legible ink
             /// to sit on it.
             case highlighted(CSSColor)
+            /// A run the book's stylesheet colours (#47). The renderer keeps
+            /// the colour only where it stays readable on the active theme.
+            case colored(CSSColor)
         }
     }
 
@@ -642,6 +645,17 @@ public enum XHTMLTextExtractor {
                    !XHTMLTextExtractor.pageLevelTags.contains(name) {
                     openCSSSpan(
                         name + "@bg", kind: .highlighted(background), into: &atSpanKeys
+                    )
+                }
+                // The book's own text colour. Same page-level exclusion: a
+                // `body { color: … }` is the book's base ink, which the
+                // reader's theme already supplies. A clear colour would make
+                // the run invisible, so it opens nothing.
+                if let foreground = resolved.foreground,
+                   !foreground.isClear,
+                   !XHTMLTextExtractor.pageLevelTags.contains(name) {
+                    openCSSSpan(
+                        name + "@fg", kind: .colored(foreground), into: &atSpanKeys
                     )
                 }
                 // `vertical-align: super/sub` — the footnote-marker pattern

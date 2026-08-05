@@ -29,6 +29,41 @@ public struct CSSColor: Hashable, Sendable, Codable {
         }
         return 0.2126 * linear(red) + 0.7152 * linear(green) + 0.0722 * linear(blue)
     }
+
+    /// WCAG contrast ratio against another colour, 1…21.
+    public func contrastRatio(against other: CSSColor) -> Double {
+        let lighter = max(luminance, other.luminance)
+        let darker = min(luminance, other.luminance)
+        return (lighter + 0.05) / (darker + 0.05)
+    }
+
+    /// WCAG AA for body text. A book's own `color` is honoured only when it
+    /// clears this against the surface it will actually sit on — see
+    /// `ResolvedStyle.foreground`.
+    public static let minimumReadableContrast = 4.5
+
+    /// Whether text in this colour is readable on `background`.
+    public func isReadable(on background: CSSColor) -> Bool {
+        contrastRatio(against: background) >= Self.minimumReadableContrast
+    }
+
+    public static let black = CSSColor(red: 0, green: 0, blue: 0)
+    public static let white = CSSColor(red: 1, green: 1, blue: 1)
+
+    /// Black or white, whichever contrasts more with this colour — the ink the
+    /// renderer puts on a highlight the book declared (#47).
+    ///
+    /// Picking by a luminance threshold is the obvious implementation and it
+    /// is wrong: mid-tones sit far enough from both ends that the *lighter*
+    /// choice can still fail AA. Plain grey (#808080) has luminance 0.22, so a
+    /// "below 0.5 → white" rule hands it white at 3.9:1 when black would give
+    /// 5.3:1. Comparing the two ratios always clears AA — the worst case, at
+    /// luminance 0.179, scores 4.58:1 either way.
+    public var legibleInk: CSSColor {
+        contrastRatio(against: .black) >= contrastRatio(against: .white)
+            ? .black
+            : .white
+    }
 }
 
 /// The formatting facts a stylesheet (or inline `style`) resolves to for one
@@ -61,14 +96,20 @@ public struct ResolvedStyle: Equatable, Sendable {
     /// Books mark "this is what a highlight looks like" runs with it, and
     /// without it those runs rendered as plain body text (#47). A clear value
     /// is *declared*, not absent — that's how `transparent` cancels.
-    ///
-    /// The matching `color` property is deliberately **not** parsed. A book's
-    /// foreground colour is chosen against the book's own page, and Readr
-    /// renders in paper, sepia, and dark themes; honouring it would turn a
-    /// dark-blue heading invisible on the dark theme. The background is safe
-    /// to honour because the renderer picks its own legible ink for the run
-    /// (see `CSSColor.luminance`).
     public var background: CSSColor?
+    /// `color` — the book's own text colour.
+    ///
+    /// Honoured **conditionally**, unlike every other fact here. A book picks
+    /// its colours against its own page; Readr renders in paper, sepia, and
+    /// dark, so a dark-blue heading that reads beautifully on cream would go
+    /// invisible on the dark theme. The renderer therefore keeps this only
+    /// when it clears `CSSColor.minimumReadableContrast` against the surface
+    /// the run will really sit on — the highlight colour if there is one, the
+    /// theme's page if not — and falls back to the theme's ink otherwise.
+    ///
+    /// Parsing it here is unconditional; the judgement lives at the point that
+    /// knows the active theme.
+    public var foreground: CSSColor?
 
     /// Text-run vertical alignment relative to the baseline.
     public enum VerticalAlign: Equatable, Sendable {
@@ -82,7 +123,8 @@ public struct ResolvedStyle: Equatable, Sendable {
     public init(
         italic: Bool? = nil, bold: Bool? = nil, alignment: TextAlignment? = nil,
         inset: Bool? = nil, hidden: Bool? = nil, smallCaps: Bool? = nil,
-        verticalAlign: VerticalAlign? = nil, background: CSSColor? = nil
+        verticalAlign: VerticalAlign? = nil, background: CSSColor? = nil,
+        foreground: CSSColor? = nil
     ) {
         self.italic = italic
         self.bold = bold
@@ -92,13 +134,14 @@ public struct ResolvedStyle: Equatable, Sendable {
         self.smallCaps = smallCaps
         self.verticalAlign = verticalAlign
         self.background = background
+        self.foreground = foreground
     }
 
     /// True when no fact is declared at all.
     public var isEmpty: Bool {
         italic == nil && bold == nil && alignment == nil
             && inset == nil && hidden == nil && smallCaps == nil
-            && verticalAlign == nil && background == nil
+            && verticalAlign == nil && background == nil && foreground == nil
     }
 
     /// Overlay a higher-precedence source: its non-nil facts win, its nil
@@ -112,6 +155,7 @@ public struct ResolvedStyle: Equatable, Sendable {
         if let value = other.smallCaps { smallCaps = value }
         if let value = other.verticalAlign { verticalAlign = value }
         if let value = other.background { background = value }
+        if let value = other.foreground { foreground = value }
     }
 }
 
@@ -125,9 +169,11 @@ public struct ResolvedStyle: Equatable, Sendable {
 /// `XHTMLTextExtractor` can emit the same format spans it already produces for
 /// presentational markup.
 ///
-/// `background-color` is the one colour it reads, because some books *describe*
-/// their own highlight styling and show an example of it (#47). Foreground
-/// `color` stays unread — see `ResolvedStyle.background`.
+/// Colour is the exception to "never colours": some books *describe* their own
+/// highlight styling and show an example of it, which rendered as plain prose
+/// without it (#47). `background-color` is honoured outright;
+/// `color` is honoured only where it stays readable against the reader's
+/// active theme — see `ResolvedStyle.foreground`.
 ///
 /// Supported selectors: `element`, `.class`, and `element.class` (single
 /// class). Selectors containing whitespace, `>`, `+`, `~`, `:`, `[`, or `#`
@@ -461,6 +507,8 @@ public struct CSSStyleResolver: Sendable {
                 default:
                     break
                 }
+            case "color":
+                if let color = color(value) { style.foreground = color }
             case "background-color":
                 if let color = color(value) { style.background = color }
             case "background":
