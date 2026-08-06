@@ -36,6 +36,13 @@ extension BugReportEnvironment {
     /// name — it's what maps a report to a screen size and a chip.
     private static var hardwareModel: String {
         #if os(iOS)
+        // In a simulator `utsname.machine` is the *host* architecture, so a
+        // report filed from one said "arm64" — true, and useless for triage.
+        // The simulated device's real identifier is in the environment.
+        if let simulated = ProcessInfo.processInfo
+            .environment["SIMULATOR_MODEL_IDENTIFIER"], !simulated.isEmpty {
+            return simulated + " (simulator)"
+        }
         var system = utsname()
         uname(&system)
         let identifier = withUnsafeBytes(of: &system.machine) { raw in
