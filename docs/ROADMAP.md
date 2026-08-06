@@ -81,12 +81,12 @@ Goal: the best reader app for the Mac — nobody goes back to Apple Books.
 - [x] App icon + asset catalog (open book + amber spark), accent color
 - [x] Data model: highlight colors, bookmarks, native PDF highlights,
   book state (continue reading / finished), book deletion
-- [ ] Sidebar shell: Home (Continue Reading), library shelves, Highlights & Notes
-- [ ] Reader chrome: TOC, bookmarks, in-book search, appearance popover,
+- [x] Sidebar shell: Home (Continue Reading), library shelves, Highlights & Notes
+- [x] Reader chrome: TOC, bookmarks, in-book search, appearance popover,
   time-left-in-chapter, per-book windows on macOS
-- [ ] Selection popover annotation (5 colors, note, ask, copy) — one gesture
-- [ ] Native PDF annotation (overlay highlights, outline TOC, thumbnails, search)
-- [ ] Notes panel (inspector) + Markdown export + Article studio
+- [x] Selection popover annotation (5 colors, note, ask, copy) — one gesture
+- [x] Native PDF annotation (overlay highlights, outline TOC, thumbnails, search)
+- [x] Notes panel (inspector) + Markdown export + Article studio
 - [ ] UI tests + screenshot verification of every new surface
 
 ### Deferred v2 review cleanups (tracked, deliberately not blocking v2.0)
