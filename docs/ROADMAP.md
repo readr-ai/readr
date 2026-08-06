@@ -125,15 +125,20 @@ docs/DEVELOPMENT-PLAN.md §M6–M8.
 - [x] First upload live: v2.8.0 accepted by App Store Connect (unsigned
   archive + sign-at-export + Xcode 26 recipe proven on `main`)
 - [ ] Exit gate: TestFlight install verified on a physical iPhone and iPad
-  (import, read, highlight, BYOK ask)
+  (import, read, highlight, BYOK ask). Walkthrough:
+  `docs/DEVICE-SMOKE-TEST.md`
 
 ### M7 — iOS platform correctness
 - [x] Files-app handler: `CFBundleDocumentTypes` + open-in-place +
   `.onOpenURL` import (UITest via `-uiTestOpenURL` fixture)
 - [x] OAuth on iOS: in-process SFSafariViewController presentation (external
-  Safari suspends the app and kills the loopback redirect) — plumbing landed;
-  re-enabling `supportsOAuth` (and flipping the M6 UITest) stays gated on a
-  manual on-device verification of the flow
+  Safari suspends the app and kills the loopback redirect). Shipping — the
+  OpenRouter card offers sign-in on iOS and the UITest asserts the button is
+  present, so the "stays gated on manual verification" note here was stale.
+  Verified on the iPad simulator 2026-08-06: the sheet presents in-process,
+  loads the authorize page, and cancelling returns to Settings cleanly with
+  no spurious error. **Still unverified: the loopback callback and token
+  exchange**, which need a real account — see the exit gate below.
 - [x] Hide the Local provider row on iOS (loopback Ollama is a dead end
   on-device; LAN host + ATS exception is a fast-follow)
 
