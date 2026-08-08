@@ -3,7 +3,19 @@
 One field per file, applied by `scripts/asc_metadata.py` via the App Store
 metadata workflow. Character limits are checked before any API call.
 
-## Why the description doesn't mention plain text
+## Plain text: dropped, then reinstated
+
+**Resolved 2026-08-08 — plain text is back.** The paginator fix landed (#71)
+and ships in v2.15.1: an unspaced 100 KB chapter went from 1,877 ms to under
+300 ms, and a novel-sized spaced chapter from ~4,600 ms to ~230 ms. The
+listing may advertise the format again because the build it points at can
+deliver it.
+
+The rule below is kept, because it is the rule and not just the incident:
+**the listing describes the attached build, not `main`.** A fix that is merged
+but not yet in an uploaded build does not entitle the listing to claim it.
+
+### The original reason for dropping it
 
 Readr reads `.txt` perfectly well, and the in-app messages say so. The App
 Store description deliberately doesn't advertise it.
