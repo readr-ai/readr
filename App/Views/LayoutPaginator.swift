@@ -128,7 +128,13 @@ struct LayoutPaginator {
             // will lay it out. Only a WINDOW of the remaining text is fed in
             // (see `measurementWindow`); if it turns out to be too small the
             // window doubles and this re-measures.
-            var window = measurementWindow
+            // Clamped: the growth step below is a DOUBLING, so a window of 0
+            // would double to 0 forever — every retry re-measuring identical
+            // input, hanging the main thread inside `body`. Unreachable from
+            // the current call sites, but this is a settable property one
+            // derived-from-geometry value away from being reachable, and the
+            // failure mode is a freeze rather than a wrong page.
+            var window = max(1, measurementWindow)
             var end: Int
             while true {
                 let windowEnd = Self.windowEnd(

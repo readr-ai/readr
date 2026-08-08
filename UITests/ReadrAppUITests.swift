@@ -18,8 +18,10 @@ final class ReadrAppUITests: XCTestCase {
         // `testFirstRunCopyOmitsUnavailablePaths`) passed only where no
         // provider had ever been connected — true on CI's fresh runners, not
         // on a developer's simulator. Empty by default: keys are seeded only
-        // when `-uiTestSeedProviderKeys` is also passed, which no test here
-        // does, so this pins CI's existing behaviour rather than changing it.
+        // when `-uiTestSeedProviderKeys` is also passed, which no caller of
+        // this helper does (the two tests that pass it build their own launch
+        // arguments), so this pins CI's existing behaviour rather than
+        // changing it.
         app.launchArguments += ["-uiTestSeed", "-uiTestInMemoryCredentials"]
         // Canned local provider (screenshot walk's second pass only) so the
         // Ask flow can be captured end-to-end; the first pass stays
