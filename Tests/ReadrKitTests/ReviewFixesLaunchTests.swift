@@ -12,7 +12,9 @@ final class ReviewFixesLaunchTests: XCTestCase {
     func testTimedOutHasActionableMessage() {
         let error = HTTPError.transport(.timedOut)
         let message = error.errorDescription ?? ""
-        XCTAssertTrue(message.localizedCaseInsensitiveContains("timed out"), message)
+        // Says what happened in the reader's words rather than the wire's:
+        // "took too long", not "timed out" or a URLError number (#48).
+        XCTAssertTrue(message.localizedCaseInsensitiveContains("too long"), message)
         XCTAssertFalse(message.contains("operation couldn't be completed"), message)
         let recovery = error.recoverySuggestion ?? ""
         XCTAssertTrue(recovery.localizedCaseInsensitiveContains("try again"), recovery)

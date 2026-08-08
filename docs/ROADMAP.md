@@ -43,6 +43,9 @@ highlights→article) together, per project direction.
 - [x] On-device deterministic embeddings (`LocalEmbeddingProvider`, zero-network)
 - [x] `AskService`: assemble context → stream answer → emit tier (tested)
 - [x] Select text → Ask panel → streamed answer (app)
+- [x] Answers are book-*contextual*, not book-*limited*: questions reaching past
+  the book get answered from world knowledge, labelled inline, with the
+  no-invention guarantee scoped to claims about the book (#54)
 - [ ] SQLite (sqlite-vec + FTS5) persistence for the index (currently in-memory)
 - [ ] Citations surfaced in the Ask panel; manual J4 walk on a Mac
 
@@ -60,6 +63,11 @@ highlights→article) together, per project direction.
 - [x] Accessibility: VoiceOver labels on icon controls; Dynamic Type in the reader
 - [x] Background indexing: build the RAG index on book open (faster first ask)
 - [x] Citations surfaced in the Ask panel; streamed article composition
+- [x] Reader-facing error copy: every error type carries a plain-language
+  sentence plus a next step, with codes/wire detail split off into
+  `diagnosticSummary` for triage (#48)
+- [x] In-app bug report with redacted session diagnostics, and a Share Readr
+  action (#41, #40) — Settings → Help
 - [ ] iCloud sync of library/annotations
 - [ ] Localization (`Localizable.strings`), issue templates, release process
 - [ ] SQLite (`sqlite-vec` + FTS5) RAG persistence; PDF article export
@@ -73,12 +81,12 @@ Goal: the best reader app for the Mac — nobody goes back to Apple Books.
 - [x] App icon + asset catalog (open book + amber spark), accent color
 - [x] Data model: highlight colors, bookmarks, native PDF highlights,
   book state (continue reading / finished), book deletion
-- [ ] Sidebar shell: Home (Continue Reading), library shelves, Highlights & Notes
-- [ ] Reader chrome: TOC, bookmarks, in-book search, appearance popover,
+- [x] Sidebar shell: Home (Continue Reading), library shelves, Highlights & Notes
+- [x] Reader chrome: TOC, bookmarks, in-book search, appearance popover,
   time-left-in-chapter, per-book windows on macOS
-- [ ] Selection popover annotation (5 colors, note, ask, copy) — one gesture
-- [ ] Native PDF annotation (overlay highlights, outline TOC, thumbnails, search)
-- [ ] Notes panel (inspector) + Markdown export + Article studio
+- [x] Selection popover annotation (5 colors, note, ask, copy) — one gesture
+- [x] Native PDF annotation (overlay highlights, outline TOC, thumbnails, search)
+- [x] Notes panel (inspector) + Markdown export + Article studio
 - [ ] UI tests + screenshot verification of every new surface
 
 ### Deferred v2 review cleanups (tracked, deliberately not blocking v2.0)
@@ -117,15 +125,20 @@ docs/DEVELOPMENT-PLAN.md §M6–M8.
 - [x] First upload live: v2.8.0 accepted by App Store Connect (unsigned
   archive + sign-at-export + Xcode 26 recipe proven on `main`)
 - [ ] Exit gate: TestFlight install verified on a physical iPhone and iPad
-  (import, read, highlight, BYOK ask)
+  (import, read, highlight, BYOK ask). Walkthrough:
+  `docs/DEVICE-SMOKE-TEST.md`
 
 ### M7 — iOS platform correctness
 - [x] Files-app handler: `CFBundleDocumentTypes` + open-in-place +
   `.onOpenURL` import (UITest via `-uiTestOpenURL` fixture)
 - [x] OAuth on iOS: in-process SFSafariViewController presentation (external
-  Safari suspends the app and kills the loopback redirect) — plumbing landed;
-  re-enabling `supportsOAuth` (and flipping the M6 UITest) stays gated on a
-  manual on-device verification of the flow
+  Safari suspends the app and kills the loopback redirect). Shipping — the
+  OpenRouter card offers sign-in on iOS and the UITest asserts the button is
+  present, so the "stays gated on manual verification" note here was stale.
+  Verified on the iPad simulator 2026-08-06: the sheet presents in-process,
+  loads the authorize page, and cancelling returns to Settings cleanly with
+  no spurious error. **Still unverified: the loopback callback and token
+  exchange**, which need a real account — see the exit gate below.
 - [x] Hide the Local provider row on iOS (loopback Ollama is a dead end
   on-device; LAN host + ATS exception is a fast-follow)
 

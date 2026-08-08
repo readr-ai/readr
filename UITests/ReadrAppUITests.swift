@@ -90,17 +90,52 @@ final class ReadrAppUITests: XCTestCase {
         )
     }
 
-    // J5 — the AI Providers settings screen opens and lists the local option.
+    // J5 — the Settings screen opens and lists the local option.
     func testOpenAIProvidersSettings() {
         let app = launchSeeded()
-        let settingsButton = button(app, id: "library.settings", label: "AI providers")
+        let settingsButton = button(app, id: "library.settings", label: "Settings")
         XCTAssertTrue(settingsButton.waitForExistence(timeout: 10))
         settingsButton.tap()
 
         XCTAssertTrue(
-            app.staticTexts["AI Providers"].waitForExistence(timeout: 5)
-            || app.navigationBars["AI Providers"].waitForExistence(timeout: 5),
-            "Tapping AI providers should open the provider settings sheet"
+            app.staticTexts["Settings"].waitForExistence(timeout: 5)
+            || app.navigationBars["Settings"].waitForExistence(timeout: 5),
+            "Tapping Settings should open the settings sheet"
+        )
+    }
+
+    // #41/#40 — Settings offers a way to report a bug and a way to pass Readr
+    // on. Both were missing entirely: a reader who hit the EPUB rendering bugs
+    // this cycle had nowhere to tell us.
+    func testSettingsOffersBugReportAndSharing() {
+        let app = launchSeeded()
+        let settingsButton = button(app, id: "library.settings", label: "Settings")
+        XCTAssertTrue(settingsButton.waitForExistence(timeout: 10))
+        settingsButton.tap()
+        XCTAssertTrue(
+            app.staticTexts["Settings"].waitForExistence(timeout: 5)
+            || app.navigationBars["Settings"].waitForExistence(timeout: 5)
+        )
+
+        let report = app.buttons["settings.reportBug"].firstMatch
+        let share = app.buttons["settings.shareReadr"].firstMatch
+        // The Help section sits below the provider cards and the privacy note.
+        for element in [report, share] where !element.isHittable {
+            app.swipeUp()
+        }
+        XCTAssertTrue(report.waitForExistence(timeout: 5), "Settings must offer a bug report")
+        XCTAssertTrue(share.waitForExistence(timeout: 5), "Settings must offer a share action")
+
+        report.tap()
+        XCTAssertTrue(
+            app.staticTexts["Report a bug"].waitForExistence(timeout: 5)
+            || app.navigationBars["Report a bug"].waitForExistence(timeout: 5),
+            "Report a bug should open its own sheet"
+        )
+        // The reader must be able to see what they're about to publish.
+        XCTAssertTrue(
+            app.buttons["feedback.preview"].firstMatch.waitForExistence(timeout: 5),
+            "The report sheet must offer a preview of what is sent"
         )
     }
 
@@ -109,13 +144,13 @@ final class ReadrAppUITests: XCTestCase {
     // generic "Sign in with subscription" label must never reappear.
     func testProviderSettingsOffersOAuthSignIn() {
         let app = launchSeeded()
-        let settingsButton = button(app, id: "library.settings", label: "AI providers")
+        let settingsButton = button(app, id: "library.settings", label: "Settings")
         XCTAssertTrue(settingsButton.waitForExistence(timeout: 10))
         settingsButton.tap()
 
         XCTAssertTrue(
-            app.staticTexts["AI Providers"].waitForExistence(timeout: 5)
-            || app.navigationBars["AI Providers"].waitForExistence(timeout: 5)
+            app.staticTexts["Settings"].waitForExistence(timeout: 5)
+            || app.navigationBars["Settings"].waitForExistence(timeout: 5)
         )
         XCTAssertTrue(
             app.buttons["Sign in with OpenRouter"].firstMatch.waitForExistence(timeout: 5),
@@ -197,12 +232,12 @@ final class ReadrAppUITests: XCTestCase {
         ]
         app.launch()
 
-        let settingsButton = button(app, id: "library.settings", label: "AI providers")
+        let settingsButton = button(app, id: "library.settings", label: "Settings")
         XCTAssertTrue(settingsButton.waitForExistence(timeout: 10))
         settingsButton.tap()
         XCTAssertTrue(
-            app.staticTexts["AI Providers"].waitForExistence(timeout: 5)
-            || app.navigationBars["AI Providers"].waitForExistence(timeout: 5)
+            app.staticTexts["Settings"].waitForExistence(timeout: 5)
+            || app.navigationBars["Settings"].waitForExistence(timeout: 5)
         )
 
         // Save an Anthropic key → it becomes the active selection.
@@ -240,7 +275,7 @@ final class ReadrAppUITests: XCTestCase {
         ]
         app.launch()
 
-        let settingsButton = button(app, id: "library.settings", label: "AI providers")
+        let settingsButton = button(app, id: "library.settings", label: "Settings")
         XCTAssertTrue(settingsButton.waitForExistence(timeout: 10))
         settingsButton.tap()
 
@@ -280,13 +315,13 @@ final class ReadrAppUITests: XCTestCase {
     // so accept either element type.
     func testProviderSettingsLinksToAPIKeyConsoles() {
         let app = launchSeeded()
-        let settingsButton = button(app, id: "library.settings", label: "AI providers")
+        let settingsButton = button(app, id: "library.settings", label: "Settings")
         XCTAssertTrue(settingsButton.waitForExistence(timeout: 10))
         settingsButton.tap()
 
         XCTAssertTrue(
-            app.staticTexts["AI Providers"].waitForExistence(timeout: 5)
-            || app.navigationBars["AI Providers"].waitForExistence(timeout: 5)
+            app.staticTexts["Settings"].waitForExistence(timeout: 5)
+            || app.navigationBars["Settings"].waitForExistence(timeout: 5)
         )
         for slug in ["anthropic", "openai"] {
             let id = "settings.getKey.\(slug)"
@@ -404,8 +439,8 @@ final class ReadrAppUITests: XCTestCase {
         // Route to provider settings from the empty state's action button.
         app.buttons["Open AI Providers"].firstMatch.tap()
         XCTAssertTrue(
-            app.navigationBars["AI Providers"].waitForExistence(timeout: 5)
-            || app.staticTexts["AI Providers"].waitForExistence(timeout: 5)
+            app.navigationBars["Settings"].waitForExistence(timeout: 5)
+            || app.staticTexts["Settings"].waitForExistence(timeout: 5)
         )
 
         // Save an Anthropic key, then dismiss the sheet.
@@ -452,9 +487,10 @@ final class ReadrAppUITests: XCTestCase {
         XCTAssertTrue(send.waitForExistence(timeout: 3))
         send.tap()
 
-        // Mapped HTTPError sentence, not Foundation's generic message.
+        // Mapped HTTPError sentence, not Foundation's generic message — and
+        // in the reader's words, not the wire's (#48).
         XCTAssertTrue(
-            app.staticTexts["The request to the provider timed out."]
+            app.staticTexts["The provider took too long to reply."]
                 .waitForExistence(timeout: 10),
             "The error state should show the mapped, actionable sentence"
         )
@@ -467,7 +503,7 @@ final class ReadrAppUITests: XCTestCase {
         XCTAssertTrue(errorCard.waitForExistence(timeout: 3))
         retry.tap()
         XCTAssertTrue(
-            app.staticTexts["The request to the provider timed out."]
+            app.staticTexts["The provider took too long to reply."]
                 .waitForExistence(timeout: 10),
             "Retry should re-run the same question and surface the error again"
         )
@@ -686,7 +722,7 @@ final class ReadrAppUITests: XCTestCase {
 
         // The AI-providers gear lives on Home's toolbar — capture before
         // navigating away (the sidebar root doesn't carry it).
-        let settingsButton = button(app2, id: "library.settings", label: "AI providers")
+        let settingsButton = button(app2, id: "library.settings", label: "Settings")
         if settingsButton.waitForExistence(timeout: 5), settingsButton.isHittable {
             settingsButton.tap()
             _ = app2.navigationBars["AI Providers"].waitForExistence(timeout: 3)

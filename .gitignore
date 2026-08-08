@@ -39,3 +39,14 @@ __pycache__/
 
 # Local build/derived-data output (signed builds, UI-test runs)
 build-*/
+
+# Working-tree collateral that must never reach the public repo: marketing
+# mockups, research notes, beta checklists. These live in
+# ~/Documents/readr-private. Listed here rather than relied on being
+# untracked, because a broad `git add` will otherwise sweep them into a
+# public commit — which is exactly what happened once.
+/docs/MARKETING.html
+/docs/marketing/
+/docs/research/
+/AGENTS.md
+/v*-beta-notes.md

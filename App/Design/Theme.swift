@@ -48,6 +48,47 @@ private extension PlatformColor {
     }
 }
 
+extension PlatformColor {
+    /// A colour a book's own stylesheet declared (#47).
+    convenience init(_ color: CSSColor) {
+        self.init(
+            red: CGFloat(color.red),
+            green: CGFloat(color.green),
+            blue: CGFloat(color.blue),
+            alpha: CGFloat(color.alpha)
+        )
+    }
+}
+
+extension CSSColor {
+    /// sRGB from a 0xRRGGBB literal, matching the theme tokens' notation.
+    init(hex: UInt32) {
+        self.init(
+            red: Double((hex >> 16) & 0xFF) / 255,
+            green: Double((hex >> 8) & 0xFF) / 255,
+            blue: Double(hex & 0xFF) / 255
+        )
+    }
+
+    /// Back the other way, so the renderer can contrast-check a colour it has
+    /// already applied as an attribute (#47).
+    init?(platform color: PlatformColor) {
+        #if canImport(UIKit)
+        var red: CGFloat = 0, green: CGFloat = 0, blue: CGFloat = 0, alpha: CGFloat = 0
+        guard color.getRed(&red, green: &green, blue: &blue, alpha: &alpha) else { return nil }
+        #else
+        // Pattern and catalog colors have no components until converted, and
+        // the conversion can legitimately fail.
+        guard let rgb = color.usingColorSpace(.sRGB) else { return nil }
+        let red = rgb.redComponent, green = rgb.greenComponent
+        let blue = rgb.blueComponent, alpha = rgb.alphaComponent
+        #endif
+        self.init(
+            red: Double(red), green: Double(green), blue: Double(blue), alpha: Double(alpha)
+        )
+    }
+}
+
 enum AppTheme {
     /// The reserved AI accent ("Iris"). Used ONLY for AI moments — the ✦
     /// glyph, Ask affordances, citation chips, streaming carets — never for
@@ -126,6 +167,17 @@ enum ReadingTheme: String, CaseIterable, Codable, Identifiable {
         case .paper: return Color(hex: 0xFAF7F0)
         case .sepia: return Color(hex: 0xF3E9D0)
         case .night: return Color(hex: 0x1E1B14)
+        }
+    }
+
+    /// `paper` as a `CSSColor`, so a book's declared text colour can be
+    /// contrast-checked against the surface it will actually sit on (#47).
+    /// Kept in step with `paper` by `BookColorLegibilityTests`.
+    var pageColor: CSSColor {
+        switch self {
+        case .paper: return CSSColor(hex: 0xFAF7F0)
+        case .sepia: return CSSColor(hex: 0xF3E9D0)
+        case .night: return CSSColor(hex: 0x1E1B14)
         }
     }
 

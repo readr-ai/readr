@@ -35,6 +35,10 @@ public enum XHTMLTextExtractor {
         "base", "embed", "source", "track", "wbr",
     ]
 
+    /// Elements whose `background-color` is the page's own colour rather than
+    /// a highlight on a run of text (#47).
+    private static let pageLevelTags: Set<String> = ["html", "body"]
+
     /// The placeholder each `<img>` becomes in extracted text: U+FFFC OBJECT
     /// REPLACEMENT CHARACTER — the same character `NSAttributedString` uses for
     /// attachments, so renderers can attach the image in place and every other
@@ -86,6 +90,14 @@ public enum XHTMLTextExtractor {
             /// Small-caps run (CSS `font-variant: small-caps`, via class or
             /// element stylesheet rules).
             case smallCaps
+            /// A run the book's own stylesheet paints a background behind
+            /// (#47) — how books mark "this is what a highlight looks like".
+            /// Carries the declared colour; the renderer picks a legible ink
+            /// to sit on it.
+            case highlighted(CSSColor)
+            /// A run the book's stylesheet colours (#47). The renderer keeps
+            /// the colour only where it stays readable on the active theme.
+            case colored(CSSColor)
         }
     }
 
@@ -622,6 +634,30 @@ public enum XHTMLTextExtractor {
                 if resolved.smallCaps == true {
                     openCSSSpan(name + "@sc", kind: .smallCaps, into: &atSpanKeys)
                 }
+                // A painted background is how a book marks a highlighted run
+                // (#47). `body`/`html` are the page's own colour, not a
+                // highlight — painting those would put a block of the book's
+                // paper colour behind every paragraph and fight the reader's
+                // theme. A clear colour declares "no highlight" and opens
+                // nothing; it exists to cancel an inherited one.
+                if let background = resolved.background,
+                   !background.isClear,
+                   !XHTMLTextExtractor.pageLevelTags.contains(name) {
+                    openCSSSpan(
+                        name + "@bg", kind: .highlighted(background), into: &atSpanKeys
+                    )
+                }
+                // The book's own text colour. Same page-level exclusion: a
+                // `body { color: … }` is the book's base ink, which the
+                // reader's theme already supplies. A clear colour would make
+                // the run invisible, so it opens nothing.
+                if let foreground = resolved.foreground,
+                   !foreground.isClear,
+                   !XHTMLTextExtractor.pageLevelTags.contains(name) {
+                    openCSSSpan(
+                        name + "@fg", kind: .colored(foreground), into: &atSpanKeys
+                    )
+                }
                 // `vertical-align: super/sub` — the footnote-marker pattern
                 // (#43): InDesign-produced EPUBs raise note refs with a
                 // classed span, not <sup>. `.baseline` opens nothing (it
@@ -1053,6 +1089,9 @@ public enum XHTMLTextExtractor {
                 spans.append(Span(start: start, end: end, kind: span.kind))
             }
             spans = XHTMLTextExtractor.collapsingNestedBaselineShifts(spans)
+            spans = XHTMLTextExtractor.droppingDocumentWideColorSpans(
+                spans, length: length
+            )
             // Ids that never saw content resolve to the end of the text.
             for id in unresolvedAnchors where anchors[id] == nil {
                 anchors[id] = length
@@ -1139,6 +1178,41 @@ public enum XHTMLTextExtractor {
     /// One sweep per kind rather than comparing every raised span with every
     /// other: a densely annotated chapter can carry hundreds of note markers,
     /// and this runs on every content document at import.
+    /// Fraction of a document a colour span may cover before it is read as
+    /// page furniture rather than as a mark on a passage.
+    static let documentWideColorSpanThreshold = 0.9
+
+    /// Below this length the fraction test is meaningless and the rule is
+    /// skipped: on a title page or a one-line section head a colour genuinely
+    /// does cover everything, and that is the author's intent rather than a
+    /// wrapper's background leaking through.
+    static let documentWideColorSpanMinimumLength = 200
+
+    /// Drops colour spans that cover essentially the whole document (#47).
+    ///
+    /// Excluding `html`/`body` is not enough on its own: calibre and InDesign
+    /// exports habitually wrap the content in `<div class="calibre">` or
+    /// similar carrying the same `background-color: #fff` copied off the body
+    /// rule. That opens one highlight over every character, so the reader gets
+    /// a full page of white paint with forced black ink — which on the dark
+    /// theme is a glaring white block in a dark app.
+    ///
+    /// A highlight is a mark on a passage. Something covering the entire
+    /// document is the page's own colour by definition, whatever element
+    /// declared it, so the shape of the span decides rather than its tag name.
+    static func droppingDocumentWideColorSpans(_ spans: [Span], length: Int) -> [Span] {
+        guard length >= documentWideColorSpanMinimumLength else { return spans }
+        let ceiling = Double(length) * documentWideColorSpanThreshold
+        return spans.filter { span in
+            switch span.kind {
+            case .highlighted, .colored:
+                return Double(span.end - span.start) < ceiling
+            default:
+                return true
+            }
+        }
+    }
+
     static func collapsingNestedBaselineShifts(_ spans: [Span]) -> [Span] {
         var covered = Set<Int>()
         for kind in [Span.Kind.superscript, .`subscript`] {

@@ -81,7 +81,7 @@ final class ArticleViewModel: ObservableObject {
             errorMessage = "Highlight something first to compose an article."
         } catch {
             markdown = ""
-            errorMessage = error.localizedDescription
+            errorMessage = error.readerFacingMessage
         }
     }
 }

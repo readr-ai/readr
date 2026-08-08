@@ -12,7 +12,9 @@ final class ErrorMessagesTests: XCTestCase {
     func testUnauthorizedPointsAtTheAPIKey() {
         let message = HTTPError.status(401, body: "").localizedDescription
         XCTAssertTrue(message.localizedCaseInsensitiveContains("API key"), message)
-        XCTAssertTrue(message.contains("401"), message)
+        // The status code moved to `diagnosticSummary` — see
+        // PlainLanguageErrorTests. A reader can't act on "401" (#48).
+        XCTAssertTrue(HTTPError.status(401, body: "").diagnosticSummary.contains("401"))
     }
 
     func testForbiddenPointsAtTheAPIKey() {
@@ -20,9 +22,11 @@ final class ErrorMessagesTests: XCTestCase {
         XCTAssertTrue(message.localizedCaseInsensitiveContains("API key"), message)
     }
 
-    func testRateLimitSaysTryAgain() {
+    /// "Rate-limited" is jargon; what the reader needs is that they asked too
+    /// fast and that waiting fixes it (#48).
+    func testRateLimitSaysTooFastAndTryAgain() {
         let message = HTTPError.status(429, body: "").localizedDescription
-        XCTAssertTrue(message.localizedCaseInsensitiveContains("rate"), message)
+        XCTAssertTrue(message.localizedCaseInsensitiveContains("faster"), message)
         XCTAssertTrue(message.localizedCaseInsensitiveContains("try again"), message)
     }
 
@@ -35,16 +39,22 @@ final class ErrorMessagesTests: XCTestCase {
 
     func testServerErrorSaysProviderTrouble() {
         for code in [500, 503, 529] {
-            let message = HTTPError.status(code, body: "").localizedDescription
+            let error = HTTPError.status(code, body: "")
+            let message = error.localizedDescription
             XCTAssertTrue(message.localizedCaseInsensitiveContains("provider"), message)
-            XCTAssertTrue(message.contains("\(code)"), message)
+            // The code is triage detail, not reader-facing copy (#48).
+            XCTAssertTrue(error.diagnosticSummary.contains("\(code)"), error.diagnosticSummary)
         }
     }
 
-    func testUnknownStatusStillNamesTheCode() {
-        let message = HTTPError.status(418, body: "").localizedDescription
-        XCTAssertTrue(message.contains("418"), message)
+    /// An unrecognised status still has to produce a real sentence rather than
+    /// Foundation's default — it just no longer recites the number (#48).
+    func testUnknownStatusStillReadsAsASentence() {
+        let error = HTTPError.status(418, body: "")
+        let message = error.localizedDescription
         XCTAssertFalse(message.contains("operation couldn't be completed"), message)
+        XCTAssertTrue(message.localizedCaseInsensitiveContains("provider"), message)
+        XCTAssertTrue(error.diagnosticSummary.contains("418"), error.diagnosticSummary)
     }
 
     func testProviderSuppliedDetailIsIncluded() {
