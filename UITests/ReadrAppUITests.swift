@@ -12,10 +12,22 @@ final class ReadrAppUITests: XCTestCase {
 
     private func launchSeeded(stubLLM: Bool = false) -> XCUIApplication {
         let app = XCUIApplication()
-        app.launchArguments += ["-uiTestSeed"]
+        // `-uiTestSeed` owns the LIBRARY; `-uiTestInMemoryCredentials` owns the
+        // CREDENTIALS. Without the second, seeded tests read the device's real
+        // Keychain, so a test asserting first-run, provider-less copy (see
+        // `testFirstRunCopyOmitsUnavailablePaths`) passed only where no
+        // provider had ever been connected — true on CI's fresh runners, not
+        // on a developer's simulator. Empty by default: keys are seeded only
+        // when `-uiTestSeedProviderKeys` is also passed, which no caller of
+        // this helper does (the two tests that pass it build their own launch
+        // arguments), so this pins CI's existing behaviour rather than
+        // changing it.
+        app.launchArguments += ["-uiTestSeed", "-uiTestInMemoryCredentials"]
         // Canned local provider (screenshot walk's second pass only) so the
         // Ask flow can be captured end-to-end; the first pass stays
         // provider-less to keep the guidance empty states in the gallery.
+        // Independent of the credential store — the stub short-circuits
+        // `activeProvider()` before it consults `providerManager`.
         if stubLLM { app.launchArguments += ["-uiTestStubLLM"] }
         app.launch()
         return app
@@ -81,12 +93,21 @@ final class ReadrAppUITests: XCTestCase {
     }
 
     // Empty library shows the welcome guidance.
+    //
+    // `-uiTestEmptyLibrary` supplies a throwaway empty store. Launching bare
+    // read the DEVICE's real library instead, so the test asserted whatever
+    // that simulator happened to hold: green on CI's fresh runners, failing
+    // for any developer who had imported a book. The old assertion tolerated
+    // that ambiguity by also accepting "Sample Book" — which meant a build
+    // that had lost the guidance entirely still passed, as long as some book
+    // was lying around. The state is now owned, so the assertion can be exact.
     func testEmptyLibraryShowsGuidance() {
         let app = XCUIApplication()
+        app.launchArguments += ["-uiTestEmptyLibrary"]
         app.launch()
         XCTAssertTrue(
-            app.staticTexts["Your library is empty"].waitForExistence(timeout: 10)
-            || app.staticTexts["Sample Book"].firstMatch.waitForExistence(timeout: 1)
+            app.staticTexts["Your library is empty"].waitForExistence(timeout: 10),
+            "An empty library must show the welcome guidance"
         )
     }
 

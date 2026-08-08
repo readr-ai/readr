@@ -28,7 +28,16 @@ final class AppModel: ObservableObject {
     let providerManager: ProviderManager
 
     init(store: (any LibraryStore)? = nil, parsers: BookParserRegistry? = nil) {
-        if store == nil, ProcessInfo.processInfo.arguments.contains("-uiTestSeed") {
+        // `-uiTestEmptyLibrary`: a throwaway EMPTY store, so the empty-library
+        // guidance can be asserted without inheriting whatever books happen to
+        // sit in this device's on-disk library. Without it the test read the
+        // real store and passed only on a never-used simulator — green on CI
+        // (fresh runners), failing for anyone who had imported a book locally,
+        // and silently able to mask a regression in the guidance itself.
+        // Checked before `-uiTestSeed`: the two describe opposite worlds.
+        if store == nil, ProcessInfo.processInfo.arguments.contains("-uiTestEmptyLibrary") {
+            self.store = InMemoryLibraryStore()
+        } else if store == nil, ProcessInfo.processInfo.arguments.contains("-uiTestSeed") {
             let seeded = InMemoryLibraryStore()
             for book in Self.sampleBooks { try? seeded.add(book) }
             Self.seedFixtureState(into: seeded)

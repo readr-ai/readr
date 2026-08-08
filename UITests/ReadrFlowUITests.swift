@@ -1191,18 +1191,23 @@ final class ReadrFlowUITests: XCTestCase {
 
     // On iPhone the empty-library guidance must NOT use Mac-only "drag from
     // Finder … into this window" language — it invites an import instead.
-    // Launched WITHOUT -uiTestSeed so the empty state renders.
+    //
+    // `-uiTestEmptyLibrary` supplies a throwaway EMPTY store. This used to
+    // launch bare and read the DEVICE's real library, which it handled by
+    // returning early when the heading was absent — so on any simulator with a
+    // book in it the test passed without asserting anything, and would have
+    // gone on passing if the copy regressed to the Mac-only wording it exists
+    // to catch. Owning the state means the heading is a hard precondition.
     func testEmptyLibraryCopyIsPlatformCorrect() {
         let app = XCUIApplication()
+        app.launchArguments += ["-uiTestEmptyLibrary"]
         app.launch()
 
         let heading = app.staticTexts["Your library is empty"].firstMatch
-        // A cold, un-seeded first launch could conceivably carry a persisted
-        // library on a dirty simulator; only assert copy when the empty state
-        // is actually showing.
-        guard heading.waitForExistence(timeout: 10) else {
-            return
-        }
+        XCTAssertTrue(
+            heading.waitForExistence(timeout: 10),
+            "An empty library must show the guidance heading"
+        )
         XCTAssertTrue(
             app.staticTexts["Import a file to start reading — an EPUB, PDF, or plain-text book."]
                 .firstMatch.exists,
