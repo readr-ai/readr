@@ -1,0 +1,14 @@
+Ask now keeps the conversation — ask follow-ups without losing the thread,
+and answers arrive as formatted text rather than raw punctuation.
+
+Ask also answers questions the book itself doesn't cover, marking clearly
+which part came from the book and which from beyond it.
+
+Every error message now says what happened in plain language and what to do
+about it.
+
+New: report a bug from inside the app (Settings → Help), and share Readr
+with a friend.
+
+Fixed: text a book styles as a highlight now renders that way; shelf cards
+line up; footnote markers sit raised and small.

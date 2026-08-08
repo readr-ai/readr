@@ -1,0 +1,26 @@
+Readr is an ebook reader. AI features are optional and bring-your-own: the
+user connects their own AI provider account or API key. Readr has no
+subscription, no account system, and no server — the developer receives no
+user data.
+
+TO TEST WITHOUT AI: the app is fully functional as a reader with no setup.
+Import any DRM-free EPUB or PDF (Files app, or drag one into the Simulator),
+then read, change layouts and themes, highlight, take notes, bookmark, and
+export notes as Markdown. None of this needs a network connection or an
+account.
+
+TO TEST THE AI FEATURES: Settings (gear icon) → paste an API key for
+Anthropic, OpenAI or OpenRouter, or use Sign in with OpenRouter. Then select
+any sentence while reading and tap Ask. Without credentials these features
+show an explanatory empty state rather than failing — that is intended, not
+a broken build.
+
+is for, and say roughly how much credit is on it.]
+
+CONTENT: Readr bundles and downloads no books. It opens only DRM-free files
+the user already has. It refuses DRM-protected files with an explanatory
+message.
+
+PURCHASES: Readr sells nothing and contains no in-app purchases. The iOS
+build deliberately contains no links to provider pricing or key-console
+pages (Guideline 3.1.1).

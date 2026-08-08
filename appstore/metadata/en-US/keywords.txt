@@ -1,0 +1,1 @@
+epub,ebook,reader,pdf,ai,ask,books,highlights,notes,annotate,reading,library,offline,markdown
