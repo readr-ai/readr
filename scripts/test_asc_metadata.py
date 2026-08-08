@@ -276,7 +276,10 @@ def test_manual_steps_always_print() -> None:
     text = out.getvalue()
     check("App Privacy" in text, "names the App Privacy questionnaire")
     check("Age rating" in text, "names the age rating")
-    check("Screenshots" in text, "names screenshots")
+    # Screenshots deliberately absent: they DO have an API and are uploaded by
+    # `upload_screenshots`. Listing them here again would send someone to do by
+    # hand what the script already did.
+    check("Screenshot" not in text, "does not list screenshots as manual")
 
 
 def test_editable_draft_is_renamed_not_duplicated() -> None:
