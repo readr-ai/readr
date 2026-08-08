@@ -1,5 +1,11 @@
 # Device smoke test — the M6 exit gate
 
+> **Walked 2026-08-08 against the v2.15.0 TestFlight build: passed.** That
+> closed M6. Item 1 — the OAuth token exchange with a real authorization code —
+> was the only path no automated lane or simulator could reach, and it works on
+> device. Keep this list for the next release rather than treating it as done
+> forever.
+
 Everything here needs a **physical iPhone and iPad**. It is deliberately short:
 the automated suites and a simulator walk already cover most of the app, so
 this lists only what a simulator genuinely cannot prove, plus the handful of

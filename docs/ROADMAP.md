@@ -124,9 +124,9 @@ docs/DEVELOPMENT-PLAN.md §M6–M8.
   record, API key, GitHub secrets) — see the workflow header for secret names
 - [x] First upload live: v2.8.0 accepted by App Store Connect (unsigned
   archive + sign-at-export + Xcode 26 recipe proven on `main`)
-- [ ] Exit gate: TestFlight install verified on a physical iPhone and iPad
-  (import, read, highlight, BYOK ask). Walkthrough:
-  `docs/DEVICE-SMOKE-TEST.md`
+- [x] Exit gate: TestFlight install verified on a physical iPhone and iPad
+  (import, read, highlight, BYOK ask) — walked 2026-08-08 against the v2.15.0
+  TestFlight build and passed. Walkthrough: `docs/DEVICE-SMOKE-TEST.md`
 
 ### M7 — iOS platform correctness
 - [x] Files-app handler: `CFBundleDocumentTypes` + open-in-place +
