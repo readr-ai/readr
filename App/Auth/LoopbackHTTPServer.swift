@@ -116,8 +116,25 @@ final class LoopbackHTTPServer {
             respond(status: "404 Not Found", body: "Not found", on: connection)
             return
         }
+        // This page cannot claim success. It is served the moment the callback
+        // arrives — before the app has checked `state` or exchanged the code —
+        // so "Signed in to Readr" was shown even when the provider denied the
+        // request, and even when the app went on to reject the callback and
+        // show an error. Verified by delivering a callback with a mismatched
+        // state: the browser said signed in, the app said it had stopped.
+        //
+        // The one thing the browser genuinely knows is that its part is over.
+        let query = URLComponents(url: url, resolvingAgainstBaseURL: false)?
+            .queryItems ?? []
+        let denied = query.first { $0.name == "error" }?.value
+        let headline = denied == nil
+            ? "You can close this tab"
+            : "Sign-in didn't complete"
+        let detail = denied == nil
+            ? "Readr is finishing sign-in — return to the app."
+            : "Return to Readr to try again."
         let body = "<html><body style=\"font-family:-apple-system;padding:3rem;text-align:center\">"
-            + "<h2>Signed in to Readr</h2><p>You can close this tab and return to the app.</p></body></html>"
+            + "<h2>\(headline)</h2><p>\(detail)</p></body></html>"
         respond(status: "200 OK", body: body, contentType: "text/html; charset=utf-8", on: connection)
         finish(.success(url), onCallback: onCallback)
     }

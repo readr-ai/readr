@@ -79,8 +79,8 @@ def find_app(bundle_id: str) -> str:
 def set_test_information(app_id: str, feedback_email: str) -> None:
     locs = api("GET", f"/v1/apps/{app_id}/betaAppLocalizations")["data"]
     attrs = {"description": BETA_DESCRIPTION, "feedbackEmail": feedback_email,
-             "marketingUrl": "https://readr-ai.github.io/readr/",
-             "privacyPolicyUrl": "https://readr-ai.github.io/readr/privacy.html"}
+             "marketingUrl": "https://readr-ai.github.io/",
+             "privacyPolicyUrl": "https://readr-ai.github.io/privacy.html"}
     en = next((l for l in locs if l["attributes"]["locale"] == "en-US"), None)
     if en:
         api("PATCH", f"/v1/betaAppLocalizations/{en['id']}",

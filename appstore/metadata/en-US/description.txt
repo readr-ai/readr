@@ -1,0 +1,41 @@
+Readr is an ebook reader you can talk to.
+
+Open an EPUB or PDF you already own, select a sentence, and ask about it.
+Readr answers with the whole book as context — and it isn't limited to the
+book: ask how the science has moved on, who directed the adaptation, or how
+an idea aged, and you get a real answer, with a clear signal for which part
+came from the book and which from beyond it. What it will never do is invent
+what the book says.
+
+Highlight as you read, then turn those highlights into a first draft. Readr
+orders them by reading position, keeps your quotes intact, and composes an
+editable article you can export as Markdown.
+
+BRING YOUR OWN AI
+Readr has no subscription and no account. Connect your own Anthropic, OpenAI
+or OpenRouter key, or sign in with OpenRouter — you pay your provider
+directly, at cost, and you can change or disconnect at any time. Without a
+provider Readr is still a complete reader; the AI features simply sit idle.
+
+PRIVATE BY CONSTRUCTION
+No telemetry. No analytics. No account. Your books, highlights, notes and
+questions live on your device. A question leaves it only when you choose to
+ask a cloud model, and it goes straight to your provider — never through a
+server of ours, because we don't run one. API keys are stored in the
+device Keychain.
+
+READING THAT FEELS LIKE READING
+• EPUB, PDF, plain-text and Markdown — DRM-free files you own
+• Three layouts: continuous scroll, single page, or two facing pages
+• Paper, Sepia and Dark themes, with your choice of typeface and spacing
+• Table of contents, bookmarks, in-book search, footnote popups
+• Five highlight colours, notes, and a Notes panel that exports to Markdown
+• Continue Reading picks up exactly where you left off
+• On iPad: sidebar and reader side by side, two-page spreads, and hardware
+  keyboard page turns
+
+OPEN SOURCE
+Readr is MIT-licensed and developed in the open. Read the code, file an
+issue, or send a bug report from inside the app — there's a Report a bug
+button in Settings that attaches your app version and recent errors, and
+nothing about what you've been reading.

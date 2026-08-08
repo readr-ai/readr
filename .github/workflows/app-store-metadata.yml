@@ -1,0 +1,94 @@
+name: App Store metadata
+
+# Push the App Store listing (and optionally submit for review) through the
+# App Store Connect API, using the same secrets the TestFlight lane already
+# holds. The .p8 is write-only in GitHub, so this workflow is the only place
+# the key can be used without a human moving it around.
+#
+# Manual dispatch only — never on a tag. Tagging already uploads a build; the
+# listing and the submission are separate, human-timed decisions.
+#
+# Modes:
+#   plan    read-only; prints what would change. Safe, and the default.
+#   push    writes the listing copy, reviewer notes, and attaches the build.
+#           Reversible — run it again with different text.
+#   submit  push, then submits for review. Do the device walk first:
+#           docs/DEVICE-SMOKE-TEST.md
+#
+# NOT covered by any Apple API, and still manual in the ASC web UI:
+#   * the App Privacy questionnaire (answer: Data Not Collected)
+#   * the age-rating questionnaire
+#   * screenshots
+# The script prints this reminder on every run so a green tick never reads as
+# "the listing is complete".
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Marketing version, e.g. 2.15.0"
+        required: true
+        type: string
+      mode:
+        description: "plan (read-only) | push (write listing) | submit (write + submit for review)"
+        required: true
+        default: plan
+        type: choice
+        options: [plan, push, submit]
+
+permissions:
+  contents: read
+
+jobs:
+  metadata:
+    name: App Store listing (${{ inputs.mode }})
+    runs-on: macos-15
+    steps:
+      - name: Check secrets
+        env:
+          KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+        run: |
+          if [ -z "$KEY_ID" ]; then
+            echo "::error::APP_STORE_CONNECT_* secrets are not configured."
+            exit 1
+          fi
+
+      # A submission is outward-facing and slow to unwind. Require the person
+      # dispatching it to have said so explicitly in the mode input, and leave
+      # a loud marker in the log naming who ran it.
+      # Dispatch inputs go through `env`, never straight into the shell:
+      # `version` is free text, so an interpolated `run:` would let anyone who
+      # can dispatch this workflow inject commands into a job holding the App
+      # Store Connect key. `mode` is a choice and constrained, but it costs
+      # nothing to treat both the same way.
+      - name: Announce intent
+        env:
+          MODE: ${{ inputs.mode }}
+          VERSION: ${{ inputs.version }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          echo "mode=$MODE version=$VERSION actor=$ACTOR"
+          if [ "$MODE" = "submit" ]; then
+            echo "::warning::Submitting $VERSION for App Store review."
+          fi
+
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: pip3 install --quiet --break-system-packages 'pyjwt[crypto]'
+
+      # The script cannot run against the real API in CI, so its control flow
+      # is exercised against a stub instead — that harness is what caught the
+      # 404 that aborted `push` on its first real run.
+      - name: Control-flow tests (stubbed API)
+        run: python3 scripts/test_asc_metadata.py
+
+      - name: Run
+        env:
+          APP_STORE_CONNECT_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+          APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+          APP_STORE_CONNECT_API_KEY_P8: ${{ secrets.APP_STORE_CONNECT_API_KEY_P8 }}
+          MODE: ${{ inputs.mode }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          python3 scripts/asc_metadata.py --mode "$MODE" --version "$VERSION"

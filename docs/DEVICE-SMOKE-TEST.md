@@ -19,12 +19,24 @@ Already covered elsewhere, so deliberately absent:
 - OAuth sheet presentation and cancel — same walk. What is *not* covered is
   the callback returning into the app, which is the first item below.
 
-## 1. OAuth round trip — the one real unknown `[blocker]`
+## 1. OAuth round trip — mostly proven, one step left `[blocker]`
 
-The in-process `SFSafariViewController` presentation is verified. The
-**loopback callback and token exchange are not**, and they are the part most
-likely to behave differently on a device (backgrounding, network stack,
-the ephemeral listener).
+Verified on the iPad simulator 2026-08-08, by starting the flow and delivering
+a callback to the loopback listener by hand:
+
+- the listener really does come up on iOS (`Readr … TCP 127.0.0.1:1456
+  (LISTEN)`), so the in-process sheet does **not** suspend the app — that was
+  M7's stated fear
+- it accepts the HTTP callback and serves its page
+- the app dismisses the sheet and returns to Settings on its own
+- it validates `state` (a deliberately wrong one was rejected) and shows a
+  plain-language error
+- the listener closes afterwards and frees the port
+
+So the delivery mechanism is not in doubt. What is still unproven is the
+**token exchange with a genuine authorization code**, which needs a real
+account — and whether a device behaves like the simulator here, since
+backgrounding and the network stack differ.
 
 - [ ] Settings → OpenRouter → **Sign in with OpenRouter**
 - [ ] Complete the sign-in in the sheet
