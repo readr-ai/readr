@@ -25,7 +25,7 @@ server of ours, because we don't run one. API keys are stored in the
 device Keychain.
 
 READING THAT FEELS LIKE READING
-• EPUB, PDF and Markdown — DRM-free files you own
+• EPUB, PDF, plain-text and Markdown — DRM-free files you own
 • Three layouts: continuous scroll, single page, or two facing pages
 • Paper, Sepia and Dark themes, with your choice of typeface and spacing
 • Table of contents, bookmarks, in-book search, footnote popups

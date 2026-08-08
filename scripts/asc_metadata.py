@@ -15,10 +15,10 @@ Three modes, deliberately separate because they carry very different risk:
             NOT reversible in the same way — a human should have walked the
             build on a device first (docs/DEVICE-SMOKE-TEST.md).
 
-What this CANNOT do, and no API can: the **App Privacy questionnaire**
-(nutrition labels) has no public App Store Connect API. It must be answered
-once, by hand, in the web UI. `plan` reports whether it looks answered so the
-gap is visible rather than assumed.
+What this CANNOT do: the **App Privacy questionnaire** and the **age-rating
+questionnaire** have no public API and must be answered once by hand in the
+web UI. Screenshots DO have an API — an earlier revision of this file claimed
+otherwise and was wrong; see `upload_screenshots`.
 
 Metadata source: appstore/metadata/<locale>/*.txt — plain text, one field per
 file, so the listing copy is diffable and reviewable like any other change.
@@ -437,6 +437,113 @@ def attach_build(bearer: str, version_id: str, build: dict, write: bool) -> None
         )
 
 
+# Apple's display types, and the directory each is sourced from. The first
+# submit attempt failed with SCREENSHOT_REQUIRED for exactly these two, which
+# is how we learned they are mandatory for this app.
+SCREENSHOT_SETS = {
+    "APP_IPHONE_65": "iphone-6.5",
+    "APP_IPAD_PRO_3GEN_129": "ipad-12.9",
+}
+
+
+def upload_screenshots(bearer: str, version_id: str, root: Path, write: bool) -> None:
+    """Create each required screenshot set and upload its images.
+
+    Contrary to what this script said for several revisions, screenshots ARE
+    covered by the API. It is a three-step dance per image rather than a plain
+    POST, which is presumably why it reads as unsupported: reserve (Apple
+    returns pre-signed upload operations), PUT the bytes, then PATCH
+    `uploaded: true` with an MD5 of the file so Apple can verify it landed
+    intact.
+    """
+    import hashlib
+
+    existing_sets = call(
+        "GET", f"/appStoreVersions/{version_id}/appStoreVersionLocalizations",
+        bearer=bearer,
+    )["data"]
+    localization = next(
+        (l for l in existing_sets if l["attributes"].get("locale") == LOCALE), None
+    )
+    if not localization:
+        print("  screenshots: no en-US localization yet — skipping")
+        return
+
+    for display_type, folder in SCREENSHOT_SETS.items():
+        directory = root / "screenshots" / folder
+        images = sorted(directory.glob("*.png"))
+        if not images:
+            print(f"  screenshots: nothing in {directory} for {display_type}")
+            continue
+        print(f"  screenshots {display_type}: {len(images)} from {folder}")
+        if not write:
+            continue
+
+        sets = call(
+            "GET",
+            f"/appStoreVersionLocalizations/{localization['id']}/appScreenshotSets",
+            bearer=bearer,
+        )["data"]
+        target = next(
+            (s for s in sets
+             if s["attributes"].get("screenshotDisplayType") == display_type),
+            None,
+        )
+        if target is None:
+            target = call(
+                "POST", "/appScreenshotSets",
+                {"data": {"type": "appScreenshotSets",
+                          "attributes": {"screenshotDisplayType": display_type},
+                          "relationships": {"appStoreVersionLocalization": {
+                              "data": {"type": "appStoreVersionLocalizations",
+                                       "id": localization["id"]}}}}},
+                bearer=bearer,
+            )["data"]
+
+        # Re-uploading into a populated set duplicates images, so only fill it
+        # when empty. Delete in ASC to re-do a set.
+        already = call(
+            "GET", f"/appScreenshotSets/{target['id']}/appScreenshots", bearer=bearer
+        )["data"]
+        if already:
+            print(f"    already has {len(already)} — leaving alone")
+            continue
+
+        for image in images:
+            payload = image.read_bytes()
+            reserved = call(
+                "POST", "/appScreenshots",
+                {"data": {"type": "appScreenshots",
+                          "attributes": {"fileSize": len(payload),
+                                         "fileName": image.name},
+                          "relationships": {"appScreenshotSet": {
+                              "data": {"type": "appScreenshotSets",
+                                       "id": target["id"]}}}}},
+                bearer=bearer,
+            )["data"]
+
+            for operation in reserved["attributes"]["uploadOperations"]:
+                request = urllib.request.Request(
+                    operation["url"], data=payload, method=operation["method"]
+                )
+                for header in operation.get("requestHeaders", []):
+                    request.add_header(header["name"], header["value"])
+                try:
+                    urllib.request.urlopen(request).read()
+                except urllib.error.HTTPError as error:
+                    die(f"screenshot upload failed for {image.name}: {error.code}")
+
+            call(
+                "PATCH", f"/appScreenshots/{reserved['id']}",
+                {"data": {"type": "appScreenshots", "id": reserved["id"],
+                          "attributes": {
+                              "uploaded": True,
+                              "sourceFileChecksum": hashlib.md5(payload).hexdigest()}}},
+                bearer=bearer,
+            )
+            print(f"    uploaded {image.name}")
+
+
 def submit(bearer: str, app_id: str, version_id: str) -> None:
     """Create a review submission, add the version, and submit it."""
     submission = call(
@@ -465,6 +572,32 @@ def submit(bearer: str, app_id: str, version_id: str) -> None:
     print(f"  SUBMITTED — review submission {submission['id']}")
 
 
+def report_age_rating(bearer: str, version_id: str) -> None:
+    """Print the version's age-rating declaration, if the API exposes one.
+
+    Read-only. This exists because the script twice asserted something was
+    "manual, no API" and was wrong once already (screenshots). Asking the API
+    what it actually returns beats reasoning about it.
+    """
+    found = call(
+        "GET", f"/appStoreVersions/{version_id}/ageRatingDeclaration",
+        bearer=bearer, allow_missing=True,
+    ).get("data")
+    if not found:
+        print("  age rating: no declaration exposed on this version")
+        return
+    attributes = found.get("attributes", {})
+    unanswered = [k for k, v in attributes.items() if v is None]
+    answered = {k: v for k, v in attributes.items() if v is not None}
+    print(f"  age rating declaration {found['id']}: "
+          f"{len(answered)} answered, {len(unanswered)} unanswered")
+    if answered:
+        for key, value in sorted(answered.items())[:8]:
+            print(f"      {key} = {value}")
+    if unanswered:
+        print(f"      unanswered: {', '.join(sorted(unanswered)[:12])}")
+
+
 def manual_steps() -> None:
     """No public API covers these. Printed on EVERY run — including the
     early-return plan path, which is the first-run case where the gap matters
@@ -472,8 +605,7 @@ def manual_steps() -> None:
     print(
         "\nNOT handled by any API — do this once in the ASC web UI:\n"
         "  * App Privacy questionnaire (answer: Data Not Collected)\n"
-        "  * Age rating questionnaire\n"
-        "  * Screenshots"
+        "  * Age rating questionnaire"
     )
 
 
@@ -501,6 +633,17 @@ def main() -> None:
         print("\nplan only — nothing further to inspect without creating the version")
         manual_steps()
         return
+    if fields.get("copyright") and write:
+        # Required at submission time — the first submit attempt failed with
+        # ENTITY_ERROR.ATTRIBUTE.REQUIRED for exactly this. It lives on the
+        # version, not the localization, which is why it was missed.
+        call(
+            "PATCH", f"/appStoreVersions/{version['id']}",
+            {"data": {"type": "appStoreVersions", "id": version["id"],
+                      "attributes": {"copyright": fields["copyright"]}}},
+            bearer=bearer,
+        )
+        print(f"  copyright: {fields['copyright']}")
     state = version["attributes"].get("appStoreState")
     print(f"version {args.version}: {version['id']} state={state}")
 
@@ -511,6 +654,9 @@ def main() -> None:
         bearer, app, version["id"], fields, write,
         root=args.root, first_version=first_version,
     )
+
+    report_age_rating(bearer, version["id"])
+    upload_screenshots(bearer, version["id"], args.root, write)
 
     build = latest_build(bearer, app["id"], args.version)
     if build:
