@@ -279,6 +279,57 @@ def test_manual_steps_always_print() -> None:
     check("Screenshots" in text, "names screenshots")
 
 
+def test_editable_draft_is_renamed_not_duplicated() -> None:
+    """Apple allows one editable version at a time, so POSTing a second is a
+    409 naming no cause. An existing PREPARE_FOR_SUBMISSION draft is renamed."""
+    print("\nexisting editable draft")
+    stub = StubAPI(routes={
+        "filter%5BversionString%5D": {"data": []},
+        "appStoreVersions": {"data": [
+            {"id": "DRAFT", "attributes": {
+                "versionString": "1.0",
+                "appVersionState": "PREPARE_FOR_SUBMISSION"}}]},
+    })
+    original, asc.call = asc.call, stub
+    out = io.StringIO()
+    try:
+        with redirect_stdout(out):
+            asc.find_or_create_version("tok", "APPID", "2.15.0", True)
+    finally:
+        asc.call = original
+    check("/appStoreVersions/DRAFT" in stub.paths("PATCH"), "renames the draft")
+    check("/appStoreVersions" not in stub.paths("POST"), "does not POST a second version")
+    body = stub.body_for("PATCH", "/appStoreVersions/DRAFT") or {}
+    check(
+        body.get("data", {}).get("attributes", {}).get("versionString") == "2.15.0",
+        "renames it to the requested version",
+    )
+
+
+def test_submitted_version_is_never_renamed() -> None:
+    """A version in review or live must never be renamed out from under it."""
+    print("\nnon-editable version present")
+    stub = StubAPI(routes={
+        "filter%5BversionString%5D": {"data": []},
+        "appStoreVersions": {"data": [
+            {"id": "LIVE", "attributes": {
+                "versionString": "1.0",
+                "appVersionState": "READY_FOR_DISTRIBUTION"}}]},
+    })
+    original, asc.call = asc.call, stub
+    out = io.StringIO()
+    try:
+        with redirect_stdout(out):
+            asc.find_or_create_version("tok", "APPID", "2.15.0", True)
+    finally:
+        asc.call = original
+    check(
+        not any("LIVE" in p for p in stub.paths("PATCH")),
+        "leaves a live version alone",
+    )
+    check("/appStoreVersions" in stub.paths("POST"), "creates a new version instead")
+
+
 def test_limits_are_enforced_before_any_call() -> None:
     print("\nfield limits")
     root = metadata_root()
@@ -301,6 +352,8 @@ def main() -> None:
         test_build_query_requires_a_processed_build,
         test_missing_review_notes_is_announced,
         test_manual_steps_always_print,
+        test_editable_draft_is_renamed_not_duplicated,
+        test_submitted_version_is_never_renamed,
         test_limits_are_enforced_before_any_call,
     ]:
         test()

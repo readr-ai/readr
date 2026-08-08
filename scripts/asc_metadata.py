@@ -167,6 +167,25 @@ def find_app(bearer: str) -> dict:
     return apps[0]
 
 
+# The only version state safe to rename. Anything submitted, in review, or
+# live must be left alone.
+EDITABLE_STATE = "PREPARE_FOR_SUBMISSION"
+
+
+def editable_draft(bearer: str, app_id: str) -> dict | None:
+    """An existing unsubmitted version record, if there is one."""
+    query = urllib.parse.urlencode({"filter[platform]": PLATFORM, "limit": "20"})
+    versions = call(
+        "GET", f"/apps/{app_id}/appStoreVersions?{query}", bearer=bearer
+    )["data"]
+    for existing in versions:
+        attrs = existing["attributes"]
+        state = attrs.get("appVersionState") or attrs.get("appStoreState")
+        if state == EDITABLE_STATE:
+            return existing
+    return None
+
+
 def report_app_state(bearer: str, app_id: str) -> None:
     """What state the app record and its versions are actually in.
 
@@ -203,6 +222,34 @@ def find_or_create_version(bearer: str, app_id: str, version: str, write: bool) 
     found = call("GET", f"/apps/{app_id}/appStoreVersions?{query}", bearer=bearer)["data"]
     if found:
         return found[0]
+
+    # Apple allows exactly ONE editable version at a time, so POSTing a new one
+    # while another sits in PREPARE_FOR_SUBMISSION fails with a 409 that names
+    # no cause: "You cannot create a new version of the App in the current
+    # state." Readr's record had an empty 1.0 placeholder doing precisely that.
+    #
+    # Retargeting it is what you would do by hand in the web UI — rename the
+    # unsubmitted draft rather than make a second one. Only PREPARE_FOR_
+    # SUBMISSION qualifies: a submitted or live version must never be renamed
+    # out from under a review.
+    editable = editable_draft(bearer, app_id)
+    if editable:
+        current = editable["attributes"].get("versionString")
+        if not write:
+            print(
+                f"  version {version} does not exist, but draft {current} is "
+                f"editable — would rename it to {version}"
+            )
+            return {}
+        print(f"  renaming editable draft {current} → {version}")
+        return call(
+            "PATCH", f"/appStoreVersions/{editable['id']}",
+            {"data": {"type": "appStoreVersions", "id": editable["id"],
+                      "attributes": {"versionString": version,
+                                     "releaseType": "MANUAL"}}},
+            bearer=bearer,
+        )["data"]
+
     if not write:
         print(f"  version {version} does not exist yet (would be created)")
         return {}
