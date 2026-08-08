@@ -572,6 +572,32 @@ def submit(bearer: str, app_id: str, version_id: str) -> None:
     print(f"  SUBMITTED — review submission {submission['id']}")
 
 
+def report_age_rating(bearer: str, version_id: str) -> None:
+    """Print the version's age-rating declaration, if the API exposes one.
+
+    Read-only. This exists because the script twice asserted something was
+    "manual, no API" and was wrong once already (screenshots). Asking the API
+    what it actually returns beats reasoning about it.
+    """
+    found = call(
+        "GET", f"/appStoreVersions/{version_id}/ageRatingDeclaration",
+        bearer=bearer, allow_missing=True,
+    ).get("data")
+    if not found:
+        print("  age rating: no declaration exposed on this version")
+        return
+    attributes = found.get("attributes", {})
+    unanswered = [k for k, v in attributes.items() if v is None]
+    answered = {k: v for k, v in attributes.items() if v is not None}
+    print(f"  age rating declaration {found['id']}: "
+          f"{len(answered)} answered, {len(unanswered)} unanswered")
+    if answered:
+        for key, value in sorted(answered.items())[:8]:
+            print(f"      {key} = {value}")
+    if unanswered:
+        print(f"      unanswered: {', '.join(sorted(unanswered)[:12])}")
+
+
 def manual_steps() -> None:
     """No public API covers these. Printed on EVERY run — including the
     early-return plan path, which is the first-run case where the gap matters
@@ -629,6 +655,7 @@ def main() -> None:
         root=args.root, first_version=first_version,
     )
 
+    report_age_rating(bearer, version["id"])
     upload_screenshots(bearer, version["id"], args.root, write)
 
     build = latest_build(bearer, app["id"], args.version)
