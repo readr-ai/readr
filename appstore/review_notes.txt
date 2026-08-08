@@ -15,8 +15,6 @@ any sentence while reading and tap Ask. Without credentials these features
 show an explanatory empty state rather than failing — that is intended, not
 a broken build.
 
-is for, and say roughly how much credit is on it.]
-
 CONTENT: Readr bundles and downloads no books. It opens only DRM-free files
 the user already has. It refuses DRM-protected files with an explanatory
 message.

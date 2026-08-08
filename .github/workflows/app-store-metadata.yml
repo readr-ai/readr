@@ -77,6 +77,12 @@ jobs:
       - name: Install dependencies
         run: pip3 install --quiet --break-system-packages 'pyjwt[crypto]'
 
+      # The script cannot run against the real API in CI, so its control flow
+      # is exercised against a stub instead — that harness is what caught the
+      # 404 that aborted `push` on its first real run.
+      - name: Control-flow tests (stubbed API)
+        run: python3 scripts/test_asc_metadata.py
+
       - name: Run
         env:
           APP_STORE_CONNECT_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}

@@ -83,15 +83,32 @@ def token() -> str:
         p8 = base64.b64decode(p8).decode()
 
     now = int(time.time())
+    # Apple rejects tokens expiring MORE than 20 minutes out, so sitting
+    # exactly on the boundary makes any runner clock skew ahead of Apple's
+    # produce a 401 that reads as "credentials are missing or invalid".
     return jwt.encode(
-        {"iss": issuer, "iat": now, "exp": now + 20 * 60, "aud": "appstoreconnect-v1"},
+        {"iss": issuer, "iat": now, "exp": now + 19 * 60, "aud": "appstoreconnect-v1"},
         p8,
         algorithm="ES256",
         headers={"kid": key_id, "typ": "JWT"},
     )
 
 
-def call(method: str, path: str, body: dict | None = None, bearer: str = "") -> dict:
+def call(
+    method: str,
+    path: str,
+    body: dict | None = None,
+    bearer: str = "",
+    allow_missing: bool = False,
+) -> dict:
+    """One ASC API call.
+
+    `allow_missing` turns a 404 into an empty result instead of a hard exit.
+    Singular relationships — `appStoreReviewDetail` above all — 404 when the
+    resource has not been created yet, which is the *normal* state for a fresh
+    version. Treating that as fatal aborted `push` on its first run for every
+    new version, which is exactly when it needs to work.
+    """
     url = path if path.startswith("http") else f"{API}{path}"
     data = json.dumps(body).encode() if body is not None else None
     request = urllib.request.Request(url, data=data, method=method)
@@ -103,9 +120,13 @@ def call(method: str, path: str, body: dict | None = None, bearer: str = "") -> 
             raw = response.read()
             return json.loads(raw) if raw else {}
     except urllib.error.HTTPError as error:
+        if error.code == 404 and allow_missing:
+            return {}
         detail = error.read().decode(errors="replace")
         # Apple's errors are specific and worth surfacing verbatim — they name
         # the offending attribute, which guessing from a status code would not.
+        # The bearer token is never echoed here: it rides in a request header,
+        # and Apple's error bodies describe the request, not its credentials.
         die(f"{method} {url} -> HTTP {error.code}\n{detail[:1500]}")
 
 
@@ -123,6 +144,19 @@ def read_metadata(root: Path) -> dict[str, str]:
         if value and len(value) > limit:
             die(f"{field} is {len(value)} characters; Apple's limit is {limit}")
     return fields
+
+
+def has_prior_version(bearer: str, app_id: str, version: str) -> bool:
+    """Whether any App Store version other than this one exists.
+
+    Decides the `whatsNew` question: a debut listing has no previous release
+    to describe changes from, and Apple rejects the field outright.
+    """
+    query = urllib.parse.urlencode({"filter[platform]": PLATFORM, "limit": "50"})
+    versions = call(
+        "GET", f"/apps/{app_id}/appStoreVersions?{query}", bearer=bearer
+    )["data"]
+    return any(v["attributes"].get("versionString") != version for v in versions)
 
 
 def find_app(bearer: str) -> dict:
@@ -170,6 +204,11 @@ def latest_build(bearer: str, app_id: str, version: str) -> dict | None:
         {
             "filter[app]": app_id,
             "filter[preReleaseVersion.version]": version,
+            "filter[preReleaseVersion.platform]": PLATFORM,
+            # Only a processed build can be attached. Without this the script
+            # happily picks one still PROCESSING moments after a tag upload,
+            # and Apple rejects the attach mid-run.
+            "filter[processingState]": "VALID",
             "sort": "-uploadedDate",
             "limit": "1",
         }
@@ -178,7 +217,10 @@ def latest_build(bearer: str, app_id: str, version: str) -> dict | None:
     return builds[0] if builds else None
 
 
-def push(bearer: str, app: dict, version_id: str, fields: dict, write: bool) -> None:
+def push(
+    bearer: str, app: dict, version_id: str, fields: dict, write: bool,
+    root: Path, first_version: bool,
+) -> None:
     app_id = app["id"]
 
     # Version-level copy: description, keywords, what's new, promo, URLs.
@@ -186,7 +228,7 @@ def push(bearer: str, app: dict, version_id: str, fields: dict, write: bool) -> 
         "GET", f"/appStoreVersions/{version_id}/appStoreVersionLocalizations",
         bearer=bearer,
     )["data"]
-    target = next((l for l in localizations if l["attributes"]["locale"] == LOCALE), None)
+    target = next((l for l in localizations if l["attributes"].get("locale") == LOCALE), None)
     attributes = {
         "description": fields.get("description"),
         "keywords": fields.get("keywords"),
@@ -196,6 +238,13 @@ def push(bearer: str, app: dict, version_id: str, fields: dict, write: bool) -> 
         "marketingUrl": fields.get("marketing_url"),
     }
     attributes = {k: v for k, v in attributes.items() if v}
+    # "What's New" describes a change from a previous version, so Apple
+    # rejects it on an app's first one — and because every field ships in a
+    # single PATCH, that rejection would take the description, keywords and
+    # URLs down with it and leave the listing empty.
+    if first_version and "whatsNew" in attributes:
+        del attributes["whatsNew"]
+        print("  (skipping whatsNew — Apple rejects it on a debut version)")
     print(f"  version localization ({LOCALE}): {', '.join(sorted(attributes))}")
     if write:
         if target:
@@ -219,17 +268,22 @@ def push(bearer: str, app: dict, version_id: str, fields: dict, write: bool) -> 
     # App-level copy: name, subtitle, privacy policy. Lives on appInfo, not on
     # the version — it is not version-specific.
     infos = call("GET", f"/apps/{app_id}/appInfos", bearer=bearer)["data"]
-    editable = next(
-        (i for i in infos
-         if i["attributes"].get("appStoreState") not in ("READY_FOR_SALE",)),
-        infos[0] if infos else None,
-    )
+    # `appStoreState` is deprecated in favour of `state`; prefer the new name.
+    # Fail CLOSED when neither is present: the old `.get()` returned None,
+    # which is not in the live-states tuple, so the guard inverted and would
+    # have selected the shipped listing the day Apple drops the attribute.
+    live = ("READY_FOR_SALE", "READY_FOR_DISTRIBUTION")
+    def editable_info(info: dict) -> bool:
+        attrs = info["attributes"]
+        state = attrs.get("state") or attrs.get("appStoreState")
+        return state is not None and state not in live
+    editable = next((i for i in infos if editable_info(i)), None)
     if editable:
         info_locs = call(
             "GET", f"/appInfos/{editable['id']}/appInfoLocalizations", bearer=bearer
         )["data"]
         info_target = next(
-            (l for l in info_locs if l["attributes"]["locale"] == LOCALE), None
+            (l for l in info_locs if l["attributes"].get("locale") == LOCALE), None
         )
         info_attributes = {
             "name": fields.get("name"),
@@ -237,24 +291,41 @@ def push(bearer: str, app: dict, version_id: str, fields: dict, write: bool) -> 
             "privacyPolicyUrl": fields.get("privacy_url"),
         }
         info_attributes = {k: v for k, v in info_attributes.items() if v}
+        if write:
+            if info_target:
+                call(
+                    "PATCH", f"/appInfoLocalizations/{info_target['id']}",
+                    {"data": {"type": "appInfoLocalizations",
+                              "id": info_target["id"],
+                              "attributes": info_attributes}},
+                    bearer=bearer,
+                )
+            else:
+                # A locale with no existing localization needs creating, not
+                # skipping — the previous version printed success and made no
+                # call at all.
+                call(
+                    "POST", "/appInfoLocalizations",
+                    {"data": {"type": "appInfoLocalizations",
+                              "attributes": {**info_attributes, "locale": LOCALE},
+                              "relationships": {"appInfo": {
+                                  "data": {"type": "appInfos",
+                                           "id": editable["id"]}}}}},
+                    bearer=bearer,
+                )
         print(f"  app info ({LOCALE}): {', '.join(sorted(info_attributes))}")
-        if write and info_target:
-            call(
-                "PATCH", f"/appInfoLocalizations/{info_target['id']}",
-                {"data": {"type": "appInfoLocalizations",
-                          "id": info_target["id"], "attributes": info_attributes}},
-                bearer=bearer,
-            )
 
     # Reviewer notes — the field that preempts a BYO-credential rejection.
-    notes_file = Path("appstore/review_notes.txt")
-    if notes_file.exists():
+    notes_file = root / "review_notes.txt"
+    if not notes_file.exists():
+        print(f"  review details: no {notes_file} — skipping")
+    else:
         notes = notes_file.read_text().rstrip("\n")
         print(f"  review details: notes ({len(notes)} chars)")
         if write:
             existing = call(
                 "GET", f"/appStoreVersions/{version_id}/appStoreReviewDetail",
-                bearer=bearer,
+                bearer=bearer, allow_missing=True,
             ).get("data")
             payload = {"notes": notes}
             if existing:
@@ -310,6 +381,18 @@ def submit(bearer: str, app_id: str, version_id: str) -> None:
     print(f"  SUBMITTED — review submission {submission['id']}")
 
 
+def manual_steps() -> None:
+    """No public API covers these. Printed on EVERY run — including the
+    early-return plan path, which is the first-run case where the gap matters
+    most — so a green tick never reads as "the listing is complete"."""
+    print(
+        "\nNOT handled by any API — do this once in the ASC web UI:\n"
+        "  * App Privacy questionnaire (answer: Data Not Collected)\n"
+        "  * Age rating questionnaire\n"
+        "  * Screenshots"
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--mode", choices=["plan", "push", "submit"], default="plan")
@@ -331,11 +414,18 @@ def main() -> None:
     version = find_or_create_version(bearer, app["id"], args.version, write)
     if not version:
         print("\nplan only — nothing further to inspect without creating the version")
+        manual_steps()
         return
     state = version["attributes"].get("appStoreState")
     print(f"version {args.version}: {version['id']} state={state}")
 
-    push(bearer, app, version["id"], fields, write)
+    first_version = not has_prior_version(bearer, app["id"], args.version)
+    if first_version:
+        print("  this is the app's first App Store version")
+    push(
+        bearer, app, version["id"], fields, write,
+        root=args.root, first_version=first_version,
+    )
 
     build = latest_build(bearer, app["id"], args.version)
     if build:
@@ -344,14 +434,7 @@ def main() -> None:
         print(f"  no processed build for {args.version} yet "
               "(Apple takes a few minutes after upload)")
 
-    # No public API covers the App Privacy questionnaire. Say so loudly rather
-    # than let a green run imply the listing is complete.
-    print(
-        "\nNOT handled by any API — do this once in the ASC web UI:\n"
-        "  * App Privacy questionnaire (answer: Data Not Collected)\n"
-        "  * Age rating questionnaire\n"
-        "  * Screenshots"
-    )
+    manual_steps()
 
     if args.mode == "submit":
         if not build:
