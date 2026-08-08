@@ -167,6 +167,35 @@ def find_app(bearer: str) -> dict:
     return apps[0]
 
 
+def report_app_state(bearer: str, app_id: str) -> None:
+    """What state the app record and its versions are actually in.
+
+    Apple refuses to create a version with a bare "You cannot create a new
+    version of the App in the current state", naming no cause. This prints the
+    facts that usually explain it, so `plan` diagnoses instead of leaving a
+    409 to be guessed at.
+    """
+    infos = call("GET", f"/apps/{app_id}/appInfos", bearer=bearer)["data"]
+    for info in infos:
+        attrs = info["attributes"]
+        state = attrs.get("state") or attrs.get("appStoreState") or "unknown"
+        print(f"  appInfo {info['id']}: state={state}")
+
+    query = urllib.parse.urlencode({"limit": "10"})
+    versions = call(
+        "GET", f"/apps/{app_id}/appStoreVersions?{query}", bearer=bearer
+    )["data"]
+    if not versions:
+        print("  no App Store version records exist at all")
+    for existing in versions:
+        attrs = existing["attributes"]
+        state = attrs.get("appVersionState") or attrs.get("appStoreState") or "unknown"
+        print(
+            f"  version {attrs.get('versionString')} "
+            f"({attrs.get('platform')}): state={state}"
+        )
+
+
 def find_or_create_version(bearer: str, app_id: str, version: str, write: bool) -> dict:
     query = urllib.parse.urlencode(
         {"filter[versionString]": version, "filter[platform]": PLATFORM}
@@ -177,6 +206,14 @@ def find_or_create_version(bearer: str, app_id: str, version: str, write: bool) 
     if not write:
         print(f"  version {version} does not exist yet (would be created)")
         return {}
+    print(
+        "  creating the version record…\n"
+        "  (if this 409s with \"cannot create a new version in the current\n"
+        "   state\", the app record is not submission-ready yet — see the\n"
+        "   manual steps printed below; App Privacy and the agreements have to\n"
+        "   be completed in the web UI before ANY version can be created,\n"
+        "   by API or otherwise)"
+    )
     return call(
         "POST",
         "/appStoreVersions",
@@ -411,6 +448,7 @@ def main() -> None:
     app = find_app(bearer)
     print(f"app: {app['attributes']['name']} ({app['id']})")
 
+    report_app_state(bearer, app["id"])
     version = find_or_create_version(bearer, app["id"], args.version, write)
     if not version:
         print("\nplan only — nothing further to inspect without creating the version")
