@@ -93,6 +93,21 @@ struct LayoutPaginator {
         // other half of the quadratic cost, and invisible because it hides
         // behind two innocuous-looking `TextRangeConvert` calls.
         var utf16RangeStart = 0
+        // Carried across pages, not reset per page. Pages of one chapter share
+        // a container size, so the width that suited the first suits the rest:
+        // starting every page at the default made a large container (an iPad
+        // or a Mac window fits far more than 4096 characters per page) widen
+        // 4096 → 8192 → 16384 for EVERY page, laying out three times to place
+        // one break. The first page pays that once and the rest start where it
+        // landed. Only ever grows, so it cannot oscillate.
+        //
+        // Clamped to at least 1 because the growth step is a DOUBLING: a
+        // window of 0 doubles to 0 forever, re-measuring identical input and
+        // hanging the main thread inside `body`. Unreachable from today's call
+        // sites, but this is a settable property one derived-from-geometry
+        // value away from being reachable, and the failure mode is a freeze
+        // rather than a wrong page.
+        var window = max(1, measurementWindow)
         while rangeStart < n {
             // Fold boundary whitespace into this page's range; rendering
             // starts at the first visible character.
@@ -128,13 +143,6 @@ struct LayoutPaginator {
             // will lay it out. Only a WINDOW of the remaining text is fed in
             // (see `measurementWindow`); if it turns out to be too small the
             // window doubles and this re-measures.
-            // Clamped: the growth step below is a DOUBLING, so a window of 0
-            // would double to 0 forever — every retry re-measuring identical
-            // input, hanging the main thread inside `body`. Unreachable from
-            // the current call sites, but this is a settable property one
-            // derived-from-geometry value away from being reachable, and the
-            // failure mode is a freeze rather than a wrong page.
-            var window = max(1, measurementWindow)
             var end: Int
             while true {
                 let windowEnd = Self.windowEnd(
@@ -231,19 +239,40 @@ struct LayoutPaginator {
     }
 
     /// End of the measurement window for a page starting at `start`, snapped
-    /// FORWARD to a word boundary.
+    /// FORWARD to a word boundary — but never scanning more than one further
+    /// window to find one.
     ///
     /// The snap is what makes windowing invisible to line breaking. Cutting
     /// mid-word would hand the breaker a short fragment ("beauti" for
     /// "beautiful") that fits where the real word would not, moving a break —
     /// a wrong page that still tiles correctly, so only a direct comparison
     /// against an unbounded run would ever catch it.
+    ///
+    /// The BOUND matters just as much. The snap looks for whitespace, and
+    /// plenty of real text has none to find: Chinese and Japanese prose has no
+    /// spaces by construction (and fits ~3× fewer characters per page than
+    /// English, so it paginates more), and a long unbroken run has none
+    /// either. An unbounded scan runs to the chapter's end, the slice becomes
+    /// the whole remainder, and the window is a no-op — byte-for-byte the
+    /// quadratic cost this exists to prevent, with the scan added on top.
+    /// Spaced English never reveals this, because a boundary is always a few
+    /// characters away.
+    ///
+    /// Cutting at the bound is safe. `chars` is `[Character]`, so any index is
+    /// a grapheme boundary; unspaced scripts break between characters anyway;
+    /// and a run long enough to reach the bound cannot fit on a line, so the
+    /// breaker splits it on width regardless of where the text after it ends.
+    /// The one case where a truncated word could fit differently — the
+    /// fragment being short enough to land on the last line — is exactly the
+    /// case where the container consumes the whole window, which makes the
+    /// caller widen and re-measure.
     private static func windowEnd(
         from start: Int, window: Int, in chars: [Character], count n: Int
     ) -> Int {
         guard window < n - start else { return n }
         var end = start + window
-        while end < n, !chars[end].isWhitespace { end += 1 }
+        let searchLimit = min(n, end + window)
+        while end < searchLimit, !chars[end].isWhitespace { end += 1 }
         return end
     }
 }

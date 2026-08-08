@@ -267,8 +267,12 @@ final class LayoutPaginatorTests: XCTestCase {
     /// at ~16× the time; linear puts it at ~4×. The 8× gate sits between them
     /// with room for TextKit's own per-page constant and scheduling noise.
     func testPaginationCostGrowsLinearlyWithChapterLength() {
-        let small = makeText(paragraphs: 200)
-        let large = makeText(paragraphs: 800)
+        // The large fixture is deliberately novel-sized (300 KB+): the whole
+        // point is the single-chapter `.txt`, so the ratio must be measured at
+        // the size that actually broke rather than extrapolated from a small
+        // one.
+        let small = makeText(paragraphs: 350)
+        let large = makeText(paragraphs: 1_400)
         XCTAssertEqual(
             large.count / small.count, 4,
             "Fixture sizes must be a clean 4× for the ratio below to mean anything"
@@ -289,20 +293,6 @@ final class LayoutPaginatorTests: XCTestCase {
             (\(Int(smallElapsed * 1000))ms → \(Int(largeElapsed * 1000))ms). \
             Linear is ~4×; quadratic is ~16×.
             """
-        )
-    }
-
-    /// The quadratic paginator took seconds on a novel-sized chapter, on the
-    /// main thread. This is a coarse backstop on the absolute cost — generous
-    /// enough not to flake on a loaded machine, tight enough that a return to
-    /// quadratic (measured at 4.4 s+ for this size) trips it.
-    func testNovelSizedChapterPaginatesQuickly() {
-        let text = makeText(paragraphs: 1400)
-        XCTAssertGreaterThan(text.count, 300_000, "Fixture should be novel-sized")
-        _ = paginate(makeText(paragraphs: 20)) // warm
-        XCTAssertLessThan(
-            timePagination(of: text), 2.0,
-            "A novel-sized chapter must not block the main thread for seconds"
         )
     }
 
@@ -329,17 +319,131 @@ final class LayoutPaginatorTests: XCTestCase {
     /// unbounded one have to produce IDENTICAL breaks. A window that clipped
     /// the measurement short would end pages early — pages that still tile
     /// and still map back, so only a direct comparison catches it.
+    /// Swept across scripts and window sizes, not just ASCII English at the
+    /// default window — the narrowness of the original fixture is precisely
+    /// what let the unbounded whitespace scan (see
+    /// `testUnspacedTextCostAlsoGrowsLinearly`) go unnoticed: on spaced
+    /// English the snap always found a boundary within a few characters, so
+    /// windowed and unwindowed agreed for the wrong reason.
     func testWindowedPaginationMatchesUnwindowedBreaks() {
+        let fixtures: [(name: String, text: String)] = [
+            ("english", makeText(paragraphs: 120)),
+            ("unspaced", makeUnspacedText(characters: 12_000)),
+            ("unspaced paragraphs", makeUnspacedText(characters: 12_000, paragraphEvery: 2_000)),
+            // One unbroken run longer than any window, then normal prose: the
+            // snap has nothing to find until the run ends.
+            ("long run", String(repeating: "a", count: 9_000) + " " + makeText(paragraphs: 20)),
+        ]
+        // Windows far below, around and above a page's worth of text, so the
+        // widen-and-re-measure path is exercised as well as the common case.
+        for window in [1, 7, 64, 512, 2_048, 4_096, 20_000] {
+            for fixture in fixtures {
+                let windowed = LayoutPaginator(
+                    style: style, inlineImages: [:], measurementWindow: window
+                ).paginate(fixture.text) { _ in pageSize }
+                let unwindowed = LayoutPaginator(
+                    style: style, inlineImages: [:], measurementWindow: .max
+                ).paginate(fixture.text) { _ in pageSize }
+                XCTAssertEqual(
+                    windowed.map(\.range), unwindowed.map(\.range),
+                    "Window \(window) moved a page break in \(fixture.name)"
+                )
+                XCTAssertEqual(
+                    windowed.map(\.text), unwindowed.map(\.text),
+                    "Window \(window) changed page text in \(fixture.name)"
+                )
+            }
+        }
+    }
+
+    /// Formatting moves page breaks, so the windowed and unwindowed passes
+    /// must agree with spans applied too — including spans that straddle a
+    /// window edge, where a mis-sliced attributed range would show up first.
+    func testWindowedPaginationMatchesUnwindowedWithFormatSpans() {
         let text = makeText(paragraphs: 120)
-        let windowed = paginate(text)
-        let unwindowed = LayoutPaginator(
-            style: style, inlineImages: [:], measurementWindow: .max
-        ).paginate(text) { _ in pageSize }
-        XCTAssertEqual(
-            windowed.map(\.range), unwindowed.map(\.range),
-            "Bounding the measurement window must not move a single page break"
+        var spans: [FormatSpan] = [
+            FormatSpan(start: 0, end: 40, kind: .heading(1)),
+            FormatSpan(start: text.count / 2, end: text.count / 2 + 200, kind: .blockquote),
+        ]
+        var cursor = 300
+        var bold = true
+        while cursor + 120 < text.count {
+            spans.append(FormatSpan(start: cursor, end: cursor + 90, kind: bold ? .bold : .italic))
+            bold.toggle()
+            cursor += 512 // deliberately near the swept window sizes
+        }
+        for window in [512, 2_048, 4_096] {
+            let windowed = LayoutPaginator(
+                style: style, inlineImages: [:], formatSpans: spans, measurementWindow: window
+            ).paginate(text) { _ in pageSize }
+            let unwindowed = LayoutPaginator(
+                style: style, inlineImages: [:], formatSpans: spans, measurementWindow: .max
+            ).paginate(text) { _ in pageSize }
+            XCTAssertEqual(
+                windowed.map(\.range), unwindowed.map(\.range),
+                "Window \(window) moved a break with format spans applied"
+            )
+        }
+    }
+
+    /// Text with NO whitespace to break on.
+    ///
+    /// Not a synthetic edge case: Chinese and Japanese prose has no spaces by
+    /// construction, and the reader advertises plain-text support. A CJK `.txt`
+    /// is one chapter of exactly this, and CJK fits ~3× fewer characters per
+    /// page than English, so it pages more, not less.
+    private func makeUnspacedText(characters: Int, paragraphEvery: Int? = nil) -> String {
+        let glyphs = Array("的一是不了人我在有他这为之大来以个中上们到说国和地也子时道出而要于就下得可你年生")
+        var out = ""
+        out.reserveCapacity(characters * 2)
+        for index in 0..<characters {
+            if let gap = paragraphEvery, index > 0, index % gap == 0 { out += "\n\n" }
+            out.append(glyphs[index % glyphs.count])
+        }
+        return out
+    }
+
+    /// The whitespace snap must not become an unbounded scan.
+    ///
+    /// The bounded measurement window snaps FORWARD to a word boundary so a
+    /// truncated word can't hand the line breaker a short fragment. That snap
+    /// looks for WHITESPACE — so on text that has none it ran to the chapter's
+    /// end, the slice became the whole remainder, and the window was a no-op:
+    /// byte-for-byte the quadratic behaviour it exists to prevent, with the
+    /// scan itself added on top. English hid it completely.
+    func testUnspacedTextCostAlsoGrowsLinearly() {
+        let small = makeUnspacedText(characters: 25_000)
+        let large = makeUnspacedText(characters: 100_000)
+        _ = paginate(makeText(paragraphs: 20)) // warm
+
+        let smallElapsed = timePagination(of: small)
+        let largeElapsed = timePagination(of: large)
+
+        XCTAssertLessThan(
+            largeElapsed, smallElapsed * 8,
+            """
+            Pagination is super-linear on unspaced text: 4× took \
+            \(String(format: "%.1f", largeElapsed / smallElapsed))× \
+            (\(Int(smallElapsed * 1000))ms → \(Int(largeElapsed * 1000))ms). \
+            The word-boundary snap has no whitespace to find and is scanning \
+            to the end of the chapter.
+            """
         )
-        XCTAssertEqual(windowed.map(\.text), unwindowed.map(\.text))
+    }
+
+    /// The same, for the realistic shape: CJK prose in long paragraphs, so
+    /// there IS whitespace but thousands of characters apart.
+    func testUnspacedParagraphsCostGrowsLinearly() {
+        let small = makeUnspacedText(characters: 25_000, paragraphEvery: 2_000)
+        let large = makeUnspacedText(characters: 100_000, paragraphEvery: 2_000)
+        _ = paginate(makeText(paragraphs: 20)) // warm
+
+        let smallElapsed = timePagination(of: small)
+        let largeElapsed = timePagination(of: large)
+        XCTAssertLessThan(
+            largeElapsed, smallElapsed * 8,
+            "CJK-shaped paragraphs grew \(String(format: "%.1f", largeElapsed / smallElapsed))×"
+        )
     }
 
     private func timePagination(of text: String) -> TimeInterval {
