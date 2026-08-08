@@ -252,6 +252,104 @@ final class LayoutPaginatorTests: XCTestCase {
         }
     }
 
+    // MARK: - Cost
+
+    /// Pagination cost must be LINEAR in chapter length.
+    ///
+    /// It was quadratic: each page sliced, copied and re-walked the whole
+    /// REMAINDER of the chapter, so cost grew with pages × chapter. A
+    /// heading-less `.txt` (a Gutenberg novel) is one 300–600 KB chapter, and
+    /// on an iPhone 17 Pro that measured 4.4–4.8 s of blocked main thread per
+    /// pagination — a frozen reader on every book open and every chrome tap.
+    ///
+    /// Ratio-based on purpose: an absolute millisecond budget is a machine
+    /// benchmark that flakes on loaded CI. Quadratic growth puts 4× the text
+    /// at ~16× the time; linear puts it at ~4×. The 8× gate sits between them
+    /// with room for TextKit's own per-page constant and scheduling noise.
+    func testPaginationCostGrowsLinearlyWithChapterLength() {
+        let small = makeText(paragraphs: 200)
+        let large = makeText(paragraphs: 800)
+        XCTAssertEqual(
+            large.count / small.count, 4,
+            "Fixture sizes must be a clean 4× for the ratio below to mean anything"
+        )
+
+        // Warm TextKit and the font cache so the first run doesn't pay for
+        // both and inflate the baseline (which would MASK quadratic growth).
+        _ = paginate(makeText(paragraphs: 20))
+
+        let smallElapsed = timePagination(of: small)
+        let largeElapsed = timePagination(of: large)
+
+        XCTAssertLessThan(
+            largeElapsed, smallElapsed * 8,
+            """
+            Pagination is growing super-linearly: 4× the text took \
+            \(String(format: "%.1f", largeElapsed / smallElapsed))× the time \
+            (\(Int(smallElapsed * 1000))ms → \(Int(largeElapsed * 1000))ms). \
+            Linear is ~4×; quadratic is ~16×.
+            """
+        )
+    }
+
+    /// The quadratic paginator took seconds on a novel-sized chapter, on the
+    /// main thread. This is a coarse backstop on the absolute cost — generous
+    /// enough not to flake on a loaded machine, tight enough that a return to
+    /// quadratic (measured at 4.4 s+ for this size) trips it.
+    func testNovelSizedChapterPaginatesQuickly() {
+        let text = makeText(paragraphs: 1400)
+        XCTAssertGreaterThan(text.count, 300_000, "Fixture should be novel-sized")
+        _ = paginate(makeText(paragraphs: 20)) // warm
+        XCTAssertLessThan(
+            timePagination(of: text), 2.0,
+            "A novel-sized chapter must not block the main thread for seconds"
+        )
+    }
+
+    /// A large chapter must still satisfy the tiling contract — the windowing
+    /// that makes pagination linear must not drop or duplicate a character,
+    /// and must not change where pages break.
+    func testLargeChapterStillTilesExactly() {
+        let text = makeText(paragraphs: 600)
+        let pages = paginate(text)
+        XCTAssertGreaterThan(pages.count, 50, "Fixture should span many pages")
+        XCTAssertEqual(pages.first?.range.lowerBound, 0)
+        XCTAssertEqual(pages.last?.range.upperBound, text.count)
+        for (a, b) in zip(pages, pages.dropFirst()) {
+            XCTAssertEqual(a.range.upperBound, b.range.lowerBound)
+        }
+        let chars = Array(text)
+        for page in pages {
+            let origin = page.textStartOffset
+            XCTAssertEqual(String(chars[origin..<(origin + page.text.count)]), page.text)
+        }
+    }
+
+    /// Windowing must be invisible: a page-sized measurement window and an
+    /// unbounded one have to produce IDENTICAL breaks. A window that clipped
+    /// the measurement short would end pages early — pages that still tile
+    /// and still map back, so only a direct comparison catches it.
+    func testWindowedPaginationMatchesUnwindowedBreaks() {
+        let text = makeText(paragraphs: 120)
+        let windowed = paginate(text)
+        let unwindowed = LayoutPaginator(
+            style: style, inlineImages: [:], measurementWindow: .max
+        ).paginate(text) { _ in pageSize }
+        XCTAssertEqual(
+            windowed.map(\.range), unwindowed.map(\.range),
+            "Bounding the measurement window must not move a single page break"
+        )
+        XCTAssertEqual(windowed.map(\.text), unwindowed.map(\.text))
+    }
+
+    private func timePagination(of text: String) -> TimeInterval {
+        let start = CFAbsoluteTimeGetCurrent()
+        let pages = paginate(text)
+        let elapsed = CFAbsoluteTimeGetCurrent() - start
+        XCTAssertFalse(pages.isEmpty, "Fixture must actually paginate")
+        return elapsed
+    }
+
     // MARK: - Degenerate input
 
     func testEmptyTextYieldsNoPages() {

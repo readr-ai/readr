@@ -152,21 +152,6 @@ struct PagedChapterView: View {
     /// fallback. Drives both the rendered kicker and the capacity/key terms.
     private var kickerTitle: String? { chapter.title ?? displayTitle }
 
-    /// Memoizes the last pagination so page turns/selection don't re-scan the
-    /// whole chapter on every body evaluation. Reference type on purpose:
-    /// mutating it during render doesn't invalidate the view.
-    private final class PaginationCache {
-        var chapterID: UUID?
-        /// Geometry + style signature of the cached pagination (page text
-        /// size, font size, layout, kicker, image set) — any change reflows.
-        var key = ""
-        var pages: [Page] = []
-        /// Words from the start of each page to the chapter's end (index-
-        /// aligned with `pages`). Computed once per pagination so the page
-        /// bar's "min left" never re-scans the chapter text in body.
-        var remainingWords: [Int] = []
-    }
-
     var body: some View {
         GeometryReader { geo in
             let pages = paginate(for: geo.size)
@@ -292,8 +277,8 @@ struct PagedChapterView: View {
             + "\(style.font.rawValue)|\(style.spacing.rawValue)|\(style.isJustified)|"
             + "\(layout.rawValue)|\(hasKicker)|\(inlineImages.keys.sorted())|"
             + "\(chapter.formatSpans?.hashValue ?? 0)"
-        if cache.chapterID == chapter.id, cache.key == key {
-            return cache.pages
+        if let hit = cache.entry(chapterID: chapter.id, key: key) {
+            return hit.pages
         }
 
         // Layout-accurate breaks: fill real TextKit containers with the same
@@ -325,9 +310,6 @@ struct PagedChapterView: View {
             // the reader functional.
             pages = Paginator(capacity: capacity(for: size)).paginate(chapter.text)
         }
-        cache.chapterID = chapter.id
-        cache.key = key
-        cache.pages = pages
         // Suffix-sum per-page word counts (pages break on whitespace, so the
         // sum matches counting the chapter once). One O(chapter) pass here
         // instead of one per render in the page bar.
@@ -337,7 +319,9 @@ struct PagedChapterView: View {
             total += ReadingTimeEstimator.wordCount(in: pages[index].text)
             remaining[index] = total
         }
-        cache.remainingWords = remaining
+        cache.store(
+            chapterID: chapter.id, key: key, pages: pages, remainingWords: remaining
+        )
         return pages
     }
 
@@ -345,8 +329,10 @@ struct PagedChapterView: View {
     /// word counts. Mirrors `ReadingTimeEstimator.minutes(for:)`: round up,
     /// minimum 1 while words remain.
     private func minutesLeft(fromPage start: Int) -> Int {
-        guard cache.remainingWords.indices.contains(start) else { return 0 }
-        let words = cache.remainingWords[start]
+        guard let remainingWords = cache.current?.remainingWords,
+              remainingWords.indices.contains(start)
+        else { return 0 }
+        let words = remainingWords[start]
         guard words > 0 else { return 0 }
         return max(
             1, Int((Double(words) / ReadingTimeEstimator.defaultWordsPerMinute).rounded(.up))
