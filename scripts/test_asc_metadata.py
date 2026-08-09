@@ -298,11 +298,23 @@ def test_submit_blockers_are_written() -> None:
         "sets the secondary category",
     )
 
-    version_body = stub.body_for("PATCH", "/appStoreVersions/VERID")
-    attrs = (version_body or {}).get("data", {}).get("attributes", {})
+    # On the APP, not the version. Apple's submit error named the attribute
+    # but not its resource; PATCHing appStoreVersions came back
+    # ENTITY_ERROR.ATTRIBUTE.UNKNOWN, which aborted push() before it ever
+    # reached the categories below. Pin the resource, not just the value.
+    app_body = stub.body_for("PATCH", "/apps/APPID")
+    attrs = (app_body or {}).get("data", {}).get("attributes", {})
     check(
         attrs.get("contentRightsDeclaration") == "DOES_NOT_USE_THIRD_PARTY_CONTENT",
-        "declares content rights",
+        "declares content rights on the app resource",
+    )
+    check(
+        not any(
+            "contentRightsDeclaration" in ((b or {}).get("data", {}).get("attributes", {}))
+            for m, path, b in stub.calls
+            if m == "PATCH" and "/appStoreVersions/" in path
+        ),
+        "never sends content rights to appStoreVersions",
     )
 
 

@@ -358,9 +358,15 @@ def push(
     rights = fields.get("content_rights") or "DOES_NOT_USE_THIRD_PARTY_CONTENT"
     print(f"  content rights: {rights}")
     if write:
+        # On the APP, not the version. Apple's submit error named the
+        # attribute but not its resource, and the obvious guess was wrong:
+        #   'contentRightsDeclaration' is not an attribute on the resource
+        #   'appStoreVersions'
+        # It is app-wide — whether the app uses third-party content at all —
+        # so it does not belong to a single version.
         call(
-            "PATCH", f"/appStoreVersions/{version_id}",
-            {"data": {"type": "appStoreVersions", "id": version_id,
+            "PATCH", f"/apps/{app_id}",
+            {"data": {"type": "apps", "id": app_id,
                       "attributes": {"contentRightsDeclaration": rights}}},
             bearer=bearer,
         )
