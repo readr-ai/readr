@@ -1,0 +1,18 @@
+{
+  "_comment": "Age-rating answers for Readr. All honest: the app renders books the reader supplies and has no game, gambling, or media content of its own. The one Yes is unrestricted web access, because OAuth opens a provider sign-in page in an in-app Safari view. Apple asks for these by name at submission time (ENTITY_ERROR.ATTRIBUTE.REQUIRED 'violenceCartoonOrFantasy').",
+  "alcoholTobaccoOrDrugUseOrReferences": "NONE",
+  "contests": "NONE",
+  "gamblingSimulated": "NONE",
+  "horrorOrFearThemes": "NONE",
+  "matureOrSuggestiveThemes": "NONE",
+  "medicalOrTreatmentInformation": "NONE",
+  "profanityOrCrudeHumor": "NONE",
+  "sexualContentGraphicAndNudity": "NONE",
+  "sexualContentOrNudity": "NONE",
+  "violenceCartoonOrFantasy": "NONE",
+  "violenceRealistic": "NONE",
+  "violenceRealisticProlongedGraphicOrSadistic": "NONE",
+  "gambling": false,
+  "unrestrictedWebAccess": true,
+  "kidsAgeBand": null
+}

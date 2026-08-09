@@ -618,6 +618,57 @@ def submit(bearer: str, app_id: str, version_id: str) -> None:
     print(f"  SUBMITTED — review submission {submission['id']}")
 
 
+def set_age_rating(
+    bearer: str, app_info_id: str, version_id: str, root: Path, write: bool
+) -> None:
+    """Answer the age-rating questionnaire.
+
+    This file twice declared age rating "manual, no API" — and Apple then
+    refused a submission naming one of its attributes outright:
+
+      ENTITY_ERROR.ATTRIBUTE.REQUIRED — 'violenceCartoonOrFantasy'
+
+    Apple asking for it by name meant it was reachable; the earlier GET simply
+    looked in the wrong place. The declaration hangs off `appInfo`, not the
+    version, which is why querying the version returned nothing and the wrong
+    conclusion stuck. Answers live in `appstore/age_rating.json` so they are
+    reviewable rather than buried in code.
+    """
+    answers_file = root / "age_rating.json"
+    if not answers_file.exists():
+        print(f"  age rating: no {answers_file} — skipping")
+        return
+    answers = {
+        k: v for k, v in json.loads(answers_file.read_text()).items()
+        if not k.startswith("_")
+    }
+
+    # The declaration lives on appInfo; the version relationship is the one
+    # that returns nothing. Try both rather than assume again.
+    declaration = call(
+        "GET", f"/appInfos/{app_info_id}/ageRatingDeclaration",
+        bearer=bearer, allow_missing=True,
+    ).get("data")
+    if not declaration:
+        declaration = call(
+            "GET", f"/appStoreVersions/{version_id}/ageRatingDeclaration",
+            bearer=bearer, allow_missing=True,
+        ).get("data")
+    if not declaration:
+        print("  age rating: no declaration on appInfo or version — "
+              "answer it in the web UI")
+        return
+
+    print(f"  age rating: {len(answers)} answers -> {declaration['id']}")
+    if write:
+        call(
+            "PATCH", f"/ageRatingDeclarations/{declaration['id']}",
+            {"data": {"type": "ageRatingDeclarations",
+                      "id": declaration["id"], "attributes": answers}},
+            bearer=bearer,
+        )
+
+
 def report_age_rating(bearer: str, version_id: str) -> None:
     """Print the version's age-rating declaration, if the API exposes one.
 
@@ -701,6 +752,17 @@ def main() -> None:
         root=args.root, first_version=first_version,
     )
 
+    # The editable appInfo owns the age-rating declaration.
+    infos = call("GET", f"/apps/{app['id']}/appInfos", bearer=bearer)["data"]
+    live_states = ("READY_FOR_SALE", "READY_FOR_DISTRIBUTION")
+    app_info = next(
+        (i for i in infos
+         if (i["attributes"].get("state") or i["attributes"].get("appStoreState"))
+         not in live_states),
+        None,
+    )
+    if app_info:
+        set_age_rating(bearer, app_info["id"], version["id"], args.root, write)
     report_age_rating(bearer, version["id"])
     upload_screenshots(bearer, version["id"], args.root, write)
 
