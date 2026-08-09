@@ -618,6 +618,33 @@ def submit(bearer: str, app_id: str, version_id: str) -> None:
     print(f"  SUBMITTED — review submission {submission['id']}")
 
 
+def report_data_usages(bearer: str, app_id: str) -> None:
+    """Probe what the API actually exposes for App Privacy.
+
+    Read-only. This script has twice asserted "manual, no API" and been wrong
+    both times — screenshots, then age rating — and in both cases the error
+    message contained the answer. So ask rather than assume.
+    """
+    state = call(
+        "GET", f"/apps/{app_id}/appDataUsagesPublishState",
+        bearer=bearer, allow_missing=True,
+    ).get("data")
+    if state:
+        print(f"  data usages publish state: {state.get('attributes')}  id={state['id']}")
+    else:
+        print("  data usages: no publish state exposed")
+
+    usages = call(
+        "GET", f"/apps/{app_id}/dataUsages?limit=50", bearer=bearer, allow_missing=True
+    ).get("data", [])
+    print(f"  data usages: {len(usages)} declared")
+
+    categories = call(
+        "GET", "/appDataUsageCategories?limit=5", bearer=bearer, allow_missing=True
+    ).get("data", [])
+    print(f"  data usage categories readable: {len(categories)}")
+
+
 def set_pricing(bearer: str, app_id: str, write: bool) -> None:
     """Put the app on the free tier.
 
@@ -816,6 +843,7 @@ def main() -> None:
          not in live_states),
         None,
     )
+    report_data_usages(bearer, app["id"])
     set_pricing(bearer, app["id"], write)
     if app_info:
         set_age_rating(bearer, app_info["id"], version["id"], args.root, write)
