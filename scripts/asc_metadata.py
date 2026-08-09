@@ -349,6 +349,22 @@ def push(
                 bearer=bearer,
             )
 
+    # Apple refuses a submission without this:
+    #   ENTITY_ERROR.ATTRIBUTE.REQUIRED — 'contentRightsDeclaration'
+    # Readr bundles and downloads no content; it opens only DRM-free files the
+    # user already has, and refuses DRM-protected ones. So it does not use
+    # third-party content, and saying so is the accurate answer rather than the
+    # convenient one.
+    rights = fields.get("content_rights") or "DOES_NOT_USE_THIRD_PARTY_CONTENT"
+    print(f"  content rights: {rights}")
+    if write:
+        call(
+            "PATCH", f"/appStoreVersions/{version_id}",
+            {"data": {"type": "appStoreVersions", "id": version_id,
+                      "attributes": {"contentRightsDeclaration": rights}}},
+            bearer=bearer,
+        )
+
     # App-level copy: name, subtitle, privacy policy. Lives on appInfo, not on
     # the version — it is not version-specific.
     infos = call("GET", f"/apps/{app_id}/appInfos", bearer=bearer)["data"]
@@ -363,6 +379,30 @@ def push(
         return state is not None and state not in live
     editable = next((i for i in infos if editable_info(i)), None)
     if editable:
+        # Categories are a *relationship* on appInfo, not an attribute, and
+        # Apple refuses a submission without a primary one:
+        #   ENTITY_ERROR.RELATIONSHIP.REQUIRED — 'primaryCategory'
+        # It is not part of the localized copy, so it is set once here rather
+        # than per locale. Ids are the documented appCategories ids.
+        categories = {}
+        if fields.get("primary_category"):
+            categories["primaryCategory"] = {
+                "data": {"type": "appCategories", "id": fields["primary_category"]}
+            }
+        if fields.get("secondary_category"):
+            categories["secondaryCategory"] = {
+                "data": {"type": "appCategories", "id": fields["secondary_category"]}
+            }
+        if categories:
+            names = ", ".join(f"{k}={v['data']['id']}" for k, v in sorted(categories.items()))
+            print(f"  categories: {names}")
+            if write:
+                call(
+                    "PATCH", f"/appInfos/{editable['id']}",
+                    {"data": {"type": "appInfos", "id": editable["id"],
+                              "relationships": categories}},
+                    bearer=bearer,
+                )
         info_locs = call(
             "GET", f"/appInfos/{editable['id']}/appInfoLocalizations", bearer=bearer
         )["data"]
