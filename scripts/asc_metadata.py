@@ -618,6 +618,61 @@ def submit(bearer: str, app_id: str, version_id: str) -> None:
     print(f"  SUBMITTED — review submission {submission['id']}")
 
 
+def set_pricing(bearer: str, app_id: str, write: bool) -> None:
+    """Put the app on the free tier.
+
+    Surfaced by a submit attempt, not by any checklist:
+      STATE_ERROR.APP_PRICING_REQUIRED — "App is not eligible for submission
+      until pricing has been set."
+
+    Readr sells nothing and has no in-app purchases, so this is the free price
+    point in the base territory. An app with no price schedule at all is not
+    "free" to Apple — it is unpriced, which blocks submission.
+    """
+    existing = call(
+        "GET", f"/apps/{app_id}/appPriceSchedule", bearer=bearer, allow_missing=True
+    ).get("data")
+    if existing:
+        print(f"  pricing: already scheduled ({existing['id']})")
+        return
+
+    # The free price point for the base territory.
+    query = urllib.parse.urlencode(
+        {"filter[territory]": "USA", "include": "territory", "limit": "200"}
+    )
+    points = call(
+        "GET", f"/apps/{app_id}/appPricePoints?{query}", bearer=bearer,
+        allow_missing=True,
+    ).get("data", [])
+    free = next(
+        (p for p in points
+         if str(p["attributes"].get("customerPrice", "")) in ("0", "0.00", "0.0")),
+        None,
+    )
+    if not free:
+        print(f"  pricing: no zero price point among {len(points)} — set it in the web UI")
+        return
+
+    print(f"  pricing: free tier ({free['id']})")
+    if write:
+        call(
+            "POST", "/appPriceSchedules",
+            {"data": {"type": "appPriceSchedules",
+                      "relationships": {
+                          "app": {"data": {"type": "apps", "id": app_id}},
+                          "baseTerritory": {
+                              "data": {"type": "territories", "id": "USA"}},
+                          "manualPrices": {
+                              "data": [{"type": "appPrices", "id": "${price}"}]}}},
+             "included": [{"type": "appPrices", "id": "${price}",
+                           "relationships": {
+                               "appPricePoint": {
+                                   "data": {"type": "appPricePoints",
+                                            "id": free["id"]}}}}]},
+            bearer=bearer,
+        )
+
+
 def set_age_rating(
     bearer: str, app_info_id: str, version_id: str, root: Path, write: bool
 ) -> None:
@@ -761,6 +816,7 @@ def main() -> None:
          not in live_states),
         None,
     )
+    set_pricing(bearer, app["id"], write)
     if app_info:
         set_age_rating(bearer, app_info["id"], version["id"], args.root, write)
     report_age_rating(bearer, version["id"])
