@@ -645,6 +645,37 @@ def report_data_usages(bearer: str, app_id: str) -> None:
     print(f"  data usage categories readable: {len(categories)}")
 
 
+def report_availability(bearer: str, app_id: str) -> None:
+    """Why Apple can call an app 'missing pricing' when a schedule exists.
+
+    APP_PRICING_REQUIRED persisted after `appPriceSchedule` reported one
+    already scheduled, so the schedule is not the whole story — territory
+    availability is configured separately, and an app available nowhere is not
+    priced anywhere. Read-only probe to find out which it is.
+    """
+    for path, label in (
+        (f"/apps/{app_id}/appAvailabilityV2", "availability v2"),
+        (f"/apps/{app_id}/appAvailability", "availability"),
+        (f"/apps/{app_id}/appPriceSchedule?include=manualPrices,baseTerritory",
+         "price schedule"),
+    ):
+        found = call("GET", path, bearer=bearer, allow_missing=True)
+        data = found.get("data")
+        if not data:
+            print(f"  {label}: not exposed")
+            continue
+        if isinstance(data, list):
+            print(f"  {label}: {len(data)} entries")
+        else:
+            print(f"  {label}: id={data.get('id')} attrs={data.get('attributes')}")
+        included = found.get("included") or []
+        if included:
+            kinds = {}
+            for item in included:
+                kinds[item["type"]] = kinds.get(item["type"], 0) + 1
+            print(f"      included: {kinds}")
+
+
 def set_pricing(bearer: str, app_id: str, write: bool) -> None:
     """Put the app on the free tier.
 
@@ -844,6 +875,7 @@ def main() -> None:
         None,
     )
     report_data_usages(bearer, app["id"])
+    report_availability(bearer, app["id"])
     set_pricing(bearer, app["id"], write)
     if app_info:
         set_age_rating(bearer, app_info["id"], version["id"], args.root, write)
