@@ -86,6 +86,9 @@ def metadata_root() -> Path:
         "name": "Readr: AI Ebook Reader",
         "subtitle": "Ask your books questions",
         "privacy_url": "https://example.invalid/privacy",
+        "primary_category": "BOOKS",
+        "secondary_category": "PRODUCTIVITY",
+        "content_rights": "DOES_NOT_USE_THIRD_PARTY_CONTENT",
     }.items():
         (locale / f"{name}.txt").write_text(text + "\n")
     (root / "review_notes.txt").write_text("Reviewer notes.\n")
@@ -266,6 +269,43 @@ def test_missing_review_notes_is_announced() -> None:
     check("skipping" in output, "says so rather than silently skipping")
 
 
+def test_submit_blockers_are_written() -> None:
+    """The two fields Apple named when it refused the first submission:
+    ENTITY_ERROR.RELATIONSHIP.REQUIRED 'primaryCategory' and
+    ENTITY_ERROR.ATTRIBUTE.REQUIRED 'contentRightsDeclaration'. Both are
+    settable via the API — they were simply never sent."""
+    print("\nsubmit blockers")
+    root = metadata_root()
+    stub = StubAPI(routes={
+        "appStoreVersionLocalizations": {"data": [
+            {"id": "LOC", "attributes": {"locale": "en-US"}}]},
+        "appInfos": {"data": [
+            {"id": "INFO", "attributes": {"state": "PREPARE_FOR_SUBMISSION"}}]},
+        "appInfoLocalizations": {"data": [
+            {"id": "ILOC", "attributes": {"locale": "en-US"}}]},
+        "appStoreReviewDetail": {"data": {"id": "RD"}},
+    })
+    run_push(stub, root)
+
+    body = stub.body_for("PATCH", "/appInfos/INFO")
+    rels = (body or {}).get("data", {}).get("relationships", {})
+    check(
+        rels.get("primaryCategory", {}).get("data", {}).get("id") == "BOOKS",
+        "sets the primary category",
+    )
+    check(
+        rels.get("secondaryCategory", {}).get("data", {}).get("id") == "PRODUCTIVITY",
+        "sets the secondary category",
+    )
+
+    version_body = stub.body_for("PATCH", "/appStoreVersions/VERID")
+    attrs = (version_body or {}).get("data", {}).get("attributes", {})
+    check(
+        attrs.get("contentRightsDeclaration") == "DOES_NOT_USE_THIRD_PARTY_CONTENT",
+        "declares content rights",
+    )
+
+
 def test_manual_steps_always_print() -> None:
     """The App Privacy reminder is the one thing no API covers, and the
     early-return plan path used to swallow it."""
@@ -354,6 +394,7 @@ def main() -> None:
         test_live_app_info_is_never_selected,
         test_build_query_requires_a_processed_build,
         test_missing_review_notes_is_announced,
+        test_submit_blockers_are_written,
         test_manual_steps_always_print,
         test_editable_draft_is_renamed_not_duplicated,
         test_submitted_version_is_never_renamed,
