@@ -14,5 +14,10 @@
   "violenceRealisticProlongedGraphicOrSadistic": "NONE",
   "gambling": false,
   "unrestrictedWebAccess": true,
-  "kidsAgeBand": null
+  "kidsAgeBand": null,
+  "_comment2": "Apple reveals these four only once the content questions are answered. messagingAndChat is false because Readr has no user-to-user communication at all \u2014 Ask talks to an AI provider the reader configured, never to another person.",
+  "advertising": false,
+  "healthOrWellnessTopics": false,
+  "messagingAndChat": false,
+  "parentalControls": false
 }
