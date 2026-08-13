@@ -618,6 +618,29 @@ def submit(bearer: str, app_id: str, version_id: str) -> None:
     print(f"  SUBMITTED — review submission {submission['id']}")
 
 
+def report_review_submission(bearer: str, app_id: str) -> None:
+    """State of the review submission itself.
+
+    `WAITING_FOR_REVIEW` on the version says it is queued. It does not prove
+    the *submission* is healthy — a submission that failed to finalise can
+    leave the version looking queued while nothing is actually in Apple's
+    pipeline. Read-only.
+    """
+    query = urllib.parse.urlencode(
+        {"filter[app]": app_id, "limit": "10", "sort": "-submittedDate"}
+    )
+    found = call(
+        "GET", f"/reviewSubmissions?{query}", bearer=bearer, allow_missing=True
+    ).get("data", [])
+    if not found:
+        print("  review submission: NONE FOUND — nothing is queued at Apple")
+        return
+    for entry in found[:3]:
+        a = entry["attributes"]
+        print(f"  review submission {entry['id']}: state={a.get('state')} "
+              f"submitted={a.get('submittedDate')} platform={a.get('platform')}")
+
+
 def report_data_usages(bearer: str, app_id: str) -> None:
     """Probe what the API actually exposes for App Privacy.
 
@@ -874,6 +897,7 @@ def main() -> None:
          not in live_states),
         None,
     )
+    report_review_submission(bearer, app["id"])
     report_data_usages(bearer, app["id"])
     report_availability(bearer, app["id"])
     set_pricing(bearer, app["id"], write)
