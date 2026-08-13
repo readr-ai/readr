@@ -640,10 +640,21 @@ def report_review_submission(bearer: str, app_id: str) -> None:
     if not found:
         print("  review submission: NONE FOUND — nothing is queued at Apple")
         return
-    for entry in found[:3]:
+    for entry in found[:5]:
         a = entry["attributes"]
         print(f"  review submission {entry['id']}: state={a.get('state')} "
               f"submitted={a.get('submittedDate')} platform={a.get('platform')}")
+        items = call(
+            "GET", f"/reviewSubmissions/{entry['id']}/items?limit=10",
+            bearer=bearer, allow_missing=True,
+        ).get("data", [])
+        if not items:
+            print("      items: NONE — an empty container, submits nothing")
+        for item in items:
+            rel = item.get("relationships", {})
+            ver = (rel.get("appStoreVersion") or {}).get("data")
+            print(f"      item {item['id']}: version={ver.get('id') if ver else None} "
+                  f"state={item['attributes'].get('state')}")
 
 
 def report_data_usages(bearer: str, app_id: str) -> None:
