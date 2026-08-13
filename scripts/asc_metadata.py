@@ -626,12 +626,17 @@ def report_review_submission(bearer: str, app_id: str) -> None:
     leave the version looking queued while nothing is actually in Apple's
     pipeline. Read-only.
     """
-    query = urllib.parse.urlencode(
-        {"filter[app]": app_id, "limit": "10", "sort": "-submittedDate"}
-    )
-    found = call(
-        "GET", f"/reviewSubmissions?{query}", bearer=bearer, allow_missing=True
-    ).get("data", [])
+    # `sort=-submittedDate` is rejected with a 400 — not a sortable field on
+    # this resource. Filter only, and tolerate a 400 as "cannot tell" rather
+    # than killing a read-only probe.
+    query = urllib.parse.urlencode({"filter[app]": app_id, "limit": "10"})
+    try:
+        found = call(
+            "GET", f"/reviewSubmissions?{query}", bearer=bearer, allow_missing=True
+        ).get("data", [])
+    except SystemExit:
+        print("  review submission: query rejected — cannot read from this key")
+        return
     if not found:
         print("  review submission: NONE FOUND — nothing is queued at Apple")
         return
