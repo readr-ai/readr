@@ -110,6 +110,51 @@ device model string comes from a different code path.
       and **not** "(simulator)"
 - [ ] Settings → Help → **Share Readr** opens the share sheet with the link
 
+## 8. Listen — the parts nothing else can reach `[blocker for 3.0]`
+
+The narration tests deliberately run a **silent** engine
+(`-uiTestSilentNarration`): against a real synthesizer a headless runner fails
+the first utterance instantly and races the book to its end before a test can
+tap anything. So the suites prove the *logic* and prove nothing about the
+*sound*. This section is the whole of the evidence that Readr speaks.
+
+The first pass of this list (macOS, 2026-08-17) found four defects, three of
+them impossible to see any other way — an English book read aloud in a novelty
+voice, every speed above 1× running at roughly double its label, and narration
+hanging at the end of a book. Treat it as load-bearing, not a formality.
+
+**On a Mac** (needs audio out; use headphones if you like, and note that a
+screen recorder may swallow ⇧⌘L as a global hotkey — drive the on-screen
+control instead):
+
+- [ ] Press Listen mid-chapter: a voice speaks, and it is a **normal** voice —
+      on macOS, `Samantha` or whatever System Settings names as the default,
+      never `Albert`, `Bad News`, `Bubbles` or another novelty voice
+- [ ] The voice menu **opens on** that same sensible voice, not on the joke ones
+- [ ] Narration starts at the first sentence of the page in view, **not** the
+      chapter's start — page to the last page of a chapter first, then press
+      Listen. If it jumps back, capture the number: Settings → Help → Report a
+      bug → "See exactly what will be sent" carries a
+      `Narration start: chapter N offset M` line
+- [ ] The page turns itself to follow the voice, and crosses into the next
+      chapter on its own
+- [ ] Change speed **mid-sentence**: it continues from about that word rather
+      than restarting the sentence
+- [ ] Speeds are honest — "2×" takes about half as long as "1×", not a quarter.
+      Worth timing rather than eyeballing; the mapping is calibrated to a
+      measurement and the constant lives in `SpeechSettings`
+- [ ] Open Ask while narrating: the voice keeps going
+- [ ] Let it run to the end of the book: it **stops** within a couple of
+      seconds and the control returns to ▶, rather than sitting on ⏸ forever
+- [ ] Pause, wait, play: it resumes rather than restarting the sentence
+
+**On an iPhone** — none of this can be faked on a simulator:
+
+- [ ] Lock the screen while narrating: playback continues
+- [ ] Lock screen shows the book and author, and its play/pause works
+- [ ] A headphone/AirPods pinch pauses and resumes
+- [ ] Leave the app: playback continues in the background
+
 ## Not on this list, on purpose
 
 **ChatGPT subscription sign-in.** `.chatGPT` is filtered out of the iOS build
