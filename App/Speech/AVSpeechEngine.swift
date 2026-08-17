@@ -18,9 +18,22 @@ import ReadrKit
 /// rules live in `NarrationController`, where they are testable.
 final class AVSpeechEngine: NSObject, SpeechEngine {
     weak var delegate: (any SpeechEngineDelegate)?
-    private(set) var state: SpeechEngineState = .idle
 
     private let synthesizer = AVSpeechSynthesizer()
+
+    /// Asked of the synthesizer rather than tracked alongside it.
+    ///
+    /// This is what the controller's stall watchdog reads, and a completion
+    /// callback going missing is exactly the case it exists for — so state kept
+    /// in a variable that only those callbacks update would report "speaking"
+    /// forever precisely when it mattered. `isSpeaking` stays true through the
+    /// post-utterance delay, so a truthful idle here means the utterance really
+    /// is over.
+    var state: SpeechEngineState {
+        if synthesizer.isPaused { return .paused }
+        if synthesizer.isSpeaking { return .speaking }
+        return .idle
+    }
     /// The request being spoken, with the exact string handed to the engine —
     /// the boundary callback reports offsets into it.
     private var activeRequest: SpeechRequest?
@@ -52,7 +65,6 @@ final class AVSpeechEngine: NSObject, SpeechEngine {
 
         activeRequest = request
         activeText = request.text
-        state = .speaking
         synthesizer.speak(utterance)
     }
 
@@ -64,18 +76,15 @@ final class AVSpeechEngine: NSObject, SpeechEngine {
     /// the synthesizer sits paused. The controller is the authority on state.
     func pause() {
         synthesizer.pauseSpeaking(at: .word)
-        state = .paused
     }
 
     func resume() {
         synthesizer.continueSpeaking()
-        state = .speaking
     }
 
     func stop() {
         activeRequest = nil
         activeText = ""
-        state = .idle
         if synthesizer.isSpeaking || synthesizer.isPaused {
             synthesizer.stopSpeaking(at: .immediate)
         }
@@ -112,20 +121,30 @@ final class AVSpeechEngine: NSObject, SpeechEngine {
         }
     }
 
-    /// The named voice if it is still installed, else one for the book's
-    /// language, else nil — which leaves AVFoundation to use the device
-    /// default rather than refusing to speak.
+    /// The voice the platform itself would use for a language — Samantha for
+    /// en-US, not Albert. `NarrationModel` feeds this to `VoiceSelector` as the
+    /// tie-break, because on macOS every English voice reports the same quality
+    /// tier and the alphabetical fallback picked novelty voices.
+    static func systemDefaultVoiceID(for language: String?) -> String? {
+        guard let language else { return nil }
+        return AVSpeechSynthesisVoice(language: language)?.identifier
+    }
+
+    /// The named voice if it is still installed, else the platform's default
+    /// for the book's language, else nil — which leaves AVFoundation to use the
+    /// device default rather than refusing to speak.
+    ///
+    /// No ranking happens here: `NarrationModel` already chose, with the whole
+    /// installed list and the reader's stored preference in hand. Choosing
+    /// again from a second, subtly different rule was how an English book ended
+    /// up in a novelty voice.
     private static func voice(for request: SpeechRequest) -> AVSpeechSynthesisVoice? {
         if let voiceID = request.voiceID,
            let named = AVSpeechSynthesisVoice(identifier: voiceID) {
             return named
         }
         guard let language = request.language else { return nil }
-        // ReadrKit's matching rules pick which of the installed voices fits the
-        // book, so an `en` book never gets read in the device's language.
-        let chosen = VoiceSelector().voice(for: language, in: availableVoices())
-        guard let chosen else { return nil }
-        return AVSpeechSynthesisVoice(identifier: chosen.id)
+        return AVSpeechSynthesisVoice(language: language)
     }
 
     // MARK: - Audio session
@@ -168,7 +187,6 @@ extension AVSpeechEngine: AVSpeechSynthesizerDelegate {
         onMain { [weak self] in
             guard let self, let request = self.activeRequest else { return }
             self.activeRequest = nil
-            self.state = .idle
             self.delegate?.speechEngine(self, didFinish: request.id)
         }
     }
@@ -179,19 +197,6 @@ extension AVSpeechEngine: AVSpeechSynthesizerDelegate {
         // Cancellation is always something the controller asked for (a skip, a
         // speed change, the sleep timer). Reporting it as a finish would
         // advance the book by a sentence the reader never heard.
-        onMain { [weak self] in self?.state = .idle }
-    }
-
-    func speechSynthesizer(
-        _ synthesizer: AVSpeechSynthesizer, didPause utterance: AVSpeechUtterance
-    ) {
-        onMain { [weak self] in self?.state = .paused }
-    }
-
-    func speechSynthesizer(
-        _ synthesizer: AVSpeechSynthesizer, didContinue utterance: AVSpeechUtterance
-    ) {
-        onMain { [weak self] in self?.state = .speaking }
     }
 
     func speechSynthesizer(

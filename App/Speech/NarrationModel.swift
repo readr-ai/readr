@@ -109,11 +109,22 @@ final class NarrationModel: ObservableObject {
         // not a picker so much as a wall. Fall back to the reader's own locale,
         // since a book whose language nobody recorded is most likely in the one
         // they read in.
-        let language = book.metadata.language ?? Locale.current.identifier
-        voices = selector.voices(matching: language, in: installed)
+        // `.identifier` can carry Unicode extensions — a region override in
+        // system settings makes it "en_US@rg=inzzzz", which matched no voice's
+        // locale and quietly widened the search to every English variant.
+        let language = book.metadata.language ?? Locale.current.identifier(.bcp47)
+        // What the platform would pick for this language, which is a better
+        // judge of "the sensible voice" than any ranking of ours: macOS ships
+        // novelty voices that tie on quality and win on name.
+        let systemDefault = AVSpeechEngine.systemDefaultVoiceID(for: language)
+        voices = selector.voices(
+            matching: language, in: installed, systemDefault: systemDefault
+        )
         // A stored voice may have been deleted since (voices are downloadable),
         // and a book in another language needs one that can read it.
-        voiceID = selector.voice(for: language, in: installed, preferring: voiceID)?.id
+        voiceID = selector.voice(
+            for: language, in: installed, preferring: voiceID, systemDefault: systemDefault
+        )?.id
 
         let controller = NarrationController(
             book: book,

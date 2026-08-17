@@ -65,15 +65,34 @@ final class SpeechSettingsTests: XCTestCase {
         )
     }
 
-    func testTheEndsOfTheRateRangeReachTheEndsOfTheEngineRange() {
-        XCTAssertEqual(
-            SpeechSettings(rate: 2).platformRate(normal: 0.5, minimum: 0, maximum: 1),
-            1.0, accuracy: 0.0001
-        )
+    func testTheSlowEndReachesTheEngineMinimum() {
         XCTAssertEqual(
             SpeechSettings(rate: 0.5).platformRate(normal: 0.5, minimum: 0, maximum: 1),
             0.0, accuracy: 0.0001
         )
+    }
+
+    func testTheFastEndStopsWellShortOfTheEngineMaximum() {
+        // The label has to be the truth. AVFoundation's rate scale climbs
+        // steeply above its default, so spreading 1x...2x linearly across the
+        // remaining range made "2x" play about four times as fast — measured by
+        // rendering the synthesizer's PCM and timing the same sentence. Roughly
+        // a third of the headroom is a genuine doubling.
+        let doubled = SpeechSettings(rate: 2).platformRate(normal: 0.5, minimum: 0, maximum: 1)
+        XCTAssertEqual(doubled, 0.672, accuracy: 0.005)
+        XCTAssertLessThan(doubled, 1.0, "Reaching the engine's maximum was the bug")
+    }
+
+    func testEverySpeedAboveNormalScalesFromTheSameCurve() {
+        // Each step is an equal share of the headroom the curve actually needs,
+        // so the gaps between labels stay even rather than compounding.
+        let mapped = [1.0, 1.25, 1.5, 1.75, 2.0].map {
+            SpeechSettings(rate: $0).platformRate(normal: 0.5, minimum: 0, maximum: 1)
+        }
+        let gaps = zip(mapped, mapped.dropFirst()).map { $1 - $0 }
+        for gap in gaps {
+            XCTAssertEqual(gap, gaps[0], accuracy: 0.0001)
+        }
     }
 
     func testRateMapsMonotonicallyBetweenTheEnds() {

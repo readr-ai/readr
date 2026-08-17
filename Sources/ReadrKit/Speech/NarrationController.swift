@@ -64,6 +64,9 @@ public final class NarrationController {
     /// Set when the engine no longer holds a resumable utterance, so `play()`
     /// re-speaks instead of asking it to continue.
     private var mustRespeakToResume = false
+    /// Consecutive ticks where we believed narration was speaking and the
+    /// engine disagreed — see `tick()`.
+    private var silentTicks = 0
 
     public init(
         book: Book,
@@ -215,11 +218,36 @@ public final class NarrationController {
         sleepTimer.remaining(at: now())
     }
 
-    /// Evaluate the sleep timer. The app ticks this once a second; the
-    /// controller has no clock of its own so tests can drive it exactly.
+    /// Evaluate the sleep timer, and notice an utterance that ended without
+    /// saying so. The app ticks this once a second; the controller has no clock
+    /// of its own so tests can drive it exactly.
     public func tick() {
-        guard status == .speaking, sleepTimer.hasExpired(at: now()) else { return }
-        stopForSleepTimer()
+        if status == .speaking, sleepTimer.hasExpired(at: now()) {
+            stopForSleepTimer()
+            return
+        }
+        checkForSilentEngine()
+    }
+
+    /// A completion callback can go missing — observed at the end of a book on
+    /// macOS, where the voice stopped, `didFinish` never arrived, and the bar
+    /// sat on Pause with the last sentence for minutes. Nothing downstream can
+    /// recover from that, because every move the controller makes is driven by
+    /// that callback.
+    ///
+    /// The engine's own state is the backstop: if it says it is idle while we
+    /// think it is speaking, the utterance is over whatever we were told. Two
+    /// consecutive ticks rather than one, because an engine may report idle for
+    /// an instant between `speak()` and the audio actually starting.
+    private func checkForSilentEngine() {
+        guard status == .speaking, activeRequestID != nil, engine.state != .speaking else {
+            silentTicks = 0
+            return
+        }
+        silentTicks += 1
+        guard silentTicks >= 2 else { return }
+        silentTicks = 0
+        handleFinishedSegment()
     }
 
     // MARK: - Playback

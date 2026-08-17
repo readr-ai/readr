@@ -674,6 +674,17 @@ struct ReaderView: View {
         } else {
             // The reading anchor, so narration picks up at the top of the page
             // in view rather than at the chapter's start.
+            //
+            // Recorded because a device test saw narration begin near the top
+            // of the chapter after paging to its last page, and every route
+            // that turns a page does write this anchor — so the next report of
+            // it needs the number that was actually handed over, not another
+            // description of where the page looked. A chapter index and an
+            // offset, never any of the text (see DiagnosticsLog).
+            DiagnosticsLog.shared.record(
+                .info, .reader,
+                "Narration start: chapter \(chapterIndex) offset \(pagedAnchor)"
+            )
             narration.start(
                 book: book, chapterIndex: chapterIndex, characterOffset: pagedAnchor
             )

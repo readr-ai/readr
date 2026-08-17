@@ -652,6 +652,53 @@ final class NarrationControllerTests: XCTestCase {
         XCTAssertEqual(controller.chapterProgress, 2.0 / 3.0, accuracy: 0.001)
     }
 
+    // MARK: - A dropped completion callback
+
+    func testNarrationRecoversWhenTheEngineGoesQuietWithoutReporting() {
+        // The engine can drop `didFinish`. Every move the controller makes is
+        // driven by that callback, so without a backstop narration sits on the
+        // sentence forever showing Pause — which is what a reader saw at the
+        // end of a book on macOS.
+        let (controller, engine) = makeController()
+        controller.start(atChapter: 0)
+        engine.fallSilentWithoutReporting()
+
+        controller.tick()
+        XCTAssertEqual(
+            controller.status, .speaking,
+            "One quiet tick is not enough — an engine can read idle for an instant"
+        )
+
+        controller.tick()
+        XCTAssertEqual(engine.spokenTexts, ["Alpha one.", "Alpha two."])
+        XCTAssertEqual(controller.status, .speaking, "It moves on to the next sentence")
+    }
+
+    func testTheBackstopEndsTheBookRatherThanHangingOnTheLastSentence() {
+        let (controller, engine) = makeController()
+        controller.start(atChapter: 2, characterOffset: 10)
+        engine.fallSilentWithoutReporting()
+
+        controller.tick()
+        controller.tick()
+        XCTAssertEqual(controller.status, .finished)
+    }
+
+    func testTheBackstopIgnoresAPausedEngine() {
+        // Pausing makes the engine stop speaking on purpose; treating that as a
+        // finished utterance would advance the book under the reader.
+        let (controller, engine) = makeController()
+        controller.start(atChapter: 0)
+        controller.pause()
+
+        controller.tick()
+        controller.tick()
+        controller.tick()
+        XCTAssertEqual(controller.status, .paused)
+        XCTAssertEqual(engine.spoken.count, 1, "Nothing new was spoken")
+        XCTAssertEqual(controller.currentSegment?.text, "Alpha one.")
+    }
+
     // MARK: - Failure
 
     func testAnEngineFailurePausesInsteadOfLosingThePlace() {

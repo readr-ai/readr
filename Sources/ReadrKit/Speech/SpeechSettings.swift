@@ -49,17 +49,44 @@ public struct SpeechSettings: Hashable, Sendable, Codable {
 
     // MARK: - Rate
 
+    /// Fraction of the engine's headroom above `normal` that one whole step of
+    /// requested speed-up costs.
+    ///
+    /// A synthesizer's rate scale is not proportional to how fast you actually
+    /// hear the words, and above its default it climbs steeply. Spreading the
+    /// reader's 1×…2× linearly across the engine's remaining range — the
+    /// obvious mapping, and the one shipped first — made every label above 1×
+    /// roughly a double lie. Measured against AVFoundation on macOS by
+    /// rendering the synthesizer's own PCM and timing one sentence:
+    ///
+    ///     label   engine rate   spoken   actual
+    ///     0.75×   0.250         6.11s    0.77×   ✓
+    ///     1×      0.500         4.70s    1.00×   ✓
+    ///     1.25×   0.625         2.74s    1.71×
+    ///     1.5×    0.750         1.89s    2.49×
+    ///     1.75×   0.875         1.51s    3.11×
+    ///     2×      1.000         1.17s    4.04×
+    ///
+    /// The slow half was honest, so it keeps its linear mapping. The fast half
+    /// is inverted through that curve instead: roughly a third of the headroom
+    /// buys a genuine doubling, so 2× means twice as fast rather than four
+    /// times. Empirical — worth re-measuring if the engine changes.
+    private static let fastHeadroomPerStep = 0.344
+
     /// `rate` expressed on a synthesizer's own scale, where `normal` is its
     /// default speaking rate and `minimum`/`maximum` are its limits. 1.0 maps
-    /// to `normal` exactly; the halves either side interpolate linearly, so
-    /// the ends of the reader's slider reach the ends of the engine's range.
+    /// to `normal` exactly, and the label is meant to be the truth: 1.5× should
+    /// take two thirds of the time, not two fifths.
+    ///
+    /// The fast end therefore stops short of `maximum` — the engine's top rate
+    /// is far faster than anyone asked for, and reaching it was the bug.
     public func platformRate(normal: Double, minimum: Double, maximum: Double) -> Double {
-        if rate >= 1 {
-            let fraction = (rate - 1) / (Self.rateRange.upperBound - 1)
-            return normal + (maximum - normal) * fraction
+        guard rate > 1 else {
+            let fraction = (1 - rate) / (1 - Self.rateRange.lowerBound)
+            return normal - (normal - minimum) * fraction
         }
-        let fraction = (1 - rate) / (1 - Self.rateRange.lowerBound)
-        return normal - (normal - minimum) * fraction
+        let headroom = maximum - normal
+        return min(maximum, normal + (rate - 1) * headroom * Self.fastHeadroomPerStep)
     }
 
     /// The next speed the speed control should offer, wrapping past the top
