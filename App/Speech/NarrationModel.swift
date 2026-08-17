@@ -125,7 +125,16 @@ final class NarrationModel: ObservableObject {
         // What the platform would pick for this language, which is a better
         // judge of "the sensible voice" than any ranking of ours: macOS ships
         // novelty voices that tie on quality and win on name.
-        let systemDefault = AVSpeechEngine.systemDefaultVoiceID(for: language)
+        //
+        // Asked with the extensions stripped, because AVFoundation *honours* a
+        // region override rather than ignoring it: given `en-US-u-rg-inzzzz` it
+        // answers Rishi (en-IN), which is not in the en-US pool the picker
+        // lists — so the voice the picker checked and the voice at the top of
+        // it were two different voices. Our own matching normalizes on the way
+        // in, so `voices(matching:)` and `voice(for:)` still take the raw tag.
+        let systemDefault = AVSpeechEngine.systemDefaultVoiceID(
+            for: SpeechVoice.withoutExtensions(language)
+        )
         voices = selector.voices(
             matching: language, in: installed, systemDefault: systemDefault
         )

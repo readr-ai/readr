@@ -142,6 +142,17 @@ final class SpeechVoiceTests: XCTestCase {
         )
     }
 
+    func testTheCasePreservingFormIsStillValidBcp47() {
+        // What gets handed to a platform voice lookup, which parses it as
+        // BCP-47 rather than comparing it to anything of ours — and which
+        // honours a region override if one survives, answering with a voice
+        // for the overriding region.
+        XCTAssertEqual(SpeechVoice.withoutExtensions("en-US-u-rg-inzzzz"), "en-US")
+        XCTAssertEqual(SpeechVoice.withoutExtensions("en_US@rg=inzzzz"), "en-US")
+        XCTAssertEqual(SpeechVoice.withoutExtensions("zh-Hant-TW"), "zh-Hant-TW")
+        XCTAssertEqual(SpeechVoice.withoutExtensions(" en-GB "), "en-GB")
+    }
+
     // MARK: - The reader's own choice
 
     func testAnExplicitChoiceBeatsLanguageMatching() {

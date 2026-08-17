@@ -65,33 +65,46 @@ public struct SpeechVoice: Hashable, Sendable, Identifiable, Codable {
         Self.normalized(language).split(separator: "-").first.map(String.init) ?? ""
     }
 
-    /// Lowercased, hyphen-separated form of a language tag, so `en_US`, `EN-us`
-    /// and `en-US` compare equal (platforms and EPUB metadata disagree here).
+    /// A language tag with its extensions removed and its separators regular,
+    /// but its **case left alone** — `en_US@rg=inzzzz` and `en-US-u-rg-inzzzz`
+    /// both become `en-US`.
     ///
-    /// Extensions are dropped, in both spellings a platform uses for them. A
-    /// region override set in system settings reaches us as `en_US@rg=inzzzz`
-    /// from `Locale.identifier` and as `en-US-u-rg-inzzzz` from its BCP-47
-    /// form; either one carried through makes the exact-locale match fail
-    /// against every installed voice, so a book falls through to a
-    /// language-wide search and takes whatever sorts first across every locale
-    /// of that language.
+    /// This is the form to hand a platform API that resolves a tag to a voice.
+    /// A region override set in system settings arrives as one of those two
+    /// spellings, and `AVSpeechSynthesisVoice(language:)` *honours* the
+    /// override: on a Mac set to en-US with `rg=IN` it answers Rishi (en-IN),
+    /// a voice that isn't even in the en-US list the picker shows — so the
+    /// checked row and the first row disagreed with each other. Case is
+    /// preserved because the platform is being asked to parse this as BCP-47,
+    /// not to compare it against anything of ours.
     ///
-    /// The `@` form was fixed first and the `-u-` form was still live behind
-    /// it — the device that found the first spelling was matching on the
-    /// second. Everything from the first single-character subtag onwards is a
-    /// BCP-47 singleton extension (`-u-`, `-t-`, `-x-`), so cutting there
-    /// closes the whole class rather than one more spelling of it.
-    static func normalized(_ tag: String) -> String {
+    /// Everything from the first single-character subtag onwards is a BCP-47
+    /// singleton extension (`-u-`, `-t-`, `-x-`), so cutting there closes the
+    /// whole class rather than one more spelling of it. A script subtag
+    /// (`zh-Hant-TW`) is four characters and survives.
+    public static func withoutExtensions(_ tag: String) -> String {
         let base = tag.split(separator: "@", maxSplits: 1).first.map(String.init) ?? tag
         let cleaned = base.replacingOccurrences(of: "_", with: "-")
             .trimmingCharacters(in: .whitespaces)
-            .lowercased()
         var kept: [Substring] = []
         for subtag in cleaned.split(separator: "-") {
             if kept.count > 0, subtag.count == 1 { break }
             kept.append(subtag)
         }
         return kept.joined(separator: "-")
+    }
+
+    /// The same thing lowercased, so `en_US`, `EN-us` and `en-US` compare equal
+    /// (platforms and EPUB metadata disagree here). This is the matching form —
+    /// everything Readr compares a tag against goes through it.
+    ///
+    /// The `@` spelling was fixed first and the `-u-` spelling was still live
+    /// behind it: the device that found the first was matching on the second.
+    /// Carried through, either one makes the exact-locale match fail against
+    /// every installed voice, so a book falls through to a language-wide search
+    /// and takes whatever sorts first across every locale of that language.
+    static func normalized(_ tag: String) -> String {
+        withoutExtensions(tag).lowercased()
     }
 }
 

@@ -122,8 +122,9 @@ The first pass of this list (macOS, 2026-08-17) found four defects, three of
 them impossible to see any other way — an English book read aloud in a novelty
 voice, every speed above 1× running at roughly double its label, and narration
 hanging at the end of a book. The **second** pass, over the fixes, found two of
-them incompletely fixed. Run the whole list again after fixing anything on it;
-a repaired defect is exactly where the next one hides.
+them incompletely fixed; the **third** found a third-order version of the same
+voice bug still live. Run the whole list again after fixing anything on it; a
+repaired defect is exactly where the next one hides.
 
 **On a Mac** (needs audio out; use headphones if you like, and note that a
 screen recorder may swallow ⇧⌘L as a global hotkey — drive the on-screen
