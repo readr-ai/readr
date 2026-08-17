@@ -103,12 +103,17 @@ final class NarrationModel: ObservableObject {
         self.book = book
         let selector = VoiceSelector()
         let installed = AVSpeechEngine.availableVoices()
-        voices = selector.voices(matching: book.metadata.language, in: installed)
+        // A book that declares no language — most PDFs, plenty of EPUBs — would
+        // otherwise offer every voice installed on the device, in every
+        // language: a list well past a hundred rows on a stock iPhone, which is
+        // not a picker so much as a wall. Fall back to the reader's own locale,
+        // since a book whose language nobody recorded is most likely in the one
+        // they read in.
+        let language = book.metadata.language ?? Locale.current.identifier
+        voices = selector.voices(matching: language, in: installed)
         // A stored voice may have been deleted since (voices are downloadable),
         // and a book in another language needs one that can read it.
-        voiceID = selector.voice(
-            for: book.metadata.language, in: installed, preferring: voiceID
-        )?.id
+        voiceID = selector.voice(for: language, in: installed, preferring: voiceID)?.id
 
         let controller = NarrationController(
             book: book,

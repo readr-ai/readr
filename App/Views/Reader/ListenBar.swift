@@ -147,6 +147,11 @@ struct ListenBar: View {
 
     private var voiceMenu: some View {
         Menu {
+            // Above the list, not below it: the voice list is as long as the
+            // reader has voices installed, and anything under it is off the
+            // bottom of the menu — unreachable, and never even rendered.
+            menuNote("More voices: Settings \u{203A} Accessibility \u{203A} Spoken Content")
+            Divider()
             if narration.voices.isEmpty {
                 menuNote("No voices installed")
             } else {
@@ -157,10 +162,6 @@ struct ListenBar: View {
                 }
                 .pickerStyle(.inline)
             }
-            Divider()
-            // Where better voices come from — they are a system download, not
-            // something Readr can install.
-            menuNote("More voices: Settings \u{203A} Accessibility \u{203A} Spoken Content")
         } label: {
             Image(systemName: "waveform")
                 .font(.system(size: 12))
@@ -179,12 +180,13 @@ struct ListenBar: View {
     /// An informational row inside a menu — where better voices come from, or
     /// that none are installed.
     ///
-    /// A disabled Button rather than a bare `Text`: SwiftUI drops a plain
-    /// `Text` from a `Menu` (the UI test looking for this line failed three
-    /// times over while the Button- and Picker-backed rows of the speed and
-    /// sleep menus were found every time), so the note the reader needs most —
-    /// the one telling them the voices come from system Settings — was the one
-    /// row that never appeared.
+    /// A disabled Button rather than a bare `Text` because a Button is
+    /// unambiguously a menu row on both platforms, where a bare `Text`'s
+    /// treatment varies. (This was my first guess at why the UI test couldn't
+    /// find this line, and it was wrong — the row was rendering, just below a
+    /// voice list long enough to push it off the end of the menu. The row's
+    /// POSITION is the fix; the Button is kept because it is the more defined
+    /// of the two, not because `Text` was proven broken.)
     private func menuNote(_ text: String) -> some View {
         Button(text) {}
             .disabled(true)
