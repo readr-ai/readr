@@ -148,7 +148,7 @@ struct ListenBar: View {
     private var voiceMenu: some View {
         Menu {
             if narration.voices.isEmpty {
-                Text("No voices installed")
+                menuNote("No voices installed")
             } else {
                 Picker("Voice", selection: voiceBinding) {
                     ForEach(narration.voices) { voice in
@@ -160,7 +160,7 @@ struct ListenBar: View {
             Divider()
             // Where better voices come from — they are a system download, not
             // something Readr can install.
-            Text("More voices: Settings \u{203A} Accessibility \u{203A} Spoken Content")
+            menuNote("More voices: Settings \u{203A} Accessibility \u{203A} Spoken Content")
         } label: {
             Image(systemName: "waveform")
                 .font(.system(size: 12))
@@ -174,6 +174,20 @@ struct ListenBar: View {
 
     private var voiceBinding: Binding<String?> {
         Binding(get: { narration.voiceID }, set: { narration.setVoice($0) })
+    }
+
+    /// An informational row inside a menu — where better voices come from, or
+    /// that none are installed.
+    ///
+    /// A disabled Button rather than a bare `Text`: SwiftUI drops a plain
+    /// `Text` from a `Menu` (the UI test looking for this line failed three
+    /// times over while the Button- and Picker-backed rows of the speed and
+    /// sleep menus were found every time), so the note the reader needs most —
+    /// the one telling them the voices come from system Settings — was the one
+    /// row that never appeared.
+    private func menuNote(_ text: String) -> some View {
+        Button(text) {}
+            .disabled(true)
     }
 
     private var sleepMenu: some View {
