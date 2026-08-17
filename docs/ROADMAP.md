@@ -180,8 +180,46 @@ docs/DEVELOPMENT-PLAN.md §M6–M8.
   reading surfaces cache their attributed string per page and rebuilding it
   each sentence would reset the reader's selection — it needs its own pass on
   `SelectableTextView`'s render cache)
-- [ ] Deferred: a neural on-device voice behind the same `SpeechEngine`
-  protocol, if Apple's voices prove not good enough for long listening
+
+## M10 — A better voice (Kokoro-82M), proposed
+
+The "if" in the deferred note below has been answered. Apple's voices were
+judged not good enough for long listening — poor enunciation and flat
+modulation — so the neural voice moves from a contingency to a plan.
+[Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) is the candidate:
+82M parameters, Apache-2.0 weights, and several working Apple-silicon ports
+(a Core ML pipeline reported at 4–4.5x realtime on A17 Pro; MLX Swift ports
+around 3.3x on an iPhone 13 Pro, with memory-watchdog trouble on 4GB devices).
+
+`SpeechEngine` is already the seam, so `NarrationController` and every
+playback rule are untouched by this. What is *not* settled, and what a spike
+has to answer before any engine code is written:
+
+- [ ] **Phonemization licence — the blocker.** Kokoro's usual path is misaki →
+  **espeak-ng, which is GPL-3.0**. Readr is MIT and ships on the App Store;
+  linking it would relicense the app and walks into the familiar GPLv3/App
+  Store conflict. (espeak-ng's own iOS app isolates it in a GPLv3 Audio Unit
+  behind XPC to keep its front end MIT — a real pattern, but heavy for
+  something on narration's critical path.) Is there a permissive G2P route,
+  and **how bad is it on invented proper nouns**? A novel is full of names no
+  dictionary has, which is precisely where a dictionary-plus-fallback scheme
+  is weakest. If the answer is "espeak or nothing", the honest outcome is a
+  macOS-only option, not an App Store feature.
+- [ ] **Cost on device.** Realtime factor, memory on a 4GB phone, and battery
+  and heat over a genuine hour of listening — 3–4.5x realtime means a
+  sustained duty cycle, not a burst.
+- [ ] **Word timings.** `willSpeak` drives read-along and resume-at-the-word
+  after a speed change. Kokoro returns audio, not timings; its duration
+  predictor makes them derivable in principle, but whether a port exposes them
+  is unknown. If not, that behaviour degrades to sentence granularity.
+- [ ] **Model delivery.** 80–330MB depending on quantization, so downloaded on
+  demand rather than bundled — and the store copy's "nothing to download" line
+  then holds only for the Apple-voice default.
+
+Note what this *fixes* for free: Kokoro takes a speed input directly, so the
+empirical AVFoundation rate calibration in `SpeechSettings` stops being
+needed on that path.
+
 
 ## Open questions / decisions to revisit
 - OAuth feasibility for "log in with Claude / ChatGPT" vs. API keys only.
