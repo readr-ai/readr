@@ -69,6 +69,16 @@ struct ReaderView: View {
     /// Footnote being shown as a popup (a tapped noteref whose fragment
     /// matched a lifted `Chapter.footnotes` entry); nil ⇒ none.
     @State private var footnotePopup: FootnotePopup?
+    /// Text-to-speech. Owned by the reader (not the app model) because
+    /// narration is scoped to the open book: leaving the reader ends it, and
+    /// the Listen bar only exists while it is running. Created empty and bound
+    /// to a book by the Listen button.
+    @StateObject private var narration = NarrationModel()
+    /// Set while narration is moving the reading anchor, so the page-turn
+    /// handler can tell the voice's page turns from the reader's. Render-inert
+    /// for the same reason `currentSelection` is — it must never invalidate
+    /// the view tree from inside an update.
+    @State private var narrationMove = NarrationMoveFlag()
 
     /// Persisted reading layout: continuous scroll, one page, or facing pages.
     // Single page is the first-run default (#42): book-like pagination is the
@@ -287,6 +297,11 @@ struct ReaderView: View {
             .onAppear {
                 restoreOnce()
                 updateMinutesCache()
+                // The page follows the voice: narration reports the sentence
+                // it moves to, and the reader turns to it.
+                narration.onPosition = { position in
+                    followNarration(position)
+                }
             }
             .onDisappear {
                 // Flush the debounced page-turn save — closing the reader
@@ -294,6 +309,19 @@ struct ReaderView: View {
                 savePositionTask?.cancel()
                 savePositionTask = nil
                 saveTextPosition(chapterIndex: chapterIndex, characterOffset: pagedAnchor)
+                // Closing the book stops the voice — narration is scoped to the
+                // reader, and a book read aloud after the reader is gone has no
+                // controls and no page to follow. But ONLY when the reader is
+                // really leaving: a presented sheet can take this view off
+                // screen too (the same reason `restoreOnce` guards against a
+                // second `onAppear`), and asking the book about the passage it
+                // just read must not cut the narration off.
+                if !isPresentingOverlay {
+                    // Also breaks the reference cycle the callback forms —
+                    // model → closure → this view → its `@StateObject` box.
+                    narration.onPosition = nil
+                    narration.stop()
+                }
             }
             .onChange(of: chapterIndex) { _, newValue in
                 // Chapter turns are rare — save immediately, and drop any
@@ -311,20 +339,20 @@ struct ReaderView: View {
                 // views report nil from onDisappear.)
                 currentSelection.value = nil
             }
-            .onChange(of: pagedAnchor) { _, newValue in
+            .onChange(of: pagedAnchor) { _, _ in
+                if narrationMove.isActive {
+                    narrationMove.isActive = false
+                    // The voice turned this page, not the reader: their
+                    // selection is still theirs (the annotation shortcuts read
+                    // it), and the save throttles instead of debouncing.
+                    scheduleAnchorSave(after: 30, throttled: true)
+                    return
+                }
                 // A page turn replaces the visible text: the collapse report
                 // arrives async, so clear eagerly — same race as a chapter
                 // turn, just within one chapter.
                 currentSelection.value = nil
-                // Page turns come in bursts and every save rewrites the whole
-                // library JSON — debounce offset-only saves. Chapter changes
-                // and onDisappear flush immediately.
-                savePositionTask?.cancel()
-                savePositionTask = Task { @MainActor in
-                    try? await Task.sleep(nanoseconds: 1_000_000_000)
-                    guard !Task.isCancelled else { return }
-                    saveTextPosition(chapterIndex: chapterIndex, characterOffset: newValue)
-                }
+                scheduleAnchorSave(after: 1, throttled: false)
             }
             // Build the retrieval index in the background when the book opens
             // so the first "ask" is fast. Safe to call repeatedly.
@@ -349,6 +377,16 @@ struct ReaderView: View {
                 readingSurface(for: chapter)
             } else {
                 ContentUnavailableView("No readable content", systemImage: "doc")
+            }
+        }
+        // The Listen bar insets the reading surface rather than floating over
+        // it: the page turns itself to follow the voice, so the bar must never
+        // cover the sentence being read.
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            if narration.isActive {
+                ListenBar(narration: narration, style: style) {
+                    narration.stop()
+                }
             }
         }
     }
@@ -569,6 +607,7 @@ struct ReaderView: View {
                     searchButton
                 }
                 appearanceButton
+                listenButton
                 askButton
                 notesButton
             }
@@ -586,6 +625,7 @@ struct ReaderView: View {
                 } else {
                     Spacer()
                 }
+                listenButton
                 askButton
             }
         }
@@ -605,10 +645,88 @@ struct ReaderView: View {
             if model.isPDF(book) {
                 pdfDisplayMenu
             }
+            listenButton
             askButton
             notesButton
         }
         #endif
+    }
+
+    /// Read the book aloud, starting from the visible page. Pressing it again
+    /// (or the bar's ✕) stops. Narration reads the book's *text*, so a PDF
+    /// shown as original pages is narrated from its extracted text.
+    private var listenButton: some View {
+        Button { toggleListening() } label: {
+            Label(
+                narration.isActive ? "Stop Listening" : "Listen",
+                systemImage: narration.isActive ? "headphones.circle.fill" : "headphones"
+            )
+        }
+        .keyboardShortcut("l", modifiers: [.command, .shift])
+        .accessibilityIdentifier("reader.listen")
+        .accessibilityLabel(narration.isActive ? "Stop listening" : "Listen to this book")
+        .help("Read aloud from this page (\u{21E7}\u{2318}L)")
+    }
+
+    private func toggleListening() {
+        if narration.isActive {
+            narration.stop()
+        } else {
+            // The reading anchor, so narration picks up at the top of the page
+            // in view rather than at the chapter's start.
+            narration.start(
+                book: book, chapterIndex: chapterIndex, characterOffset: pagedAnchor
+            )
+        }
+    }
+
+    /// Keep the page under the voice. Narration reports each sentence it moves
+    /// to; setting the anchor re-derives the visible page from it, so the page
+    /// turns exactly when the reading crosses onto the next one — and the
+    /// position that gets persisted is where the reader actually listened to.
+    private func followNarration(_ position: NarrationPosition) {
+        guard book.chapters.indices.contains(position.chapterIndex) else { return }
+        guard position.chapterIndex == chapterIndex else {
+            jump(toChapter: position.chapterIndex, offset: position.characterOffset)
+            return
+        }
+        guard position.characterOffset != pagedAnchor else { return }
+        narrationMove.isActive = true
+        pagedAnchor = position.characterOffset
+        if layout == .scroll {
+            scrollTarget = position.characterOffset
+        }
+    }
+
+    /// True while something is presented over the reader.
+    private var isPresentingOverlay: Bool {
+        showAsk || showNotes || showTOC || showSearch || showAppearance
+            || editingNote != nil || footnotePopup != nil
+    }
+
+    /// Persist the reading anchor off the hot path.
+    ///
+    /// Reader page turns arrive in bursts and then stop, so they **debounce** —
+    /// each turn pushes the save back a second and only the last one lands.
+    /// Narration's page turns never stop arriving (a sentence every few seconds
+    /// for as long as the reader listens), and every save rewrites the whole
+    /// library JSON: debouncing those would either never fire or rewrite the
+    /// file at sentence rate for an hour. They **throttle** instead — one save
+    /// per window, whatever the voice is doing in between.
+    private func scheduleAnchorSave(after seconds: Double, throttled: Bool) {
+        if throttled {
+            guard savePositionTask == nil else { return }
+        } else {
+            savePositionTask?.cancel()
+        }
+        savePositionTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+            guard !Task.isCancelled else { return }
+            // Reads the anchor at fire time, so a throttled save records where
+            // the voice actually got to, not where it was a window ago.
+            saveTextPosition(chapterIndex: chapterIndex, characterOffset: pagedAnchor)
+            savePositionTask = nil
+        }
     }
 
     private var tocButton: some View {
@@ -1439,6 +1557,12 @@ extension Book {
 /// an in-flight touch (see the `currentSelection` doc in `ReaderView`).
 final class SelectionMirror {
     var value: Range<Int>?
+}
+
+/// Render-inert marker for "this anchor move came from narration, not the
+/// reader" (see `SelectionMirror` for why it is a class in a `@State` slot).
+final class NarrationMoveFlag {
+    var isActive = false
 }
 
 // MARK: - Chapter swipe (scroll mode)

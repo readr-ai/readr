@@ -1,0 +1,183 @@
+import XCTest
+@testable import ReadrKit
+
+/// The narration cursor: where "read from here" lands, and what happens at
+/// chapter walls and the ends of the book.
+final class SpeechPlaylistTests: XCTestCase {
+
+    /// Three linear chapters with a `linear="no"` notes document in the middle
+    /// — the same shape `AppModel.sampleBooks` has, and the reason continuous
+    /// playback needs a skip rule at all.
+    private func makeBook(
+        chapters: [(title: String, text: String, linear: Bool)] = [
+            ("One", "Alpha one. Alpha two.", true),
+            ("Notes", "A note nobody reads aloud.", false),
+            ("Two", "Beta one. Beta two.", true),
+        ]
+    ) -> Book {
+        Book(
+            metadata: BookMetadata(title: "Test"),
+            chapters: chapters.enumerated().map { index, chapter in
+                Chapter(
+                    title: chapter.title, order: index, text: chapter.text,
+                    isLinear: chapter.linear ? nil : false
+                )
+            },
+            estimatedTokenCount: 100
+        )
+    }
+
+    // MARK: - Seeking
+
+    func testSeekStartsAtTheSentenceContainingTheOffset() {
+        var playlist = SpeechPlaylist(book: makeBook())
+        // Offset 14 is inside "Alpha two." (which begins at 11).
+        let segment = playlist.seek(toChapter: 0, characterOffset: 14)
+        XCTAssertEqual(segment?.text, "Alpha two.")
+        XCTAssertEqual(playlist.position?.chapterIndex, 0)
+        XCTAssertEqual(playlist.position?.characterOffset, 11)
+    }
+
+    func testSeekFromTheTopOfAChapterStartsAtItsFirstSentence() {
+        var playlist = SpeechPlaylist(book: makeBook())
+        XCTAssertEqual(playlist.seek(toChapter: 2)?.text, "Beta one.")
+    }
+
+    func testSeekHonoursANonLinearChapterTheReaderOpened() {
+        // Continuous playback skips the notes document, but a reader who is
+        // *in* it and presses Listen expects to hear it.
+        var playlist = SpeechPlaylist(book: makeBook())
+        XCTAssertEqual(playlist.seek(toChapter: 1)?.text, "A note nobody reads aloud.")
+    }
+
+    func testSeekPastTheEndOfAChapterRollsIntoTheNextOne() {
+        var playlist = SpeechPlaylist(book: makeBook())
+        let segment = playlist.seek(toChapter: 0, characterOffset: 9_999)
+        XCTAssertEqual(segment?.text, "Beta one.", "Should skip the non-linear notes chapter")
+        XCTAssertEqual(segment?.chapterIndex, 2)
+    }
+
+    func testSeekSkipsChaptersWithNothingToSay() {
+        let book = makeBook(chapters: [
+            ("Cover", "\u{FFFC}", true),
+            ("Blank", "", true),
+            ("One", "Real prose here.", true),
+        ])
+        var playlist = SpeechPlaylist(book: book)
+        let segment = playlist.seek(toChapter: 0)
+        XCTAssertEqual(segment?.text, "Real prose here.")
+        XCTAssertEqual(segment?.chapterIndex, 2)
+    }
+
+    func testSeekOutsideTheBookFindsNothing() {
+        var playlist = SpeechPlaylist(book: makeBook())
+        XCTAssertNil(playlist.seek(toChapter: 99))
+        XCTAssertNil(playlist.seek(toChapter: -1))
+        XCTAssertNil(playlist.current)
+    }
+
+    func testNothingIsCurrentBeforeSeeking() {
+        let playlist = SpeechPlaylist(book: makeBook())
+        XCTAssertNil(playlist.current)
+        XCTAssertNil(playlist.position)
+        XCTAssertEqual(playlist.chapterProgress, 0)
+    }
+
+    // MARK: - Advancing
+
+    func testAdvanceWalksSentencesThenCrossesIntoTheNextLinearChapter() {
+        var playlist = SpeechPlaylist(book: makeBook())
+        playlist.seek(toChapter: 0)
+        XCTAssertEqual(playlist.current?.text, "Alpha one.")
+        XCTAssertEqual(playlist.advance()?.text, "Alpha two.")
+        // The notes chapter (linear="no") is skipped by continuous playback.
+        XCTAssertEqual(playlist.advance()?.text, "Beta one.")
+        XCTAssertEqual(playlist.advance()?.text, "Beta two.")
+    }
+
+    func testAdvanceAtTheEndOfTheBookReturnsNilAndKeepsThePlace() {
+        var playlist = SpeechPlaylist(book: makeBook())
+        playlist.seek(toChapter: 2, characterOffset: 10)
+        XCTAssertEqual(playlist.current?.text, "Beta two.")
+        XCTAssertNil(playlist.advance())
+        XCTAssertEqual(
+            playlist.current?.text, "Beta two.",
+            "The last sentence stays the resume point"
+        )
+    }
+
+    func testAdvanceBeforeSeekingDoesNothing() {
+        var playlist = SpeechPlaylist(book: makeBook())
+        XCTAssertNil(playlist.advance())
+        XCTAssertNil(playlist.rewind())
+    }
+
+    // MARK: - Rewinding
+
+    func testRewindStepsBackAndCrossesToThePreviousChapterLastSentence() {
+        var playlist = SpeechPlaylist(book: makeBook())
+        playlist.seek(toChapter: 2)
+        XCTAssertEqual(playlist.current?.text, "Beta one.")
+        XCTAssertEqual(playlist.rewind()?.text, "Alpha two.", "Skips the notes chapter backwards")
+        XCTAssertEqual(playlist.rewind()?.text, "Alpha one.")
+    }
+
+    func testRewindAtTheStartOfTheBookReturnsNil() {
+        var playlist = SpeechPlaylist(book: makeBook())
+        playlist.seek(toChapter: 0)
+        XCTAssertNil(playlist.rewind())
+        XCTAssertEqual(playlist.current?.text, "Alpha one.")
+    }
+
+    // MARK: - Chapter jumps
+
+    func testAdvanceToNextChapterSkipsTheRestOfThisOne() {
+        var playlist = SpeechPlaylist(book: makeBook())
+        playlist.seek(toChapter: 0)
+        XCTAssertEqual(playlist.advanceToNextChapter()?.text, "Beta one.")
+        XCTAssertNil(playlist.advanceToNextChapter(), "No chapter after the last one")
+    }
+
+    func testPreviousChapterRestartsThisChapterBeforeSteppingBack() {
+        var playlist = SpeechPlaylist(book: makeBook())
+        playlist.seek(toChapter: 2, characterOffset: 12)
+        XCTAssertEqual(playlist.current?.text, "Beta two.")
+        // Mid-chapter: back to the top of this chapter, like a track control.
+        XCTAssertEqual(playlist.rewindToChapterStart()?.text, "Beta one.")
+        // Already at the top: step back a chapter.
+        XCTAssertEqual(playlist.rewindToChapterStart()?.text, "Alpha one.")
+        XCTAssertNil(playlist.rewindToChapterStart())
+    }
+
+    // MARK: - Progress
+
+    func testChapterProgressTracksPositionWithinTheChapter() {
+        var playlist = SpeechPlaylist(book: makeBook())
+        playlist.seek(toChapter: 0)
+        XCTAssertEqual(playlist.chapterProgress, 0.5, accuracy: 0.001)
+        playlist.advance()
+        XCTAssertEqual(playlist.chapterProgress, 1.0, accuracy: 0.001)
+        // Crossing into a new chapter resets the measure to that chapter.
+        playlist.advance()
+        XCTAssertEqual(playlist.chapterProgress, 0.5, accuracy: 0.001)
+    }
+
+    // MARK: - Segmentation
+
+    func testSegmentsAreBuiltPerChapterAndReusable() {
+        var playlist = SpeechPlaylist(book: makeBook())
+        let first = playlist.segments(inChapter: 0)
+        let second = playlist.segments(inChapter: 0)
+        XCTAssertEqual(first, second)
+        XCTAssertEqual(first.map(\.text), ["Alpha one.", "Alpha two."])
+        XCTAssertTrue(playlist.segments(inChapter: 99).isEmpty)
+    }
+
+    func testACustomSegmenterIsUsed() {
+        var playlist = SpeechPlaylist(
+            book: makeBook(chapters: [("One", "abcdefghij", true)]),
+            segmenter: SpeechSegmenter(maximumSegmentLength: 4)
+        )
+        XCTAssertEqual(playlist.segments(inChapter: 0).map(\.text), ["abcd", "efgh", "ij"])
+    }
+}

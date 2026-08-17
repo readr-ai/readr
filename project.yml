@@ -51,6 +51,12 @@ targets:
         # never asks the export-compliance question per build.
         ITSAppUsesNonExemptEncryption: false
         UILaunchScreen: {}
+        # Read-aloud keeps playing with the screen locked or the app in the
+        # background, like any audiobook — see App/Speech/AVSpeechEngine.swift,
+        # which puts the session in .playback/.spokenAudio, and NarrationModel,
+        # which publishes to the lock screen and takes remote commands.
+        UIBackgroundModes:
+          - audio
         UISupportedInterfaceOrientations~iphone:
           - UIInterfaceOrientationPortrait
           - UIInterfaceOrientationLandscapeLeft

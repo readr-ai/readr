@@ -162,6 +162,27 @@ docs/DEVELOPMENT-PLAN.md §M6–M8.
   underline parity across themes; PDF chrome parity with the EPUB reader
   toolbar
 
+## M9 — Listen (text-to-speech)
+- [x] `ReadrKit.Speech`: sentence segmentation, playlist across chapters,
+  `NarrationController` over a `SpeechEngine` protocol — every playback rule
+  unit-tested on Linux CI against a mock engine
+- [x] `AVSpeechEngine` (Apple's on-device voices — offline, nothing to
+  download, no egress), `NarrationModel`, and the reader's Listen bar
+- [x] Controls: play/pause, sentence and chapter skip, speed, voice, sleep
+  timer (timed + end-of-chapter), auto-advance
+- [x] The page follows the voice, and the position it persists is where the
+  reader listened to
+- [x] iOS background audio: `UIBackgroundModes: audio`, Now Playing, and
+  lock-screen/headphone remote commands
+- [x] XCUITests over the bar (`-uiTestSilentNarration` keeps them off
+  simulator audio)
+- [ ] Deferred: highlighting the spoken sentence in the page itself (the
+  reading surfaces cache their attributed string per page and rebuilding it
+  each sentence would reset the reader's selection — it needs its own pass on
+  `SelectableTextView`'s render cache)
+- [ ] Deferred: a neural on-device voice behind the same `SpeechEngine`
+  protocol, if Apple's voices prove not good enough for long listening
+
 ## Open questions / decisions to revisit
 - OAuth feasibility for "log in with Claude / ChatGPT" vs. API keys only.
 - SwiftData vs. GRDB for persistence.
