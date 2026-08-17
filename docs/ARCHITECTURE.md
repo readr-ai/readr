@@ -16,6 +16,7 @@
 │  RAG      ── RAGIndex (sqlite-vec + FTS5, rerank)            │
 │  LLM      ── LLMProvider (Anthropic / OpenAI / Local)        │
 │  Article  ── ArticleComposer (highlights+notes → Markdown)   │
+│  Speech   ── NarrationController (segments → SpeechEngine)   │
 │  Models   ── Book, Chapter, Highlight, Note, Conversation    │
 └──────────────────────────────────────────────────────────────┘
 ```
@@ -34,12 +35,28 @@ can be swapped or mocked.
 | `RAGIndex` | Build/query the hybrid index for a book | SQLite (`sqlite-vec` + FTS5) |
 | `ContextStrategy` | Assemble the optimal prompt context for a query | `AdaptiveContextStrategy` |
 | `ArticleComposer` | Compose highlights + notes into an article | LLM-backed |
+| `SpeechEngine` | Speak one utterance; report boundaries and completion | `AVSpeechEngine` (AVFoundation, on-device) |
 
 ## Rendering
 
 [Readium Swift toolkit](https://github.com/readium/swift-toolkit) provides EPUB +
 PDF navigation, pagination, and **decoration** APIs for highlights. We wrap it
 behind `BookRenderer` so the UI is insulated from Readium specifics.
+
+## Read-aloud
+
+`SpeechSegmenter` splits chapter text into sentence-sized `SpeechSegment`s
+addressed by character offsets into `Chapter.text` — the same coordinates
+highlights use — and `SpeechPlaylist` walks them across chapters in reading
+order. `NarrationController` owns every playback rule (skip, speed and voice
+changes applied mid-sentence, sleep timer, auto-advance, the cancelled-utterance
+race) and drives a `SpeechEngine`. All of it is pure and unit-tested on Linux
+CI; only the synthesizer itself lives in the app target.
+
+Apple's `AVSpeechSynthesizer` is the default engine: it is on-device, so
+listening keeps the same zero-egress promise as reading, and it needs no
+account or download. A neural on-device voice can replace it behind the same
+protocol.
 
 ## Persistence
 

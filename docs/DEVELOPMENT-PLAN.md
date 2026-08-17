@@ -165,6 +165,32 @@ pointer `.hoverEffect` on custom controls; iPad screenshots in the
 **Exit:** iPad TestFlight build walks J1–J6 in both orientations and Split
 View; iPad UITest lane green.
 
+### M9 — Listen (text-to-speech) — *J8*
+**Tests first:**
+- `[unit]` sentence segmentation: abbreviations/initials/decimals are not
+  sentence ends; image placeholders and scene-break rules are never spoken;
+  every segment's range addresses its chapter text exactly.
+- `[unit]` playlist: "read from here" lands on the sentence at the offset;
+  continuous playback skips `linear="no"` documents; chapter walls in both
+  directions.
+- `[unit]` every control against a mock engine: play/pause/stop, sentence and
+  chapter skips, the cancelled-utterance race, mid-sentence speed and voice
+  changes resuming at the word reached, sleep timer (timed + end-of-chapter,
+  and pausing not burning it), auto-advance off, engine failure.
+- `[ui]` Listen starts narration from the visible page, the bar carries every
+  control, each is operable, closing it ends narration
+  (`-uiTestSilentNarration` swaps in a soundless engine, so nothing depends on
+  simulator audio).
+
+**Build:** `ReadrKit.Speech` (`SpeechSegmenter`, `SpeechPlaylist`,
+`SpeechSettings`, `VoiceSelector`, `SleepTimerState`, `NarrationController`
+over a `SpeechEngine` protocol); `AVSpeechEngine` + `NarrationModel` +
+`ListenBar` in the app; `UIBackgroundModes: audio` and Now Playing / remote
+commands for lock-screen listening on iOS.
+
+**Exit:** a book reads aloud from the visible page with the page following the
+voice; all M9 tests green; manual J8 walked on device with the screen locked.
+
 ---
 
 ## Risk register

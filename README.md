@@ -46,6 +46,10 @@ a shareable article.
   book is the context, not the ceiling: questions that reach past it (later
   research, the film adaptation) get real answers, marked as coming from
   beyond the book.
+- 🎧 **Listen to the book**: read-aloud from the page you're on, using Apple's
+  on-device voices — no network, no account, nothing to download. Sentence
+  skip, speed, voice, and a sleep timer; the page turns itself to follow the
+  voice, and lock-screen/headphone controls work with the screen off (iOS).
 - ✍️ **Highlights → article**: auto-compose your highlights and notes into an
   editable, exportable Markdown article (streams in live).
 - 🔌 **Bring your own LLM**: paste an **Anthropic** or **OpenAI** API key, or

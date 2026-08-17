@@ -98,4 +98,29 @@ final class PrivacyAuditTests: XCTestCase {
         XCTAssertTrue(info.isLocal)
         XCTAssertEqual(info.kind, .local)
     }
+
+    /// J8 — read-aloud is on-device too. Cloud text-to-speech would mean
+    /// posting the book, sentence by sentence, to somebody's API; the
+    /// narration pipeline takes no `HTTPClient`, so like retrieval it has no
+    /// place to inject network access and nothing to egress. Everything it
+    /// touches — segmenting, the playlist, the controller — is exercised here
+    /// against an engine that does nothing but record.
+    func testNarrationPipelineNeedsNoNetwork() {
+        final class SilentEngine: SpeechEngine {
+            weak var delegate: (any SpeechEngineDelegate)?
+            var state: SpeechEngineState = .idle
+            var spoken: [SpeechRequest] = []
+            func speak(_ request: SpeechRequest) { spoken.append(request) }
+            func pause() {}
+            func resume() {}
+            func stop() {}
+        }
+
+        let engine = SilentEngine()
+        let controller = NarrationController(book: makeBook(), engine: engine)
+        controller.start(atChapter: 0)
+
+        XCTAssertEqual(controller.status, .speaking)
+        XCTAssertFalse(engine.spoken.isEmpty, "The book is narrated by a local engine")
+    }
 }

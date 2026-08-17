@@ -91,6 +91,26 @@ model.** (See `docs/AUTH.md`.)
   compose, **then** the network layer records zero outbound calls. `[unit][integration]`
 - **Expected:** no telemetry is sent by default. `[unit]`
 
+## J8 — Listen to the book
+**As a reader, I want the book read aloud from where I am, so I can keep going
+when I can't look at the page.**
+
+- **Given** an open book, **when** I press Listen, **then** narration starts at
+  the first sentence of the visible page — never mid-sentence. `[unit][ui]`
+- **Given** narration is running, **when** it reaches the end of a page or a
+  chapter, **then** the reader follows it and my saved position moves with the
+  voice. `[unit][ui]`
+- **Given** narration is running, **when** I change the speed or the voice,
+  **then** the change is heard immediately, continuing from the word being
+  spoken rather than restarting the sentence. `[unit][ui]`
+- **Given** a sleep timer of N minutes, **when** N minutes of *listening* have
+  passed, **then** narration stops and keeps my place; time spent paused does
+  not count. `[unit]`
+- **Given** narration is running on iPhone, **when** the screen locks, **then**
+  it keeps playing and the lock-screen/headphone controls work. `[manual]`
+- **Expected:** narration is on-device — listening makes no network calls
+  (J7 covers the audit). `[unit]`
+
 ---
 
 ## Cross-cutting non-functional expectations
