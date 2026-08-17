@@ -56,8 +56,10 @@ final class NarrationControllerTests: XCTestCase {
 
     // MARK: - Starting from a page
 
-    func testStartReadsFromTheSentenceAtTheGivenOffset() {
+    func testStartReadsFromTheSentenceBeginningAtTheGivenOffset() {
         let (controller, engine) = makeController()
+        // 11 is exactly where "Alpha two." begins, so that is the sentence —
+        // not the one after it.
         controller.start(atChapter: 0, characterOffset: 11)
 
         XCTAssertEqual(controller.status, .speaking)
@@ -65,12 +67,14 @@ final class NarrationControllerTests: XCTestCase {
         XCTAssertEqual(controller.currentSegment?.text, "Alpha two.")
     }
 
-    func testStartNeverBeginsMidSentence() {
+    func testStartBeginsAtTheFirstWholeSentenceAfterTheAnchor() {
         let (controller, engine) = makeController()
-        // Offset 15 sits inside "Alpha two." — narration starts at its head,
-        // not halfway through a word.
+        // Offset 15 sits inside "Alpha two." (11..<21). The anchor a reader
+        // presses Listen on is the top of a page, and a sentence straddling
+        // that boundary began on the page before — so narration takes the next
+        // whole one rather than dragging the page backwards to finish it.
         controller.start(atChapter: 0, characterOffset: 15)
-        XCTAssertEqual(engine.spokenTexts, ["Alpha two."])
+        XCTAssertEqual(engine.spokenTexts, ["Alpha three."])
     }
 
     func testStartInANonLinearChapterReadsItAnyway() {

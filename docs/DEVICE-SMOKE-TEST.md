@@ -121,7 +121,9 @@ tap anything. So the suites prove the *logic* and prove nothing about the
 The first pass of this list (macOS, 2026-08-17) found four defects, three of
 them impossible to see any other way — an English book read aloud in a novelty
 voice, every speed above 1× running at roughly double its label, and narration
-hanging at the end of a book. Treat it as load-bearing, not a formality.
+hanging at the end of a book. The **second** pass, over the fixes, found two of
+them incompletely fixed. Run the whole list again after fixing anything on it;
+a repaired defect is exactly where the next one hides.
 
 **On a Mac** (needs audio out; use headphones if you like, and note that a
 screen recorder may swallow ⇧⌘L as a global hotkey — drive the on-screen
@@ -130,12 +132,17 @@ control instead):
 - [ ] Press Listen mid-chapter: a voice speaks, and it is a **normal** voice —
       on macOS, `Samantha` or whatever System Settings names as the default,
       never `Albert`, `Bad News`, `Bubbles` or another novelty voice
-- [ ] The voice menu **opens on** that same sensible voice, not on the joke ones
+- [ ] The voice menu **opens on** that same sensible voice, and the joke ones are
+      at the **bottom** of the list — checking only the first row misses this,
+      which is how it survived one round of fixes
 - [ ] Narration starts at the first sentence of the page in view, **not** the
-      chapter's start — page to the last page of a chapter first, then press
-      Listen. If it jumps back, capture the number: Settings → Help → Report a
-      bug → "See exactly what will be sent" carries a
-      `Narration start: chapter N offset M` line
+      chapter's start and **not** a sentence that began on the previous page —
+      page to the last page of a chapter first, then press Listen. Read the
+      *text* it speaks against the page rather than trusting where the view
+      scrolls to. If it looks wrong, capture the number: Settings → Help →
+      Report a bug → "See exactly what will be sent" carries a
+      `Narration start: chapter N offset M` line, and the sample book's
+      paragraphs are all different, so the offset and the words should agree
 - [ ] The page turns itself to follow the voice, and crosses into the next
       chapter on its own
 - [ ] Change speed **mid-sentence**: it continues from about that word rather
@@ -148,7 +155,9 @@ control instead):
       seconds and the control returns to ▶, rather than sitting on ⏸ forever
 - [ ] Pause, wait, play: it resumes rather than restarting the sentence
 
-**On an iPhone** — none of this can be faked on a simulator:
+**On an iPhone** — none of this can be faked on a simulator, and none of it has
+been run yet: the machine that verified 3.0.0 had no device paired to it, so
+these four shipped on unit tests and the simulator alone.
 
 - [ ] Lock the screen while narrating: playback continues
 - [ ] Lock screen shows the book and author, and its play/pause works

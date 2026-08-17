@@ -108,9 +108,31 @@ final class AVSpeechEngine: NSObject, SpeechEngine {
                 id: voice.identifier,
                 name: voice.name,
                 language: voice.language,
-                quality: quality(of: voice)
+                quality: quality(of: voice),
+                family: family(of: voice)
             )
         }
+    }
+
+    /// Which generation of voice this is, from its identifier's family prefix.
+    ///
+    /// macOS installs three side by side and reports them all at the same
+    /// quality tier, so the identifier is the only thing that separates a
+    /// narration voice from a novelty one. On the machine this was measured on:
+    /// six `com.apple.voice.*` (Daniel, Karen, Moira, Rishi, Samantha, Tessa —
+    /// exactly the voices you would read a book in), sixteen
+    /// `com.apple.eloquence.*` (DECtalk-style, legitimate for accessibility but
+    /// not for an hour of prose), and the `com.apple.speech.synthesis.voice.*`
+    /// legacy set that holds Albert, Bad News and Bubbles — the same family
+    /// whose speaking-rate curve is 26–39% off the others.
+    ///
+    /// A prefix rather than a list of names, so it keeps working when Apple
+    /// ships more of any of them. Anything unrecognised is treated as modern:
+    /// a new family is far more likely to be a real voice than a joke one.
+    private static func family(of voice: AVSpeechSynthesisVoice) -> SpeechVoice.Family {
+        if voice.identifier.hasPrefix("com.apple.speech.synthesis.voice.") { return .legacy }
+        if voice.identifier.hasPrefix("com.apple.eloquence.") { return .alternate }
+        return .modern
     }
 
     private static func quality(of voice: AVSpeechSynthesisVoice) -> SpeechVoice.Quality {

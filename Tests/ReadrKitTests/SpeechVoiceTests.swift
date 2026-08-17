@@ -111,6 +111,37 @@ final class SpeechVoiceTests: XCTestCase {
         )
     }
 
+    func testTheVoiceFamilyOutranksEverythingBelowIt() {
+        // macOS reports every generation at the same quality tier, so nothing
+        // below family could separate a narration voice from a novelty one.
+        let mixed = [
+            SpeechVoice(id: "albert", name: "Albert", language: "en-US", family: .legacy),
+            SpeechVoice(id: "eddy", name: "Eddy", language: "en-US", family: .alternate),
+            SpeechVoice(id: "samantha", name: "Samantha", language: "en-US", family: .modern),
+        ]
+        XCTAssertEqual(
+            selector.voices(matching: "en-US", in: mixed).map(\.id),
+            ["samantha", "eddy", "albert"],
+            "Modern, then accessibility voices, then the legacy novelty set"
+        )
+        XCTAssertEqual(selector.voice(for: "en-US", in: mixed)?.id, "samantha")
+    }
+
+    func testBcp47ExtensionsAreStrippedToo() {
+        // The `@rg=` spelling was fixed first and this one was still live
+        // behind it: `Locale.current.identifier(.bcp47)` renders the same
+        // region override as a `-u-` extension.
+        XCTAssertEqual(
+            selector.voice(for: "en-US-u-rg-inzzzz", in: catalog)?.id, "en-US.premium"
+        )
+        XCTAssertEqual(SpeechVoice.normalized("en-US-u-rg-inzzzz"), "en-us")
+        XCTAssertEqual(SpeechVoice.normalized("en-x-private"), "en")
+        XCTAssertEqual(
+            SpeechVoice.normalized("zh-Hant-TW"), "zh-hant-tw",
+            "A script subtag is not an extension"
+        )
+    }
+
     // MARK: - The reader's own choice
 
     func testAnExplicitChoiceBeatsLanguageMatching() {
