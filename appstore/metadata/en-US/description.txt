@@ -1,4 +1,4 @@
-Readr is an ebook reader you can talk to.
+Readr is an ebook reader you can talk to, and listen to.
 
 Open an EPUB or PDF you already own, select a sentence, and ask about it.
 Readr answers with the whole book as context — and it isn't limited to the
@@ -11,6 +11,22 @@ Highlight as you read, then turn those highlights into a first draft. Readr
 orders them by reading position, keeps your quotes intact, and composes an
 editable article you can export as Markdown.
 
+LISTEN TO IT
+Press Listen and Readr reads the book aloud, starting from the page you're on
+— not the top of the chapter. The page turns itself to follow the voice, and
+the place it saves is where you listened to, so switching between reading and
+listening never costs you your spot.
+
+Skip by sentence or by chapter, change the speed or the voice mid-sentence and
+it carries on from that word, and set a sleep timer that counts listening
+rather than clock time — pause for lunch and the countdown waits for you. It
+keeps playing with the screen locked, with lock-screen and headphone controls,
+and it works on PDFs as well as EPUBs.
+
+The voice is Apple's, running on your device: no account, no subscription,
+nothing to download, and nothing about your book leaves the device to be read
+aloud.
+
 BRING YOUR OWN AI
 Readr has no subscription and no account. Connect your own Anthropic, OpenAI
 or OpenRouter key, or sign in with OpenRouter — you pay your provider
@@ -19,7 +35,7 @@ provider Readr is still a complete reader; the AI features simply sit idle.
 
 PRIVATE BY CONSTRUCTION
 No telemetry. No analytics. No account. Your books, highlights, notes and
-questions live on your device. A question leaves it only when you choose to
+questions live on your device, and reading them aloud happens there too. A question leaves it only when you choose to
 ask a cloud model, and it goes straight to your provider — never through a
 server of ours, because we don't run one. API keys are stored in the
 device Keychain.
@@ -30,7 +46,7 @@ READING THAT FEELS LIKE READING
 • Paper, Sepia and Dark themes, with your choice of typeface and spacing
 • Table of contents, bookmarks, in-book search, footnote popups
 • Five highlight colours, notes, and a Notes panel that exports to Markdown
-• Continue Reading picks up exactly where you left off
+• Continue Reading picks up exactly where you left off, reading or listening
 • On iPad: sidebar and reader side by side, two-page spreads, and hardware
   keyboard page turns
 

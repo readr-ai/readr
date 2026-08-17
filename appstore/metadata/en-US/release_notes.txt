@@ -1,14 +1,18 @@
-Ask now keeps the conversation — ask follow-ups without losing the thread,
-and answers arrive as formatted text rather than raw punctuation.
+READ IT, OR LISTEN TO IT
 
-Ask also answers questions the book itself doesn't cover, marking clearly
-which part came from the book and which from beyond it.
+Press Listen and Readr reads your book aloud, starting from the page you're
+on. The page turns itself to follow the voice, so you can put the phone in
+your pocket and pick the book back up later — reading or listening — exactly
+where you stopped.
 
-Every error message now says what happened in plain language and what to do
-about it.
+• Sentence and chapter skip, speed, and a choice of voice
+• Change speed or voice mid-sentence and it carries on from that word
+• A sleep timer that counts listening, not clock time — pause for lunch and
+  the countdown waits for you
+• Keeps playing with the screen locked, with lock-screen and headphone
+  controls
+• Works on EPUBs and PDFs alike
 
-New: report a bug from inside the app (Settings → Help), and share Readr
-with a friend.
-
-Fixed: text a book styles as a highlight now renders that way; shelf cards
-line up; footnote markers sit raised and small.
+The voice is Apple's, running on your device. No account, no subscription,
+nothing to download — and nothing about your book leaves the device to be
+read aloud.

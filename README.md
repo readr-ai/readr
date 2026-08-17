@@ -21,11 +21,11 @@ built for the love of reading.
   <a href="https://readr-ai.github.io/">Website</a>
 </p>
 
-> Status: **feature-complete core, pre-1.0.** All features below are implemented,
-> unit/integration tested, and CI builds, signs, and ships the app: notarized
-> macOS releases and iPhone/iPad TestFlight builds. CI runs the UI-test suite
-> on iPhone **and iPad** simulators. Remaining pre-1.0 work is tracked in
-> [docs/ROADMAP.md](docs/ROADMAP.md).
+> Status: **3.0 — read it, or listen to it.** All features below are
+> implemented, unit/integration tested, and CI builds, signs, and ships the
+> app: notarized macOS releases and iPhone/iPad TestFlight builds. CI runs the
+> UI-test suite on iPhone **and iPad** simulators, and the macOS suite on
+> signed builds. What's next is tracked in [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ## Why
 
