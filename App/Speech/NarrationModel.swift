@@ -74,6 +74,12 @@ final class NarrationModel: ObservableObject {
     /// Start (or restart) narration at a reading position — the Listen button.
     func start(book: Book, chapterIndex: Int, characterOffset: Int) {
         let narration = makeNarration(for: book)
+        // Every start, not just the first: `stop()` hands the remote commands
+        // back, and `makeNarration` early-returns for a book already set up —
+        // so registering only there left the lock-screen and headphone
+        // controls dead for every listening session after the first.
+        // Idempotent (see the guard inside).
+        registerRemoteCommands()
         narration.start(atChapter: chapterIndex, characterOffset: characterOffset)
         startTicking()
         refresh()

@@ -88,16 +88,24 @@ public struct SpeechSegmenter: Sendable {
     /// Where an over-long segment may be cut instead of mid-clause.
     private static let clauseBreaks: Set<Character> = [",", ";", ":", "\u{2014}", "\u{2013}"]
 
-    /// Abbreviations whose trailing period is not a sentence end. Kept short
-    /// and lowercase — the point is to cover what actually recurs in prose,
-    /// not to be a gazetteer.
-    private static let abbreviations: Set<String> = [
+    /// Titles and honorifics: a period after one of these is never a sentence
+    /// end, and what follows is a capitalised name, so no other signal can
+    /// tell us. Suppressed unconditionally.
+    private static let titles: Set<String> = [
         "mr", "mrs", "ms", "dr", "prof", "sr", "jr", "st", "mt", "rev", "hon",
-        "gen", "col", "capt", "lt", "sgt", "messrs", "vs", "etc", "al",
-        "approx", "dept", "est", "fig", "figs", "no", "nos", "vol", "vols",
-        "ch", "chap", "ed", "eds", "pp", "cf", "ca", "viz", "inc", "ltd",
-        "co", "corp", "univ", "jan", "feb", "mar", "apr", "jun", "jul",
-        "aug", "sep", "sept", "oct", "nov", "dec",
+        "gen", "col", "capt", "lt", "sgt", "messrs",
+    ]
+
+    /// Abbreviations that are also ordinary words — "No.", "Co.", "Ed.",
+    /// "Vol." — so their period *can* end a sentence: "Did he agree? No. He
+    /// refused." Suppressed only when what follows continues the phrase
+    /// rather than starting a sentence (see `suppressesBreak`), which is what
+    /// keeps "No. 5" and "Fig. 3" together without swallowing the "No." above.
+    private static let phraseAbbreviations: Set<String> = [
+        "vs", "etc", "al", "approx", "dept", "est", "fig", "figs", "no",
+        "nos", "vol", "vols", "ch", "chap", "ed", "eds", "pp", "cf", "ca",
+        "viz", "inc", "ltd", "co", "corp", "univ", "jan", "feb", "mar",
+        "apr", "jun", "jul", "aug", "sep", "sept", "oct", "nov", "dec",
     ]
 
     /// Whether a period at `terminator` continues the sentence rather than
@@ -106,26 +114,31 @@ public struct SpeechSegmenter: Sendable {
     private func suppressesBreak(_ chars: [Character], terminator: Int, next: Int) -> Bool {
         guard chars[terminator] == "." else { return false }
 
-        // The word the period is attached to: a known abbreviation ("Mr.") or
-        // a lone initial ("J. R. R. Tolkien") carries on.
+        // The word the period is attached to.
         var scan = terminator - 1
         var reversed: [Character] = []
         while scan >= 0, chars[scan].isLetter {
             reversed.append(chars[scan])
             scan -= 1
         }
-        if !reversed.isEmpty {
-            let word = String(reversed.reversed()).lowercased()
-            if word.count == 1 { return true }
-            if Self.abbreviations.contains(word) { return true }
-        }
+        let word = reversed.isEmpty ? "" : String(reversed.reversed()).lowercased()
 
-        // A following word that starts lowercase is a continuation, whatever
-        // the period was ("...etc. and so on"). Sentences start with a capital,
-        // a digit, or an opening quote.
+        // A lone initial ("J. R. R. Tolkien") or a title ("Mr. Smith") always
+        // carries on — nothing about what follows could tell us otherwise.
+        if word.count == 1 { return true }
+        if Self.titles.contains(word) { return true }
+
+        // Otherwise the word that FOLLOWS decides. A lowercase start is a
+        // continuation whatever the period was ("...etc. and so on"); a
+        // sentence starts with a capital, a digit, or an opening quote.
         var forward = next
         while forward < chars.count, chars[forward].isWhitespace { forward += 1 }
-        if forward < chars.count, chars[forward].isLowercase { return true }
+        guard forward < chars.count else { return false }
+        if chars[forward].isLowercase { return true }
+        // A number after an abbreviation that takes one ("No. 5", "Fig. 3",
+        // "pp. 41") belongs to it. Without this test the same word ends a
+        // sentence, which is the point: "Did he agree? No. He refused."
+        if chars[forward].isNumber, Self.phraseAbbreviations.contains(word) { return true }
         return false
     }
 

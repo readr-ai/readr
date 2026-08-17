@@ -76,6 +76,26 @@ final class SpeechSegmenterTests: XCTestCase {
         XCTAssertEqual(segments.map(\.text), ["Bread, cheese, etc. and some wine.", "Good."])
     }
 
+    func testAbbreviationsThatAreAlsoOrdinaryWordsCanEndASentence() {
+        // "No." is an abbreviation AND a word. Suppressing it unconditionally
+        // swallowed the answer into the question, which costs the reader a
+        // skip target and the read-along line.
+        let segments = segmenter.segments(ofChapterText: "Did he agree? No. He refused.")
+        XCTAssertEqual(segments.map(\.text), ["Did he agree?", "No.", "He refused."])
+    }
+
+    func testTheSameAbbreviationBeforeANumberStaysJoined() {
+        XCTAssertEqual(
+            segmenter.segments(ofChapterText: "See No. 5 below. Then stop.").map(\.text),
+            ["See No. 5 below.", "Then stop."]
+        )
+        XCTAssertEqual(
+            segmenter.segments(ofChapterText: "Compare Fig. 3 and Fig. 4. It matters.")
+                .map(\.text),
+            ["Compare Fig. 3 and Fig. 4.", "It matters."]
+        )
+    }
+
     // MARK: - What never reaches the voice
 
     func testDropsSegmentsWithNothingToSay() {

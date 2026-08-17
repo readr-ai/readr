@@ -201,11 +201,31 @@ final class NarrationControllerTests: XCTestCase {
 
         engine.finishCurrent()
         XCTAssertEqual(controller.status, .finished)
-        XCTAssertEqual(engine.spoken.count, 1, "Nothing more is spoken")
+        XCTAssertEqual(engine.spoken.count, 1, "Nothing more is spoken on its own")
 
-        // Play at the end is inert; only starting again re-enters the book.
+        // Play at the end replays the last sentence rather than doing nothing:
+        // the bar shows a play button there, and a button that does nothing
+        // when pressed reads as broken.
         controller.play()
-        XCTAssertEqual(engine.spoken.count, 1)
+        XCTAssertEqual(engine.spokenTexts, ["Beta two.", "Beta two."])
+        XCTAssertEqual(controller.status, .speaking)
+    }
+
+    func testChapterSkipAtTheLastChapterKeepsReadingInsteadOfEnding() {
+        let (controller, engine) = makeController()
+        controller.start(atChapter: 2)
+        engine.speakWord(0..<4) // "Beta"
+
+        controller.skipToNextChapter()
+        XCTAssertEqual(
+            controller.status, .speaking,
+            "There is no next chapter, so the skip is a no-op — not the end of the book"
+        )
+        XCTAssertEqual(controller.currentSegment?.text, "Beta one.")
+        XCTAssertEqual(
+            engine.spokenTexts.last, "Beta one.",
+            "The voice picks the sentence back up where it was"
+        )
     }
 
     func testChapterEndHoldsWhenAutoAdvanceIsOff() {
@@ -388,7 +408,10 @@ final class NarrationControllerTests: XCTestCase {
     func testSettingTheSameValuesChangesNothing() {
         let (controller, engine) = makeController()
         controller.start(atChapter: 0)
-        controller.settings = controller.settings
+        // Via a local: assigning a property to itself is a compile error, and
+        // what matters is that an equal value doesn't interrupt the sentence.
+        let unchanged = controller.settings
+        controller.settings = unchanged
         XCTAssertEqual(engine.spoken.count, 1)
     }
 
@@ -475,6 +498,48 @@ final class NarrationControllerTests: XCTestCase {
         XCTAssertEqual(controller.status, .paused, "Stops rather than crossing into chapter two")
         XCTAssertEqual(engine.spokenTexts, ["Alpha two.", "Alpha three."])
         XCTAssertEqual(controller.currentSegment?.text, "Beta one.")
+    }
+
+    func testAChapterHoldDoesNotBurnTheSleepTimer() {
+        // Auto-advance off parks narration at the chapter wall. That is a
+        // pause like any other: the countdown has to stop with it, or the
+        // first tick after the reader presses play cuts them off.
+        let clock = Clock(epoch)
+        let (controller, engine) = makeController(
+            settings: SpeechSettings(autoAdvancesChapters: false), clock: clock
+        )
+        controller.start(atChapter: 0, characterOffset: 22)
+        controller.setSleepTimer(.after(minutes: 15))
+
+        engine.finishCurrent()
+        XCTAssertEqual(controller.status, .paused, "Held at the chapter wall")
+
+        clock.advance(minutes: 60)
+        controller.play()
+        controller.tick()
+        XCTAssertEqual(
+            controller.status, .speaking,
+            "An hour parked at the wall must not have spent the 15 minutes"
+        )
+
+        clock.advance(minutes: 15)
+        controller.tick()
+        XCTAssertEqual(controller.status, .paused, "The full 15 minutes of listening")
+    }
+
+    func testAFailedUtteranceDoesNotBurnTheSleepTimerEither() {
+        let clock = Clock(epoch)
+        let (controller, engine) = makeController(clock: clock)
+        controller.start(atChapter: 0)
+        controller.setSleepTimer(.after(minutes: 15))
+
+        engine.fail()
+        XCTAssertEqual(controller.status, .paused)
+
+        clock.advance(minutes: 60)
+        controller.play()
+        controller.tick()
+        XCTAssertEqual(controller.status, .speaking)
     }
 
     func testStartingAgainRestartsTheCountdown() {

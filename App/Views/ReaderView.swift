@@ -74,6 +74,11 @@ struct ReaderView: View {
     /// the Listen bar only exists while it is running. Created empty and bound
     /// to a book by the Listen button.
     @StateObject private var narration = NarrationModel()
+    /// Set while narration is moving the reading anchor, so the page-turn
+    /// handler can tell the voice's page turns from the reader's. Render-inert
+    /// for the same reason `currentSelection` is — it must never invalidate
+    /// the view tree from inside an update.
+    @State private var narrationMove = NarrationMoveFlag()
 
     /// Persisted reading layout: continuous scroll, one page, or facing pages.
     // Single page is the first-run default (#42): book-like pagination is the
@@ -304,10 +309,19 @@ struct ReaderView: View {
                 savePositionTask?.cancel()
                 savePositionTask = nil
                 saveTextPosition(chapterIndex: chapterIndex, characterOffset: pagedAnchor)
-                // Closing the book stops the voice. Narration is scoped to the
-                // reader; a book read aloud after the reader is gone has no
-                // controls and no page to follow.
-                narration.stop()
+                // Closing the book stops the voice — narration is scoped to the
+                // reader, and a book read aloud after the reader is gone has no
+                // controls and no page to follow. But ONLY when the reader is
+                // really leaving: a presented sheet can take this view off
+                // screen too (the same reason `restoreOnce` guards against a
+                // second `onAppear`), and asking the book about the passage it
+                // just read must not cut the narration off.
+                if !isPresentingOverlay {
+                    // Also breaks the reference cycle the callback forms —
+                    // model → closure → this view → its `@StateObject` box.
+                    narration.onPosition = nil
+                    narration.stop()
+                }
             }
             .onChange(of: chapterIndex) { _, newValue in
                 // Chapter turns are rare — save immediately, and drop any
@@ -325,20 +339,20 @@ struct ReaderView: View {
                 // views report nil from onDisappear.)
                 currentSelection.value = nil
             }
-            .onChange(of: pagedAnchor) { _, newValue in
+            .onChange(of: pagedAnchor) { _, _ in
+                if narrationMove.isActive {
+                    narrationMove.isActive = false
+                    // The voice turned this page, not the reader: their
+                    // selection is still theirs (the annotation shortcuts read
+                    // it), and the save throttles instead of debouncing.
+                    scheduleAnchorSave(after: 30, throttled: true)
+                    return
+                }
                 // A page turn replaces the visible text: the collapse report
                 // arrives async, so clear eagerly — same race as a chapter
                 // turn, just within one chapter.
                 currentSelection.value = nil
-                // Page turns come in bursts and every save rewrites the whole
-                // library JSON — debounce offset-only saves. Chapter changes
-                // and onDisappear flush immediately.
-                savePositionTask?.cancel()
-                savePositionTask = Task { @MainActor in
-                    try? await Task.sleep(nanoseconds: 1_000_000_000)
-                    guard !Task.isCancelled else { return }
-                    saveTextPosition(chapterIndex: chapterIndex, characterOffset: newValue)
-                }
+                scheduleAnchorSave(after: 1, throttled: false)
             }
             // Build the retrieval index in the background when the book opens
             // so the first "ask" is fast. Safe to call repeatedly.
@@ -677,9 +691,41 @@ struct ReaderView: View {
             return
         }
         guard position.characterOffset != pagedAnchor else { return }
+        narrationMove.isActive = true
         pagedAnchor = position.characterOffset
         if layout == .scroll {
             scrollTarget = position.characterOffset
+        }
+    }
+
+    /// True while something is presented over the reader.
+    private var isPresentingOverlay: Bool {
+        showAsk || showNotes || showTOC || showSearch || showAppearance
+            || editingNote != nil || footnotePopup != nil
+    }
+
+    /// Persist the reading anchor off the hot path.
+    ///
+    /// Reader page turns arrive in bursts and then stop, so they **debounce** —
+    /// each turn pushes the save back a second and only the last one lands.
+    /// Narration's page turns never stop arriving (a sentence every few seconds
+    /// for as long as the reader listens), and every save rewrites the whole
+    /// library JSON: debouncing those would either never fire or rewrite the
+    /// file at sentence rate for an hour. They **throttle** instead — one save
+    /// per window, whatever the voice is doing in between.
+    private func scheduleAnchorSave(after seconds: Double, throttled: Bool) {
+        if throttled {
+            guard savePositionTask == nil else { return }
+        } else {
+            savePositionTask?.cancel()
+        }
+        savePositionTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+            guard !Task.isCancelled else { return }
+            // Reads the anchor at fire time, so a throttled save records where
+            // the voice actually got to, not where it was a window ago.
+            saveTextPosition(chapterIndex: chapterIndex, characterOffset: pagedAnchor)
+            savePositionTask = nil
         }
     }
 
@@ -1511,6 +1557,12 @@ extension Book {
 /// an in-flight touch (see the `currentSelection` doc in `ReaderView`).
 final class SelectionMirror {
     var value: Range<Int>?
+}
+
+/// Render-inert marker for "this anchor move came from narration, not the
+/// reader" (see `SelectionMirror` for why it is a class in a `@State` slot).
+final class NarrationMoveFlag {
+    var isActive = false
 }
 
 // MARK: - Chapter swipe (scroll mode)

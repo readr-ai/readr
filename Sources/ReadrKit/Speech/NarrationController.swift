@@ -136,15 +136,18 @@ public final class NarrationController {
                 speak(segment, from: spokenOffset)
             }
         case .finished:
-            // The book ran out; `start(atChapter:)` is the way back in.
-            return
+            // The book ran out. Replay its last sentence rather than leaving
+            // the bar's play button inert — a control that does nothing when
+            // pressed reads as broken, and from here ⏮ walks back in.
+            if let segment = currentSegment {
+                speak(segment, from: 0)
+            }
         }
     }
 
     public func pause() {
         guard status == .speaking else { return }
         engine.pause()
-        sleepTimer.pause(at: now())
         setStatus(.paused)
     }
 
@@ -170,25 +173,29 @@ public final class NarrationController {
     }
 
     public func skipToNextSentence() {
-        move { $0.advance() }
+        // Skipping past the last sentence really is the end of the book.
+        move(atEnd: .finish) { $0.advance() }
     }
 
     public func skipToPreviousSentence() {
         // At the very start of the book there is nothing to step back to;
         // restart the sentence instead, which is what the control looks like
         // it should do.
-        move { playlist in
+        move(atEnd: .stayPut) { playlist in
             if let previous = playlist.rewind() { return previous }
             return playlist.current
         }
     }
 
     public func skipToNextChapter() {
-        move { $0.advanceToNextChapter() }
+        // No chapter after this one: stay where the voice is and keep reading,
+        // the way a track control does at the end of a record. Declaring the
+        // book finished here would strand narration mid-chapter.
+        move(atEnd: .stayPut) { $0.advanceToNextChapter() }
     }
 
     public func skipToPreviousChapter() {
-        move { playlist in
+        move(atEnd: .stayPut) { playlist in
             if let previous = playlist.rewindToChapterStart() { return previous }
             return playlist.current
         }
@@ -217,10 +224,20 @@ public final class NarrationController {
 
     // MARK: - Playback
 
+    /// What a skip does when there is nothing left in that direction.
+    private enum EndBehavior {
+        /// The book is over.
+        case finish
+        /// Nothing to move to — carry on with the current sentence.
+        case stayPut
+    }
+
     /// Move the cursor and, if narration is running, follow it with the voice.
     /// Skipping while paused only moves — it must not start audio the reader
     /// paused.
-    private func move(_ step: (inout SpeechPlaylist) -> SpeechSegment?) {
+    private func move(
+        atEnd endBehavior: EndBehavior, _ step: (inout SpeechPlaylist) -> SpeechSegment?
+    ) {
         guard status != .idle else { return }
         engine.stop()
         activeRequestID = nil
@@ -229,12 +246,20 @@ public final class NarrationController {
         if status == .finished { setStatus(.paused) }
 
         guard let segment = step(&playlist) else {
-            // Nothing further in that direction: the book is done.
             currentSegment = playlist.current
-            spokenOffset = 0
             currentSegmentLength = currentSegment.map { $0.text.count } ?? 0
             mustRespeakToResume = true
-            setStatus(.finished)
+            switch endBehavior {
+            case .finish:
+                spokenOffset = 0
+                setStatus(.finished)
+            case .stayPut:
+                // The engine was already stopped for the move; put the voice
+                // back where it was so the skip is simply a no-op.
+                if wasSpeaking, let segment = currentSegment {
+                    speak(segment, from: spokenOffset)
+                }
+            }
             return
         }
         if wasSpeaking {
@@ -371,6 +396,15 @@ public final class NarrationController {
     private func setStatus(_ new: NarrationStatus) {
         guard status != new else { return }
         status = new
+        // The countdown only runs while narration does, whatever the reason it
+        // stopped — the reader pausing, a chapter wall with auto-advance off,
+        // an utterance the engine couldn't speak. Centralised here because
+        // every one of those paths used to have to remember it, and two of
+        // them didn't: the timer kept burning while nothing was being read,
+        // then cut narration off a second after the reader pressed play.
+        if new != .speaking {
+            sleepTimer.pause(at: now())
+        }
         onStatusChange?(new)
     }
 }
