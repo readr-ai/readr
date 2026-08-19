@@ -35,10 +35,10 @@ provider Readr is still a complete reader; the AI features simply sit idle.
 
 PRIVATE BY CONSTRUCTION
 No telemetry. No analytics. No account. Your books, highlights, notes and
-questions live on your device, and reading them aloud happens there too. A question leaves it only when you choose to
-ask a cloud model, and it goes straight to your provider — never through a
-server of ours, because we don't run one. API keys are stored in the
-device Keychain.
+questions live on your device, and reading them aloud happens there too. A
+question leaves it only when you choose to ask a cloud model, and it goes
+straight to your provider — never through a server of ours, because we don't
+run one. API keys are stored in the device Keychain.
 
 READING THAT FEELS LIKE READING
 • EPUB, PDF, plain-text and Markdown — DRM-free files you own
