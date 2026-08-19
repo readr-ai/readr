@@ -94,7 +94,8 @@ public final class NarrationController {
         currentSegment.map {
             NarrationPosition(
                 chapterIndex: $0.chapterIndex,
-                characterOffset: $0.range.lowerBound + min(spokenOffset, currentSegmentLength)
+                characterOffset: $0.range.lowerBound + min(spokenOffset, currentSegmentLength),
+                sentenceStart: $0.range.lowerBound
             )
         }
     }
@@ -337,7 +338,8 @@ public final class NarrationController {
         onPositionChange?(
             NarrationPosition(
                 chapterIndex: segment.chapterIndex,
-                characterOffset: segment.range.lowerBound + start
+                characterOffset: segment.range.lowerBound + start,
+                sentenceStart: segment.range.lowerBound
             )
         )
         engine.speak(request)

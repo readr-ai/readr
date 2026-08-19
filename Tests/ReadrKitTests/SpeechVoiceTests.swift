@@ -142,6 +142,44 @@ final class SpeechVoiceTests: XCTestCase {
         )
     }
 
+    func testThePlatformsOwnDefaultIsNeverDemotedByItsFamily() {
+        // The legacy prefix is not purely novelty: it holds Alex, Fred and
+        // Victoria alongside Albert and Bubbles. Ranking that whole family last
+        // would hand a Mac whose default is Alex a DECtalk voice instead.
+        let mixed = [
+            SpeechVoice(id: "albert", name: "Albert", language: "en-US", family: .legacy),
+            SpeechVoice(id: "eddy", name: "Eddy", language: "en-US", family: .alternate),
+            SpeechVoice(id: "alex", name: "Alex", language: "en-US", family: .legacy),
+        ]
+        XCTAssertEqual(
+            selector.voices(matching: "en-US", in: mixed, systemDefault: "alex").map(\.id),
+            ["alex", "eddy", "albert"],
+            "The blessed legacy voice leads; the unblessed one still ranks last"
+        )
+        XCTAssertEqual(
+            selector.voice(for: "en-US", in: mixed, systemDefault: "alex")?.id, "alex"
+        )
+    }
+
+    func testAQualityDownloadStillBeatsTheDefault() {
+        // The exemption lifts the default to `.modern`, no further — it must not
+        // become a trump card over quality.
+        let voices = [
+            SpeechVoice(
+                id: "compact", name: "Compact", language: "en-US",
+                quality: .standard, family: .legacy
+            ),
+            SpeechVoice(
+                id: "enhanced", name: "Enhanced", language: "en-US",
+                quality: .enhanced, family: .modern
+            ),
+        ]
+        XCTAssertEqual(
+            selector.voice(for: "en-US", in: voices, systemDefault: "compact")?.id,
+            "enhanced"
+        )
+    }
+
     func testTheCasePreservingFormIsStillValidBcp47() {
         // What gets handed to a platform voice lookup, which parses it as
         // BCP-47 rather than comparing it to anything of ours — and which

@@ -608,6 +608,29 @@ final class NarrationControllerTests: XCTestCase {
         XCTAssertEqual(positions.last, NarrationPosition(chapterIndex: 2, characterOffset: 0))
     }
 
+    func testAMidSentencePositionStillCarriesTheSentenceItBelongsTo() {
+        // The page follows the voice to the word, but the reader's saved place
+        // has to be the sentence: `seek` takes the first sentence beginning at
+        // or after its anchor, so persisting a mid-sentence offset and then
+        // pressing Listen again would skip the rest of that sentence unheard.
+        let (controller, engine) = makeController()
+        var positions: [NarrationPosition] = []
+        controller.onPositionChange = { positions.append($0) }
+
+        controller.start(atChapter: 0, characterOffset: 11)
+        engine.speakWord(6..<9)
+        // A speed change re-speaks the remainder from the last word boundary.
+        controller.settings.rate = 1.5
+
+        let resumed = positions.last
+        XCTAssertEqual(resumed?.characterOffset, 17, "The voice is at 'two'")
+        XCTAssertEqual(
+            resumed?.sentenceStart, 11,
+            "But the place to come back to is the head of the sentence"
+        )
+        XCTAssertEqual(controller.position?.sentenceStart, 11)
+    }
+
     func testSpokenWordsAreReportedInChapterCoordinates() {
         let (controller, engine) = makeController()
         var spoken: [(chapter: Int, range: Range<Int>)] = []

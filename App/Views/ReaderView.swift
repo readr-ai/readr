@@ -24,6 +24,15 @@ struct ReaderView: View {
     /// layouts — drives position persistence, bookmark anchors, and
     /// programmatic jumps. Scroll mode anchors to the chapter start.
     @State private var pagedAnchor = 0
+    /// Where the sentence the voice is reading began, while it is reading one.
+    ///
+    /// `pagedAnchor` follows the voice to the *word* so a long sentence turns
+    /// the page partway through, but that is the wrong thing to write down: a
+    /// mid-sentence anchor makes the next Listen start at the sentence *after*
+    /// it, skipping the rest of the one that was interrupted. Persist this
+    /// instead, and fall back to `pagedAnchor` whenever the reader — not the
+    /// voice — is the one moving.
+    @State private var narrationResumeAnchor: Int?
     @State private var didRestorePosition = false
     @State private var askSelection: Selection?
     /// The committed text selection in chapter coordinates, reported by the
@@ -308,7 +317,7 @@ struct ReaderView: View {
                 // must never lose the last position.
                 savePositionTask?.cancel()
                 savePositionTask = nil
-                saveTextPosition(chapterIndex: chapterIndex, characterOffset: pagedAnchor)
+                saveTextPosition(chapterIndex: chapterIndex, characterOffset: anchorToPersist)
                 // Closing the book stops the voice — narration is scoped to the
                 // reader, and a book read aloud after the reader is gone has no
                 // controls and no page to follow. But ONLY when the reader is
@@ -329,7 +338,7 @@ struct ReaderView: View {
                 // chapter).
                 savePositionTask?.cancel()
                 savePositionTask = nil
-                saveTextPosition(chapterIndex: newValue, characterOffset: pagedAnchor)
+                saveTextPosition(chapterIndex: newValue, characterOffset: anchorToPersist)
                 updateMinutesCache()
                 // The selection's range belongs to the old chapter. The text
                 // views also report nil when their content is replaced, but
@@ -352,6 +361,9 @@ struct ReaderView: View {
                 // arrives async, so clear eagerly — same race as a chapter
                 // turn, just within one chapter.
                 currentSelection.value = nil
+                // The reader moved, so the voice's sentence is no longer where
+                // they are — their page is the anchor again.
+                narrationResumeAnchor = nil
                 scheduleAnchorSave(after: 1, throttled: false)
             }
             // Build the retrieval index in the background when the book opens
@@ -701,12 +713,19 @@ struct ReaderView: View {
             jump(toChapter: position.chapterIndex, offset: position.characterOffset)
             return
         }
+        narrationResumeAnchor = position.sentenceStart
         guard position.characterOffset != pagedAnchor else { return }
         narrationMove.isActive = true
         pagedAnchor = position.characterOffset
         if layout == .scroll {
             scrollTarget = position.characterOffset
         }
+    }
+
+    /// The offset to write down: the start of the sentence being narrated if a
+    /// voice is reading, otherwise the top of the visible page.
+    private var anchorToPersist: Int {
+        narrationResumeAnchor ?? pagedAnchor
     }
 
     /// True while something is presented over the reader.
@@ -735,7 +754,7 @@ struct ReaderView: View {
             guard !Task.isCancelled else { return }
             // Reads the anchor at fire time, so a throttled save records where
             // the voice actually got to, not where it was a window ago.
-            saveTextPosition(chapterIndex: chapterIndex, characterOffset: pagedAnchor)
+            saveTextPosition(chapterIndex: chapterIndex, characterOffset: anchorToPersist)
             savePositionTask = nil
         }
     }

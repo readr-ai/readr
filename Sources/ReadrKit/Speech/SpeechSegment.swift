@@ -27,10 +27,28 @@ public struct SpeechSegment: Hashable, Sendable {
 /// follows this to keep the visible page under the voice.
 public struct NarrationPosition: Hashable, Sendable {
     public var chapterIndex: Int
+    /// Where the *voice* is, to the word. This is what the page follows, so
+    /// that a long sentence spanning a page break turns the page partway
+    /// through rather than at its end.
     public var characterOffset: Int
+    /// Where the sentence being read *began* — the resume anchor, and the one
+    /// to persist.
+    ///
+    /// These differ only mid-sentence, and conflating them lost a sentence:
+    /// a speed change re-speaks from the last word boundary and publishes that
+    /// offset, so a reader who changed speed early in a long sentence, stopped,
+    /// and pressed Listen again resumed from an anchor *inside* it — and
+    /// `seek` takes the first sentence beginning at or after its anchor, so the
+    /// rest of that sentence was skipped unheard. Following the voice wants the
+    /// word; coming back to it wants the sentence.
+    public var sentenceStart: Int
 
-    public init(chapterIndex: Int, characterOffset: Int) {
+    /// `sentenceStart` defaults to `characterOffset` — correct for every
+    /// position that is already at a sentence boundary, which is all of them
+    /// except a mid-sentence resume.
+    public init(chapterIndex: Int, characterOffset: Int, sentenceStart: Int? = nil) {
         self.chapterIndex = chapterIndex
         self.characterOffset = characterOffset
+        self.sentenceStart = sentenceStart ?? characterOffset
     }
 }

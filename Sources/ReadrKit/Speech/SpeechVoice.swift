@@ -171,17 +171,33 @@ public struct VoiceSelector: Sendable {
     }
 
     /// Best first: family, then quality, then the platform's own default for
-    /// the language, then name.
+    /// the language, then name — with the platform's default exempt from the
+    /// family rule.
     ///
     /// Family leads because the platform reports every generation of voice at
     /// the same quality tier, so nothing below it could separate a narration
     /// voice from a novelty one — a picker sorted without it opened on Albert,
     /// Bad News, Bahh, Bells, Boing and Bubbles.
+    ///
+    /// But family is a heuristic over identifier prefixes, and the legacy
+    /// prefix is not purely novelty: `com.apple.speech.synthesis.voice.` holds
+    /// Alex, Fred, Victoria and Kathy as well as Albert and Bubbles. Demoting
+    /// that whole prefix beneath the DECtalk-style voices would mean a Mac
+    /// whose own default is Alex — a serious narration voice — silently getting
+    /// an accessibility voice instead. So a voice the platform *names* as its
+    /// default is never demoted by family: the platform blessing it is direct
+    /// evidence, where the prefix is only an inference, and no novelty voice is
+    /// ever a system default. Below that pair the heuristic still decides.
     private func sorted(
         _ voices: [SpeechVoice], systemDefault: String?
     ) -> [SpeechVoice] {
-        voices.sorted { first, second in
-            if first.family != second.family { return first.family > second.family }
+        func family(of voice: SpeechVoice) -> SpeechVoice.Family {
+            voice.id == systemDefault ? max(voice.family, .modern) : voice.family
+        }
+        return voices.sorted { first, second in
+            let firstFamily = family(of: first)
+            let secondFamily = family(of: second)
+            if firstFamily != secondFamily { return firstFamily > secondFamily }
             if first.quality != second.quality { return first.quality > second.quality }
             let firstIsDefault = first.id == systemDefault
             let secondIsDefault = second.id == systemDefault
