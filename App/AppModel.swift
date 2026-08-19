@@ -149,7 +149,43 @@ final class AppModel: ObservableObject {
         Victory Mansions, though not quickly enough to prevent a swirl of \
         gritty dust from entering along with him.
         """
-        let chapterOne = (0..<6).map { _ in paragraph }.joined(separator: "\n\n")
+        // Six DISTINCT paragraphs, not six copies of one. Identical paragraphs
+        // made a real narration bug undiagnosable: narration correctly started
+        // 81% into the chapter, but the sentence it spoke was character-for-
+        // character the same as the one near the top, so a device test read it
+        // as "narration restarted the chapter" and the investigation went after
+        // the wrong thing entirely. A fixture that repeats itself cannot tell
+        // you where you are. The first paragraph is untouched — the seeded
+        // highlights and the UI tests match phrases in it.
+        let chapterOne = [
+            paragraph,
+            """
+            The hallway smelt of boiled cabbage and old rag mats. At one end \
+            of it a coloured poster, too large for indoor display, had been \
+            tacked to the wall. It depicted simply an enormous face, more than \
+            a metre wide.
+            """,
+            """
+            Winston made for the stairs. It was no use trying the lift. Even \
+            at the best of times it was seldom working, and at present the \
+            electric current was cut off during daylight hours.
+            """,
+            """
+            The flat was seven flights up, and Winston, who was thirty-nine \
+            and had a varicose ulcer above his right ankle, went slowly, \
+            resting several times on the way.
+            """,
+            """
+            Outside, even through the shut window-pane, the world looked cold. \
+            Down in the street little eddies of wind were whirling dust and \
+            torn paper into spirals, and the sun shone with no warmth at all.
+            """,
+            """
+            The blackmoustachio'd face gazed down from every commanding \
+            corner. There was one on the house-front immediately opposite. \
+            BIG BROTHER IS WATCHING YOU, the caption said.
+            """,
+        ].joined(separator: "\n\n")
         let sample = Book(
             metadata: BookMetadata(
                 title: "Sample Book", authors: ["Test Author"],

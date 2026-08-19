@@ -180,8 +180,72 @@ docs/DEVELOPMENT-PLAN.md §M6–M8.
   reading surfaces cache their attributed string per page and rebuilding it
   each sentence would reset the reader's selection — it needs its own pass on
   `SelectableTextView`'s render cache)
-- [ ] Deferred: a neural on-device voice behind the same `SpeechEngine`
-  protocol, if Apple's voices prove not good enough for long listening
+
+## M10 — A better voice (Kokoro-82M), proposed
+
+The "if" in the deferred note below has been answered. Apple's voices were
+judged not good enough for long listening — poor enunciation and flat
+modulation — so the neural voice moves from a contingency to a plan.
+[Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) is the candidate:
+82M parameters, Apache-2.0 weights, and several working Apple-silicon ports
+(a Core ML pipeline reported at 4–4.5x realtime on A17 Pro; MLX Swift ports
+around 3.3x on an iPhone 13 Pro, with memory-watchdog trouble on 4GB devices).
+
+`SpeechEngine` is already the seam, so `NarrationController` and every
+playback rule are untouched by this.
+
+**A spike ran on 2026-08-17** (reported on
+[#78](https://github.com/readr-ai/readr/pull/78)) and answered three of the
+four questions below. Its own summary: *the licence blocker is cleared, but not
+the way this plan assumed — and the premise is still unproven, because nobody
+has listened yet.*
+
+- [x] **Phonemization licence — was the blocker.** Confirmed dead as originally
+  planned: misaki pulls `libespeak-ng.dylib` and `phonemizer-fork`, a hard
+  GPL-3.0 dependency, and **misaki without espeak does not degrade — it drops
+  words silently.** Measured over 400 Moby-Dick sentences: 1.62% of words
+  emitted a placeholder token rather than phonemes, which is only 63 distinct
+  words but lands in **24% of sentences**. Worse where it was predicted to be
+  worst — 16 of 17 invented proper nouns failed outright (Queequeg, Pequod,
+  Ahab, Fedallah, Cthulhu, Daenerys, Raskolnikov, Nynaeve, Galadriel,
+  Voldemort, Arrakis, Kvothe; only Bilbo survived). A reader would hear the
+  protagonist's name omitted, every time. Unshippable, not "slightly off".
+
+  The way through is a **neural G2P instead of a dictionary**: FluidAudio's
+  Apache-2.0 Core ML BART encoder–decoder (~1.6MB) replaces espeak entirely and
+  produced plausible phonemes for those names with no silent drops. One
+  question survives for a human, not an engineer: the model was trained on
+  espeak-ng output, and whether that makes it a derivative work is a **legal
+  question we should get answered before building on it**.
+- [x] **Cost on device.** Measured on an M5 Pro with FluidAudio (Apache-2.0,
+  no external dependencies, the only candidate both actively maintained and
+  permissively licensed): 31.7× realtime aggregate, time-to-first-audio
+  117–217ms typical and 746ms at p95, 527MB peak RSS, 104MB on disk at the
+  smallest variant. The latency number is the one that matters — pressing
+  Listen would wait about a fifth of a second where AVFoundation waits 11–15ms.
+  Survivable, but it is a real difference and the vocoder is ~63% of it.
+  **Phone numbers are still unknown** (no paired device), and there is an
+  unfixed iOS BNNS crash in the port (FluidAudio#844) that would have to be
+  understood first.
+- [x] **Word timings.** Better than what we have, not worse: FluidAudio exposes
+  `predictedDurations` per token at 25.000ms/frame, so timings are known
+  *before* playback rather than arriving during it. Mapping them back to
+  character ranges means preserving word boundaries through the phonemizer —
+  real work, but not a degradation.
+- [ ] **Model delivery.** 104–325MB depending on quantization, so downloaded on
+  demand rather than bundled — and the store copy's "nothing to download" line
+  then holds only for the Apple-voice default.
+- [ ] **Is it actually better? — unanswered, and it gates everything.** The
+  spike measured 1.5× the pitch variation and 2–3× the pauses of the Apple
+  voice, which is evidence of more expression but not proof of better
+  expression: erratic is also high-variance, and halting is also lots of
+  pauses. A/B files are attached to the spike comment. **Nobody has listened to
+  them.** If Kokoro isn't clearly better on real prose, this stops here.
+
+Note what this *fixes* for free: Kokoro takes a speed input directly, so the
+empirical AVFoundation rate calibration in `SpeechSettings` stops being
+needed on that path.
+
 
 ## Open questions / decisions to revisit
 - OAuth feasibility for "log in with Claude / ChatGPT" vs. API keys only.

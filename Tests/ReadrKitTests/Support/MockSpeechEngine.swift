@@ -59,6 +59,13 @@ final class MockSpeechEngine: SpeechEngine {
         delegate?.speechEngine(self, willSpeak: range, of: request.id)
     }
 
+    /// The engine goes quiet without saying so — an utterance whose completion
+    /// callback never arrives. Observed at the end of a book on macOS, where it
+    /// left the bar on Pause with the last sentence for minutes.
+    func fallSilentWithoutReporting() {
+        state = .idle
+    }
+
     /// A "finished" arriving from an utterance that was already cancelled —
     /// the race every interrupting control has to survive.
     func finishStaleRequest(_ requestID: UUID) {

@@ -56,8 +56,10 @@ final class NarrationControllerTests: XCTestCase {
 
     // MARK: - Starting from a page
 
-    func testStartReadsFromTheSentenceAtTheGivenOffset() {
+    func testStartReadsFromTheSentenceBeginningAtTheGivenOffset() {
         let (controller, engine) = makeController()
+        // 11 is exactly where "Alpha two." begins, so that is the sentence —
+        // not the one after it.
         controller.start(atChapter: 0, characterOffset: 11)
 
         XCTAssertEqual(controller.status, .speaking)
@@ -65,12 +67,14 @@ final class NarrationControllerTests: XCTestCase {
         XCTAssertEqual(controller.currentSegment?.text, "Alpha two.")
     }
 
-    func testStartNeverBeginsMidSentence() {
+    func testStartBeginsAtTheFirstWholeSentenceAfterTheAnchor() {
         let (controller, engine) = makeController()
-        // Offset 15 sits inside "Alpha two." — narration starts at its head,
-        // not halfway through a word.
+        // Offset 15 sits inside "Alpha two." (11..<21). The anchor a reader
+        // presses Listen on is the top of a page, and a sentence straddling
+        // that boundary began on the page before — so narration takes the next
+        // whole one rather than dragging the page backwards to finish it.
         controller.start(atChapter: 0, characterOffset: 15)
-        XCTAssertEqual(engine.spokenTexts, ["Alpha two."])
+        XCTAssertEqual(engine.spokenTexts, ["Alpha three."])
     }
 
     func testStartInANonLinearChapterReadsItAnyway() {
@@ -604,6 +608,29 @@ final class NarrationControllerTests: XCTestCase {
         XCTAssertEqual(positions.last, NarrationPosition(chapterIndex: 2, characterOffset: 0))
     }
 
+    func testAMidSentencePositionStillCarriesTheSentenceItBelongsTo() {
+        // The page follows the voice to the word, but the reader's saved place
+        // has to be the sentence: `seek` takes the first sentence beginning at
+        // or after its anchor, so persisting a mid-sentence offset and then
+        // pressing Listen again would skip the rest of that sentence unheard.
+        let (controller, engine) = makeController()
+        var positions: [NarrationPosition] = []
+        controller.onPositionChange = { positions.append($0) }
+
+        controller.start(atChapter: 0, characterOffset: 11)
+        engine.speakWord(6..<9)
+        // A speed change re-speaks the remainder from the last word boundary.
+        controller.settings.rate = 1.5
+
+        let resumed = positions.last
+        XCTAssertEqual(resumed?.characterOffset, 17, "The voice is at 'two'")
+        XCTAssertEqual(
+            resumed?.sentenceStart, 11,
+            "But the place to come back to is the head of the sentence"
+        )
+        XCTAssertEqual(controller.position?.sentenceStart, 11)
+    }
+
     func testSpokenWordsAreReportedInChapterCoordinates() {
         let (controller, engine) = makeController()
         var spoken: [(chapter: Int, range: Range<Int>)] = []
@@ -650,6 +677,53 @@ final class NarrationControllerTests: XCTestCase {
         XCTAssertEqual(controller.chapterProgress, 1.0 / 3.0, accuracy: 0.001)
         engine.finishCurrent()
         XCTAssertEqual(controller.chapterProgress, 2.0 / 3.0, accuracy: 0.001)
+    }
+
+    // MARK: - A dropped completion callback
+
+    func testNarrationRecoversWhenTheEngineGoesQuietWithoutReporting() {
+        // The engine can drop `didFinish`. Every move the controller makes is
+        // driven by that callback, so without a backstop narration sits on the
+        // sentence forever showing Pause — which is what a reader saw at the
+        // end of a book on macOS.
+        let (controller, engine) = makeController()
+        controller.start(atChapter: 0)
+        engine.fallSilentWithoutReporting()
+
+        controller.tick()
+        XCTAssertEqual(
+            controller.status, .speaking,
+            "One quiet tick is not enough — an engine can read idle for an instant"
+        )
+
+        controller.tick()
+        XCTAssertEqual(engine.spokenTexts, ["Alpha one.", "Alpha two."])
+        XCTAssertEqual(controller.status, .speaking, "It moves on to the next sentence")
+    }
+
+    func testTheBackstopEndsTheBookRatherThanHangingOnTheLastSentence() {
+        let (controller, engine) = makeController()
+        controller.start(atChapter: 2, characterOffset: 10)
+        engine.fallSilentWithoutReporting()
+
+        controller.tick()
+        controller.tick()
+        XCTAssertEqual(controller.status, .finished)
+    }
+
+    func testTheBackstopIgnoresAPausedEngine() {
+        // Pausing makes the engine stop speaking on purpose; treating that as a
+        // finished utterance would advance the book under the reader.
+        let (controller, engine) = makeController()
+        controller.start(atChapter: 0)
+        controller.pause()
+
+        controller.tick()
+        controller.tick()
+        controller.tick()
+        XCTAssertEqual(controller.status, .paused)
+        XCTAssertEqual(engine.spoken.count, 1, "Nothing new was spoken")
+        XCTAssertEqual(controller.currentSegment?.text, "Alpha one.")
     }
 
     // MARK: - Failure

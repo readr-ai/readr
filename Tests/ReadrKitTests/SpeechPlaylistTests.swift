@@ -29,13 +29,35 @@ final class SpeechPlaylistTests: XCTestCase {
 
     // MARK: - Seeking
 
-    func testSeekStartsAtTheSentenceContainingTheOffset() {
+    func testSeekReportsThePositionOfTheSentenceItLandsOn() {
         var playlist = SpeechPlaylist(book: makeBook())
-        // Offset 14 is inside "Alpha two." (which begins at 11).
         let segment = playlist.seek(toChapter: 0, characterOffset: 14)
         XCTAssertEqual(segment?.text, "Alpha two.")
         XCTAssertEqual(playlist.position?.chapterIndex, 0)
         XCTAssertEqual(playlist.position?.characterOffset, 11)
+    }
+
+    func testSeekTakesTheFirstSentenceBeginningAtOrAfterTheAnchor() {
+        // The bug this exists for: pressing Listen on the last page of a
+        // chapter started the sentence that *spanned* the page boundary, which
+        // began on the page before — so following the voice pulled the reader
+        // back a spread and looked like narration had restarted the chapter.
+        var playlist = SpeechPlaylist(book: makeBook())
+        // Offset 5 is inside "Alpha one." (0..<10); the next whole sentence is
+        // "Alpha two." at 11.
+        XCTAssertEqual(playlist.seek(toChapter: 0, characterOffset: 5)?.text, "Alpha two.")
+        XCTAssertEqual(
+            playlist.seek(toChapter: 0, characterOffset: 11)?.text, "Alpha two.",
+            "An anchor exactly on a sentence start takes that sentence"
+        )
+    }
+
+    func testSeekInsideTheLastSentenceKeepsIt() {
+        // Nothing begins later in the chapter, so the sentence the anchor sits
+        // inside is still the right answer rather than a jump to the next
+        // chapter.
+        var playlist = SpeechPlaylist(book: makeBook())
+        XCTAssertEqual(playlist.seek(toChapter: 0, characterOffset: 14)?.text, "Alpha two.")
     }
 
     func testSeekFromTheTopOfAChapterStartsAtItsFirstSentence() {

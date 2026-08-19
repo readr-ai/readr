@@ -41,7 +41,14 @@ final class NarrationModel: ObservableObject {
     private var ticker: Timer?
 
     private static let rateKey = "narrationRate"
-    private static let voiceKey = "narrationVoiceID"
+    /// Versioned deliberately. The first build chose voices by a rule that could
+    /// land on a novelty voice, and a stored choice is honoured unconditionally
+    /// as long as it is still installed — so every reader who ran that build
+    /// would have kept Albert forever, with the fix helping only people who
+    /// never ran it. A new key retires those choices exactly once; a reader who
+    /// picked a voice on purpose re-picks it, which is a far smaller cost than
+    /// a book narrated by a joke voice with no obvious way out.
+    private static let voiceKey = "narrationVoiceID2"
 
     var isActive: Bool { status != .idle }
     var isSpeaking: Bool { status == .speaking }
@@ -109,11 +116,33 @@ final class NarrationModel: ObservableObject {
         // not a picker so much as a wall. Fall back to the reader's own locale,
         // since a book whose language nobody recorded is most likely in the one
         // they read in.
-        let language = book.metadata.language ?? Locale.current.identifier
-        voices = selector.voices(matching: language, in: installed)
+        // Either spelling of this carries extensions a region override adds —
+        // "en_US@rg=inzzzz" from `.identifier`, "en-US-u-rg-inzzzz" from the
+        // BCP-47 form — and `SpeechVoice.normalized` strips both before
+        // matching. Without that the exact-locale branch can never succeed on
+        // such a device and every lookup falls through to a language-wide one.
+        let language = book.metadata.language ?? Locale.current.identifier(.bcp47)
+        // What the platform would pick for this language, which is a better
+        // judge of "the sensible voice" than any ranking of ours: macOS ships
+        // novelty voices that tie on quality and win on name.
+        //
+        // Asked with the extensions stripped, because AVFoundation *honours* a
+        // region override rather than ignoring it: given `en-US-u-rg-inzzzz` it
+        // answers Rishi (en-IN), which is not in the en-US pool the picker
+        // lists — so the voice the picker checked and the voice at the top of
+        // it were two different voices. Our own matching normalizes on the way
+        // in, so `voices(matching:)` and `voice(for:)` still take the raw tag.
+        let systemDefault = AVSpeechEngine.systemDefaultVoiceID(
+            for: SpeechVoice.withoutExtensions(language)
+        )
+        voices = selector.voices(
+            matching: language, in: installed, systemDefault: systemDefault
+        )
         // A stored voice may have been deleted since (voices are downloadable),
         // and a book in another language needs one that can read it.
-        voiceID = selector.voice(for: language, in: installed, preferring: voiceID)?.id
+        voiceID = selector.voice(
+            for: language, in: installed, preferring: voiceID, systemDefault: systemDefault
+        )?.id
 
         let controller = NarrationController(
             book: book,
