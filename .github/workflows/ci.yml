@@ -74,6 +74,12 @@ jobs:
         run: brew install xcodegen
       - name: Generate Xcode project
         run: xcodegen generate
+      # ARCHS=arm64: the macOS app is Apple-silicon-only since Readr Voice —
+      # FluidAudio uses Float16 (unavailable on x86_64 macOS) and targets the
+      # Neural Engine, which Intel Macs don't have. The command-line override
+      # is load-bearing: project-level EXCLUDED_ARCHS doesn't reach Swift
+      # package compilation, so a generic (universal) build still tries the
+      # x86_64 slice without it.
       - name: Build (macOS)
         run: >
           set -o pipefail &&
@@ -83,6 +89,7 @@ jobs:
           -destination 'generic/platform=macOS'
           -skipPackagePluginValidation
           CODE_SIGNING_ALLOWED=NO
+          ARCHS=arm64
       # Device SDK, not simulator: catches iOS-device-only breakage (missing
       # frameworks, arch issues) on every PR instead of at TestFlight time.
       - name: Build (iOS device SDK)
