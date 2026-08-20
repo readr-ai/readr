@@ -38,6 +38,14 @@ final class AVSpeechEngine: NSObject, SpeechEngine {
     /// the boundary callback reports offsets into it.
     private var activeRequest: SpeechRequest?
     private var activeText = ""
+    /// The utterance carrying `activeRequest`. Delegate callbacks arrive
+    /// asynchronously from a background thread, so a callback for an utterance
+    /// this engine already replaced can land *after* the swap — matching on
+    /// the request alone attributed that stale callback to the new request,
+    /// which finished sentences the voice never spoke and moved word
+    /// boundaries into the wrong text. Only callbacks for this exact utterance
+    /// count; everything else is stale by construction.
+    private var activeUtterance: AVSpeechUtterance?
 
     override init() {
         super.init()
@@ -65,6 +73,7 @@ final class AVSpeechEngine: NSObject, SpeechEngine {
 
         activeRequest = request
         activeText = request.text
+        activeUtterance = utterance
         synthesizer.speak(utterance)
     }
 
@@ -85,6 +94,7 @@ final class AVSpeechEngine: NSObject, SpeechEngine {
     func stop() {
         activeRequest = nil
         activeText = ""
+        activeUtterance = nil
         if synthesizer.isSpeaking || synthesizer.isPaused {
             synthesizer.stopSpeaking(at: .immediate)
         }
@@ -207,8 +217,10 @@ extension AVSpeechEngine: AVSpeechSynthesizerDelegate {
         _ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance
     ) {
         onMain { [weak self] in
-            guard let self, let request = self.activeRequest else { return }
+            guard let self, utterance === self.activeUtterance,
+                  let request = self.activeRequest else { return }
             self.activeRequest = nil
+            self.activeUtterance = nil
             self.delegate?.speechEngine(self, didFinish: request.id)
         }
     }
@@ -227,7 +239,8 @@ extension AVSpeechEngine: AVSpeechSynthesizerDelegate {
         utterance: AVSpeechUtterance
     ) {
         onMain { [weak self] in
-            guard let self, let request = self.activeRequest,
+            guard let self, utterance === self.activeUtterance,
+                  let request = self.activeRequest,
                   // AVFoundation reports UTF-16 offsets; ReadrKit addresses
                   // text by character — the same conversion the selection code
                   // does.

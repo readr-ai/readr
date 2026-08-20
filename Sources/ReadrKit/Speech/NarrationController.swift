@@ -248,6 +248,15 @@ public final class NarrationController {
         silentTicks += 1
         guard silentTicks >= 2 else { return }
         silentTicks = 0
+        // Quiet because *paused*, not because the utterance ended: an audio
+        // interruption (phone call, Siri) pauses the synthesizer without the
+        // controller asking. Advancing from here treated every interrupted
+        // sentence as spoken and machine-gunned through pages nobody heard —
+        // hold instead, and `play()` resumes the same utterance.
+        if engine.state == .paused {
+            setStatus(.paused)
+            return
+        }
         handleFinishedSegment()
     }
 

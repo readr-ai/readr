@@ -73,7 +73,20 @@ final class NarrationModel: ObservableObject {
     }
 
     deinit {
+        // The backstop for narration outliving its reader. `ReaderView`'s
+        // onDisappear deliberately skips `stop()` while something is presented
+        // over the reader (asking about a passage must not cut the voice off)
+        // — but on iPad/macOS the notes inspector is a *column*, so leaving
+        // the reader with it open hit that skip and the voice kept reading
+        // over the library, and reopening the book stacked a second voice on
+        // top of the first: every sentence heard twice. The view layer can't
+        // always tell "covered for a moment" from "gone"; deallocation can.
+        // (`NarrationController` and `AVSpeechEngine` are main-thread-confined
+        // plain classes, and the last reference is SwiftUI's, released on the
+        // main thread.)
         ticker?.invalidate()
+        narration?.stop()
+        (engine as? AVSpeechEngine)?.endAudioSession()
     }
 
     // MARK: - Session

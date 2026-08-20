@@ -202,4 +202,77 @@ final class SpeechPlaylistTests: XCTestCase {
         )
         XCTAssertEqual(playlist.segments(inChapter: 0).map(\.text), ["abcd", "efgh", "ij"])
     }
+
+    // MARK: - Footnote markers
+
+    /// A chapter whose text carries a superscript footnote marker, the way
+    /// `XHTMLTextExtractor` leaves one: the digits stay in `text`, with a
+    /// `.superscript` span recording what the markup raised.
+    private func makeMarkedBook(text: String, spans: [FormatSpan]) -> Book {
+        Book(
+            metadata: BookMetadata(title: "Test"),
+            chapters: [Chapter(title: "One", order: 0, text: text, formatSpans: spans)],
+            estimatedTokenCount: 100
+        )
+    }
+
+    func testFootnoteMarkersAreNotSpoken() {
+        // "The war ended.12 Peace came." — "12" is a noteref marker. Spoken
+        // as-is the voice reads "ended point twelve", and because the digits
+        // sit hard against the period the segmenter can't even end the
+        // sentence there. Muted to spaces, both problems disappear — and the
+        // segment ranges stay in chapter coordinates because the substitution
+        // preserves length.
+        let text = "The war ended.12 Peace came."
+        let book = makeMarkedBook(
+            text: text,
+            spans: [FormatSpan(start: 14, end: 16, kind: .superscript)]
+        )
+        var playlist = SpeechPlaylist(book: book)
+        let segments = playlist.segments(inChapter: 0)
+        XCTAssertEqual(segments.map(\.text), ["The war ended.", "Peace came."])
+        XCTAssertEqual(segments[0].range, 0..<14)
+        XCTAssertEqual(segments[1].range, 17..<28)
+    }
+
+    func testSubscriptMarkersAreMutedToo() {
+        let text = "See note.3 Then read on."
+        let book = makeMarkedBook(
+            text: text,
+            spans: [FormatSpan(start: 9, end: 10, kind: .subscript)]
+        )
+        var playlist = SpeechPlaylist(book: book)
+        XCTAssertEqual(
+            playlist.segments(inChapter: 0).map(\.text),
+            ["See note.", "Then read on."]
+        )
+    }
+
+    func testLetteredSuperscriptsAreStillSpoken() {
+        // "1st" sets its "st" as a raised run in plenty of EPUBs. That is
+        // prose, not a marker — only letterless runs (digits, daggers,
+        // asterisks) are muted.
+        let text = "The 1st of May."
+        let book = makeMarkedBook(
+            text: text,
+            spans: [FormatSpan(start: 5, end: 7, kind: .superscript)]
+        )
+        var playlist = SpeechPlaylist(book: book)
+        XCTAssertEqual(playlist.segments(inChapter: 0).map(\.text), ["The 1st of May."])
+    }
+
+    func testAMarkerOnlySegmentDisappears() {
+        // A line holding nothing but markers ("* * *" rendered as raised
+        // symbols) must not become a silent utterance the reader has to skip.
+        let text = "First line.\n12\nSecond line."
+        let book = makeMarkedBook(
+            text: text,
+            spans: [FormatSpan(start: 12, end: 14, kind: .superscript)]
+        )
+        var playlist = SpeechPlaylist(book: book)
+        XCTAssertEqual(
+            playlist.segments(inChapter: 0).map(\.text),
+            ["First line.", "Second line."]
+        )
+    }
 }

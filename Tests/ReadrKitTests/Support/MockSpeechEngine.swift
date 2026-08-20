@@ -66,6 +66,12 @@ final class MockSpeechEngine: SpeechEngine {
         state = .idle
     }
 
+    /// The engine pauses without the controller asking — what an audio
+    /// interruption (phone call, Siri) does to `AVSpeechSynthesizer`.
+    func pauseWithoutBeingAsked() {
+        state = .paused
+    }
+
     /// A "finished" arriving from an utterance that was already cancelled —
     /// the race every interrupting control has to survive.
     func finishStaleRequest(_ requestID: UUID) {

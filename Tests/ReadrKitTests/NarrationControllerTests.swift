@@ -726,6 +726,29 @@ final class NarrationControllerTests: XCTestCase {
         XCTAssertEqual(controller.currentSegment?.text, "Alpha one.")
     }
 
+    func testTheBackstopHoldsWhenTheEnginePausedItself() {
+        // An audio interruption (a phone call, Siri, another app taking the
+        // session) pauses the synthesizer without the controller asking.
+        // Treating that as a finished utterance advanced the book by a
+        // sentence every two ticks — silently machine-gunning through pages
+        // nobody heard for as long as the interruption lasted.
+        let (controller, engine) = makeController()
+        controller.start(atChapter: 0)
+        engine.pauseWithoutBeingAsked()
+
+        controller.tick()
+        controller.tick()
+        controller.tick()
+        XCTAssertEqual(controller.status, .paused, "Held, not advanced")
+        XCTAssertEqual(engine.spoken.count, 1, "Nothing new was spoken")
+        XCTAssertEqual(controller.currentSegment?.text, "Alpha one.")
+
+        // The interruption ends: play picks the same utterance back up.
+        controller.play()
+        XCTAssertEqual(engine.resumeCount, 1)
+        XCTAssertEqual(controller.status, .speaking)
+    }
+
     // MARK: - Failure
 
     func testAnEngineFailurePausesInsteadOfLosingThePlace() {

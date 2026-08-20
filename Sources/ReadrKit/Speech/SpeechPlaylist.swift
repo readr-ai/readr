@@ -53,12 +53,49 @@ public struct SpeechPlaylist: Sendable {
     }
 
     /// Segments of one chapter, built on first use and cached thereafter.
+    ///
+    /// Footnote markers are muted before segmentation: the chapter text keeps
+    /// noteref digits inline (with a `.superscript`/`.subscript` span saying
+    /// what the markup raised), and a voice reading "ended.12" says "ended
+    /// point twelve" — worse, the digits sit hard against the period, so the
+    /// segmenter can't even end the sentence there. Markers become spaces,
+    /// which fixes both, and because the substitution preserves length every
+    /// segment range stays a true chapter coordinate.
     public mutating func segments(inChapter index: Int) -> [SpeechSegment] {
         guard book.chapters.indices.contains(index) else { return [] }
         if let cached = cache[index] { return cached }
-        let built = segmenter.segments(of: book.chapters[index], chapterIndex: index)
+        let chapter = book.chapters[index]
+        let built = segmenter.segments(
+            ofChapterText: Self.speakableText(of: chapter), chapterIndex: index
+        )
         cache[index] = built
         return built
+    }
+
+    /// The chapter's text with unspeakable marker runs blanked to spaces —
+    /// same length, so offsets into it are offsets into `Chapter.text`.
+    ///
+    /// Muted: superscript/subscript runs containing no letters (footnote
+    /// digits, daggers, asterisks). A raised run *with* letters — the "st" of
+    /// "1st", a spelled-out note — is prose and stays spoken.
+    static func speakableText(of chapter: Chapter) -> String {
+        guard let spans = chapter.formatSpans, !spans.isEmpty else { return chapter.text }
+        var characters = Array(chapter.text)
+        for span in spans {
+            switch span.kind {
+            case .superscript, .subscript: break
+            default: continue
+            }
+            let lower = max(0, span.start)
+            let upper = min(characters.count, span.end)
+            guard lower < upper else { continue }
+            let run = characters[lower..<upper]
+            guard !run.contains(where: { $0.isLetter }) else { continue }
+            for position in lower..<upper where !characters[position].isNewline {
+                characters[position] = " "
+            }
+        }
+        return String(characters)
     }
 
     // MARK: - Moving
