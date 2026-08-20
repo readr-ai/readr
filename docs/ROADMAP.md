@@ -232,15 +232,40 @@ has listened yet.*
   *before* playback rather than arriving during it. Mapping them back to
   character ranges means preserving word boundaries through the phonemizer —
   real work, but not a degradation.
-- [ ] **Model delivery.** 104–325MB depending on quantization, so downloaded on
+- [x] **Model delivery.** 104–325MB depending on quantization, so downloaded on
   demand rather than bundled — and the store copy's "nothing to download" line
-  then holds only for the Apple-voice default.
-- [ ] **Is it actually better? — unanswered, and it gates everything.** The
-  spike measured 1.5× the pitch variation and 2–3× the pauses of the Apple
-  voice, which is evidence of more expression but not proof of better
-  expression: erratic is also high-variance, and halting is also lots of
-  pauses. A/B files are attached to the spike comment. **Nobody has listened to
-  them.** If Kokoro isn't clearly better on real prose, this stops here.
+  then holds only for the Apple-voice default. *Landed that way: the model
+  fetches on first selection of the voice (`KokoroSpeechEngine.prepare()`),
+  never bundled.*
+- [x] **Is it actually better? — answered 2026-08-20: yes, decisively.** The
+  spike's A/B files were never actually attached to the PR; the pair was
+  regenerated (same sentences, compact Apple voice vs FluidAudio Kokoro) and
+  judged by ear: **"Kokoro wins hands down."**
+
+**Wired 2026-08-20** as an opt-in voice — "Readr Voice (Beta)" in the Listen
+bar's picker, English books only, never auto-selected. `KokoroSpeechEngine`
+implements the `SpeechEngine` protocol (whole-sentence synthesis →
+`AVAudioPlayer`; reports `.speaking` through the synthesis/download gap so the
+silent-engine watchdog holds off); `RoutingSpeechEngine` routes each request
+to Kokoro or `AVSpeechSynthesizer` by voice id, so `NarrationController` and
+every playback rule are untouched. Verified in the iOS simulator: model
+download on selection, mid-sentence voice switch, sequential sentences,
+chapter crossing, pause/resume, book end.
+
+Still open before this rides a release (tracked here deliberately — the
+wiring does not close them):
+
+- [ ] **Legal read on the G2P model** (trained on espeak-ng output; see spike).
+- [ ] **The iOS BNNS crash** (FluidAudio#844) — intermittent, unfixed on the
+  iOS 26.6 line; the warning fires at initialization. Beta stays opt-in and
+  should not be promoted while this stands.
+- [ ] **Phone-device numbers** (latency/memory/battery) — still unmeasured.
+- [ ] **Word timings** — `predictedDurations` gives exact token timestamps;
+  mapping tokens back to character ranges (for read-along highlighting and
+  precise mid-sentence resume) is the remaining work. Until then the Kokoro
+  path follows per sentence, not per word.
+- [ ] **Download UX** — the ~104MB fetch is silent today; the picker row
+  should show progress and a failure state.
 
 Note what this *fixes* for free: Kokoro takes a speed input directly, so the
 empirical AVFoundation rate calibration in `SpeechSettings` stops being

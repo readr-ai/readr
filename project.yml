@@ -24,6 +24,14 @@ packages:
   ZIPFoundation:
     url: https://github.com/weichsel/ZIPFoundation
     exactVersion: "0.9.19"
+  # "Readr Voice (Beta)": Kokoro-82M neural narration via FluidAudio's CoreML
+  # port (Apache-2.0, espeak-free G2P) — see docs/ROADMAP.md M10. App-layer
+  # only, behind ReadrKit's SpeechEngine protocol (KokoroSpeechEngine); the
+  # ~104MB model downloads on first use, never bundled. Pinned exactly: the
+  # narration path shouldn't move under us on a resolve.
+  FluidAudio:
+    url: https://github.com/FluidInference/FluidAudio
+    exactVersion: "0.15.6"
   # Readium's paginated navigator (reflow/fonts/decorations) is an optional
   # rendering upgrade tracked for a later milestone:
   # ReadiumNavigator:
@@ -41,6 +49,8 @@ targets:
         product: ReadrKit
       - package: ZIPFoundation
         product: ZIPFoundation
+      - package: FluidAudio
+        product: FluidAudio
     # Keys that GENERATE_INFOPLIST_FILE can't express land in this generated
     # plist (git-ignored; XcodeGen keeps it out of Copy Bundle Resources) and
     # Xcode merges both sources into the final Info.plist.

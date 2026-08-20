@@ -64,7 +64,9 @@ final class NarrationModel: ObservableObject {
         if UITestStubSpeechEngine.isEnabled {
             self.engine = UITestStubSpeechEngine()
         } else {
-            self.engine = AVSpeechEngine()
+            // Platform voices by default, Kokoro ("Readr Voice") when the
+            // picker chooses it — routed per request by voice id.
+            self.engine = RoutingSpeechEngine()
         }
         // Speed and voice are the reader's, not the book's — carried across
         // books the way the reading theme is.
@@ -86,7 +88,7 @@ final class NarrationModel: ObservableObject {
         // main thread.)
         ticker?.invalidate()
         narration?.stop()
-        (engine as? AVSpeechEngine)?.endAudioSession()
+        (engine as? RoutingSpeechEngine)?.endAudioSession()
     }
 
     // MARK: - Session
@@ -111,7 +113,7 @@ final class NarrationModel: ObservableObject {
         narration?.stop()
         ticker?.invalidate()
         ticker = nil
-        (engine as? AVSpeechEngine)?.endAudioSession()
+        (engine as? RoutingSpeechEngine)?.endAudioSession()
         clearNowPlaying()
         releaseRemoteCommands()
         refresh()
@@ -148,14 +150,32 @@ final class NarrationModel: ObservableObject {
         let systemDefault = AVSpeechEngine.systemDefaultVoiceID(
             for: SpeechVoice.withoutExtensions(language)
         )
-        voices = selector.voices(
+        var offered = selector.voices(
             matching: language, in: installed, systemDefault: systemDefault
         )
-        // A stored voice may have been deleted since (voices are downloadable),
-        // and a book in another language needs one that can read it.
-        voiceID = selector.voice(
-            for: language, in: installed, preferring: voiceID, systemDefault: systemDefault
-        )?.id
+        // "Readr Voice (Beta)" — the bundled Kokoro neural narrator (English
+        // books only for now). Offered first so it's discoverable, but never
+        // *auto*-selected: the platform default costs no download, and this
+        // one pulls ~104MB of model on first use. Only an explicit pick (or a
+        // stored one) routes narration to it.
+        if KokoroSpeechEngine.supports(language: language) {
+            offered.insert(KokoroSpeechEngine.pickerVoice, at: 0)
+        }
+        voices = offered
+        if KokoroSpeechEngine.isKokoroVoiceID(voiceID),
+           KokoroSpeechEngine.supports(language: language) {
+            // The reader's stored Readr Voice choice. It is not an installed
+            // platform voice, so the selector below can't see it — honour it
+            // here and start fetching the model before the first sentence.
+            (engine as? RoutingSpeechEngine)?.prepareKokoro()
+        } else {
+            // A stored voice may have been deleted since (voices are
+            // downloadable), and a book in another language needs one that
+            // can read it.
+            voiceID = selector.voice(
+                for: language, in: installed, preferring: voiceID, systemDefault: systemDefault
+            )?.id
+        }
 
         let controller = NarrationController(
             book: book,
@@ -230,6 +250,12 @@ final class NarrationModel: ObservableObject {
     func setVoice(_ id: String?) {
         voiceID = id
         narration?.settings.voiceID = id
+        // Picking the Readr Voice starts the model download immediately, so
+        // as little as possible of the ~104MB wait lands on the next sentence
+        // (the settings change above already re-speaks it via the router).
+        if KokoroSpeechEngine.isKokoroVoiceID(id) {
+            (engine as? RoutingSpeechEngine)?.prepareKokoro()
+        }
         if let id {
             defaults.set(id, forKey: Self.voiceKey)
         } else {
