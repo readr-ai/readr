@@ -311,6 +311,14 @@ struct ReaderView: View {
                 narration.onPosition = { position in
                     followNarration(position)
                 }
+                // Catch up on anything narrated while the callback was
+                // unwired (onDisappear breaks it for every departure,
+                // including a presented sheet the voice keeps reading under):
+                // events fired meanwhile are gone — the one-shot chapter-hold
+                // notification included — so re-sync to where the voice is.
+                if let position = narration.position {
+                    followNarration(position)
+                }
             }
             .onDisappear {
                 // Flush the debounced page-turn save — closing the reader

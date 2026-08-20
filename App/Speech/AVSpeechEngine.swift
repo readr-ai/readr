@@ -60,7 +60,7 @@ final class AVSpeechEngine: NSObject, SpeechEngine {
         if synthesizer.isSpeaking || synthesizer.isPaused {
             synthesizer.stopSpeaking(at: .immediate)
         }
-        activateAudioSession()
+        NarrationAudioSession.activate()
 
         let utterance = AVSpeechUtterance(string: request.text)
         utterance.voice = Self.voice(for: request)
@@ -106,7 +106,7 @@ final class AVSpeechEngine: NSObject, SpeechEngine {
 
     /// Narration is over (the Listen bar closed): hand the audio session back.
     func endAudioSession() {
-        deactivateAudioSession()
+        NarrationAudioSession.deactivate()
     }
 
     // MARK: - Voices
@@ -179,35 +179,6 @@ final class AVSpeechEngine: NSObject, SpeechEngine {
         return AVSpeechSynthesisVoice(language: language)
     }
 
-    // MARK: - Audio session
-
-    /// Spoken-audio playback: narration keeps going with the screen locked and
-    /// ducks other audio rather than being ducked by it. macOS has no audio
-    /// session to configure.
-    private func activateAudioSession() {
-        #if os(iOS)
-        let session = AVAudioSession.sharedInstance()
-        do {
-            try session.setCategory(.playback, mode: .spokenAudio, options: [])
-            try session.setActive(true)
-        } catch {
-            // Narration still plays through whatever session is current; only
-            // background and lock-screen playback are lost, which is not worth
-            // failing the whole feature over.
-            DiagnosticsLog.shared.record(
-                .warning, .reader, "Narration audio session unavailable", error: error
-            )
-        }
-        #endif
-    }
-
-    private func deactivateAudioSession() {
-        #if os(iOS)
-        try? AVAudioSession.sharedInstance().setActive(
-            false, options: .notifyOthersOnDeactivation
-        )
-        #endif
-    }
 }
 
 // MARK: - AVSpeechSynthesizerDelegate
@@ -216,7 +187,7 @@ extension AVSpeechEngine: AVSpeechSynthesizerDelegate {
     func speechSynthesizer(
         _ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance
     ) {
-        onMain { [weak self] in
+        onNarrationMain { [weak self] in
             guard let self, utterance === self.activeUtterance,
                   let request = self.activeRequest else { return }
             self.activeRequest = nil
@@ -238,7 +209,7 @@ extension AVSpeechEngine: AVSpeechSynthesizerDelegate {
         willSpeakRangeOfSpeechString characterRange: NSRange,
         utterance: AVSpeechUtterance
     ) {
-        onMain { [weak self] in
+        onNarrationMain { [weak self] in
             guard let self, utterance === self.activeUtterance,
                   let request = self.activeRequest,
                   // AVFoundation reports UTF-16 offsets; ReadrKit addresses
@@ -252,16 +223,6 @@ extension AVSpeechEngine: AVSpeechSynthesizerDelegate {
         }
     }
 
-    /// AVFoundation does not promise which thread delegate callbacks arrive
-    /// on, and everything downstream — the controller and the SwiftUI state it
-    /// drives — is main-thread-confined.
-    private func onMain(_ work: @escaping () -> Void) {
-        if Thread.isMainThread {
-            work()
-        } else {
-            DispatchQueue.main.async(execute: work)
-        }
-    }
 }
 
 // MARK: - Rate mapping

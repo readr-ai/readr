@@ -76,10 +76,24 @@ public struct SpeechPlaylist: Sendable {
     /// same length, so offsets into it are offsets into `Chapter.text`.
     ///
     /// Muted: superscript/subscript runs containing no letters (footnote
-    /// digits, daggers, asterisks). A raised run *with* letters — the "st" of
-    /// "1st", a spelled-out note — is prose and stays spoken.
+    /// digits, daggers, asterisks) that don't hang off a word. Two things
+    /// survive deliberately: a raised run *with* letters — the "st" of "1st",
+    /// a spelled-out note — is prose; and a letterless run glued to a letter
+    /// or digit — the ₂ of CO₂, the ² of mc² — is content whose muting would
+    /// silently drop meaning (the span kinds' own docs name chemical formulas
+    /// and exponents). A marker after a word's *punctuation* ("ended.12") is
+    /// the noteref pattern and is muted. The cost: a marker jammed directly
+    /// against its word with no punctuation is spoken — the old behavior —
+    /// which reads wrong but loses nothing.
     static func speakableText(of chapter: Chapter) -> String {
-        guard let spans = chapter.formatSpans, !spans.isEmpty else { return chapter.text }
+        // The common case — a chapter with emphasis spans but no raised runs —
+        // must not pay for a character-array round trip.
+        guard let spans = chapter.formatSpans, spans.contains(where: {
+            switch $0.kind {
+            case .superscript, .subscript: return true
+            default: return false
+            }
+        }) else { return chapter.text }
         var characters = Array(chapter.text)
         for span in spans {
             switch span.kind {
@@ -91,6 +105,9 @@ public struct SpeechPlaylist: Sendable {
             guard lower < upper else { continue }
             let run = characters[lower..<upper]
             guard !run.contains(where: { $0.isLetter }) else { continue }
+            if lower > 0, characters[lower - 1].isLetter || characters[lower - 1].isNumber {
+                continue
+            }
             for position in lower..<upper where !characters[position].isNewline {
                 characters[position] = " "
             }

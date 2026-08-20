@@ -70,9 +70,10 @@ final class RoutingSpeechEngine: SpeechEngine {
     }
 
     /// Narration is over (the Listen bar closed): hand the audio session back.
+    /// One deactivation — the session is process-global, so per-engine calls
+    /// deactivated the same session twice.
     func endAudioSession() {
-        platform.endAudioSession()
-        kokoro.endAudioSession()
+        NarrationAudioSession.deactivate()
     }
 }
 

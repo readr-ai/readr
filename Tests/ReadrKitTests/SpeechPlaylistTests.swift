@@ -248,6 +248,25 @@ final class SpeechPlaylistTests: XCTestCase {
         )
     }
 
+    func testChemicalSubscriptsAndExponentsAreStillSpoken() {
+        // The ₂ of CO₂ and the ² of mc² are letterless raised runs, but they
+        // hang off a word — muting them silently drops meaning. Only runs
+        // after punctuation or whitespace (the noteref pattern) are markers.
+        let text = "Water is H2O and energy is mc2 today."
+        let book = makeMarkedBook(
+            text: text,
+            spans: [
+                FormatSpan(start: 10, end: 11, kind: .subscript),
+                FormatSpan(start: 29, end: 30, kind: .superscript),
+            ]
+        )
+        var playlist = SpeechPlaylist(book: book)
+        XCTAssertEqual(
+            playlist.segments(inChapter: 0).map(\.text),
+            ["Water is H2O and energy is mc2 today."]
+        )
+    }
+
     func testLetteredSuperscriptsAreStillSpoken() {
         // "1st" sets its "st" as a raised run in plenty of EPUBs. That is
         // prose, not a marker — only letterless runs (digits, daggers,

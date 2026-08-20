@@ -34,8 +34,13 @@ final class NarrationModel: ObservableObject {
     private let defaults: UserDefaults
     /// The synthesizer behind narration. `-uiTestSilentNarration` swaps in a
     /// soundless stand-in so UI tests drive the real pipeline deterministically
-    /// (see `UITestStubSpeechEngine`); normal launches always get AVFoundation.
+    /// (see `UITestStubSpeechEngine`); normal launches always get the router.
     private let engine: any SpeechEngine
+    /// The same engine, typed — router-only calls (audio-session teardown,
+    /// Kokoro prefetch) go through this instead of scattered downcasts that
+    /// would silently no-op if the engine type ever changed. Nil only under
+    /// the UI-test stub.
+    private let router: RoutingSpeechEngine?
     private var narration: NarrationController?
     private var book: Book?
     private var ticker: Timer?
@@ -52,6 +57,9 @@ final class NarrationModel: ObservableObject {
 
     var isActive: Bool { status != .idle }
     var isSpeaking: Bool { status == .speaking }
+    /// Where the voice is right now — for the reader to re-sync its page after
+    /// an overlay kept `onPosition` unwired (events fired meanwhile are gone).
+    var position: NarrationPosition? { narration?.position }
 
     /// Name of the chosen voice, for the picker's label.
     var voiceName: String? {
@@ -63,10 +71,13 @@ final class NarrationModel: ObservableObject {
         self.defaults = defaults
         if UITestStubSpeechEngine.isEnabled {
             self.engine = UITestStubSpeechEngine()
+            self.router = nil
         } else {
             // Platform voices by default, Kokoro ("Readr Voice") when the
             // picker chooses it — routed per request by voice id.
-            self.engine = RoutingSpeechEngine()
+            let router = RoutingSpeechEngine()
+            self.engine = router
+            self.router = router
         }
         // Speed and voice are the reader's, not the book's — carried across
         // books the way the reading theme is.
@@ -88,7 +99,22 @@ final class NarrationModel: ObservableObject {
         // main thread.)
         ticker?.invalidate()
         narration?.stop()
-        (engine as? RoutingSpeechEngine)?.endAudioSession()
+        router?.endAudioSession()
+        #if os(iOS)
+        // The lock screen must not keep showing a book nobody is narrating,
+        // and the shared command centre must not accumulate dead targets.
+        // Inlined rather than calling `clearNowPlaying()`/
+        // `releaseRemoteCommands()` — those are main-actor methods a
+        // nonisolated deinit can't call; `MPNowPlayingInfoCenter` and
+        // `MPRemoteCommand.removeTarget` don't need it. (The one piece left
+        // to the next session is `endReceivingRemoteControlEvents`, which
+        // does need the main actor; `registerRemoteCommands` re-begins it
+        // idempotently.)
+        MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
+        for (command, target) in remoteTargets {
+            command.removeTarget(target)
+        }
+        #endif
     }
 
     // MARK: - Session
@@ -113,7 +139,7 @@ final class NarrationModel: ObservableObject {
         narration?.stop()
         ticker?.invalidate()
         ticker = nil
-        (engine as? RoutingSpeechEngine)?.endAudioSession()
+        router?.endAudioSession()
         clearNowPlaying()
         releaseRemoteCommands()
         refresh()
@@ -162,18 +188,26 @@ final class NarrationModel: ObservableObject {
             offered.insert(KokoroSpeechEngine.pickerVoice, at: 0)
         }
         voices = offered
-        if KokoroSpeechEngine.isKokoroVoiceID(voiceID),
+        // Resolve from the PERSISTED preference, not the session's last
+        // resolution: `voiceID` is per-book (a French book resolves to a
+        // French voice), and resolving from it meant one book in another
+        // language silently erased a stored Readr Voice choice for the rest
+        // of the session — the sentinel is the one preference the selector
+        // can never re-suggest from the installed list.
+        let preferred = defaults.string(forKey: Self.voiceKey) ?? voiceID
+        if KokoroSpeechEngine.isKokoroVoiceID(preferred),
            KokoroSpeechEngine.supports(language: language) {
             // The reader's stored Readr Voice choice. It is not an installed
             // platform voice, so the selector below can't see it — honour it
             // here and start fetching the model before the first sentence.
-            (engine as? RoutingSpeechEngine)?.prepareKokoro()
+            voiceID = preferred
+            router?.prepareKokoro()
         } else {
             // A stored voice may have been deleted since (voices are
             // downloadable), and a book in another language needs one that
             // can read it.
             voiceID = selector.voice(
-                for: language, in: installed, preferring: voiceID, systemDefault: systemDefault
+                for: language, in: installed, preferring: preferred, systemDefault: systemDefault
             )?.id
         }
 
@@ -254,7 +288,7 @@ final class NarrationModel: ObservableObject {
         // as little as possible of the ~104MB wait lands on the next sentence
         // (the settings change above already re-speaks it via the router).
         if KokoroSpeechEngine.isKokoroVoiceID(id) {
-            (engine as? RoutingSpeechEngine)?.prepareKokoro()
+            router?.prepareKokoro()
         }
         if let id {
             defaults.set(id, forKey: Self.voiceKey)
@@ -281,7 +315,10 @@ final class NarrationModel: ObservableObject {
             return
         }
         status = narration.status
-        currentSentence = narration.currentSegment?.text ?? ""
+        // Muted footnote markers leave runs of spaces in segment text
+        // (length-preserving by design); collapse them for display only.
+        currentSentence = (narration.currentSegment?.text ?? "")
+            .replacingOccurrences(of: " {2,}", with: " ", options: .regularExpression)
         chapterProgress = narration.chapterProgress
         sleepMode = narration.sleepTimer.mode
         sleepRemaining = narration.sleepTimerRemaining()

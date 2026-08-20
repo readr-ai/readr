@@ -233,6 +233,16 @@ final class SpeechVoiceTests: XCTestCase {
         XCTAssertEqual(SpeechVoice(id: "x", name: "X", language: "de").languageCode, "de")
     }
 
+    func testPrimaryLanguageCodeOfARawTag() {
+        XCTAssertEqual(SpeechVoice.primaryLanguageCode(of: "en-US"), "en")
+        XCTAssertEqual(SpeechVoice.primaryLanguageCode(of: "en_GB@rg=uszzzz"), "en")
+        XCTAssertEqual(SpeechVoice.primaryLanguageCode(of: "EN-us-u-rg-inzzzz"), "en")
+        // Three-letter codes are their own languages, not prefixes of ours:
+        // Middle English must never match an English-only voice.
+        XCTAssertEqual(SpeechVoice.primaryLanguageCode(of: "enm"), "enm")
+        XCTAssertEqual(SpeechVoice.primaryLanguageCode(of: ""), "")
+    }
+
     func testQualityOrdersFromStandardToPremium() {
         XCTAssertLessThan(SpeechVoice.Quality.standard, SpeechVoice.Quality.enhanced)
         XCTAssertLessThan(SpeechVoice.Quality.enhanced, SpeechVoice.Quality.premium)

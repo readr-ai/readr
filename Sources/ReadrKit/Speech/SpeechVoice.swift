@@ -62,7 +62,16 @@ public struct SpeechVoice: Hashable, Sendable, Identifiable, Codable {
 
     /// Primary language subtag, lowercased — `en` for both `en-GB` and `EN_us`.
     public var languageCode: String {
-        Self.normalized(language).split(separator: "-").first.map(String.init) ?? ""
+        Self.primaryLanguageCode(of: language)
+    }
+
+    /// Primary language subtag of any raw tag, through the same normalization
+    /// everything else uses — `en` for `en-US`, `en_GB@rg=uszzzz` and
+    /// `EN-us-u-rg-inzzzz`; `enm` stays `enm` (a prefix test would conflate
+    /// Middle English with English). The form to *compare*, never to hand a
+    /// platform API (that wants `withoutExtensions`, case preserved).
+    public static func primaryLanguageCode(of tag: String) -> String {
+        normalized(tag).split(separator: "-").first.map(String.init) ?? ""
     }
 
     /// A language tag with its extensions removed and its separators regular,
