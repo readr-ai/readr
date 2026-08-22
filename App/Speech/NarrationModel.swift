@@ -27,6 +27,10 @@ final class NarrationModel: ObservableObject {
     @Published private(set) var voiceID: String?
     /// Voices offered for the open book, best match first.
     @Published private(set) var voices: [SpeechVoice] = []
+    /// Where the Readr Voice model stands (first use is a ~104MB download).
+    /// The Listen bar's voice menu narrates this state; until `.ready`, the
+    /// platform voice reads and the switch happens at a sentence boundary.
+    @Published private(set) var readrVoiceReadiness: KokoroSpeechEngine.Readiness = .notReady
 
     /// Where the voice is — the reader follows this to keep the page under it.
     var onPosition: ((NarrationPosition) -> Void)?
@@ -83,6 +87,12 @@ final class NarrationModel: ObservableObject {
         // books the way the reading theme is.
         self.rate = defaults.object(forKey: Self.rateKey) as? Double ?? 1
         self.voiceID = defaults.string(forKey: Self.voiceKey)
+        // Readiness changes happen on the main thread (the engine is
+        // main-confined), but hop explicitly so the published write is safe
+        // whatever thread a future engine reports from.
+        router?.onReadrVoiceReadinessChange = { [weak self] readiness in
+            Task { @MainActor in self?.readrVoiceReadiness = readiness }
+        }
     }
 
     deinit {
@@ -195,12 +205,16 @@ final class NarrationModel: ObservableObject {
         // of the session — the sentinel is the one preference the selector
         // can never re-suggest from the installed list.
         let preferred = defaults.string(forKey: Self.voiceKey) ?? voiceID
-        if KokoroSpeechEngine.isKokoroVoiceID(preferred),
-           KokoroSpeechEngine.supports(language: language) {
-            // The reader's stored Readr Voice choice. It is not an installed
-            // platform voice, so the selector below can't see it — honour it
-            // here and start fetching the model before the first sentence.
-            voiceID = preferred
+        if KokoroSpeechEngine.supports(language: language),
+           preferred == nil || KokoroSpeechEngine.isKokoroVoiceID(preferred) {
+            // Readr Voice is the DEFAULT narrator for English books — a
+            // reader with no stored choice gets it, and a stored Readr Voice
+            // pick keeps it. Only an explicit platform-voice choice (below)
+            // overrides. Narration never waits on the model: until it's in,
+            // the router reads through the platform voice and switches at a
+            // sentence boundary (see RoutingSpeechEngine.speak).
+            voiceID = KokoroSpeechEngine.isKokoroVoiceID(preferred)
+                ? preferred : KokoroSpeechEngine.defaultVoiceID
             router?.prepareKokoro()
         } else {
             // A stored voice may have been deleted since (voices are

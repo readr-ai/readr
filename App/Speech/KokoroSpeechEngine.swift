@@ -46,7 +46,7 @@ final class KokoroSpeechEngine: NSObject, SpeechEngine {
     /// The row the voice picker shows.
     static let pickerVoice = SpeechVoice(
         id: defaultVoiceID,
-        name: "Readr Voice (Beta)",
+        name: "Readr Voice",
         language: "en-US",
         quality: .premium,
         family: .modern
@@ -66,6 +66,30 @@ final class KokoroSpeechEngine: NSObject, SpeechEngine {
         guard let id, isKokoroVoiceID(id) else { return "af_heart" }
         return String(id.dropFirst(voiceIDPrefix.count))
     }
+
+    // MARK: - Readiness
+
+    /// Where the voice stands between "picked" and "audible": the model is a
+    /// ~104MB first-use download, and the Listen bar shows this so the wait
+    /// is never silent. While it isn't `.ready`, `RoutingSpeechEngine` narrates
+    /// through the platform voice and switches over at a sentence boundary.
+    enum Readiness: Equatable {
+        case notReady
+        case downloading
+        case ready
+        case failed
+    }
+
+    private(set) var readiness: Readiness = .notReady {
+        didSet {
+            guard readiness != oldValue else { return }
+            onReadinessChange?(readiness)
+        }
+    }
+    /// Fires on the main thread (readiness only changes inside @MainActor
+    /// paths); the model publishes it to the Listen bar.
+    var onReadinessChange: ((Readiness) -> Void)?
+    var isReady: Bool { readiness == .ready }
 
     // MARK: - State
 
@@ -197,13 +221,16 @@ final class KokoroSpeechEngine: NSObject, SpeechEngine {
         if let initializeTask {
             return try await initializeTask.value
         }
+        readiness = .downloading
         let task = Task { try await manager.initialize() }
         initializeTask = task
         do {
             try await task.value
+            readiness = .ready
         } catch {
             // A failed download must not poison every later attempt.
             initializeTask = nil
+            readiness = .failed
             throw error
         }
     }

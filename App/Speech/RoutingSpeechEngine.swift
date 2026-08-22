@@ -37,8 +37,24 @@ final class RoutingSpeechEngine: SpeechEngine {
     }
 
     func speak(_ request: SpeechRequest) {
-        let target: any SpeechEngine =
-            KokoroSpeechEngine.isKokoroVoiceID(request.voiceID) ? kokoro : platform
+        let target: any SpeechEngine
+        if KokoroSpeechEngine.isKokoroVoiceID(request.voiceID) {
+            if kokoro.isReady {
+                target = kokoro
+            } else {
+                // Readr Voice is chosen but its model isn't in yet (first-use
+                // ~104MB download). Narration must start NOW — a Listen button
+                // that buffers for minutes reads as broken — so the platform
+                // voice reads in the meantime (AVSpeechEngine treats the
+                // unknown voice id as "pick for the language") and the very
+                // next sentence after the model lands routes here and switches
+                // voices at the sentence boundary.
+                kokoro.prepare()
+                target = platform
+            }
+        } else {
+            target = platform
+        }
         // Switching engines mid-flight: silence the one being left, so two
         // voices never overlap.
         if let current, current !== target {
@@ -67,6 +83,13 @@ final class RoutingSpeechEngine: SpeechEngine {
     /// Readr Voice so the first spoken sentence doesn't carry the wait.
     func prepareKokoro() {
         kokoro.prepare()
+    }
+
+    /// Download/readiness state of the Readr Voice, for the Listen bar.
+    var readrVoiceReadiness: KokoroSpeechEngine.Readiness { kokoro.readiness }
+    var onReadrVoiceReadinessChange: ((KokoroSpeechEngine.Readiness) -> Void)? {
+        get { kokoro.onReadinessChange }
+        set { kokoro.onReadinessChange = newValue }
     }
 
     /// Narration is over (the Listen bar closed): hand the audio session back.
