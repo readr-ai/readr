@@ -107,20 +107,28 @@ final class NarrationModel: ObservableObject {
         // (`NarrationController` and `AVSpeechEngine` are main-thread-confined
         // plain classes, and the last reference is SwiftUI's, released on the
         // main thread.)
+        // Global resources (the shared audio session, Now Playing) are torn
+        // down ONLY if this model's narration was still live — SwiftUI
+        // releases a departed reader's model lazily, often after the next
+        // reader has started its own narration, and an unconditional teardown
+        // here deactivated the session out from under the live voice.
+        let wasNarrating = (narration?.status ?? .idle) != .idle
         ticker?.invalidate()
         narration?.stop()
-        router?.endAudioSession()
+        if wasNarrating {
+            router?.endAudioSession()
+        }
         #if os(iOS)
-        // The lock screen must not keep showing a book nobody is narrating,
-        // and the shared command centre must not accumulate dead targets.
-        // Inlined rather than calling `clearNowPlaying()`/
-        // `releaseRemoteCommands()` — those are main-actor methods a
-        // nonisolated deinit can't call; `MPNowPlayingInfoCenter` and
-        // `MPRemoteCommand.removeTarget` don't need it. (The one piece left
-        // to the next session is `endReceivingRemoteControlEvents`, which
-        // does need the main actor; `registerRemoteCommands` re-begins it
-        // idempotently.)
-        MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
+        // The command centre must not accumulate dead targets. Inlined rather
+        // than calling `clearNowPlaying()`/`releaseRemoteCommands()` — those
+        // are main-actor methods a nonisolated deinit can't call;
+        // `MPNowPlayingInfoCenter` and `MPRemoteCommand.removeTarget` don't
+        // need it. (The one piece left to the next session is
+        // `endReceivingRemoteControlEvents`, which does need the main actor;
+        // `registerRemoteCommands` re-begins it idempotently.)
+        if wasNarrating {
+            MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
+        }
         for (command, target) in remoteTargets {
             command.removeTarget(target)
         }
@@ -146,11 +154,17 @@ final class NarrationModel: ObservableObject {
 
     /// Tear narration down: closing the Listen bar, or leaving the reader.
     func stop() {
+        // Same rule as deinit: only a model whose narration was live may
+        // release the process-global session and lock-screen entry — a stale
+        // model stopping must not silence another reader's voice.
+        let wasNarrating = (narration?.status ?? .idle) != .idle
         narration?.stop()
         ticker?.invalidate()
         ticker = nil
-        router?.endAudioSession()
-        clearNowPlaying()
+        if wasNarrating {
+            router?.endAudioSession()
+            clearNowPlaying()
+        }
         releaseRemoteCommands()
         refresh()
     }
@@ -189,33 +203,30 @@ final class NarrationModel: ObservableObject {
         var offered = selector.voices(
             matching: language, in: installed, systemDefault: systemDefault
         )
-        // "Readr Voice (Beta)" — the bundled Kokoro neural narrator (English
-        // books only for now). Offered first so it's discoverable, but never
-        // *auto*-selected: the platform default costs no download, and this
-        // one pulls ~104MB of model on first use. Only an explicit pick (or a
-        // stored one) routes narration to it.
+        // "Readr Voice" — the bundled Kokoro neural narrator, the DEFAULT for
+        // English books (its ~104MB model downloads on first Listen; the
+        // router reads through the platform voice until it's in — see
+        // RoutingSpeechEngine.speak).
         if KokoroSpeechEngine.supports(language: language) {
             offered.insert(KokoroSpeechEngine.pickerVoice, at: 0)
         }
         voices = offered
-        // Resolve from the PERSISTED preference, not the session's last
-        // resolution: `voiceID` is per-book (a French book resolves to a
-        // French voice), and resolving from it meant one book in another
-        // language silently erased a stored Readr Voice choice for the rest
-        // of the session — the sentinel is the one preference the selector
-        // can never re-suggest from the installed list.
-        let preferred = defaults.string(forKey: Self.voiceKey) ?? voiceID
+        // Resolve from the PERSISTED preference ONLY — never the session's
+        // last resolution. `voiceID` is per-book (a French book resolves to a
+        // French voice), and any fallback to it lets one book in another
+        // language veto the choice — or the un-persisted default — for every
+        // later English book in the session. Defaults are written on every
+        // explicit pick, so they are the whole story.
+        let preferred = defaults.string(forKey: Self.voiceKey)
         if KokoroSpeechEngine.supports(language: language),
            preferred == nil || KokoroSpeechEngine.isKokoroVoiceID(preferred) {
-            // Readr Voice is the DEFAULT narrator for English books — a
+            // Readr Voice is the default narrator for English books — a
             // reader with no stored choice gets it, and a stored Readr Voice
             // pick keeps it. Only an explicit platform-voice choice (below)
-            // overrides. Narration never waits on the model: until it's in,
-            // the router reads through the platform voice and switches at a
-            // sentence boundary (see RoutingSpeechEngine.speak).
+            // overrides. The download starts with the first spoken sentence
+            // (the router's not-ready path); no separate prepare needed here.
             voiceID = KokoroSpeechEngine.isKokoroVoiceID(preferred)
                 ? preferred : KokoroSpeechEngine.defaultVoiceID
-            router?.prepareKokoro()
         } else {
             // A stored voice may have been deleted since (voices are
             // downloadable), and a book in another language needs one that
@@ -331,8 +342,12 @@ final class NarrationModel: ObservableObject {
         status = narration.status
         // Muted footnote markers leave runs of spaces in segment text
         // (length-preserving by design); collapse them for display only.
-        currentSentence = (narration.currentSegment?.text ?? "")
-            .replacingOccurrences(of: " {2,}", with: " ", options: .regularExpression)
+        // The contains-check matters: refresh runs on a once-a-second tick,
+        // and the common sentence has no marker — don't pay a regex per tick.
+        let sentence = narration.currentSegment?.text ?? ""
+        currentSentence = sentence.contains("  ")
+            ? sentence.replacingOccurrences(of: " {2,}", with: " ", options: .regularExpression)
+            : sentence
         chapterProgress = narration.chapterProgress
         sleepMode = narration.sleepTimer.mode
         sleepRemaining = narration.sleepTimerRemaining()

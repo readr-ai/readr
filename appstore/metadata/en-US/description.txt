@@ -23,9 +23,12 @@ rather than clock time — pause for lunch and the countdown waits for you. It
 keeps playing with the screen locked, with lock-screen and headphone controls,
 and it works on PDFs as well as EPUBs.
 
-The voice is Apple's, running on your device: no account, no subscription,
-nothing to download, and nothing about your book leaves the device to be read
-aloud.
+The narrator is Readr Voice, a neural voice that runs entirely on your
+device: no account, no subscription, and nothing about your book ever leaves
+the device to be read aloud. Its voice model downloads once (about 104MB) the
+first time you listen; until it's in, an Apple voice reads and the switch
+happens mid-chapter on its own. Prefer Apple's built-in voices? They're one
+tap away in the voice menu, with nothing to download at all.
 
 BRING YOUR OWN AI
 Readr has no subscription and no account. Connect your own Anthropic, OpenAI

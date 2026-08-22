@@ -24,6 +24,9 @@ final class RoutingSpeechEngine: SpeechEngine {
     private let kokoro: KokoroSpeechEngine
     /// The engine the last `speak` was routed to — the one allowed to report.
     private var current: (any SpeechEngine)?
+    /// The request `current` is on — what the failure fallback re-speaks
+    /// through the platform engine when Kokoro can't deliver it.
+    private var currentRequest: SpeechRequest?
 
     init(platform: AVSpeechEngine = AVSpeechEngine(), kokoro: KokoroSpeechEngine = KokoroSpeechEngine()) {
         self.platform = platform
@@ -49,7 +52,16 @@ final class RoutingSpeechEngine: SpeechEngine {
                 // unknown voice id as "pick for the language") and the very
                 // next sentence after the model lands routes here and switches
                 // voices at the sentence boundary.
-                kokoro.prepare()
+                //
+                // Auto-prepare only from the UNTRIED state. A `.failed`
+                // download must not restart per sentence — that hammered a
+                // flaky connection with a fresh ~104MB attempt every few
+                // seconds and flapped the menu note. After a failure, retry
+                // is the explicit re-pick (`NarrationModel.setVoice`), which
+                // is exactly what the menu's failure note tells the reader.
+                if kokoro.readiness == .notReady {
+                    kokoro.prepare()
+                }
                 target = platform
             }
         } else {
@@ -61,6 +73,7 @@ final class RoutingSpeechEngine: SpeechEngine {
             current.stop()
         }
         current = target
+        currentRequest = request
         target.speak(request)
     }
 
@@ -75,6 +88,7 @@ final class RoutingSpeechEngine: SpeechEngine {
     func stop() {
         // Both, unconditionally — stop is the everything-off switch and must
         // never depend on routing state.
+        currentRequest = nil
         platform.stop()
         kokoro.stop()
     }
@@ -85,8 +99,8 @@ final class RoutingSpeechEngine: SpeechEngine {
         kokoro.prepare()
     }
 
-    /// Download/readiness state of the Readr Voice, for the Listen bar.
-    var readrVoiceReadiness: KokoroSpeechEngine.Readiness { kokoro.readiness }
+    /// Download/readiness changes of the Readr Voice, for the Listen bar
+    /// (the model keeps its own published copy; there is no snapshot getter).
     var onReadrVoiceReadinessChange: ((KokoroSpeechEngine.Readiness) -> Void)? {
         get { kokoro.onReadinessChange }
         set { kokoro.onReadinessChange = newValue }
@@ -113,6 +127,18 @@ extension RoutingSpeechEngine: SpeechEngineDelegate {
 
     func speechEngine(_ engine: any SpeechEngine, didFail requestID: UUID, error: any Error) {
         guard engine === current else { return }
+        // The promised platform fallback: a Kokoro failure AFTER the model is
+        // in (synthesis fault, refused playback) must not pause the default
+        // voice in a fail loop — the same request is re-spoken through the
+        // platform engine under the same id, so the controller never notices.
+        // Per-sentence, deliberately: the next sentence tries Kokoro again,
+        // which self-heals transient faults and costs one failed synthesis
+        // (~200ms) when it doesn't. A platform failure is reported as before.
+        if engine === kokoro, let request = currentRequest, request.id == requestID {
+            current = platform
+            platform.speak(request)
+            return
+        }
         delegate?.speechEngine(self, didFail: requestID, error: error)
     }
 }

@@ -35,7 +35,12 @@ Only when you explicitly connect a cloud AI provider and ask it something:
 - In **local model** mode (Ollama on your Mac), requests go only to the local
   Ollama server on your machine. Readr's test suite asserts this path makes
   zero network calls.
-- If no AI provider is connected, Readr makes no network requests at all.
+- If no AI provider is connected, Readr makes **one kind** of network request:
+  a one-time download of the Readr Voice narration model (~104MB of Kokoro-82M
+  CoreML weights) from a fixed content host, the first time an English book is
+  read aloud. The request carries **nothing about you or your book** — it only
+  fetches model files, and the voice then runs entirely on the device. Choose
+  an Apple voice in the Listen bar and Readr makes no network requests at all.
 
 ## Your choices
 

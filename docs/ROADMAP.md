@@ -233,10 +233,12 @@ has listened yet.*
   character ranges means preserving word boundaries through the phonemizer —
   real work, but not a degradation.
 - [x] **Model delivery.** 104–325MB depending on quantization, so downloaded on
-  demand rather than bundled — and the store copy's "nothing to download" line
-  then holds only for the Apple-voice default. *Landed that way: the model
-  fetches on first selection of the voice (`KokoroSpeechEngine.prepare()`),
-  never bundled.*
+  demand rather than bundled. *v3.2.0: the fetch is automatic on the first
+  English-book Listen (Readr Voice is the default), with the platform voice
+  reading until it lands — so the "nothing to download" store line was retired
+  and PRIVACY.md now discloses the one fixed-CDN model fetch. Still open:
+  metered-connection gating (defer the automatic fetch on expensive/constrained
+  networks).*
 - [x] **Is it actually better? — answered 2026-08-20: yes, decisively.** The
   spike's A/B files were never actually attached to the PR; the pair was
   regenerated (same sentences, compact Apple voice vs FluidAudio Kokoro) and
