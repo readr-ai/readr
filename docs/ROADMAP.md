@@ -255,7 +255,8 @@ chapter crossing, pause/resume, book end.
 Still open before this rides a release (tracked here deliberately — the
 wiring does not close them):
 
-- [ ] **Legal read on the G2P model** (trained on espeak-ng output; see spike).
+- [x] **Legal read on the G2P model** — closed 2026-08-20 by the project owner:
+  determined no legal issue with shipping the espeak-trained G2P.
 - [ ] **The iOS BNNS crash** (FluidAudio#844) — intermittent, unfixed on the
   iOS 26.6 line; the warning fires at initialization. Beta stays opt-in and
   should not be promoted while this stands.

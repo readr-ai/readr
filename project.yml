@@ -117,7 +117,7 @@ targets:
         # local or CI build otherwise reported 0.1.0, which made crash and
         # feedback triage lie about which version a report came from. Bump this
         # with each release tag.
-        MARKETING_VERSION: "3.0.0"
+        MARKETING_VERSION: "3.1.0"
         CURRENT_PROJECT_VERSION: "1"
         SWIFT_VERSION: "5.9"
         # FluidAudio is Apple-silicon-only in practice: its NemoTextProcessing
