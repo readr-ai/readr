@@ -86,20 +86,18 @@ public struct SpeechPlaylist: Sendable {
     /// against its word with no punctuation is spoken — the old behavior —
     /// which reads wrong but loses nothing.
     static func speakableText(of chapter: Chapter) -> String {
-        // The common case — a chapter with emphasis spans but no raised runs —
-        // must not pay for a character-array round trip.
-        guard let spans = chapter.formatSpans, spans.contains(where: {
+        // One predicate, applied once: the raised runs are filtered up front,
+        // which is also the fast path — a chapter with emphasis spans but no
+        // raised runs must not pay for a character-array round trip.
+        let raised = (chapter.formatSpans ?? []).filter {
             switch $0.kind {
             case .superscript, .subscript: return true
             default: return false
             }
-        }) else { return chapter.text }
+        }
+        guard !raised.isEmpty else { return chapter.text }
         var characters = Array(chapter.text)
-        for span in spans {
-            switch span.kind {
-            case .superscript, .subscript: break
-            default: continue
-            }
+        for span in raised {
             let lower = max(0, span.start)
             let upper = min(characters.count, span.end)
             guard lower < upper else { continue }

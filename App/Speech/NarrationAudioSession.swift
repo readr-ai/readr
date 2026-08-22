@@ -20,7 +20,29 @@ enum NarrationAudioSession {
     #if os(iOS)
     nonisolated(unsafe) private static var isActive = false
 
+    /// `isActive` caches process-global state the SYSTEM can change under us:
+    /// a phone call or Siri deactivates the session without asking, and a
+    /// media-services reset throws every session away. Left uncorrected, the
+    /// flag would block re-activation forever — so both events clear it, and
+    /// the next `activate()` re-asserts the category for real.
+    nonisolated(unsafe) private static var observersInstalled = false
+
+    private static func installObserversIfNeeded() {
+        guard !observersInstalled else { return }
+        observersInstalled = true
+        let center = NotificationCenter.default
+        center.addObserver(
+            forName: AVAudioSession.interruptionNotification,
+            object: nil, queue: .main
+        ) { _ in isActive = false }
+        center.addObserver(
+            forName: AVAudioSession.mediaServicesWereResetNotification,
+            object: nil, queue: .main
+        ) { _ in isActive = false }
+    }
+
     static func activate() {
+        installObserversIfNeeded()
         guard !isActive else { return }
         let session = AVAudioSession.sharedInstance()
         do {

@@ -3,17 +3,19 @@ import AVFoundation
 import FluidAudio
 import ReadrKit
 
-/// "Readr Voice (Beta)": Kokoro-82M neural narration behind ReadrKit's
+/// "Readr Voice": Kokoro-82M neural narration behind ReadrKit's
 /// `SpeechEngine` protocol, via FluidAudio's CoreML port (Apache-2.0,
 /// espeak-free G2P). See docs/ROADMAP.md M10 — the A/B listen chose Kokoro
 /// over the platform voices decisively.
 ///
-/// Deliberately an *opt-in* voice, never the default: the ~104MB model
-/// downloads on first use (the store copy's "nothing to download" holds for
-/// the Apple-voice default), the G2P model's licence question is still with
-/// legal, and FluidAudio warns of an intermittent BNNS crash on current iOS
-/// (FluidAudio#844). Wiring it as one more voice in the picker keeps every
-/// one of those a per-voice concern instead of a narration-wide one.
+/// The DEFAULT narrator for English books since v3.2.0 (an explicitly chosen
+/// platform voice still wins, and non-English books keep the platform
+/// voices). The ~104MB model downloads automatically on the first Listen —
+/// PRIVACY.md and the store copy disclose that one fixed-CDN fetch — and
+/// until it's in, `RoutingSpeechEngine` narrates through the platform voice
+/// and switches over at a sentence boundary. The router is also the failure
+/// story: any post-ready synthesis fault re-routes that sentence to the
+/// platform voice rather than pausing narration.
 ///
 /// Shape: synthesize the whole sentence (Kokoro is not a streaming engine —
 /// 100–250ms for a typical sentence on Apple silicon), then play it with
@@ -46,7 +48,7 @@ final class KokoroSpeechEngine: NSObject, SpeechEngine {
     /// The row the voice picker shows.
     static let pickerVoice = SpeechVoice(
         id: defaultVoiceID,
-        name: "Readr Voice (Beta)",
+        name: "Readr Voice",
         language: "en-US",
         quality: .premium,
         family: .modern
@@ -66,6 +68,30 @@ final class KokoroSpeechEngine: NSObject, SpeechEngine {
         guard let id, isKokoroVoiceID(id) else { return "af_heart" }
         return String(id.dropFirst(voiceIDPrefix.count))
     }
+
+    // MARK: - Readiness
+
+    /// Where the voice stands between "picked" and "audible": the model is a
+    /// ~104MB first-use download, and the Listen bar shows this so the wait
+    /// is never silent. While it isn't `.ready`, `RoutingSpeechEngine` narrates
+    /// through the platform voice and switches over at a sentence boundary.
+    enum Readiness: Equatable {
+        case notReady
+        case downloading
+        case ready
+        case failed
+    }
+
+    private(set) var readiness: Readiness = .notReady {
+        didSet {
+            guard readiness != oldValue else { return }
+            onReadinessChange?(readiness)
+        }
+    }
+    /// Fires on the main thread (readiness only changes inside @MainActor
+    /// paths); the model publishes it to the Listen bar.
+    var onReadinessChange: ((Readiness) -> Void)?
+    var isReady: Bool { readiness == .ready }
 
     // MARK: - State
 
@@ -118,7 +144,16 @@ final class KokoroSpeechEngine: NSObject, SpeechEngine {
         pausedByCaller = false
         // With no player yet (paused mid-synthesis), synthesizeThenPlay
         // starts playback itself once the audio lands.
-        player?.play()
+        guard let player else { return }
+        if !player.play(), let request = activeRequest {
+            // Same contract as the speak path: a refused start is a failure,
+            // not a silent no-op the watchdog has to discover two ticks later.
+            self.player = nil
+            activeRequest = nil
+            delegate?.speechEngine(
+                self, didFail: request.id, error: SpeechEngineError.audioUnavailable
+            )
+        }
     }
 
     func stop() {
@@ -152,12 +187,10 @@ final class KokoroSpeechEngine: NSObject, SpeechEngine {
                 text: request.text,
                 voice: Self.kokoroVoice(from: request.voiceID),
                 // Kokoro takes the reader's multiplier directly — no
-                // platform-rate curve like AVFoundation's. Clamped to the
-                // range the settings own, so the two never disagree.
-                speed: Float(min(
-                    max(request.rate, SpeechSettings.rateRange.lowerBound),
-                    SpeechSettings.rateRange.upperBound
-                ))
+                // platform-rate curve like AVFoundation's. Already in range:
+                // SpeechSettings is the single clamping authority (init,
+                // didSet, and decode), and every request is built from it.
+                speed: Float(request.rate)
             )
             guard activeRequest?.id == request.id else { return }
             // Claimed only once audio is ready to play: activating on
@@ -165,10 +198,7 @@ final class KokoroSpeechEngine: NSObject, SpeechEngine {
             // the whole first-use model download, for nothing.
             NarrationAudioSession.activate()
             let player = try AVAudioPlayer(data: wav)
-            player.volume = Float(min(
-                max(request.volume, SpeechSettings.volumeRange.lowerBound),
-                SpeechSettings.volumeRange.upperBound
-            ))
+            player.volume = Float(request.volume)
             player.delegate = self
             self.player = player
             if pausedByCaller {
@@ -197,13 +227,16 @@ final class KokoroSpeechEngine: NSObject, SpeechEngine {
         if let initializeTask {
             return try await initializeTask.value
         }
+        readiness = .downloading
         let task = Task { try await manager.initialize() }
         initializeTask = task
         do {
             try await task.value
+            readiness = .ready
         } catch {
             // A failed download must not poison every later attempt.
             initializeTask = nil
+            readiness = .failed
             throw error
         }
     }
