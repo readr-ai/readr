@@ -53,12 +53,66 @@ public struct SpeechPlaylist: Sendable {
     }
 
     /// Segments of one chapter, built on first use and cached thereafter.
+    ///
+    /// Footnote markers are muted before segmentation: the chapter text keeps
+    /// noteref digits inline (with a `.superscript`/`.subscript` span saying
+    /// what the markup raised), and a voice reading "ended.12" says "ended
+    /// point twelve" — worse, the digits sit hard against the period, so the
+    /// segmenter can't even end the sentence there. Markers become spaces,
+    /// which fixes both, and because the substitution preserves length every
+    /// segment range stays a true chapter coordinate.
     public mutating func segments(inChapter index: Int) -> [SpeechSegment] {
         guard book.chapters.indices.contains(index) else { return [] }
         if let cached = cache[index] { return cached }
-        let built = segmenter.segments(of: book.chapters[index], chapterIndex: index)
+        let chapter = book.chapters[index]
+        let built = segmenter.segments(
+            ofChapterText: Self.speakableText(of: chapter), chapterIndex: index
+        )
         cache[index] = built
         return built
+    }
+
+    /// The chapter's text with unspeakable marker runs blanked to spaces —
+    /// same length, so offsets into it are offsets into `Chapter.text`.
+    ///
+    /// Muted: superscript/subscript runs containing no letters (footnote
+    /// digits, daggers, asterisks) that don't hang off a word. Two things
+    /// survive deliberately: a raised run *with* letters — the "st" of "1st",
+    /// a spelled-out note — is prose; and a letterless run glued to a letter
+    /// or digit — the ₂ of CO₂, the ² of mc² — is content whose muting would
+    /// silently drop meaning (the span kinds' own docs name chemical formulas
+    /// and exponents). A marker after a word's *punctuation* ("ended.12") is
+    /// the noteref pattern and is muted. The cost: a marker jammed directly
+    /// against its word with no punctuation is spoken — the old behavior —
+    /// which reads wrong but loses nothing.
+    static func speakableText(of chapter: Chapter) -> String {
+        // The common case — a chapter with emphasis spans but no raised runs —
+        // must not pay for a character-array round trip.
+        guard let spans = chapter.formatSpans, spans.contains(where: {
+            switch $0.kind {
+            case .superscript, .subscript: return true
+            default: return false
+            }
+        }) else { return chapter.text }
+        var characters = Array(chapter.text)
+        for span in spans {
+            switch span.kind {
+            case .superscript, .subscript: break
+            default: continue
+            }
+            let lower = max(0, span.start)
+            let upper = min(characters.count, span.end)
+            guard lower < upper else { continue }
+            let run = characters[lower..<upper]
+            guard !run.contains(where: { $0.isLetter }) else { continue }
+            if lower > 0, characters[lower - 1].isLetter || characters[lower - 1].isNumber {
+                continue
+            }
+            for position in lower..<upper where !characters[position].isNewline {
+                characters[position] = " "
+            }
+        }
+        return String(characters)
     }
 
     // MARK: - Moving

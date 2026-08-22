@@ -24,6 +24,14 @@ packages:
   ZIPFoundation:
     url: https://github.com/weichsel/ZIPFoundation
     exactVersion: "0.9.19"
+  # "Readr Voice (Beta)": Kokoro-82M neural narration via FluidAudio's CoreML
+  # port (Apache-2.0, espeak-free G2P) — see docs/ROADMAP.md M10. App-layer
+  # only, behind ReadrKit's SpeechEngine protocol (KokoroSpeechEngine); the
+  # ~104MB model downloads on first use, never bundled. Pinned exactly: the
+  # narration path shouldn't move under us on a resolve.
+  FluidAudio:
+    url: https://github.com/FluidInference/FluidAudio
+    exactVersion: "0.15.6"
   # Readium's paginated navigator (reflow/fonts/decorations) is an optional
   # rendering upgrade tracked for a later milestone:
   # ReadiumNavigator:
@@ -41,6 +49,8 @@ targets:
         product: ReadrKit
       - package: ZIPFoundation
         product: ZIPFoundation
+      - package: FluidAudio
+        product: FluidAudio
     # Keys that GENERATE_INFOPLIST_FILE can't express land in this generated
     # plist (git-ignored; XcodeGen keeps it out of Copy Bundle Resources) and
     # Xcode merges both sources into the final Info.plist.
@@ -107,9 +117,18 @@ targets:
         # local or CI build otherwise reported 0.1.0, which made crash and
         # feedback triage lie about which version a report came from. Bump this
         # with each release tag.
-        MARKETING_VERSION: "3.0.0"
+        MARKETING_VERSION: "3.1.0"
         CURRENT_PROJECT_VERSION: "1"
         SWIFT_VERSION: "5.9"
+        # FluidAudio is Apple-silicon-only in practice: its NemoTextProcessing
+        # binary ships arm64-only (simulator link failure) and its Swift uses
+        # Float16, unavailable on x86_64 macOS (CI's generic/universal build
+        # failure) — and the models it exists to run target the Neural Engine,
+        # which Intel Macs don't have. So the app drops the x86_64 slice
+        # everywhere: simulator builds and the macOS app are arm64-only from
+        # the Readr Voice release on.
+        "EXCLUDED_ARCHS[sdk=iphonesimulator*]": x86_64
+        "EXCLUDED_ARCHS[sdk=macosx*]": x86_64
         INFOPLIST_KEY_CFBundleDisplayName: Readr
         # App Store / Launchpad category (an ebook reader → Books).
         INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.books

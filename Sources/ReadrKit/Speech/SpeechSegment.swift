@@ -3,11 +3,13 @@ import Foundation
 /// One unit of narration: a sentence-sized slice of a chapter, addressed the
 /// same way highlights are — **character** offsets into `Chapter.text`.
 ///
-/// Invariant: `text` is exactly the chapter's characters over `range`, with no
-/// substitution or trimming applied after the fact. Word-boundary callbacks
-/// from the speech engine arrive as offsets into `text`, so the reader maps a
-/// spoken word back into chapter coordinates by adding `range.lowerBound` —
-/// which only holds while the two stay in lockstep.
+/// Invariant: `text` is the chapter's characters over `range`, character for
+/// character in length — the only substitution ever applied is the
+/// length-preserving space-blanking of footnote markers (see
+/// `SpeechPlaylist.speakableText(of:)`). Word-boundary callbacks from the
+/// speech engine arrive as offsets into `text`, so the reader maps a spoken
+/// word back into chapter coordinates by adding `range.lowerBound` — which
+/// only holds while the two stay in lockstep.
 public struct SpeechSegment: Hashable, Sendable {
     /// Index into `Book.chapters`.
     public var chapterIndex: Int

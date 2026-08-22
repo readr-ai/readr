@@ -34,8 +34,13 @@ final class NarrationModel: ObservableObject {
     private let defaults: UserDefaults
     /// The synthesizer behind narration. `-uiTestSilentNarration` swaps in a
     /// soundless stand-in so UI tests drive the real pipeline deterministically
-    /// (see `UITestStubSpeechEngine`); normal launches always get AVFoundation.
+    /// (see `UITestStubSpeechEngine`); normal launches always get the router.
     private let engine: any SpeechEngine
+    /// The same engine, typed — router-only calls (audio-session teardown,
+    /// Kokoro prefetch) go through this instead of scattered downcasts that
+    /// would silently no-op if the engine type ever changed. Nil only under
+    /// the UI-test stub.
+    private let router: RoutingSpeechEngine?
     private var narration: NarrationController?
     private var book: Book?
     private var ticker: Timer?
@@ -52,6 +57,9 @@ final class NarrationModel: ObservableObject {
 
     var isActive: Bool { status != .idle }
     var isSpeaking: Bool { status == .speaking }
+    /// Where the voice is right now — for the reader to re-sync its page after
+    /// an overlay kept `onPosition` unwired (events fired meanwhile are gone).
+    var position: NarrationPosition? { narration?.position }
 
     /// Name of the chosen voice, for the picker's label.
     var voiceName: String? {
@@ -63,8 +71,13 @@ final class NarrationModel: ObservableObject {
         self.defaults = defaults
         if UITestStubSpeechEngine.isEnabled {
             self.engine = UITestStubSpeechEngine()
+            self.router = nil
         } else {
-            self.engine = AVSpeechEngine()
+            // Platform voices by default, Kokoro ("Readr Voice") when the
+            // picker chooses it — routed per request by voice id.
+            let router = RoutingSpeechEngine()
+            self.engine = router
+            self.router = router
         }
         // Speed and voice are the reader's, not the book's — carried across
         // books the way the reading theme is.
@@ -73,7 +86,35 @@ final class NarrationModel: ObservableObject {
     }
 
     deinit {
+        // The backstop for narration outliving its reader. `ReaderView`'s
+        // onDisappear deliberately skips `stop()` while something is presented
+        // over the reader (asking about a passage must not cut the voice off)
+        // — but on iPad/macOS the notes inspector is a *column*, so leaving
+        // the reader with it open hit that skip and the voice kept reading
+        // over the library, and reopening the book stacked a second voice on
+        // top of the first: every sentence heard twice. The view layer can't
+        // always tell "covered for a moment" from "gone"; deallocation can.
+        // (`NarrationController` and `AVSpeechEngine` are main-thread-confined
+        // plain classes, and the last reference is SwiftUI's, released on the
+        // main thread.)
         ticker?.invalidate()
+        narration?.stop()
+        router?.endAudioSession()
+        #if os(iOS)
+        // The lock screen must not keep showing a book nobody is narrating,
+        // and the shared command centre must not accumulate dead targets.
+        // Inlined rather than calling `clearNowPlaying()`/
+        // `releaseRemoteCommands()` — those are main-actor methods a
+        // nonisolated deinit can't call; `MPNowPlayingInfoCenter` and
+        // `MPRemoteCommand.removeTarget` don't need it. (The one piece left
+        // to the next session is `endReceivingRemoteControlEvents`, which
+        // does need the main actor; `registerRemoteCommands` re-begins it
+        // idempotently.)
+        MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
+        for (command, target) in remoteTargets {
+            command.removeTarget(target)
+        }
+        #endif
     }
 
     // MARK: - Session
@@ -98,7 +139,7 @@ final class NarrationModel: ObservableObject {
         narration?.stop()
         ticker?.invalidate()
         ticker = nil
-        (engine as? AVSpeechEngine)?.endAudioSession()
+        router?.endAudioSession()
         clearNowPlaying()
         releaseRemoteCommands()
         refresh()
@@ -135,14 +176,40 @@ final class NarrationModel: ObservableObject {
         let systemDefault = AVSpeechEngine.systemDefaultVoiceID(
             for: SpeechVoice.withoutExtensions(language)
         )
-        voices = selector.voices(
+        var offered = selector.voices(
             matching: language, in: installed, systemDefault: systemDefault
         )
-        // A stored voice may have been deleted since (voices are downloadable),
-        // and a book in another language needs one that can read it.
-        voiceID = selector.voice(
-            for: language, in: installed, preferring: voiceID, systemDefault: systemDefault
-        )?.id
+        // "Readr Voice (Beta)" — the bundled Kokoro neural narrator (English
+        // books only for now). Offered first so it's discoverable, but never
+        // *auto*-selected: the platform default costs no download, and this
+        // one pulls ~104MB of model on first use. Only an explicit pick (or a
+        // stored one) routes narration to it.
+        if KokoroSpeechEngine.supports(language: language) {
+            offered.insert(KokoroSpeechEngine.pickerVoice, at: 0)
+        }
+        voices = offered
+        // Resolve from the PERSISTED preference, not the session's last
+        // resolution: `voiceID` is per-book (a French book resolves to a
+        // French voice), and resolving from it meant one book in another
+        // language silently erased a stored Readr Voice choice for the rest
+        // of the session — the sentinel is the one preference the selector
+        // can never re-suggest from the installed list.
+        let preferred = defaults.string(forKey: Self.voiceKey) ?? voiceID
+        if KokoroSpeechEngine.isKokoroVoiceID(preferred),
+           KokoroSpeechEngine.supports(language: language) {
+            // The reader's stored Readr Voice choice. It is not an installed
+            // platform voice, so the selector below can't see it — honour it
+            // here and start fetching the model before the first sentence.
+            voiceID = preferred
+            router?.prepareKokoro()
+        } else {
+            // A stored voice may have been deleted since (voices are
+            // downloadable), and a book in another language needs one that
+            // can read it.
+            voiceID = selector.voice(
+                for: language, in: installed, preferring: preferred, systemDefault: systemDefault
+            )?.id
+        }
 
         let controller = NarrationController(
             book: book,
@@ -217,6 +284,12 @@ final class NarrationModel: ObservableObject {
     func setVoice(_ id: String?) {
         voiceID = id
         narration?.settings.voiceID = id
+        // Picking the Readr Voice starts the model download immediately, so
+        // as little as possible of the ~104MB wait lands on the next sentence
+        // (the settings change above already re-speaks it via the router).
+        if KokoroSpeechEngine.isKokoroVoiceID(id) {
+            router?.prepareKokoro()
+        }
         if let id {
             defaults.set(id, forKey: Self.voiceKey)
         } else {
@@ -242,7 +315,10 @@ final class NarrationModel: ObservableObject {
             return
         }
         status = narration.status
-        currentSentence = narration.currentSegment?.text ?? ""
+        // Muted footnote markers leave runs of spaces in segment text
+        // (length-preserving by design); collapse them for display only.
+        currentSentence = (narration.currentSegment?.text ?? "")
+            .replacingOccurrences(of: " {2,}", with: " ", options: .regularExpression)
         chapterProgress = narration.chapterProgress
         sleepMode = narration.sleepTimer.mode
         sleepRemaining = narration.sleepTimerRemaining()

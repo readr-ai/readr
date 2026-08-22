@@ -311,6 +311,14 @@ struct ReaderView: View {
                 narration.onPosition = { position in
                     followNarration(position)
                 }
+                // Catch up on anything narrated while the callback was
+                // unwired (onDisappear breaks it for every departure,
+                // including a presented sheet the voice keeps reading under):
+                // events fired meanwhile are gone — the one-shot chapter-hold
+                // notification included — so re-sync to where the voice is.
+                if let position = narration.position {
+                    followNarration(position)
+                }
             }
             .onDisappear {
                 // Flush the debounced page-turn save — closing the reader
@@ -318,6 +326,16 @@ struct ReaderView: View {
                 savePositionTask?.cancel()
                 savePositionTask = nil
                 saveTextPosition(chapterIndex: chapterIndex, characterOffset: anchorToPersist)
+                // Break the reference cycle the follow callback forms (model →
+                // closure → this view → its `@StateObject` box) EVERY time the
+                // view goes off screen. `onAppear` rewires it on return, and
+                // without this a reader who left with the notes inspector open
+                // leaked the model — which kept the voice reading over the
+                // library, and stacked a second voice on top when the book was
+                // reopened. With the cycle broken, `NarrationModel.deinit` is
+                // the backstop that silences narration when the reader is
+                // discarded for real.
+                narration.onPosition = nil
                 // Closing the book stops the voice — narration is scoped to the
                 // reader, and a book read aloud after the reader is gone has no
                 // controls and no page to follow. But ONLY when the reader is
@@ -326,9 +344,6 @@ struct ReaderView: View {
                 // second `onAppear`), and asking the book about the passage it
                 // just read must not cut the narration off.
                 if !isPresentingOverlay {
-                    // Also breaks the reference cycle the callback forms —
-                    // model → closure → this view → its `@StateObject` box.
-                    narration.onPosition = nil
                     narration.stop()
                 }
             }

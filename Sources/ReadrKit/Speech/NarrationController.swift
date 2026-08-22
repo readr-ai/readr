@@ -248,6 +248,15 @@ public final class NarrationController {
         silentTicks += 1
         guard silentTicks >= 2 else { return }
         silentTicks = 0
+        // Quiet because *paused*, not because the utterance ended: an audio
+        // interruption (phone call, Siri) pauses the synthesizer without the
+        // controller asking. Advancing from here treated every interrupted
+        // sentence as spoken and machine-gunned through pages nobody heard —
+        // hold instead, and `play()` resumes the same utterance.
+        if engine.state == .paused {
+            setStatus(.paused)
+            return
+        }
         handleFinishedSegment()
     }
 
@@ -446,6 +455,18 @@ extension NarrationController: SpeechEngineDelegate {
         // Stale: this utterance was cancelled by a skip, a settings change, or
         // the sleep timer, and its completion must not advance the book.
         guard requestID == activeRequestID else { return }
+        // Finished *while paused*: the reader tapped pause in the same instant
+        // the utterance's audio ended (nothing was left to pause), and the
+        // completion — queued asynchronously by the engine — landed after.
+        // Advancing here would start the next sentence's audio against the
+        // pause. Hold instead, with the sentence marked fully spoken so
+        // `play()` moves on to the next one naturally.
+        if status == .paused {
+            activeRequestID = nil
+            spokenOffset = currentSegmentLength
+            mustRespeakToResume = true
+            return
+        }
         handleFinishedSegment()
     }
 
