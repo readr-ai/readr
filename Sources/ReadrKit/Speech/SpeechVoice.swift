@@ -190,8 +190,16 @@ public struct VoiceSelector: Sendable {
         } else {
             pool = voices
         }
+        // Curate only when there is something to curate TOWARD: if the pool
+        // holds no modern voice at all (a language served solely by the
+        // accessibility set), offer the whole pool — filtering to just the
+        // blessed default would hide its same-language siblings with no way
+        // to pick them.
+        guard pool.contains(where: { $0.family == .modern }) else {
+            return sorted(pool, systemDefault: systemDefault)
+        }
         let prose = pool.filter { $0.family == .modern || $0.id == systemDefault }
-        return sorted(prose.isEmpty ? pool : prose, systemDefault: systemDefault)
+        return sorted(prose, systemDefault: systemDefault)
     }
 
     /// Best first: family, then quality, then the platform's own default for
