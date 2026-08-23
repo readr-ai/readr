@@ -121,10 +121,41 @@ final class SpeechVoiceTests: XCTestCase {
         ]
         XCTAssertEqual(
             selector.voices(matching: "en-US", in: mixed).map(\.id),
-            ["samantha", "eddy", "albert"],
-            "Modern, then accessibility voices, then the legacy novelty set"
+            ["samantha"],
+            "The picker offers prose voices only — no accessibility or novelty rows"
         )
         XCTAssertEqual(selector.voice(for: "en-US", in: mixed)?.id, "samantha")
+    }
+
+    func testThePickerHidesAccessibilityAndNoveltyVoices() {
+        // The DECtalk-style accessibility set and the novelty voices exist for
+        // reasons that aren't an hour of prose, and on a stock Mac they were
+        // most of the list — a wall between the reader and the real voices.
+        // They are hidden from the picker but NOT from selection: a stored
+        // choice of one (an accessibility user who wants Eloquence at speed)
+        // is still honoured by `voice(for:preferring:)`.
+        let mixed = [
+            SpeechVoice(id: "albert", name: "Albert", language: "en-US", family: .legacy),
+            SpeechVoice(id: "eddy", name: "Eddy", language: "en-US", family: .alternate),
+            SpeechVoice(id: "samantha", name: "Samantha", language: "en-US", family: .modern),
+        ]
+        XCTAssertEqual(selector.voices(matching: "en-US", in: mixed).map(\.id), ["samantha"])
+        XCTAssertEqual(
+            selector.voice(for: "en-US", in: mixed, preferring: "eddy")?.id, "eddy",
+            "A stored accessibility-voice choice keeps working"
+        )
+    }
+
+    func testAnAllFilteredListFallsBackToEverything() {
+        // If hiding the non-prose families would leave the picker empty (a
+        // language whose only installed voice is an accessibility one), offer
+        // them anyway — an empty picker helps nobody.
+        let onlyAlternate = [
+            SpeechVoice(id: "eddy", name: "Eddy", language: "en-US", family: .alternate),
+        ]
+        XCTAssertEqual(
+            selector.voices(matching: "en-US", in: onlyAlternate).map(\.id), ["eddy"]
+        )
     }
 
     func testBcp47ExtensionsAreStrippedToo() {
@@ -153,8 +184,8 @@ final class SpeechVoiceTests: XCTestCase {
         ]
         XCTAssertEqual(
             selector.voices(matching: "en-US", in: mixed, systemDefault: "alex").map(\.id),
-            ["alex", "eddy", "albert"],
-            "The blessed legacy voice leads; the unblessed one still ranks last"
+            ["alex"],
+            "The blessed legacy voice is offered; the unblessed families are hidden"
         )
         XCTAssertEqual(
             selector.voice(for: "en-US", in: mixed, systemDefault: "alex")?.id, "alex"

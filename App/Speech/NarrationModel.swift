@@ -235,6 +235,15 @@ final class NarrationModel: ObservableObject {
                 for: language, in: installed, preferring: preferred, systemDefault: systemDefault
             )?.id
         }
+        // The picker hides the accessibility/novelty families, but a stored
+        // choice of one still narrates (an accessibility reader who set up
+        // Eloquence keeps it) — so the picker must show that truth: append
+        // the chosen voice when curation dropped it, or the menu would show
+        // no checkmark at all.
+        if let chosen = voiceID, !voices.contains(where: { $0.id == chosen }),
+           let installedChoice = installed.first(where: { $0.id == chosen }) {
+            voices.append(installedChoice)
+        }
 
         let controller = NarrationController(
             book: book,
