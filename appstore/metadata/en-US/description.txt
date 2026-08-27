@@ -14,8 +14,8 @@ editable article you can export as Markdown.
 LISTEN TO IT
 Press Listen and Readr reads the book aloud, starting from the page you're on
 — not the top of the chapter. The page turns itself to follow the voice, and
-the place it saves is where you listened to, so switching between reading and
-listening never costs you your spot.
+the place it saves is where the voice left off, so switching between reading
+and listening never costs you your spot.
 
 Skip by sentence or by chapter, change the speed or the voice mid-sentence and
 it carries on from that word, and set a sleep timer that counts listening
@@ -23,9 +23,10 @@ rather than clock time — pause for lunch and the countdown waits for you. It
 keeps playing with the screen locked, with lock-screen and headphone controls,
 and it works on PDFs as well as EPUBs.
 
-The narrator is Readr Voice, a neural voice that runs entirely on your
-device: no account, no subscription, and nothing about your book ever leaves
-the device to be read aloud. Its voice model downloads once (about 104MB) the
+The narrator for English books is Readr Voice, a neural voice that runs
+entirely on your device: no account, no subscription, and nothing about your
+book ever leaves the device to be read aloud. Books in other languages are
+read by Apple's voices. Its voice model downloads once (about 104MB) the
 first time you listen; until it's in, an Apple voice reads and the switch
 happens mid-chapter on its own. Prefer Apple's built-in voices? They're one
 tap away in the voice menu, with nothing to download at all.
@@ -48,7 +49,7 @@ READING THAT FEELS LIKE READING
 • Three layouts: continuous scroll, single page, or two facing pages
 • Paper, Sepia and Dark themes, with your choice of typeface and spacing
 • Table of contents, bookmarks, in-book search, footnote popups
-• Five highlight colours, notes, and a Notes panel that exports to Markdown
+• Five highlight colors, notes, and a Notes panel that exports to Markdown
 • Continue Reading picks up exactly where you left off, reading or listening
 • On iPad: sidebar and reader side by side, two-page spreads, and hardware
   keyboard page turns

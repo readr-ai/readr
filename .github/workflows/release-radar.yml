@@ -1,0 +1,177 @@
+name: Release radar
+
+# Polls the App Store review state for the launch target and — because the
+# release type is MANUAL — presses Release through the API the moment Apple
+# approves it. Every state change is mirrored onto a `launch-radar` issue so
+# the maker hears about it from GitHub notifications without watching logs.
+#
+# The schedule exists for exactly one window: between submitting a version
+# for review and that version going live. The workflow disables itself when
+# the target reports live; delete the file whenever the launch era is over.
+#
+# TARGET_VERSION and AUTO_RELEASE are pinned here in the file so a scheduled
+# run and a manual dispatch cannot disagree about what they are watching. A
+# manual dispatch defaults auto_release to "no" — checking on a version must
+# never publish it as a side effect.
+
+on:
+  schedule:
+    - cron: "*/30 * * * *"
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Version to watch (blank = the pinned TARGET_VERSION)"
+        required: false
+        type: string
+      auto_release:
+        description: "Press Release when approved"
+        required: true
+        default: "no"
+        type: choice
+        options: ["yes", "no"]
+
+permissions:
+  contents: read
+  issues: write
+  actions: write
+
+concurrency:
+  group: release-radar
+  cancel-in-progress: false
+
+env:
+  PINNED_TARGET: "3.2.1"
+  PINNED_AUTO_RELEASE: "yes"
+
+jobs:
+  radar:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check secrets
+        env:
+          KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+          ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+          P8: ${{ secrets.APP_STORE_CONNECT_API_KEY_P8 }}
+        run: |
+          if [ -z "$KEY_ID" ] || [ -z "$ISSUER_ID" ] || [ -z "$P8" ]; then
+            echo "::error::APP_STORE_CONNECT_* secrets are not configured."
+            exit 1
+          fi
+
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: pip3 install --quiet --break-system-packages 'pyjwt[crypto]'
+
+      - name: Decision-table tests
+        run: python3 scripts/test_asc_radar.py
+
+      - name: Radar
+        id: radar
+        env:
+          APP_STORE_CONNECT_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+          APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+          APP_STORE_CONNECT_API_KEY_P8: ${{ secrets.APP_STORE_CONNECT_API_KEY_P8 }}
+          # Dispatch inputs ride through env, never the shell (same rule as
+          # app-store-metadata.yml: free text must not touch a job that holds
+          # the App Store key).
+          INPUT_TARGET: ${{ inputs.target }}
+          INPUT_AUTO_RELEASE: ${{ inputs.auto_release }}
+        run: |
+          export TARGET_VERSION="${INPUT_TARGET:-$PINNED_TARGET}"
+          export AUTO_RELEASE="${INPUT_AUTO_RELEASE:-$PINNED_AUTO_RELEASE}"
+          python3 scripts/asc_radar.py
+
+      # Runs even when the radar step fails: a dead radar during the
+      # submission-to-live window is exactly what must page the maker, not
+      # freeze the issue at the last good state.
+      - name: Mirror state onto the launch-radar issue
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ACTION: ${{ steps.radar.outputs.action }}
+          STATE: ${{ steps.radar.outputs.state }}
+          TARGET: ${{ steps.radar.outputs.target }}
+        run: |
+          set -euo pipefail
+          ACTION="${ACTION:-run-failed}"
+          STATE="${STATE:-see the run log}"
+          TARGET="${TARGET:-$PINNED_TARGET}"
+          TITLE="Launch radar: $TARGET is $ACTION ($STATE)"
+          MARKER="<!-- radar:$TARGET|$ACTION|$STATE -->"
+          BODY="Automated: mirrors the App Store review state of the launch target. One comment per state change; the title is always current.
+
+          $MARKER"
+
+          gh label create launch-radar \
+            --repo "$GITHUB_REPOSITORY" \
+            --description "Automated App Store launch radar" \
+            --color 5319e7 2>/dev/null || true
+
+          # Newest radar issue, open or closed — a closed one must not spawn
+          # a fresh issue every half hour.
+          NUM=$(gh issue list --repo "$GITHUB_REPOSITORY" \
+                  --label launch-radar --state all \
+                  --json number,title \
+                  --jq '[.[] | select(.title | startswith("Launch radar:"))][0].number // empty')
+
+          if [ -z "$NUM" ]; then
+            gh issue create --repo "$GITHUB_REPOSITORY" \
+              --title "$TITLE" --label launch-radar --body "$BODY"
+            exit 0
+          fi
+
+          # Change detection rides on the hidden marker, not the title, so a
+          # human retitling the issue does not start an edit war.
+          if gh issue view "$NUM" --repo "$GITHUB_REPOSITORY" \
+               --json body --jq .body | grep -qF "$MARKER"; then
+            # "absent" is only ever a transient pre-submit state; if it has
+            # sat unchanged for a day, the submit step never ran (dead
+            # session, failed dispatch) and someone must hear about it.
+            if [ "$ACTION" = "absent" ]; then
+              UPDATED=$(gh issue view "$NUM" --repo "$GITHUB_REPOSITORY" \
+                          --json updatedAt --jq .updatedAt)
+              AGE=$(( $(date -u +%s) - $(date -u -d "$UPDATED" +%s) ))
+              if [ "$AGE" -gt 86400 ]; then
+                gh issue reopen "$NUM" --repo "$GITHUB_REPOSITORY" 2>/dev/null || true
+                gh issue comment "$NUM" --repo "$GITHUB_REPOSITORY" \
+                  --body "$TARGET has had no App Store record for over 24h — the submit step likely never ran. Check the launch session and the app-store-metadata workflow."
+              fi
+            fi
+            exit 0
+          fi
+
+          ISSUE_STATE=$(gh issue view "$NUM" --repo "$GITHUB_REPOSITORY" \
+                          --json state --jq .state)
+          if [ "$ISSUE_STATE" = "CLOSED" ]; then
+            case "$ACTION" in
+              rejected|run-failed|release-failed)
+                gh issue reopen "$NUM" --repo "$GITHUB_REPOSITORY" ;;
+              *) exit 0 ;;  # human closed the thread; routine states stay quiet
+            esac
+          fi
+
+          gh issue edit "$NUM" --repo "$GITHUB_REPOSITORY" \
+            --title "$TITLE" --body "$BODY"
+          gh issue comment "$NUM" --repo "$GITHUB_REPOSITORY" \
+            --body "State change: \`$ACTION\` (\`$STATE\`) for $TARGET — $(date -u +%FT%TZ)"
+
+      # Only the PINNED target standing down may kill the watch — a manual
+      # dispatch that finds some OTHER version live (2.15.1 during its
+      # release phase) must leave the cron running for the real target.
+      - name: Stand down once live
+        if: steps.radar.outputs.action == 'live' && steps.radar.outputs.target == env.PINNED_TARGET
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET: ${{ steps.radar.outputs.target }}
+        run: |
+          gh workflow disable release-radar.yml --repo "$GITHUB_REPOSITORY"
+          NUM=$(gh issue list --repo "$GITHUB_REPOSITORY" \
+                  --label launch-radar --state all \
+                  --json number,title \
+                  --jq '[.[] | select(.title | startswith("Launch radar:"))][0].number // empty')
+          if [ -n "$NUM" ]; then
+            gh issue comment "$NUM" --repo "$GITHUB_REPOSITORY" \
+              --body "$TARGET is live — radar disabled. Remaining launch steps (website merge, Product Hunt post) are owned by the launch session: if the site still shows the waitlist a few hours from now, that session is dead and needs a human."
+          fi
+          echo "target is live — radar disabled; delete the file at leisure"

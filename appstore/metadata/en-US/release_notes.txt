@@ -4,8 +4,9 @@ Readr 3.2: a voice worth listening to.
   entirely on your device, now the default for English books
 • Nothing to wait for: listening starts instantly with an Apple voice while
   the voice model downloads once (~104MB), then switches over automatically
-• Footnote numbers are no longer read aloud — while formulas still are
+• Footnote numbers are no longer read aloud (formulas still are — that
+  one's next)
 • Fixed: repeated sentences, narration jumping ahead, and playback wedging
   after a phone call
-• Your book never leaves the device to be read aloud; Apple's zero-download
+• Your book never leaves the device to be read aloud; Apple's built-in
   voices remain one tap away
