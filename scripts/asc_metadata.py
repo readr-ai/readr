@@ -41,6 +41,11 @@ BUNDLE_ID = "com.readrai.app"
 PLATFORM = "IOS"
 LOCALE = "en-US"
 
+# Apple has used both names for the live state across API revisions. One
+# definition, shared with the release radar — a rename by Apple must be fixed
+# in exactly one place.
+LIVE_STATES = ("READY_FOR_SALE", "READY_FOR_DISTRIBUTION")
+
 # Apple's limits. Exceeding one is a rejected PATCH, so fail before the call
 # with a message naming the field rather than surfacing a 409 from the API.
 LIMITS = {
@@ -378,11 +383,10 @@ def push(
     # Fail CLOSED when neither is present: the old `.get()` returned None,
     # which is not in the live-states tuple, so the guard inverted and would
     # have selected the shipped listing the day Apple drops the attribute.
-    live = ("READY_FOR_SALE", "READY_FOR_DISTRIBUTION")
     def editable_info(info: dict) -> bool:
         attrs = info["attributes"]
         state = attrs.get("state") or attrs.get("appStoreState")
-        return state is not None and state not in live
+        return state is not None and state not in LIVE_STATES
     editable = next((i for i in infos if editable_info(i)), None)
     if editable:
         # Categories are a *relationship* on appInfo, not an attribute, and
@@ -867,11 +871,10 @@ def main() -> None:
 
     # The editable appInfo owns the age-rating declaration.
     infos = call("GET", f"/apps/{app['id']}/appInfos", bearer=bearer)["data"]
-    live_states = ("READY_FOR_SALE", "READY_FOR_DISTRIBUTION")
     app_info = next(
         (i for i in infos
          if (i["attributes"].get("state") or i["attributes"].get("appStoreState"))
-         not in live_states),
+         not in LIVE_STATES),
         None,
     )
     report_data_usages(bearer, app["id"])

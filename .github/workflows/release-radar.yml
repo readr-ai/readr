@@ -6,12 +6,13 @@ name: Release radar
 # the maker hears about it from GitHub notifications without watching logs.
 #
 # The schedule exists for exactly one window: between submitting a version
-# for review and that version going live. Outside the window every run is a
-# cheap read that reports "wait" or "live". Delete or disable this workflow
-# once the launch settles.
+# for review and that version going live. The workflow disables itself when
+# the target reports live; delete the file whenever the launch era is over.
 #
 # TARGET_VERSION and AUTO_RELEASE are pinned here in the file so a scheduled
-# run and a manual dispatch cannot disagree about what they are watching.
+# run and a manual dispatch cannot disagree about what they are watching. A
+# manual dispatch defaults auto_release to "no" — checking on a version must
+# never publish it as a side effect.
 
 on:
   schedule:
@@ -25,13 +26,14 @@ on:
       auto_release:
         description: "Press Release when approved"
         required: true
-        default: "yes"
+        default: "no"
         type: choice
         options: ["yes", "no"]
 
 permissions:
   contents: read
   issues: write
+  actions: write
 
 concurrency:
   group: release-radar
@@ -48,8 +50,10 @@ jobs:
       - name: Check secrets
         env:
           KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+          ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+          P8: ${{ secrets.APP_STORE_CONNECT_API_KEY_P8 }}
         run: |
-          if [ -z "$KEY_ID" ]; then
+          if [ -z "$KEY_ID" ] || [ -z "$ISSUER_ID" ] || [ -z "$P8" ]; then
             echo "::error::APP_STORE_CONNECT_* secrets are not configured."
             exit 1
           fi
@@ -57,7 +61,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install dependencies
-        run: pip3 install --quiet 'pyjwt[crypto]'
+        run: pip3 install --quiet --break-system-packages 'pyjwt[crypto]'
 
       - name: Decision-table tests
         run: python3 scripts/test_asc_radar.py
@@ -78,7 +82,11 @@ jobs:
           export AUTO_RELEASE="${INPUT_AUTO_RELEASE:-$PINNED_AUTO_RELEASE}"
           python3 scripts/asc_radar.py
 
+      # Runs even when the radar step fails: a dead radar during the
+      # submission-to-live window is exactly what must page the maker, not
+      # freeze the issue at the last good state.
       - name: Mirror state onto the launch-radar issue
+        if: always()
         env:
           GH_TOKEN: ${{ github.token }}
           ACTION: ${{ steps.radar.outputs.action }}
@@ -86,27 +94,59 @@ jobs:
           TARGET: ${{ steps.radar.outputs.target }}
         run: |
           set -euo pipefail
+          ACTION="${ACTION:-run-failed}"
+          STATE="${STATE:-see the run log}"
+          TARGET="${TARGET:-$PINNED_TARGET}"
+          TITLE="Launch radar: $TARGET is $ACTION ($STATE)"
+          MARKER="<!-- radar:$TARGET|$ACTION|$STATE -->"
+          BODY="Automated: mirrors the App Store review state of the launch target. One comment per state change; the title is always current.
+
+          $MARKER"
+
           gh label create launch-radar \
             --repo "$GITHUB_REPOSITORY" \
             --description "Automated App Store launch radar" \
             --color 5319e7 2>/dev/null || true
 
-          TITLE="Launch radar: $TARGET is $ACTION ($STATE)"
+          # Newest radar issue, open or closed — a closed one must not spawn
+          # a fresh issue every half hour.
           NUM=$(gh issue list --repo "$GITHUB_REPOSITORY" \
-                  --label launch-radar --state open \
-                  --json number --jq '.[0].number // empty')
+                  --label launch-radar --state all \
+                  --json number,title \
+                  --jq '[.[] | select(.title | startswith("Launch radar:"))][0].number // empty')
 
           if [ -z "$NUM" ]; then
             gh issue create --repo "$GITHUB_REPOSITORY" \
-              --title "$TITLE" --label launch-radar \
-              --body "Automated: mirrors the App Store review state of the launch target. One comment per state change; the title is always current."
+              --title "$TITLE" --label launch-radar --body "$BODY"
             exit 0
           fi
 
-          CURRENT=$(gh issue view "$NUM" --repo "$GITHUB_REPOSITORY" \
-                      --json title --jq .title)
-          if [ "$CURRENT" != "$TITLE" ]; then
-            gh issue edit "$NUM" --repo "$GITHUB_REPOSITORY" --title "$TITLE"
-            gh issue comment "$NUM" --repo "$GITHUB_REPOSITORY" \
-              --body "State change: \`$ACTION\` (\`$STATE\`) for $TARGET — $(date -u +%FT%TZ)"
+          # Change detection rides on the hidden marker, not the title, so a
+          # human retitling the issue does not start an edit war.
+          if gh issue view "$NUM" --repo "$GITHUB_REPOSITORY" \
+               --json body --jq .body | grep -qF "$MARKER"; then
+            exit 0
           fi
+
+          ISSUE_STATE=$(gh issue view "$NUM" --repo "$GITHUB_REPOSITORY" \
+                          --json state --jq .state)
+          if [ "$ISSUE_STATE" = "CLOSED" ]; then
+            case "$ACTION" in
+              rejected|run-failed)
+                gh issue reopen "$NUM" --repo "$GITHUB_REPOSITORY" ;;
+              *) exit 0 ;;  # human closed the thread; routine states stay quiet
+            esac
+          fi
+
+          gh issue edit "$NUM" --repo "$GITHUB_REPOSITORY" \
+            --title "$TITLE" --body "$BODY"
+          gh issue comment "$NUM" --repo "$GITHUB_REPOSITORY" \
+            --body "State change: \`$ACTION\` (\`$STATE\`) for $TARGET — $(date -u +%FT%TZ)"
+
+      - name: Stand down once live
+        if: steps.radar.outputs.action == 'live'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh workflow disable release-radar.yml --repo "$GITHUB_REPOSITORY"
+          echo "target is live — radar disabled; delete the file at leisure"
