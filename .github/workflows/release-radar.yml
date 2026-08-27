@@ -125,6 +125,19 @@ jobs:
           # human retitling the issue does not start an edit war.
           if gh issue view "$NUM" --repo "$GITHUB_REPOSITORY" \
                --json body --jq .body | grep -qF "$MARKER"; then
+            # "absent" is only ever a transient pre-submit state; if it has
+            # sat unchanged for a day, the submit step never ran (dead
+            # session, failed dispatch) and someone must hear about it.
+            if [ "$ACTION" = "absent" ]; then
+              UPDATED=$(gh issue view "$NUM" --repo "$GITHUB_REPOSITORY" \
+                          --json updatedAt --jq .updatedAt)
+              AGE=$(( $(date -u +%s) - $(date -u -d "$UPDATED" +%s) ))
+              if [ "$AGE" -gt 86400 ]; then
+                gh issue reopen "$NUM" --repo "$GITHUB_REPOSITORY" 2>/dev/null || true
+                gh issue comment "$NUM" --repo "$GITHUB_REPOSITORY" \
+                  --body "$TARGET has had no App Store record for over 24h — the submit step likely never ran. Check the launch session and the app-store-metadata workflow."
+              fi
+            fi
             exit 0
           fi
 
@@ -132,7 +145,7 @@ jobs:
                           --json state --jq .state)
           if [ "$ISSUE_STATE" = "CLOSED" ]; then
             case "$ACTION" in
-              rejected|run-failed)
+              rejected|run-failed|release-failed)
                 gh issue reopen "$NUM" --repo "$GITHUB_REPOSITORY" ;;
               *) exit 0 ;;  # human closed the thread; routine states stay quiet
             esac
@@ -143,10 +156,22 @@ jobs:
           gh issue comment "$NUM" --repo "$GITHUB_REPOSITORY" \
             --body "State change: \`$ACTION\` (\`$STATE\`) for $TARGET — $(date -u +%FT%TZ)"
 
+      # Only the PINNED target standing down may kill the watch — a manual
+      # dispatch that finds some OTHER version live (2.15.1 during its
+      # release phase) must leave the cron running for the real target.
       - name: Stand down once live
-        if: steps.radar.outputs.action == 'live'
+        if: steps.radar.outputs.action == 'live' && steps.radar.outputs.target == env.PINNED_TARGET
         env:
           GH_TOKEN: ${{ github.token }}
+          TARGET: ${{ steps.radar.outputs.target }}
         run: |
           gh workflow disable release-radar.yml --repo "$GITHUB_REPOSITORY"
+          NUM=$(gh issue list --repo "$GITHUB_REPOSITORY" \
+                  --label launch-radar --state all \
+                  --json number,title \
+                  --jq '[.[] | select(.title | startswith("Launch radar:"))][0].number // empty')
+          if [ -n "$NUM" ]; then
+            gh issue comment "$NUM" --repo "$GITHUB_REPOSITORY" \
+              --body "$TARGET is live — radar disabled. Remaining launch steps (website merge, Product Hunt post) are owned by the launch session: if the site still shows the waitlist a few hours from now, that session is dead and needs a human."
+          fi
           echo "target is live — radar disabled; delete the file at leisure"

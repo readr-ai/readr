@@ -38,6 +38,7 @@ on:
 
 permissions:
   contents: read
+  issues: write
 
 jobs:
   metadata:
@@ -92,3 +93,31 @@ jobs:
           VERSION: ${{ inputs.version }}
         run: |
           python3 scripts/asc_metadata.py --mode "$MODE" --version "$VERSION"
+
+      # A failed push/submit is a one-shot dispatch — without this, the only
+      # trace is a red run nobody is watching, while the release radar keeps
+      # reporting "absent" as if the submit simply hadn't happened yet.
+      - name: Page the launch-radar issue on failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MODE: ${{ inputs.mode }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          MSG="App Store metadata run FAILED (mode=$MODE, version=$VERSION): $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          NUM=$(gh issue list --repo "$GITHUB_REPOSITORY" \
+                  --label launch-radar --state all \
+                  --json number,title \
+                  --jq '[.[] | select(.title | startswith("Launch radar:"))][0].number // empty')
+          if [ -n "$NUM" ]; then
+            gh issue reopen "$NUM" --repo "$GITHUB_REPOSITORY" 2>/dev/null || true
+            gh issue comment "$NUM" --repo "$GITHUB_REPOSITORY" --body "$MSG"
+          else
+            gh label create launch-radar --repo "$GITHUB_REPOSITORY" \
+              --description "Automated App Store launch radar" \
+              --color 5319e7 2>/dev/null || true
+            gh issue create --repo "$GITHUB_REPOSITORY" \
+              --title "Launch radar: metadata run FAILED" \
+              --label launch-radar --body "$MSG"
+          fi

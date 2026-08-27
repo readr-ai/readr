@@ -19,10 +19,13 @@ other path is read-only.
 
 from __future__ import annotations
 
+import json
 import os
 import socket
 import sys
+import urllib.error
 import urllib.parse
+import urllib.request
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -65,38 +68,50 @@ def decide(states: dict[str, str], target: str, auto_release: bool) -> tuple[str
     return "wait", state
 
 
-def release(bearer: str, version_id: str) -> bool:
+def release(bearer: str, version_id: str) -> str:
     """POST the release request — the API's 'press Release' button.
 
-    Apple keeps the version in PENDING_DEVELOPER_RELEASE for a while after a
-    release request is accepted, so on a 30-minute schedule the next run WILL
-    see the same state and try again. Apple answers the duplicate with an
-    error; treat that as "already pressed" rather than letting `die()` turn
-    the happy path into a wall of red runs. `call()` exits via SystemExit on
-    any HTTP error — catching it here is the same tolerate-and-report shape
-    the review-submission probe used.
+    Returns 'released', 'already-pressed', or 'failed'. The distinction
+    matters: Apple keeps the version in PENDING_DEVELOPER_RELEASE for a while
+    after a release request is accepted, so the next scheduled run WILL see
+    the same state and try again — that duplicate must stay quiet. But a
+    genuinely failed press (expired key, lapsed agreement, 500) must NOT be
+    swallowed as "already pressed", or the app silently never goes live while
+    every run reports success. This does its own HTTP call instead of
+    `asc.call` precisely because it needs the error body to tell the two
+    apart.
     """
-    try:
-        asc.call(
-            "POST",
-            "/appStoreVersionReleaseRequests",
-            body={
-                "data": {
-                    "type": "appStoreVersionReleaseRequests",
-                    "relationships": {
-                        "appStoreVersion": {
-                            "data": {"type": "appStoreVersions", "id": version_id}
-                        }
-                    },
+    body = json.dumps({
+        "data": {
+            "type": "appStoreVersionReleaseRequests",
+            "relationships": {
+                "appStoreVersion": {
+                    "data": {"type": "appStoreVersions", "id": version_id}
                 }
             },
-            bearer=bearer,
-        )
-        return True
-    except SystemExit:
-        print("  release request rejected — most likely already pressed on a "
-              "previous run; leaving the version to transition on its own")
-        return False
+        }
+    }).encode()
+    request = urllib.request.Request(
+        f"{asc.API}/appStoreVersionReleaseRequests", data=body, method="POST"
+    )
+    request.add_header("Authorization", f"Bearer {bearer}")
+    request.add_header("Content-Type", "application/json")
+    try:
+        with urllib.request.urlopen(request):
+            return "released"
+    except urllib.error.HTTPError as error:
+        detail = error.read().decode(errors="replace")
+        # A duplicate press comes back as a conflict/state error naming the
+        # version's state. Anything else is a real failure and must page.
+        if error.code in (409, 422) and "STATE_ERROR" in detail:
+            print("  release request rejected as a state conflict — most "
+                  "likely already pressed on a previous run")
+            return "already-pressed"
+        print(f"  release request FAILED: HTTP {error.code}\n{detail[:800]}")
+        return "failed"
+    except urllib.error.URLError as error:
+        print(f"  release request FAILED: {error}")
+        return "failed"
 
 
 def main() -> None:
@@ -134,8 +149,13 @@ def main() -> None:
     action, detail = decide(states, target, auto_release)
 
     if action == "release":
-        if release(bearer, records[target][1]):
+        outcome = release(bearer, records[target][1])
+        if outcome == "released":
             print(f"  RELEASED — requested release of {target}")
+        elif outcome == "failed":
+            # Surfaces in the issue title and reopens a closed issue — the
+            # mirror step treats release-failed like a rejection.
+            action = "release-failed"
 
     # The one line consumers parse. Stable format; append, don't reshape.
     print(f"RADAR target={target} action={action} detail={detail}")
