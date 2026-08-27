@@ -1,3 +1,1 @@
-Now Readr really reads to you: press Listen and your book plays in Readr
-Voice, a natural neural narrator that runs entirely on your device — no
-account, and your book never leaves your phone.
+Press Listen and your book plays in Readr Voice — a natural neural narrator that runs entirely on your device. No account, and your book never leaves your phone.

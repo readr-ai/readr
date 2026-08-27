@@ -1,0 +1,112 @@
+name: Release radar
+
+# Polls the App Store review state for the launch target and — because the
+# release type is MANUAL — presses Release through the API the moment Apple
+# approves it. Every state change is mirrored onto a `launch-radar` issue so
+# the maker hears about it from GitHub notifications without watching logs.
+#
+# The schedule exists for exactly one window: between submitting a version
+# for review and that version going live. Outside the window every run is a
+# cheap read that reports "wait" or "live". Delete or disable this workflow
+# once the launch settles.
+#
+# TARGET_VERSION and AUTO_RELEASE are pinned here in the file so a scheduled
+# run and a manual dispatch cannot disagree about what they are watching.
+
+on:
+  schedule:
+    - cron: "*/30 * * * *"
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Version to watch (blank = the pinned TARGET_VERSION)"
+        required: false
+        type: string
+      auto_release:
+        description: "Press Release when approved"
+        required: true
+        default: "yes"
+        type: choice
+        options: ["yes", "no"]
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: release-radar
+  cancel-in-progress: false
+
+env:
+  PINNED_TARGET: "3.2.1"
+  PINNED_AUTO_RELEASE: "yes"
+
+jobs:
+  radar:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check secrets
+        env:
+          KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+        run: |
+          if [ -z "$KEY_ID" ]; then
+            echo "::error::APP_STORE_CONNECT_* secrets are not configured."
+            exit 1
+          fi
+
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: pip3 install --quiet 'pyjwt[crypto]'
+
+      - name: Decision-table tests
+        run: python3 scripts/test_asc_radar.py
+
+      - name: Radar
+        id: radar
+        env:
+          APP_STORE_CONNECT_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+          APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+          APP_STORE_CONNECT_API_KEY_P8: ${{ secrets.APP_STORE_CONNECT_API_KEY_P8 }}
+          # Dispatch inputs ride through env, never the shell (same rule as
+          # app-store-metadata.yml: free text must not touch a job that holds
+          # the App Store key).
+          INPUT_TARGET: ${{ inputs.target }}
+          INPUT_AUTO_RELEASE: ${{ inputs.auto_release }}
+        run: |
+          export TARGET_VERSION="${INPUT_TARGET:-$PINNED_TARGET}"
+          export AUTO_RELEASE="${INPUT_AUTO_RELEASE:-$PINNED_AUTO_RELEASE}"
+          python3 scripts/asc_radar.py
+
+      - name: Mirror state onto the launch-radar issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ACTION: ${{ steps.radar.outputs.action }}
+          STATE: ${{ steps.radar.outputs.state }}
+          TARGET: ${{ steps.radar.outputs.target }}
+        run: |
+          set -euo pipefail
+          gh label create launch-radar \
+            --repo "$GITHUB_REPOSITORY" \
+            --description "Automated App Store launch radar" \
+            --color 5319e7 2>/dev/null || true
+
+          TITLE="Launch radar: $TARGET is $ACTION ($STATE)"
+          NUM=$(gh issue list --repo "$GITHUB_REPOSITORY" \
+                  --label launch-radar --state open \
+                  --json number --jq '.[0].number // empty')
+
+          if [ -z "$NUM" ]; then
+            gh issue create --repo "$GITHUB_REPOSITORY" \
+              --title "$TITLE" --label launch-radar \
+              --body "Automated: mirrors the App Store review state of the launch target. One comment per state change; the title is always current."
+            exit 0
+          fi
+
+          CURRENT=$(gh issue view "$NUM" --repo "$GITHUB_REPOSITORY" \
+                      --json title --jq .title)
+          if [ "$CURRENT" != "$TITLE" ]; then
+            gh issue edit "$NUM" --repo "$GITHUB_REPOSITORY" --title "$TITLE"
+            gh issue comment "$NUM" --repo "$GITHUB_REPOSITORY" \
+              --body "State change: \`$ACTION\` (\`$STATE\`) for $TARGET — $(date -u +%FT%TZ)"
+          fi
