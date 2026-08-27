@@ -49,15 +49,22 @@ def decide(states: dict[str, str], target: str, auto_release: bool) -> tuple[str
     Pure — no I/O — so the whole decision table is unit-testable without the
     API. Returns (action, detail):
 
-      absent    no App Store record for the target version yet
-      wait      submitted / in review / preparing — nothing to do
-      hold      approved and releasable, but AUTO_RELEASE is off
-      release   approved and releasable, and AUTO_RELEASE is on
-      live      already on the App Store
-      rejected  Apple (or a developer action) rejected it — needs a human
+      absent           no App Store record for the target version yet
+      release-blocker  the target cannot even be created because a DIFFERENT
+                       approved version is parked in PENDING_DEVELOPER_RELEASE
+                       (Apple refuses new-version creation in that state);
+                       detail names the parked version, and main() releases it
+      wait             submitted / in review / preparing — nothing to do
+      hold             approved and releasable, but AUTO_RELEASE is off
+      release          approved and releasable, and AUTO_RELEASE is on
+      live             already on the App Store
+      rejected         Apple (or a developer action) rejected it — needs a human
     """
     state = states.get(target)
     if state is None:
+        blocker = next((v for v, s in states.items() if s == RELEASABLE), None)
+        if blocker is not None and auto_release:
+            return "release-blocker", blocker
         return "absent", f"no App Store record for {target}"
     if state in asc.LIVE_STATES:
         return "live", state
@@ -155,6 +162,13 @@ def main() -> None:
         elif outcome == "failed":
             # Surfaces in the issue title and reopens a closed issue — the
             # mirror step treats release-failed like a rejection.
+            action = "release-failed"
+    elif action == "release-blocker":
+        # `detail` is the parked version standing in the target's way.
+        outcome = release(bearer, records[detail][1])
+        if outcome == "released":
+            print(f"  RELEASED — {detail} was blocking {target}'s creation")
+        elif outcome == "failed":
             action = "release-failed"
 
     # The one line consumers parse. Stable format; append, don't reshape.

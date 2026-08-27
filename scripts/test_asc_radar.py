@@ -33,8 +33,23 @@ check(
     ("absent", "no App Store record for 3.2.1"),
 )
 check(
-    "other versions' states do not leak onto the target",
-    decide({"2.15.1": "PENDING_DEVELOPER_RELEASE"}, "3.2.1", True)[0],
+    "an approved version parked in the target's way gets released",
+    decide({"2.15.1": "PENDING_DEVELOPER_RELEASE"}, "3.2.1", True),
+    ("release-blocker", "2.15.1"),
+)
+check(
+    "a parked blocker is only cleared when auto-release is on",
+    decide({"2.15.1": "PENDING_DEVELOPER_RELEASE"}, "3.2.1", False)[0],
+    "absent",
+)
+check(
+    "a live other version is not a blocker",
+    decide({"2.15.1": "READY_FOR_SALE"}, "3.2.1", True)[0],
+    "absent",
+)
+check(
+    "a waiting other version is not a blocker",
+    decide({"2.15.1": "WAITING_FOR_REVIEW"}, "3.2.1", True)[0],
     "absent",
 )
 check(
