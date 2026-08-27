@@ -167,16 +167,39 @@ public struct VoiceSelector: Sendable {
     /// Voices that could read a book in `language`, best first — what the
     /// voice picker lists. An unrecognised or missing language lists
     /// everything rather than nothing, so the reader can still choose.
+    ///
+    /// Only **prose** voices are offered: the DECtalk-style accessibility set
+    /// (`.alternate`) and the novelty legacy set (`.legacy`) are hidden — on a
+    /// stock Mac they were most of the list, a wall between the reader and the
+    /// real voices. Hidden, not disabled: a *stored* choice of one is still
+    /// honoured by `voice(for:preferring:)`, so an accessibility user who set
+    /// one up keeps it, and the platform's own blessed default (Alex on some
+    /// Macs, a `.legacy` id) stays offered. If hiding would empty the list,
+    /// everything is offered instead — an empty picker helps nobody.
     public func voices(
         matching language: String?,
         in voices: [SpeechVoice],
         systemDefault: String? = nil
     ) -> [SpeechVoice] {
-        guard let language else { return sorted(voices, systemDefault: systemDefault) }
-        let code = SpeechVoice.normalized(language).split(separator: "-")
-            .first.map(String.init) ?? ""
-        let matches = voices.filter { $0.languageCode == code }
-        return sorted(matches.isEmpty ? voices : matches, systemDefault: systemDefault)
+        let pool: [SpeechVoice]
+        if let language {
+            let code = SpeechVoice.normalized(language).split(separator: "-")
+                .first.map(String.init) ?? ""
+            let matches = voices.filter { $0.languageCode == code }
+            pool = matches.isEmpty ? voices : matches
+        } else {
+            pool = voices
+        }
+        // Curate only when there is something to curate TOWARD: if the pool
+        // holds no modern voice at all (a language served solely by the
+        // accessibility set), offer the whole pool — filtering to just the
+        // blessed default would hide its same-language siblings with no way
+        // to pick them.
+        guard pool.contains(where: { $0.family == .modern }) else {
+            return sorted(pool, systemDefault: systemDefault)
+        }
+        let prose = pool.filter { $0.family == .modern || $0.id == systemDefault }
+        return sorted(prose, systemDefault: systemDefault)
     }
 
     /// Best first: family, then quality, then the platform's own default for

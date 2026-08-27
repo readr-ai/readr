@@ -58,12 +58,14 @@ final class SpeechVoiceTests: XCTestCase {
     func testTheSystemDefaultBreaksTiesAheadOfTheAlphabet() {
         // The bug this exists for: on macOS every installed English voice
         // reports the same quality tier, so the name comparison decided
-        // everything — and macOS ships novelty voices that sort first. An
-        // English book was read aloud by "Albert".
+        // everything — the platform's blessing must outrank the alphabet.
+        // All-modern fixture on purpose: among voices the picker actually
+        // offers, the tie-break itself must hold (the real novelty voices
+        // are `.legacy` and are filtered out before ordering ever matters —
+        // see `testThePickerHidesAccessibilityAndNoveltyVoices`).
         let macOSish = [
-            SpeechVoice(id: "albert", name: "Albert", language: "en-US"),
-            SpeechVoice(id: "bad-news", name: "Bad News", language: "en-US"),
-            SpeechVoice(id: "bubbles", name: "Bubbles", language: "en-US"),
+            SpeechVoice(id: "aaron", name: "Aaron", language: "en-US"),
+            SpeechVoice(id: "abby", name: "Abby", language: "en-US"),
             SpeechVoice(id: "samantha", name: "Samantha", language: "en-US"),
         ]
         let chosen = selector.voice(for: "en-US", in: macOSish, systemDefault: "samantha")
@@ -71,7 +73,7 @@ final class SpeechVoiceTests: XCTestCase {
         XCTAssertEqual(
             selector.voices(matching: "en-US", in: macOSish, systemDefault: "samantha").first?.id,
             "samantha",
-            "The picker opens on the sensible voice, not the joke ones"
+            "The picker opens on the blessed voice, not the alphabetical first"
         )
     }
 
@@ -114,17 +116,55 @@ final class SpeechVoiceTests: XCTestCase {
     func testTheVoiceFamilyOutranksEverythingBelowIt() {
         // macOS reports every generation at the same quality tier, so nothing
         // below family could separate a narration voice from a novelty one.
+        // Auto-selection still leans on the family order even where the
+        // picker's curation doesn't apply: with no modern voice installed,
+        // the accessibility family is chosen over the novelty one.
         let mixed = [
             SpeechVoice(id: "albert", name: "Albert", language: "en-US", family: .legacy),
             SpeechVoice(id: "eddy", name: "Eddy", language: "en-US", family: .alternate),
             SpeechVoice(id: "samantha", name: "Samantha", language: "en-US", family: .modern),
         ]
-        XCTAssertEqual(
-            selector.voices(matching: "en-US", in: mixed).map(\.id),
-            ["samantha", "eddy", "albert"],
-            "Modern, then accessibility voices, then the legacy novelty set"
-        )
         XCTAssertEqual(selector.voice(for: "en-US", in: mixed)?.id, "samantha")
+        let noModern = Array(mixed.prefix(2))
+        XCTAssertEqual(selector.voice(for: "en-US", in: noModern)?.id, "eddy")
+    }
+
+    func testThePickerHidesAccessibilityAndNoveltyVoices() {
+        // The DECtalk-style accessibility set and the novelty voices exist for
+        // reasons that aren't an hour of prose, and on a stock Mac they were
+        // most of the list — a wall between the reader and the real voices.
+        // They are hidden from the picker but NOT from selection: a stored
+        // choice of one (an accessibility user who wants Eloquence at speed)
+        // is still honoured by `voice(for:preferring:)`.
+        let mixed = [
+            SpeechVoice(id: "albert", name: "Albert", language: "en-US", family: .legacy),
+            SpeechVoice(id: "eddy", name: "Eddy", language: "en-US", family: .alternate),
+            SpeechVoice(id: "samantha", name: "Samantha", language: "en-US", family: .modern),
+        ]
+        XCTAssertEqual(selector.voices(matching: "en-US", in: mixed).map(\.id), ["samantha"])
+        XCTAssertEqual(
+            selector.voice(for: "en-US", in: mixed, preferring: "eddy")?.id, "eddy",
+            "A stored accessibility-voice choice keeps working"
+        )
+    }
+
+    func testAnAllFilteredListFallsBackToEverything() {
+        // A language with no modern voice at all (served solely by the
+        // accessibility set) offers everything — an empty picker helps
+        // nobody, and a blessed default must not hide its same-language
+        // siblings: curation only applies when there is something modern to
+        // curate toward.
+        let onlyHidden = [
+            SpeechVoice(id: "eddy", name: "Eddy", language: "en-US", family: .alternate),
+            SpeechVoice(id: "flo", name: "Flo", language: "en-US", family: .alternate),
+            SpeechVoice(id: "albert", name: "Albert", language: "en-US", family: .legacy),
+        ]
+        XCTAssertEqual(
+            selector.voices(matching: "en-US", in: onlyHidden, systemDefault: "eddy")
+                .map(\.id),
+            ["eddy", "flo", "albert"],
+            "Blessed default first, then the fallback pool in family order"
+        )
     }
 
     func testBcp47ExtensionsAreStrippedToo() {
@@ -150,11 +190,12 @@ final class SpeechVoiceTests: XCTestCase {
             SpeechVoice(id: "albert", name: "Albert", language: "en-US", family: .legacy),
             SpeechVoice(id: "eddy", name: "Eddy", language: "en-US", family: .alternate),
             SpeechVoice(id: "alex", name: "Alex", language: "en-US", family: .legacy),
+            SpeechVoice(id: "samantha", name: "Samantha", language: "en-US", family: .modern),
         ]
         XCTAssertEqual(
             selector.voices(matching: "en-US", in: mixed, systemDefault: "alex").map(\.id),
-            ["alex", "eddy", "albert"],
-            "The blessed legacy voice leads; the unblessed one still ranks last"
+            ["alex", "samantha"],
+            "The blessed legacy voice survives curation and leads; the unblessed rows are hidden"
         )
         XCTAssertEqual(
             selector.voice(for: "en-US", in: mixed, systemDefault: "alex")?.id, "alex"
