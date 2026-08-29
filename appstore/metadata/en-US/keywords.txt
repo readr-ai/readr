@@ -1,1 +1,1 @@
-epub,pdf,audiobook,listen,aloud,speech,voice,narrate,ask,ai,highlights,notes,offline,markdown
+epub,pdf,audiobook,text to speech,aloud,narrator,highlights,annotations,offline,markdown
