@@ -1,12 +1,12 @@
-Readr 3.2: a voice worth listening to.
+Readr 3.2.1 makes listening better.
 
-• Meet Readr Voice — a natural neural narrator (Kokoro-82M) that runs
-  entirely on your device, now the default for English books
-• Nothing to wait for: listening starts instantly with an Apple voice while
-  the voice model downloads once (~104MB), then switches over automatically
+• English books can now use Readr Voice, a more natural narrator that reads
+  on your device
+• Listening starts with an Apple voice while the one-time Readr Voice
+  download finishes (about 104MB), then switches over automatically
 • Footnote numbers are no longer read aloud (formulas still are — that
   one's next)
 • Fixed: repeated sentences, narration jumping ahead, and playback wedging
   after a phone call
-• Your book never leaves the device to be read aloud; Apple's built-in
-  voices remain one tap away
+• Apple's built-in voices are still one tap away, and are used for books in
+  other languages
