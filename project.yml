@@ -14,6 +14,12 @@ options:
   fileTypes:
     xcprivacy:
       buildPhase: resources
+    # The bundled sample book (App/Resources/alice-in-wonderland.epub) is data,
+    # not something to compile. Without this, `sources: - App` sweeps it into
+    # Compile Sources on some XcodeGen versions and it never reaches the
+    # bundle — where `SampleBookSeeder` expects to find it on first launch.
+    epub:
+      buildPhase: resources
 
 packages:
   # The core logic lives in the local Swift package at the repo root.

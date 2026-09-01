@@ -115,7 +115,60 @@ final class AppModel: ObservableObject {
             try? credentials.save(.apiKey("uitest-placeholder-not-a-secret"), for: .openAI)
             providerManager.setActive(kind: .anthropic)
         }
+
+        seedSampleBookIfNeeded()
     }
+
+    /// Puts one book in the library the first time Readr runs, so a fresh
+    /// install opens onto something readable rather than an empty shelf with
+    /// an Import button and nothing to import. See `SampleBookSeeder` for why
+    /// this exists and why it only ever fires once.
+    private func seedSampleBookIfNeeded() {
+        // `-uiTestEmptyLibrary` asserts the empty-library guidance, which is
+        // still a real state (the user deletes everything). Seeding into that
+        // launch would make the test assert against a library with a book in
+        // it. `-uiTestSeed` supplies its own fixtures for the same reason.
+        let arguments = ProcessInfo.processInfo.arguments
+        guard !arguments.contains("-uiTestEmptyLibrary"),
+              !arguments.contains("-uiTestSeed") else { return }
+
+        let defaults = UserDefaults.standard
+        guard SampleBookSeeder.shouldSeed(
+            hasSeededBefore: defaults.bool(forKey: Self.sampleBookSeededKey),
+            existingBookCount: books.count
+        ) else { return }
+
+        guard let url = Bundle.main.url(
+            forResource: "alice-in-wonderland", withExtension: "epub"
+        ) else {
+            // The resource fell out of the bundle. An empty library is a poor
+            // first run, but it is a working one — never a launch crash.
+            assertionFailure("bundled sample book is missing from the app bundle")
+            return
+        }
+
+        Task { @MainActor in
+            do {
+                let book = try await EPUBFileParser().parse(url)
+                try SampleBookSeeder.seedIfNeeded(
+                    into: store,
+                    hasSeededBefore: defaults.bool(forKey: Self.sampleBookSeededKey)
+                ) { book }
+                // Set the flag on success only, so a transient failure gets
+                // another chance on the next launch.
+                defaults.set(true, forKey: Self.sampleBookSeededKey)
+                books = store.allBooks()
+            } catch {
+                // Same reasoning as above: a broken sample costs the user the
+                // sample, not the app.
+                DiagnosticsLog.shared.record(
+                    .error, .importer, "could not seed the bundled sample book", error: error
+                )
+            }
+        }
+    }
+
+    private static let sampleBookSeededKey = "hasSeededSampleBook"
 
     private static func makeCredentialStore() -> any CredentialStore {
         // `-uiTestInMemoryCredentials`: keep the Ask refresh-on-connect UI test
