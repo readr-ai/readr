@@ -12,19 +12,20 @@ built for the love of reading.
 ![Readr: reading with highlights, and asking the book a question with cited sources](docs/screenshots/hero-reader-ask.png)
 
 <p align="center">
-  <a href="https://github.com/readr-ai/readr/releases/latest"><b>⬇️&nbsp;&nbsp;Download for macOS</b></a>
+  <a href="https://apps.apple.com/app/id6789784856"><b>📱&nbsp;&nbsp;Download on the App Store</b></a> (iPhone &amp; iPad)
   &nbsp;·&nbsp;
-  <a href="#ios--ipad-beta-testflight">iPhone &amp; iPad beta (TestFlight)</a>
+  <a href="https://github.com/readr-ai/readr/releases/latest"><b>⬇️&nbsp;&nbsp;Download for macOS</b></a> (Apple silicon)
   &nbsp;·&nbsp;
   <a href="#building-from-source">Build from source</a>
   &nbsp;·&nbsp;
   <a href="https://readr-ai.github.io/">Website</a>
 </p>
 
-> Status: **3.0 — read it, or listen to it.** All features below are
-> implemented, unit/integration tested, and CI builds, signs, and ships the
-> app: notarized macOS releases and iPhone/iPad TestFlight builds. CI runs the
-> UI-test suite on iPhone **and iPad** simulators, and the macOS suite on
+> Status: **3.2 — on the App Store.** Readr for iPhone and iPad is live on
+> the [App Store](https://apps.apple.com/app/id6789784856); macOS ships as
+> notarized GitHub Releases. All features below are implemented,
+> unit/integration tested, and CI builds, signs, and ships the app. CI runs
+> the UI-test suite on iPhone **and iPad** simulators, and the macOS suite on
 > signed builds. What's next is tracked in [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ## Why
@@ -103,12 +104,22 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 - Launch & PR materials (Product Hunt kit, TestFlight plan, launch assets)
   live in [readr-ai/PR](https://github.com/readr-ai/PR).
 
-## Installing (macOS)
+## Installing
+
+### iPhone & iPad (App Store)
+
+**[Download on the App Store](https://apps.apple.com/app/id6789784856)** —
+Readr is a free download for iPhone and iPad running iOS 17 or later.
+
+### macOS (GitHub Release)
 
 Grab the `.dmg` from the
 [latest GitHub Release](https://github.com/readr-ai/readr/releases/latest)
 (built by CI), open it, and drag Readr into Applications — the classic Mac
 install. A `.zip` of the same app ships alongside for scripted installs.
+The Mac build **requires Apple silicon** (M1 or later) — Readr Voice's
+on-device narration uses Float16, which isn't available on Intel Macs, so
+releases are built for `arm64` only.
 From **v2.9.0** releases are **Developer-ID signed and notarized**; no
 security warnings. (The `.dmg` ships from **v2.15.0**; earlier releases are
 zip-only.)
@@ -117,14 +128,13 @@ zip-only.)
 right-click → **Open**, or **System Settings → Privacy & Security → Open
 Anyway** on macOS 15+.)
 
-## iOS & iPad beta (TestFlight)
+### Beta builds
 
-Readr for iPhone and iPad is in beta on TestFlight.
-
-Join with one tap:
-**[testflight.apple.com/join/U5dBEsSG](https://testflight.apple.com/join/U5dBEsSG)**
-— install Apple's TestFlight app first, then open the link on your iPhone or
-iPad. You can also [build from source](#building-from-source) with Xcode.
+Pre-release iPhone and iPad builds go out through TestFlight ahead of each
+App Store release. To try them, install Apple's TestFlight app and open
+[testflight.apple.com/join/U5dBEsSG](https://testflight.apple.com/join/U5dBEsSG)
+on your iPhone or iPad. You can also [build from source](#building-from-source)
+with Xcode.
 
 ## Building from source
 
