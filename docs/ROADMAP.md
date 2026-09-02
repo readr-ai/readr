@@ -107,10 +107,13 @@ Goal: the best reader app for the Mac — nobody goes back to Apple Books.
 - kosync (KOReader) progress-sync interop; Calibre/OPDS import
 - List view + metadata editing; user collections; parallel read (two books)
 
-## M6–M8 — iPhone & iPad: TestFlight beta (shipped; device walks pending)
+## M6–M8 — iPhone & iPad: on the App Store (v3.2.1, live 2026-09-02)
 
 The iOS UI already exists (multiplatform target, iPhone-simulator UITests in
-CI); these milestones make it shippable on real devices. Spec:
+CI); these milestones made it shippable on real devices. Readr is now a free
+App Store download for iPhone and iPad (iOS 17+):
+[apps.apple.com/app/id6789784856](https://apps.apple.com/app/id6789784856).
+TestFlight carries pre-release builds only. Spec:
 docs/DEVELOPMENT-PLAN.md §M6–M8.
 
 ### M6 — Signed builds + TestFlight pipeline
@@ -127,6 +130,19 @@ docs/DEVELOPMENT-PLAN.md §M6–M8.
 - [x] Exit gate: TestFlight install verified on a physical iPhone and iPad
   (import, read, highlight, BYOK ask) — walked 2026-08-08 against the v2.15.0
   TestFlight build and passed. Walkthrough: `docs/DEVICE-SMOKE-TEST.md`
+
+### App Store release
+- [x] `.github/workflows/app-store-metadata.yml` — pushes the listing copy
+  and reviewer notes, attaches the build, and submits for review through the
+  App Store Connect API (manual dispatch; `plan` / `push` / `submit` modes,
+  never on a tag). Privacy and age-rating questionnaires and screenshots
+  stay manual in the ASC web UI.
+- [x] `.github/workflows/release-radar.yml` — polls the review state every
+  30 minutes, presses Release on approval (release type is MANUAL), and
+  mirrors every state change onto a `launch-radar` issue.
+- [x] Live: v3.2.1 on the App Store since 2026-09-02, iPhone and iPad.
+- [ ] Retire `release-radar.yml` now that the launch window has closed (the
+  workflow header says to delete it once the target reports live).
 
 ### M7 — iOS platform correctness
 - [x] Files-app handler: `CFBundleDocumentTypes` + open-in-place +
