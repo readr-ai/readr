@@ -33,7 +33,8 @@ public struct AskService: Sendable {
         _ question: String,
         about book: Book,
         selection: Selection?,
-        history: [ConversationTurn] = []
+        history: [ConversationTurn] = [],
+        frontier: ReadingFrontier? = nil
     ) -> AsyncThrowingStream<AskEvent, Error> {
         let strategy = self.strategy
         let provider = self.provider
@@ -45,6 +46,7 @@ public struct AskService: Sendable {
                         in: book,
                         selection: selection,
                         history: history,
+                        frontier: frontier,
                         provider: provider.info
                     )
                     try Task.checkCancellation()

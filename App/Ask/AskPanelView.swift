@@ -33,7 +33,9 @@ struct AskPanelView: View {
         var index: Int
     }
 
-    init(app: AppModel, book: Book, selection: Selection?) {
+    /// - Parameter frontier: where the reader is in the book, so answers stay
+    ///   spoiler-free. Nil when there is no meaningful position (PDF pages).
+    init(app: AppModel, book: Book, selection: Selection?, frontier: ReadingFrontier? = nil) {
         self.book = book
         self.selection = selection
         _vm = StateObject(wrappedValue: AskViewModel(
@@ -44,6 +46,7 @@ struct AskPanelView: View {
             },
             book: book,
             selection: selection,
+            frontier: frontier,
             providerName: { app.providerManager.selection?.kind.rawValue ?? "none" }
         ))
     }

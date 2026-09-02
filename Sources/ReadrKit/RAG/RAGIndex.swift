@@ -6,11 +6,17 @@ public struct RetrievedPassage: Sendable, Hashable {
     /// Human-readable position, e.g. "Ch. 4 ¶12".
     public var locator: String
     public var score: Double
+    /// Reading-order chapter the passage came from, when the index knows it.
+    /// Lets `ReadingFrontier` keep passages the reader hasn't reached out of
+    /// the prompt. Nil is treated as unknown — and withheld — when a frontier
+    /// is in force.
+    public var chapterIndex: Int?
 
-    public init(text: String, locator: String, score: Double) {
+    public init(text: String, locator: String, score: Double, chapterIndex: Int? = nil) {
         self.text = text
         self.locator = locator
         self.score = score
+        self.chapterIndex = chapterIndex
     }
 }
 

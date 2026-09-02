@@ -62,6 +62,9 @@ final class AskViewModel: ObservableObject {
     private let providerName: () -> String
     private let book: Book
     private let selection: Selection?
+    /// How far the reader has got. Every answer is built only from what
+    /// they've read, so "recap so far" can't spoil — see `ReadingFrontier`.
+    private let frontier: ReadingFrontier?
     /// The last question submitted, kept so a Retry can re-run it after an
     /// error (A5) without the reader retyping.
     private(set) var lastQuestion: String?
@@ -71,6 +74,7 @@ final class AskViewModel: ObservableObject {
         prepare: @escaping () async -> Void,
         book: Book,
         selection: Selection?,
+        frontier: ReadingFrontier? = nil,
         providerName: @escaping () -> String = { "unknown" }
     ) {
         self.makeService = makeService
@@ -78,6 +82,7 @@ final class AskViewModel: ObservableObject {
         self.providerName = providerName
         self.book = book
         self.selection = selection
+        self.frontier = frontier
         let resolved = makeService()
         self.service = resolved
         self.hasProvider = resolved != nil
@@ -145,7 +150,8 @@ final class AskViewModel: ObservableObject {
         }
         do {
             for try await event in service.ask(
-                trimmed, about: book, selection: selection, history: history
+                trimmed, about: book, selection: selection, history: history,
+                frontier: frontier
             ) {
                 switch event {
                 case let .contextAssembled(tier):

@@ -208,8 +208,11 @@ struct ReaderView: View {
             .background(hiddenFontShortcuts)
             .background(hiddenAnnotationShortcuts)
             .sheet(isPresented: $showAsk) {
-                AskPanelView(app: model, book: book, selection: askSelection)
-                    .environmentObject(model)
+                AskPanelView(
+                    app: model, book: book, selection: askSelection,
+                    frontier: askFrontier
+                )
+                .environmentObject(model)
             }
             .sheet(item: $editingNote) { highlight in
                 NoteEditor(
@@ -741,6 +744,17 @@ struct ReaderView: View {
     /// voice is reading, otherwise the top of the visible page.
     private var anchorToPersist: Int {
         narrationResumeAnchor ?? pagedAnchor
+    }
+
+    /// How far the reader has got, for Ask. Answers are built only from the
+    /// text before this point, so "recap what I've read" can't spoil. It uses
+    /// the same anchor the reading position does — the top of the visible
+    /// page — which errs on the safe side: the page in front of the reader
+    /// is withheld rather than the next one leaking in. Native PDFs have no
+    /// text position to offer, so they get the whole document as before.
+    private var askFrontier: ReadingFrontier? {
+        guard !isPDFOriginal else { return nil }
+        return ReadingFrontier(chapterIndex: chapterIndex, characterOffset: anchorToPersist)
     }
 
     /// True while something is presented over the reader.

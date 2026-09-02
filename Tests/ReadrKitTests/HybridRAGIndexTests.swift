@@ -93,4 +93,20 @@ final class HybridRAGIndexTests: XCTestCase {
 
         XCTAssertEqual(first.map(\.locator), second.map(\.locator))
     }
+
+    /// The frontier filter in `AdaptiveContextStrategy` can only withhold a
+    /// passage it can place. The index must say which chapter each one came
+    /// from, in reading order.
+    func testRetrievedPassagesCarryTheirChapterIndex() async throws {
+        let book = makeDogsAndSpaceBook()
+        let index = HybridRAGIndex()
+        try await index.build(for: book, embeddings: LocalEmbeddingProvider())
+
+        let dogResults = try await index.retrieve(query: "puppy", bookID: book.id, limit: 1)
+        let spaceResults = try await index.retrieve(query: "planets", bookID: book.id, limit: 1)
+        let dogs = try XCTUnwrap(dogResults.first)
+        let space = try XCTUnwrap(spaceResults.first)
+        XCTAssertEqual(dogs.chapterIndex, 0)
+        XCTAssertEqual(space.chapterIndex, 1)
+    }
 }

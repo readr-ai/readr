@@ -44,6 +44,29 @@ Every query also includes:
 This guarantees the model always knows *where the reader is*, even when retrieval
 or truncation drops the rest.
 
+### Reading frontier — spoiler-free answers (both tiers)
+
+The reader is usually mid-book, and "recap what I've read so far" is only
+honest if the model cannot see past where they are. `ReadingFrontier`
+(chapter index in reading order + character offset) is that boundary, and the
+app passes the reader's current anchor as the frontier on every Ask from a
+text book.
+
+With a frontier in force:
+
+- **Tier 1** sends `book.textRead(upTo:)` — earlier chapters in full, the
+  current chapter up to the offset — instead of `fullText`, and budgets on
+  that text. A long book the reader has only started fits the whole-book tier.
+- **Tier 2** drops every retrieved passage past the frontier before it is
+  quoted or cited. The current chapter's passages are withheld until the
+  reader has finished it; passages of unknown position are withheld too.
+- **The prompt** gains `spoilerGuard`: nothing after the frontier may be
+  revealed, from the text *or from what the model knows about the book*, and
+  a recap means "so far, in reading order, stopping where the reader stopped".
+
+Native PDFs pass no frontier (there is no text position to offer), so they
+keep the whole-document behaviour. Pinned by `ReadingFrontierTests`.
+
 ### Conversation history (both tiers)
 Ask is a conversation, so the earlier turns of the same session ride along as
 plain user/assistant messages between the system prompt and the new question.

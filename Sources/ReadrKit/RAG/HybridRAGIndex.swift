@@ -132,7 +132,10 @@ public final class HybridRAGIndex: RAGIndex, @unchecked Sendable {
 
         return ranked.prefix(limit).map { item in
             let chunk = entry.chunks[item.index]
-            return RetrievedPassage(text: chunk.text, locator: chunk.locator, score: item.score)
+            return RetrievedPassage(
+                text: chunk.text, locator: chunk.locator, score: item.score,
+                chapterIndex: chunk.chapterIndex
+            )
         }
     }
 
