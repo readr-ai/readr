@@ -12,6 +12,11 @@ final class AppModel: ObservableObject {
     @Published private(set) var pdfHighlightsByBook: [UUID: [PDFHighlight]] = [:]
     @Published private(set) var bookmarksByBook: [UUID: [Bookmark]] = [:]
     @Published private(set) var statesByBook: [UUID: BookState] = [:]
+    /// Saved reading positions, published so a Home card's "Chapter 7 of
+    /// 24" is current the moment the reader saves — the store alone is not
+    /// observable, and a card computed before the save would stay stale
+    /// until something else happened to re-render it.
+    @Published private(set) var positionsByBook: [UUID: ReadingPosition] = [:]
     @Published var importError: String?
     /// Informational notice from the last import (e.g. a fixed-layout book
     /// that will be shown as extracted text). Same alert-binding pattern as
@@ -26,13 +31,25 @@ final class AppModel: ObservableObject {
     private let store: any LibraryStore
     private let parsers: BookParserRegistry
     private let highlightService = HighlightService()
+    /// Chapter lengths per book, measured once (`ReadingLengthTable`). Read
+    /// from body by Home's cards and the reader's footer, and by the context
+    /// router off the main actor — hence a lock-guarded cache, not a
+    /// `@Published` dictionary.
+    private let lengthCache = ReadingLengthCache()
 
     /// Credential storage + the active-LLM selector (used by Settings and, from
     /// M3, by "ask the book").
     let credentialStore: any CredentialStore
     let providerManager: ProviderManager
 
-    init(store: (any LibraryStore)? = nil, parsers: BookParserRegistry? = nil) {
+    /// - Parameter seedsSampleBook: whether a never-used library gets the
+    ///   bundled sample on this launch. The app entry point decides from the
+    ///   launch arguments; tests and previews pass `false`.
+    init(
+        store: (any LibraryStore)? = nil,
+        parsers: BookParserRegistry? = nil,
+        seedsSampleBook: Bool
+    ) {
         // `-uiTestEmptyLibrary`: a throwaway EMPTY store, so the empty-library
         // guidance can be asserted without inheriting whatever books happen to
         // sit in this device's on-disk library. Without it the test read the
@@ -80,6 +97,9 @@ final class AppModel: ObservableObject {
             if let state = self.store.bookState(for: book.id) {
                 statesByBook[book.id] = state
             }
+            if let position = self.store.position(for: book.id) {
+                positionsByBook[book.id] = position
+            }
         }
 
         // `-uiTestOpenURL <path>`: deterministic stand-in for the Files-app /
@@ -121,25 +141,21 @@ final class AppModel: ObservableObject {
             providerManager.setActive(kind: .anthropic)
         }
 
-        seedSampleBookIfNeeded()
+        if seedsSampleBook {
+            seedSampleBookIfNeeded()
+        }
     }
 
     /// Puts one book in the library the first time Readr runs, so a fresh
     /// install opens onto something readable rather than an empty shelf with
     /// an Import button and nothing to import. See `SampleBookSeeder` for why
-    /// this exists and why it only ever fires once.
+    /// this exists and why it only ever fires once — and only into a library
+    /// that has never been written (`LibraryStore.hasPersistedLibrary`).
     private func seedSampleBookIfNeeded() {
-        // `-uiTestEmptyLibrary` asserts the empty-library guidance, which is
-        // still a real state (the user deletes everything). Seeding into that
-        // launch would make the test assert against a library with a book in
-        // it. `-uiTestSeed` supplies its own fixtures for the same reason.
-        let arguments = ProcessInfo.processInfo.arguments
-        guard !arguments.contains("-uiTestEmptyLibrary"),
-              !arguments.contains("-uiTestSeed") else { return }
-
         let defaults = UserDefaults.standard
         guard SampleBookSeeder.shouldSeed(
             hasSeededBefore: defaults.bool(forKey: Self.sampleBookSeededKey),
+            hasPersistedLibrary: store.hasPersistedLibrary,
             existingBookCount: books.count
         ) else { return }
 
@@ -154,15 +170,21 @@ final class AppModel: ObservableObject {
 
         Task { @MainActor in
             do {
-                let book = try await EPUBFileParser().parse(url)
-                try SampleBookSeeder.seedIfNeeded(
+                // The same path a file the user opens takes (`ingest`): the
+                // sample gets its retained source, cover file, added-on date
+                // and diagnostics entry like any other book.
+                let seeded = try await SampleBookSeeder.seedIfNeeded(
                     into: store,
                     hasSeededBefore: defaults.bool(forKey: Self.sampleBookSeededKey)
-                ) { book }
-                // Set the flag on success only, so a transient failure gets
-                // another chance on the next launch.
-                defaults.set(true, forKey: Self.sampleBookSeededKey)
-                books = store.allBooks()
+                ) {
+                    try await self.ingest(url)
+                }
+                // The flag records that a book was actually seeded — nothing
+                // else. A launch that decided not to seed, or a failed
+                // import, leaves it unset so the decision is made afresh.
+                if seeded != nil {
+                    defaults.set(true, forKey: Self.sampleBookSeededKey)
+                }
             } catch {
                 // Same reasoning as above: a broken sample costs the user the
                 // sample, not the app.
@@ -293,7 +315,7 @@ final class AppModel: ObservableObject {
         for book in sampleBooks { try? seeded.add(book) }
         seedFixtureState(into: seeded)
         seedFixturePDF(into: seeded)
-        return AppModel(store: seeded)
+        return AppModel(store: seeded, seedsSampleBook: false)
     }
 
     /// Layers lifecycle state and annotations over `sampleBooks` so seeded
@@ -483,33 +505,7 @@ final class AppModel: ObservableObject {
         let scoped = url.startAccessingSecurityScopedResource()
         defer { if scoped { url.stopAccessingSecurityScopedResource() } }
         do {
-            var book = try await parsers.parse(url)
-            let bookID = book.id
-            let needsCover = book.coverImageData == nil
-            // File copy + PDF thumbnail rendering happen OFF the main actor —
-            // large books would otherwise freeze the UI right after import.
-            // The security scope is still held: we await before returning.
-            let assets = await Task.detached(priority: .userInitiated) {
-                let retained = try? Self.retainSource(url, for: bookID)
-                let cover = needsCover ? Self.pdfCoverThumbnail(for: url) : nil
-                return (retained, cover)
-            }.value
-            book.sourceFilename = assets.0
-            if let cover = assets.1 { book.coverImageData = cover }
-
-            // Covers live as files, not inside library.json: the store rewrites
-            // its whole JSON on every position save, so embedded image data
-            // would make each page turn re-serialize megabytes.
-            if let cover = book.coverImageData {
-                try? Self.saveCoverFile(cover, for: book.id)
-                book.coverImageData = nil
-            }
-            try store.add(book)
-            var state = store.bookState(for: book.id) ?? BookState()
-            state.addedAt = Date()
-            try? store.saveBookState(state, for: book.id)
-            statesByBook[book.id] = state
-            books = store.allBooks()
+            let book = try await ingest(url)
             if book.metadata.isFixedLayout == true {
                 importNotice = """
                 “\(book.metadata.title)” is a fixed-layout book. Readr shows it \
@@ -517,9 +513,6 @@ final class AppModel: ObservableObject {
                 roadmap.
                 """
             }
-            DiagnosticsLog.shared.recordBookOpened(
-                book, format: url.pathExtension.lowercased()
-            )
         } catch {
             // `readerFacingMessage` carries the recovery suggestion too — the
             // banner is one string, and the next step is the half that matters
@@ -531,6 +524,48 @@ final class AppModel: ObservableObject {
                 fileExtension: url.pathExtension.lowercased(), error: error
             )
         }
+    }
+
+    /// The one way a file becomes a book in the library: parse, retain the
+    /// source, write the cover file, add it, stamp `addedAt`, and record the
+    /// diagnostics entry. `importBook(at:)` wraps it for files the user
+    /// opens (security scope, duplicate delivery, the error banner);
+    /// first-run seeding calls it for the bundled sample, so the sample is
+    /// indistinguishable from an import. Throws on a parse or store failure
+    /// with the library untouched.
+    @discardableResult
+    private func ingest(_ url: URL) async throws -> Book {
+        var book = try await parsers.parse(url)
+        let bookID = book.id
+        let needsCover = book.coverImageData == nil
+        // File copy + PDF thumbnail rendering happen OFF the main actor —
+        // large books would otherwise freeze the UI right after import.
+        // The caller's security scope is still held: we await before returning.
+        let assets = await Task.detached(priority: .userInitiated) {
+            let retained = try? Self.retainSource(url, for: bookID)
+            let cover = needsCover ? Self.pdfCoverThumbnail(for: url) : nil
+            return (retained, cover)
+        }.value
+        book.sourceFilename = assets.0
+        if let cover = assets.1 { book.coverImageData = cover }
+
+        // Covers live as files, not inside library.json: the store rewrites
+        // its whole JSON on every position save, so embedded image data
+        // would make each page turn re-serialize megabytes.
+        if let cover = book.coverImageData {
+            try? Self.saveCoverFile(cover, for: book.id)
+            book.coverImageData = nil
+        }
+        try store.add(book)
+        var state = store.bookState(for: book.id) ?? BookState()
+        state.addedAt = Date()
+        try? store.saveBookState(state, for: book.id)
+        statesByBook[book.id] = state
+        books = store.allBooks()
+        DiagnosticsLog.shared.recordBookOpened(
+            book, format: url.pathExtension.lowercased()
+        )
+        return book
     }
 
     // MARK: Covers
@@ -668,21 +703,37 @@ final class AppModel: ObservableObject {
             try? FileManager.default.removeItem(at: cover)
         }
         coverCache.removeObject(forKey: book.id as NSUUID)
+        lengthCache.invalidate(bookID: book.id)
         highlightsByBook[book.id] = nil
         pdfHighlightsByBook[book.id] = nil
         bookmarksByBook[book.id] = nil
         statesByBook[book.id] = nil
+        positionsByBook[book.id] = nil
         books = store.allBooks()
     }
 
     // MARK: Reading position
 
+    /// Called from body — reads the published cache first (see
+    /// `positionsByBook`), falling through to the store for a book whose
+    /// position was saved before this model existed.
     func position(for book: Book) -> ReadingPosition? {
-        store.position(for: book.id)
+        positionsByBook[book.id] ?? store.position(for: book.id)
     }
 
     func savePosition(_ position: ReadingPosition, for book: Book) {
         try? store.savePosition(position, for: book.id)
+        positionsByBook[book.id] = position
+    }
+
+    // MARK: Chapter lengths
+
+    /// Per-chapter character and word counts for a book, measured once and
+    /// kept — what Home's "Chapter 7 of 24 · 31%" and "~N min left", the
+    /// reader's footer estimate and the Ask panel's caption are built from.
+    /// Safe to call from body: the cache is not `@Published`.
+    func readingLengths(for book: Book) -> ReadingLengthTable {
+        lengthCache.table(for: book)
     }
 
     // MARK: Book state (Home / Finished)
@@ -837,7 +888,10 @@ final class AppModel: ObservableObject {
     /// An `AskService` bound to the active provider, or nil if none is configured.
     func makeAskService() -> AskService? {
         guard let provider = activeProvider() else { return nil }
-        return AskService(strategy: AdaptiveContextStrategy(index: ragIndex), provider: provider)
+        return AskService(
+            strategy: AdaptiveContextStrategy(index: ragIndex, lengths: lengthCache),
+            provider: provider
+        )
     }
 
     /// Renew the active provider's OAuth tokens if they're at expiry, so a

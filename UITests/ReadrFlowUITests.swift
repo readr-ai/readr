@@ -161,11 +161,19 @@ final class ReadrFlowUITests: XCTestCase {
         XCTAssertTrue(ask.waitForExistence(timeout: 5))
         ask.tap()
 
+        // Opened from a text book the panel is scoped to what's been read —
+        // the seeded position is halfway through chapter one, so no whole
+        // chapter is behind the reader yet. Widen it to the whole book: the
+        // chips follow, and the retrieval tier can cite chapter one's chunks.
+        let scope = app.switches["ask.scope"].firstMatch
+        XCTAssertTrue(scope.waitForExistence(timeout: 5), "a text book offers the whole-book switch")
+        scope.tap()
+
         // Suggestion chips insert text without needing the keyboard.
         let suggestion = app.buttons["Summarize this book"].firstMatch
         XCTAssertTrue(
             suggestion.waitForExistence(timeout: 5),
-            "Ask panel should offer the whole-book suggestion chips"
+            "Ask panel should offer the whole-book suggestion chips once widened"
         )
         suggestion.tap()
 

@@ -16,14 +16,6 @@ struct HomeView: View {
     @AppStorage("readingTheme") private var themeRaw = ReadingTheme.paper.rawValue
     private var theme: ReadingTheme { ReadingTheme(rawValue: themeRaw) ?? .paper }
 
-    /// Memoized "~N min left" per book. The estimate scans the whole chapter,
-    /// so body must never compute it per card per render — it only reads this
-    /// dict, refreshed on appear and when the Continue Reading row changes.
-    @State private var minutesCache: [UUID: Int] = [:]
-    /// Memoized "Chapter 7 of 24" per book, for the same reason: the summary
-    /// counts characters across the whole book. Absent for PDFs.
-    @State private var positionCache: [UUID: ReadingPositionSummary] = [:]
-
     var body: some View {
         #if os(iOS)
         // Inline: the serif in-content header is the screen title; a large
@@ -83,17 +75,25 @@ struct HomeView: View {
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(alignment: .top, spacing: 24) {
                             ForEach(model.continueReading) { book in
+                                // Computed per card, per render, from the
+                                // app's cached chapter lengths and its
+                                // published positions: cheap, and current
+                                // the moment the reader saves a position —
+                                // "Chapter 7 of 24" is right after a session,
+                                // and Recap never vanishes because a cache
+                                // was built before the book was opened.
+                                let summary = positionSummary(for: book)
                                 ContinueReadingCard(
                                     book: book,
                                     coverImage: model.coverImage(for: book),
                                     progress: LibraryProgress.fraction(
                                         for: book, position: model.position(for: book)
                                     ),
-                                    minutesLeft: minutesCache[book.id],
+                                    minutesLeft: minutesLeft(in: book),
                                     theme: theme,
                                     action: { openBook(book) },
-                                    position: positionCache[book.id],
-                                    onRecap: positionCache[book.id] == nil ? nil : {
+                                    position: summary,
+                                    onRecap: summary == nil ? nil : {
                                         // Open the book, then the recap: the
                                         // reader picks the id up on appearance.
                                         model.pendingRecapBookID = book.id
@@ -129,10 +129,6 @@ struct HomeView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.vertical, 12)
         }
-        .task { refreshMinutesCache() }
-        .onChange(of: model.continueReading.map(\.id)) {
-            refreshMinutesCache()
-        }
     }
 
     /// Serif section headings with a faint count — reading-related headings
@@ -152,26 +148,17 @@ struct HomeView: View {
         .padding(.top, 10)
     }
 
-    /// Recomputes the minutes-left estimates for every Continue Reading book.
-    private func refreshMinutesCache() {
-        var cache: [UUID: Int] = [:]
-        var positions: [UUID: ReadingPositionSummary] = [:]
-        for book in model.continueReading {
-            if let minutes = minutesLeft(in: book) { cache[book.id] = minutes }
-            if let summary = positionSummary(for: book) { positions[book.id] = summary }
-        }
-        minutesCache = cache
-        positionCache = positions
-    }
-
     /// "Chapter 7 of 24" for the resume card — and, when present, the Recap
     /// action. Same rule as `minutesLeft`: a PDF page is not a reading
-    /// position, so PDFs get neither.
+    /// position, so PDFs get neither. Built from the cached chapter lengths,
+    /// so it is safe to compute in body.
     private func positionSummary(for book: Book) -> ReadingPositionSummary? {
         guard !model.isPDF(book),
               let position = model.position(for: book),
               position.pdfPageIndex == nil else { return nil }
-        return ReadingPositionSummary(book: book, position: position)
+        return ReadingPositionSummary(
+            book: book, position: position, lengths: model.readingLengths(for: book)
+        )
     }
 
     /// "~N min left in chapter" for the resume card, when a position is saved.
@@ -182,8 +169,7 @@ struct HomeView: View {
               position.pdfPageIndex == nil,
               book.chapters.indices.contains(position.chapterIndex) else { return nil }
         let minutes = ReadingTimeEstimator().minutesLeft(
-            inChapterText: book.chapters[position.chapterIndex].text,
-            fromCharacterOffset: position.characterOffset
+            in: model.readingLengths(for: book), at: ReadingFrontier(position)
         )
         return minutes > 0 ? minutes : nil
     }

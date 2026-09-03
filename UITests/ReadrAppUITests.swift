@@ -501,7 +501,9 @@ final class ReadrAppUITests: XCTestCase {
 
         openAskPanel(app)
 
-        let suggestion = app.buttons["Summarize this book"].firstMatch
+        // Opened from a text book the panel is scoped to what's been read,
+        // so its chips are worded "so far".
+        let suggestion = app.buttons["Summarize what I've read so far"].firstMatch
         XCTAssertTrue(suggestion.waitForExistence(timeout: 5))
         suggestion.tap()
         let send = app.buttons["ask.send"].firstMatch
@@ -532,7 +534,9 @@ final class ReadrAppUITests: XCTestCase {
 
     // A4 — a whole-book answer shows the honest no-citations copy and never a
     // Sources list. -uiTestStubWholeBook makes the stub report a remote model
-    // so the small seeded book routes to the whole-book tier.
+    // so the small seeded book routes to the whole-book tier. The panel opens
+    // scoped to what's been read; the header's switch widens it to the whole
+    // book, and the chips follow.
     func testAskWholeBookShowsHonestNoCitationsCopy() {
         let app = XCUIApplication()
         app.launchArguments += ["-uiTestSeed", "-uiTestStubLLM", "-uiTestStubWholeBook"]
@@ -540,8 +544,19 @@ final class ReadrAppUITests: XCTestCase {
 
         openAskPanel(app)
 
+        // Scoped by default: the "so far" chip is there, the whole-book one
+        // is not, and the where-am-I line says where answers stop.
+        XCTAssertTrue(app.buttons["Summarize what I've read so far"].firstMatch.waitForExistence(timeout: 5))
+        XCTAssertFalse(app.buttons["Summarize this book"].exists)
+        XCTAssertTrue(app.staticTexts["ask.position"].firstMatch.exists, "a scoped panel says where it stops")
+
+        let scope = app.switches["ask.scope"].firstMatch
+        XCTAssertTrue(scope.waitForExistence(timeout: 3), "a text book offers the whole-book switch")
+        scope.tap()
+
         let suggestion = app.buttons["Summarize this book"].firstMatch
-        XCTAssertTrue(suggestion.waitForExistence(timeout: 5))
+        XCTAssertTrue(suggestion.waitForExistence(timeout: 5), "flipping the switch swaps in the whole-book chips")
+        XCTAssertFalse(app.staticTexts["ask.position"].exists, "no stopping point when the whole book is in scope")
         suggestion.tap()
         let send = app.buttons["ask.send"].firstMatch
         XCTAssertTrue(send.waitForExistence(timeout: 3))
@@ -864,7 +879,8 @@ final class ReadrAppUITests: XCTestCase {
             if ask2.waitForExistence(timeout: 5), ask2.isHittable {
                 ask2.tap()
                 // Suggestion chips insert text without needing the keyboard.
-                let suggestion = app2.buttons["Summarize this book"].firstMatch
+                // The panel opens scoped to what's been read.
+                let suggestion = app2.buttons["Summarize what I've read so far"].firstMatch
                 if suggestion.waitForExistence(timeout: 3) { suggestion.tap() }
                 let send = app2.buttons["ask.send"].firstMatch
                 if send.waitForExistence(timeout: 2), send.isEnabled {
