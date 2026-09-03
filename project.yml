@@ -38,6 +38,38 @@ packages:
   FluidAudio:
     url: https://github.com/FluidInference/FluidAudio
     exactVersion: "0.15.6"
+  # Readr Voice on iPhone/iPad: the same Kokoro-82M, run on the Metal GPU via
+  # MLX instead of CoreML — Apple's CoreML CPU path segfaults inside libBNNS
+  # on iOS 26.4+ (FluidAudio#817/#844; three App Store crash logs), and MLX
+  # never touches BNNS. Blaizzy/mlx-audio-swift (MIT) supplies the Kokoro
+  # port and an espeak-free Misaki G2P (lexicon + a 3MB BART fallback on MLX,
+  # assets from HF beshkenadze/kitten-tts-g2p, MIT); weights are
+  # mlx-community/Kokoro-82M-bf16 (~327MB, Apache-2.0), downloaded on first
+  # use, never bundled. See docs/research/MLX-KOKORO-IOS.md for the decision.
+  # Pinned to a commit rather than a tag: v0.1.3 (2026-07-09) predates the
+  # per-phoneme duration API, and the package's debug-only unsafeFlags are
+  # only permitted by SwiftPM for revision/branch pins anyway. App-layer only
+  # (MLXKokoroSpeechEngine), used at runtime on iOS devices only — the iOS
+  # Simulator cannot run MLX at all (mlx#2605), so it compiles there and is
+  # never entered (UI tests use UITestStubSpeechEngine).
+  MLXAudio:
+    url: https://github.com/Blaizzy/mlx-audio-swift
+    revision: d20cbd660424c9f202363306ef4ff4595a199356
+  # Declared explicitly so the MLX runtime is pinned too (mlx-audio-swift asks
+  # for `from: 0.30.6`): ≥ 0.31.1 fixes an iOS ConvTransposed1d bug Kokoro's
+  # decoder hits (mlx-swift#344). MIT. Its Metal shaders only compile under
+  # xcodebuild, which is why none of this can live in the ReadrKit package.
+  MLX:
+    url: https://github.com/ml-explore/mlx-swift
+    exactVersion: "0.31.6"
+  # mlx-audio-swift's Hub client (Apache-2.0). Declared because the MLX
+  # engine names its `Repo.ID` type directly — the weights are fetched to
+  # disk in one step and loaded onto the GPU in a separate, foreground-only
+  # one — and a type we compile against should be pinned, not inherited from
+  # a transitive resolve. Satisfies the package's `from: 0.8.1`.
+  swift-huggingface:
+    url: https://github.com/huggingface/swift-huggingface.git
+    exactVersion: "0.10.0"
   # Readium's paginated navigator (reflow/fonts/decorations) is an optional
   # rendering upgrade tracked for a later milestone:
   # ReadiumNavigator:
@@ -57,6 +89,17 @@ targets:
         product: ZIPFoundation
       - package: FluidAudio
         product: FluidAudio
+      # MLX Kokoro is iOS-only at runtime; XcodeGen links a package product to
+      # every supportedDestination, so it links on macOS too and every use is
+      # behind `#if os(iOS)` (App/Speech/MLXKokoroSpeechEngine.swift).
+      - package: MLXAudio
+        product: MLXAudioTTS
+      - package: MLXAudio
+        product: MLXAudioCore
+      - package: MLX
+        product: MLX
+      - package: swift-huggingface
+        product: HuggingFace
     # Keys that GENERATE_INFOPLIST_FILE can't express land in this generated
     # plist (git-ignored; XcodeGen keeps it out of Copy Bundle Resources) and
     # Xcode merges both sources into the final Info.plist.
@@ -135,6 +178,13 @@ targets:
         # the Readr Voice release on.
         "EXCLUDED_ARCHS[sdk=iphonesimulator*]": x86_64
         "EXCLUDED_ARCHS[sdk=macosx*]": x86_64
+        # iOS device builds only: the ~327MB MLX Kokoro weights plus MLX's
+        # working buffers sit above the default jetsam limit on 4–6GB phones.
+        # Increased Memory Limit needs no App ID capability, just the
+        # entitlement (App/Readr.entitlements). Deliberately not applied to
+        # macOS (no jetsam; an unknown entitlement is a notarization risk) or
+        # the simulator (never runs MLX).
+        "CODE_SIGN_ENTITLEMENTS[sdk=iphoneos*]": App/Readr.entitlements
         INFOPLIST_KEY_CFBundleDisplayName: Readr
         # App Store / Launchpad category (an ebook reader → Books).
         INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.books

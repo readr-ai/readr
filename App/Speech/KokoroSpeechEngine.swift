@@ -29,7 +29,12 @@ import ReadrKit
 ///
 /// Main-thread-confined like `AVSpeechEngine`; synthesis hops to the
 /// `KokoroAneManager` actor and back.
-final class KokoroSpeechEngine: NSObject, SpeechEngine {
+///
+/// macOS only in practice: on iPhone and iPad the router prepares
+/// `MLXKokoroSpeechEngine` instead (CoreML crashes inside Apple's BNNS on
+/// iOS 26.4+), and `NarrationEnginePolicy` never sends a sentence here while
+/// an MLX engine exists on the platform.
+final class KokoroSpeechEngine: NSObject, ReadrVoiceEngine {
     weak var delegate: (any SpeechEngineDelegate)?
 
     // MARK: - The picker's view of this engine
@@ -91,8 +96,9 @@ final class KokoroSpeechEngine: NSObject, SpeechEngine {
         return SpeechVoice.primaryLanguageCode(of: language) == "en"
     }
 
-    /// Kokoro voice-pack name from a sentinel id ("af_heart").
-    private static func kokoroVoice(from id: String?) -> String {
+    /// Kokoro voice-pack name from a sentinel id ("af_heart"). Shared with the
+    /// MLX engine: the sentinel ids are the same whichever runtime speaks.
+    static func kokoroVoice(from id: String?) -> String {
         guard let id, isKokoroVoiceID(id) else { return "af_heart" }
         return String(id.dropFirst(voiceIDPrefix.count))
     }
@@ -103,16 +109,10 @@ final class KokoroSpeechEngine: NSObject, SpeechEngine {
     /// ~104MB first-use download, and the Listen bar shows this so the wait
     /// is never silent. While it isn't `.ready`, `RoutingSpeechEngine` narrates
     /// through the platform voice and switches over at a sentence boundary.
-    enum Readiness: Equatable {
-        /// This OS build crashes the process inside Apple's BNNS during
-        /// Kokoro inference (FluidAudio#817/#844); the engine refuses every
-        /// request. See `NeuralVoiceAvailability`.
-        case unsupported
-        case notReady
-        case downloading
-        case ready
-        case failed
-    }
+    /// `.unsupported` here means this OS build crashes the process inside
+    /// Apple's BNNS during Kokoro inference (FluidAudio#817/#844); the engine
+    /// refuses every request. See `NeuralVoiceAvailability`.
+    typealias Readiness = ReadrVoiceReadiness
 
     private(set) var readiness: Readiness = KokoroSpeechEngine.isSupportedOnThisOS
         ? .notReady : .unsupported {

@@ -180,18 +180,23 @@ struct ListenBar: View {
                 case .unsupported, .notReady, .ready:
                     EmptyView()
                 }
+                // iPhone/iPad: Readr Voice runs on the GPU, which Metal
+                // withholds from a backgrounded app. Said once, up front, so
+                // the voice change on lock is expected rather than a bug.
+                if narration.readrVoiceStepsAsideWhenLocked,
+                   narration.readrVoiceReadiness != .unsupported {
+                    menuNote(
+                        "With the screen locked, an Apple voice reads; "
+                            + "Readr Voice returns when you come back."
+                    )
+                }
             }
             // This is scoped to readers who would otherwise have Readr Voice:
             // an English book with no stored choice, or a stored Readr Voice.
             // An explicitly chosen Apple voice needs no warning about a voice
             // the reader did not ask for.
             if narration.readrVoiceUnavailable {
-                menuNote(
-                    """
-                    Readr Voice isn't available on this version of \(osName) — an Apple bug \
-                    crashes it. The Apple voice reads instead.
-                    """
-                )
+                menuNote(readrVoiceUnavailableNote)
             }
             Divider()
             if narration.voices.isEmpty {
@@ -213,6 +218,20 @@ struct ListenBar: View {
         .accessibilityIdentifier("listen.voice")
         .accessibilityLabel("Voice")
         .help(narration.voiceName.map { "Voice — \($0)" } ?? "Voice")
+    }
+
+    /// Why Readr Voice is missing from the list. On a Mac it is the OS gate
+    /// around Apple's BNNS crash; on an iPhone or iPad the MLX runtime needs
+    /// a Metal GPU (never missing on a device, always on the simulator).
+    private var readrVoiceUnavailableNote: String {
+        #if os(iOS)
+        return "Readr Voice isn't available on this device. The Apple voice reads instead."
+        #else
+        return """
+        Readr Voice isn't available on this version of \(osName) — an Apple bug \
+        crashes it. The Apple voice reads instead.
+        """
+        #endif
     }
 
     private var voiceBinding: Binding<String?> {

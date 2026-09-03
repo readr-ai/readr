@@ -90,6 +90,11 @@ jobs:
           fi
           sudo xcode-select -s "$XCODE"
           xcodebuild -version
+      # Xcode 26 ships the Metal compiler separately; mlx-swift (Readr Voice
+      # on iOS) needs it to build its GPU kernels — see ci.yml.
+      - name: Install Metal toolchain
+        if: env.HAS_ASC_KEY == 'true'
+        run: xcodebuild -downloadComponent MetalToolchain
       - name: Install XcodeGen
         if: env.HAS_ASC_KEY == 'true'
         run: brew install xcodegen
