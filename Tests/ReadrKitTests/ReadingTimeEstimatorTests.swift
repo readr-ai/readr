@@ -46,6 +46,14 @@ final class ReadingTimeEstimatorTests: XCTestCase {
         XCTAssertEqual(ReadingTimeEstimator().minutes(for: words(480)), 2)
     }
 
+    func testMinutesForWordsMatchesMinutesForText() {
+        let estimator = ReadingTimeEstimator()
+        XCTAssertEqual(estimator.minutes(forWords: 0), 0)
+        XCTAssertEqual(estimator.minutes(forWords: 1), 1)
+        XCTAssertEqual(estimator.minutes(forWords: 241), estimator.minutes(for: words(241)))
+        XCTAssertEqual(estimator.minutes(forWords: 480), 2)
+    }
+
     // MARK: minutesLeft
 
     func testMinutesLeftFromOffsetZeroEqualsWholeChapter() {

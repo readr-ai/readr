@@ -45,6 +45,15 @@ public final class FileLibraryStore: LibraryStore, @unchecked Sendable {
         try data.write(to: url, options: .atomic)
     }
 
+    /// True once `library.json` exists — or its `.corrupt` sibling does: a
+    /// file we set aside was still a library the user had filled, and a
+    /// sample book must not be seeded over the top of their recovery.
+    public var hasPersistedLibrary: Bool {
+        let manager = FileManager.default
+        return manager.fileExists(atPath: url.path)
+            || manager.fileExists(atPath: url.appendingPathExtension("corrupt").path)
+    }
+
     public func add(_ book: Book) throws {
         lock.lock(); defer { lock.unlock() }
         if state.books[book.id] == nil { state.order.append(book.id) }

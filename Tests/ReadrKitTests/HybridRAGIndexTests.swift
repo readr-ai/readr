@@ -50,6 +50,33 @@ final class HybridRAGIndexTests: XCTestCase {
         XCTAssertTrue(top.locator.contains("Space"), "Got: \(top.locator)")
     }
 
+    // MARK: - Chapter ceiling
+
+    /// The reading scope is applied before the limit: a space question capped
+    /// at the dogs chapter comes back with dog passages — a full set of what
+    /// may be shown — never with an empty list because the best matches were
+    /// past the frontier.
+    func testChapterCeilingFiltersCandidatesBeforeTheLimit() async throws {
+        let index = HybridRAGIndex()
+        let book = makeDogsAndSpaceBook()
+        try await index.build(for: book, embeddings: DeterministicEmbeddingProvider())
+
+        let unscoped = try await index.retrieve(query: "planets orbiting the sun", bookID: book.id, limit: 1)
+        XCTAssertEqual(unscoped.first?.chapterIndex, 1, "unscoped, the space chapter wins")
+
+        let capped = try await index.retrieve(
+            query: "planets orbiting the sun", bookID: book.id, limit: 1, maxChapterIndex: 0
+        )
+        XCTAssertEqual(capped.count, 1, "the limit is still filled from what is allowed")
+        XCTAssertEqual(capped.first?.chapterIndex, 0)
+        XCTAssertTrue(capped.allSatisfy { $0.chapterIndex == 0 })
+
+        let nothingAllowed = try await index.retrieve(
+            query: "puppy", bookID: book.id, limit: 3, maxChapterIndex: -1
+        )
+        XCTAssertTrue(nothingAllowed.isEmpty, "a ceiling before the first chapter admits nothing")
+    }
+
     func testRetrieveOnUnbuiltBookReturnsEmpty() async throws {
         let index = HybridRAGIndex()
         let results = try await index.retrieve(query: "anything", bookID: UUID(), limit: 5)

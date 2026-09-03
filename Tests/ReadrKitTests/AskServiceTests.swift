@@ -39,7 +39,7 @@ final class AskServiceTests: XCTestCase {
         let strategy = AdaptiveContextStrategy(index: StubRAGIndex())
         let service = AskService(strategy: strategy, provider: provider)
 
-        let events = try await collect(service.ask("What happens?", about: book, selection: nil))
+        let events = try await collect(service.ask("What happens?", about: book, selection: nil, scope: .wholeBook))
 
         XCTAssertEqual(events.first, .contextAssembled(tier: .wholeBook))
 
@@ -70,7 +70,7 @@ final class AskServiceTests: XCTestCase {
         let strategy = AdaptiveContextStrategy(index: index)
         let service = AskService(strategy: strategy, provider: provider)
 
-        let events = try await collect(service.ask("What happens?", about: book, selection: nil))
+        let events = try await collect(service.ask("What happens?", about: book, selection: nil, scope: .wholeBook))
 
         XCTAssertEqual(events.first, .contextAssembled(tier: .retrieval))
         XCTAssertEqual(index.retrieveCallCount, 1)
@@ -92,7 +92,7 @@ final class AskServiceTests: XCTestCase {
         let strategy = AdaptiveContextStrategy(index: index)
         let service = AskService(strategy: strategy, provider: provider)
 
-        let events = try await collect(service.ask("What happens?", about: book, selection: nil))
+        let events = try await collect(service.ask("What happens?", about: book, selection: nil, scope: .wholeBook))
 
         let citations = events.compactMap { event -> [Citation]? in
             if case let .citations(list) = event { return list }
@@ -121,7 +121,7 @@ final class AskServiceTests: XCTestCase {
         let strategy = AdaptiveContextStrategy(index: StubRAGIndex())
         let service = AskService(strategy: strategy, provider: provider)
 
-        let events = try await collect(service.ask("What happens?", about: book, selection: nil))
+        let events = try await collect(service.ask("What happens?", about: book, selection: nil, scope: .wholeBook))
 
         let hasCitations = events.contains { event in
             if case .citations = event { return true }
@@ -145,7 +145,7 @@ final class AskServiceTests: XCTestCase {
         let strategy = AdaptiveContextStrategy(index: StubRAGIndex())
         let service = AskService(strategy: strategy, provider: provider)
 
-        let events = try await collect(service.ask("What happens?", about: book, selection: nil))
+        let events = try await collect(service.ask("What happens?", about: book, selection: nil, scope: .wholeBook))
 
         guard case let .contextAssembled(tier) = try XCTUnwrap(events.first) else {
             return XCTFail("Expected the first event to be contextAssembled; got \(events.first as Any)")
@@ -166,7 +166,7 @@ final class AskServiceTests: XCTestCase {
         let strategy = AdaptiveContextStrategy(index: StubRAGIndex())
         let service = AskService(strategy: strategy, provider: provider)
 
-        let events = try await collect(service.ask("What happens?", about: book, selection: nil))
+        let events = try await collect(service.ask("What happens?", about: book, selection: nil, scope: .wholeBook))
 
         guard case let .contextAssembled(tier) = try XCTUnwrap(events.first) else {
             return XCTFail("Expected the first event to be contextAssembled; got \(events.first as Any)")
@@ -196,7 +196,7 @@ final class AskServiceTests: XCTestCase {
             chapterTitle: "One"
         )
 
-        _ = try await collect(service.ask("Explain this.", about: book, selection: selection))
+        _ = try await collect(service.ask("Explain this.", about: book, selection: selection, scope: .wholeBook))
 
         let request = try XCTUnwrap(provider.receivedRequests.first)
         let userMessage = try XCTUnwrap(request.messages.first { $0.role == .user })

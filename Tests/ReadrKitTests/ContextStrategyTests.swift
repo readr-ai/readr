@@ -27,6 +27,7 @@ final class ContextStrategyTests: XCTestCase {
             for: "What happens?",
             in: makeBook(tokenCount: 1_000),
             selection: nil,
+            scope: .wholeBook,
             provider: provider(budget: 200_000, isLocal: false)
         )
         XCTAssertEqual(result.tier, .wholeBook)
@@ -38,6 +39,7 @@ final class ContextStrategyTests: XCTestCase {
             for: "What happens?",
             in: makeBook(tokenCount: 5_000_000),
             selection: nil,
+            scope: .wholeBook,
             provider: provider(budget: 200_000, isLocal: false)
         )
         XCTAssertEqual(result.tier, .retrieval)
@@ -53,6 +55,7 @@ final class ContextStrategyTests: XCTestCase {
             for: "What happens?",
             in: makeBook(tokenCount: 5_000_000),
             selection: nil,
+            scope: .wholeBook,
             provider: provider(budget: 200_000, isLocal: false)
         )
         XCTAssertEqual(result.tier, .retrieval)
@@ -66,6 +69,7 @@ final class ContextStrategyTests: XCTestCase {
             for: "What happens?",
             in: makeBook(tokenCount: 1_000),
             selection: nil,
+            scope: .wholeBook,
             provider: provider(budget: 200_000, isLocal: false)
         )
         XCTAssertEqual(result.tier, .wholeBook)
@@ -82,6 +86,7 @@ final class ContextStrategyTests: XCTestCase {
             for: "What happens?",
             in: makeBook(tokenCount: 5_000_000),
             selection: nil,
+            scope: .wholeBook,
             provider: provider(budget: 200_000, isLocal: false)
         )
         let snippet = try XCTUnwrap(result.citations.first?.quotedText)
@@ -100,6 +105,7 @@ final class ContextStrategyTests: XCTestCase {
             for: "What happens?",
             in: book,
             selection: nil,
+            scope: .wholeBook,
             provider: provider(budget: 200_000, isLocal: false, caching: false)
         )
         XCTAssertEqual(result.tier, .wholeBook)
@@ -113,6 +119,7 @@ final class ContextStrategyTests: XCTestCase {
             for: "What happens?",
             in: book,
             selection: nil,
+            scope: .wholeBook,
             provider: provider(budget: 200_000, isLocal: false, caching: true)
         )
         XCTAssertEqual(result.tier, .wholeBook)
@@ -125,6 +132,7 @@ final class ContextStrategyTests: XCTestCase {
             for: "What happens?",
             in: makeBook(tokenCount: 10),
             selection: nil,
+            scope: .wholeBook,
             provider: provider(budget: 8_000, isLocal: true)
         )
         XCTAssertEqual(result.tier, .retrieval)
@@ -142,6 +150,7 @@ final class ContextStrategyTests: XCTestCase {
             for: "What happens?",
             in: makeBook(tokenCount: 1_000),
             selection: nil,
+            scope: .wholeBook,
             provider: provider(budget: 200_000, isLocal: false)
         )
         XCTAssertEqual(result.tier, .wholeBook)
@@ -155,6 +164,7 @@ final class ContextStrategyTests: XCTestCase {
             for: "What happens?",
             in: makeBook(tokenCount: 5_000_000),
             selection: nil,
+            scope: .wholeBook,
             provider: provider(budget: 200_000, isLocal: false)
         )
         XCTAssertEqual(result.tier, .retrieval)
@@ -171,7 +181,9 @@ final class ContextStrategyTests: XCTestCase {
 /// Minimal in-memory index for routing tests.
 private struct StubIndex: RAGIndex {
     func build(for book: Book, embeddings: EmbeddingProvider) async throws {}
-    func retrieve(query: String, bookID: UUID, limit: Int) async throws -> [RetrievedPassage] {
+    func retrieve(
+        query: String, bookID: UUID, limit: Int, maxChapterIndex: Int?
+    ) async throws -> [RetrievedPassage] {
         [RetrievedPassage(text: "stub passage", locator: "Ch.1", score: 1.0)]
     }
     func isBuilt(bookID: UUID) async -> Bool { true }

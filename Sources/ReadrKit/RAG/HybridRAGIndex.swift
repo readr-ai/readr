@@ -79,38 +79,52 @@ public final class HybridRAGIndex: RAGIndex, @unchecked Sendable {
         lock.unlock()
     }
 
-    public func retrieve(query: String, bookID: UUID, limit: Int) async throws -> [RetrievedPassage] {
+    public func retrieve(
+        query: String, bookID: UUID, limit: Int, maxChapterIndex: Int?
+    ) async throws -> [RetrievedPassage] {
         lock.lock()
         let entry = indexes[bookID]
         lock.unlock()
 
         guard let entry, !entry.chunks.isEmpty, limit > 0 else { return [] }
 
+        // The candidates: every chunk, or — under a reading scope — only the
+        // chunks from chapters the reader has finished. Filtered here, before
+        // scoring and before the limit, so a scoped question is ranked among
+        // what it may see and still gets `limit` passages back.
+        let candidates: [Int] = (0..<entry.chunks.count).filter { idx in
+            guard let maxChapterIndex else { return true }
+            return entry.chunks[idx].chapterIndex <= maxChapterIndex
+        }
+        guard !candidates.isEmpty else { return [] }
+
         // Vector score: cosine of query embedding vs each chunk embedding, using
         // the same provider that built this book (matching vector spaces).
         let queryVectors = try await entry.provider.embed([query])
         let queryVector = queryVectors.first ?? []
 
-        let count = entry.chunks.count
+        let count = candidates.count
         var vectorScores = [Double](repeating: 0, count: count)
-        for idx in 0..<count {
+        for (slot, idx) in candidates.enumerated() {
             let sim = LocalEmbeddingProvider.cosineSimilarity(queryVector, entry.vectors[idx])
-            vectorScores[idx] = Double(sim)
+            vectorScores[slot] = Double(sim)
         }
 
-        // BM25 lexical score over query terms.
+        // BM25 lexical score over query terms. Document frequencies stay
+        // book-wide: a term's rarity is a property of the book, not of the
+        // stretch the reader is allowed to see.
         let queryTerms = LocalEmbeddingProvider.tokenize(query)
         var bm25Scores = [Double](repeating: 0, count: count)
-        let n = Double(count)
+        let n = Double(entry.chunks.count)
         for term in Set(queryTerms) {
             let df = Double(entry.documentFrequency[term] ?? 0)
             guard df > 0 else { continue }
             let idf = log((n - df + 0.5) / (df + 0.5) + 1)
-            for idx in 0..<count {
+            for (slot, idx) in candidates.enumerated() {
                 let tf = Double(entry.termCounts[idx][term] ?? 0)
                 guard tf > 0 else { continue }
                 let denom = tf + k1 * (1 - b + b * Double(entry.docLengths[idx]) / max(entry.averageDocLength, 1e-9))
-                bm25Scores[idx] += idf * (tf * (k1 + 1)) / denom
+                bm25Scores[slot] += idf * (tf * (k1 + 1)) / denom
             }
         }
 
@@ -120,8 +134,8 @@ public final class HybridRAGIndex: RAGIndex, @unchecked Sendable {
 
         var ranked: [(index: Int, score: Double)] = []
         ranked.reserveCapacity(count)
-        for idx in 0..<count {
-            let combined = 0.5 * normVector[idx] + 0.5 * normBM25[idx]
+        for (slot, idx) in candidates.enumerated() {
+            let combined = 0.5 * normVector[slot] + 0.5 * normBM25[slot]
             ranked.append((idx, combined))
         }
 

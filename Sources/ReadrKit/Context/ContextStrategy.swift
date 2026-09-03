@@ -64,41 +64,32 @@ public protocol ContextStrategy: Sendable {
     /// - Parameter history: earlier turns of the same conversation, oldest
     ///   first. Without it a follow-up ("but roads are technically 3D") reads
     ///   as a brand-new question with no idea what it is objecting to.
+    /// - Parameter scope: what the answer may draw on — the whole book, or
+    ///   only what the reader has read. Named at every call site; see
+    ///   `ReadingScope`.
     func assembleContext(
         for question: String,
         in book: Book,
         selection: Selection?,
         history: [ConversationTurn],
-        frontier: ReadingFrontier?,
+        scope: ReadingScope,
         provider: ProviderInfo
     ) async throws -> AssembledContext
 }
 
 public extension ContextStrategy {
-    /// Whole-book form: no frontier. See `ReadingFrontier` for what setting
-    /// one changes.
-    func assembleContext(
-        for question: String,
-        in book: Book,
-        selection: Selection?,
-        history: [ConversationTurn],
-        provider: ProviderInfo
-    ) async throws -> AssembledContext {
-        try await assembleContext(
-            for: question, in: book, selection: selection, history: history,
-            frontier: nil, provider: provider
-        )
-    }
-
     /// Single-shot convenience: a question with no conversation behind it.
+    /// The scope is still the caller's to name.
     func assembleContext(
         for question: String,
         in book: Book,
         selection: Selection?,
+        scope: ReadingScope,
         provider: ProviderInfo
     ) async throws -> AssembledContext {
         try await assembleContext(
-            for: question, in: book, selection: selection, history: [], provider: provider
+            for: question, in: book, selection: selection, history: [],
+            scope: scope, provider: provider
         )
     }
 }
@@ -109,12 +100,21 @@ public extension ContextStrategy {
 /// Both tiers always inject the selection + chapter + TOC anchor.
 public struct AdaptiveContextStrategy: ContextStrategy {
     private let index: RAGIndex
+    private let lengths: ReadingLengthCache
     /// Fraction of the context budget we allow the book to occupy before
     /// switching to retrieval (leaves room for history + answer).
     private let wholeBookBudgetFraction: Double
 
-    public init(index: RAGIndex, wholeBookBudgetFraction: Double = 0.6) {
+    /// - Parameter lengths: per-book chapter lengths, shared with whatever
+    ///   else measures books (the app hands in its one cache) so a scoped
+    ///   question's token estimate never re-walks the text.
+    public init(
+        index: RAGIndex,
+        lengths: ReadingLengthCache = ReadingLengthCache(),
+        wholeBookBudgetFraction: Double = 0.6
+    ) {
         self.index = index
+        self.lengths = lengths
         self.wholeBookBudgetFraction = wholeBookBudgetFraction
     }
 
@@ -123,25 +123,49 @@ public struct AdaptiveContextStrategy: ContextStrategy {
         in book: Book,
         selection: Selection?,
         history: [ConversationTurn],
-        frontier: ReadingFrontier?,
+        scope: ReadingScope,
         provider: ProviderInfo
     ) async throws -> AssembledContext {
-        let anchor = Self.anchor(for: book, selection: selection, frontier: frontier)
+        let frontier = scope.frontier
+        let table = frontier == nil ? nil : lengths.table(for: book)
+        // The same "Chapter 7 of 24 · The Whale" the panel shows, so the
+        // model and the reader are told the same place.
+        let position = frontier.flatMap { frontier -> ReadingPositionSummary? in
+            guard let table else { return nil }
+            return ReadingPositionSummary(book: book, frontier: frontier, lengths: table)
+        }
+        let anchor = Self.anchor(for: book, selection: selection, position: position, scoped: scope.isScoped)
         // System prompt, then the conversation so far, then the new question:
         // the model reads the earlier turns as what was already said and the
         // last message as what it has to answer. With a frontier, the prompt
         // also carries the no-spoiler rule.
-        let systemContent = frontier == nil
-            ? Self.systemPrompt
-            : Self.systemPrompt + "\n\n" + Self.spoilerGuard
-        let systemMessage = ChatMessage(role: .system, content: systemContent)
+        var systemContent = scope.isScoped
+            ? Self.systemPrompt + "\n\n" + Self.spoilerGuard
+            : Self.systemPrompt
         let priorTurns = Self.historyMessages(from: history)
         let budget = Int(Double(provider.contextBudget) * wholeBookBudgetFraction)
-        // What would actually be sent on the whole-book tier — and therefore
-        // what the budget has to fit. A long book the reader has only started
-        // is a short text.
-        let bookText = frontier.map { book.textRead(upTo: $0) } ?? book.fullText
-        let bookTokens = frontier == nil ? book.estimatedTokenCount : estimateTokens(bookText)
+
+        // How much would ride along on the whole-book tier — and therefore
+        // what the budget has to fit. Counted, not built: a long book the
+        // reader has only started is a short text, and the text itself is
+        // only assembled once that tier is chosen.
+        let charactersRead = frontier.map { frontier in table?.charactersRead(upTo: frontier) ?? 0 }
+        if let charactersRead, charactersRead == 0 {
+            // Frontier at the very start: nothing has been read, so nothing
+            // is sent — not an empty cacheable prefix, which some providers
+            // reject and all of them would answer from thin air. The system
+            // prompt says so, and a recap answer should too.
+            systemContent += "\n\n" + Self.notStartedNote
+            let systemMessage = ChatMessage(role: .system, content: systemContent)
+            let ask = ChatMessage(role: .user, content: anchor + "\n\nQuestion: " + question)
+            let request = ChatRequest(
+                messages: [systemMessage] + priorTurns + [ask],
+                maxOutputTokens: 1024
+            )
+            return AssembledContext(tier: .wholeBook, request: request)
+        }
+        let systemMessage = ChatMessage(role: .system, content: systemContent)
+        let bookTokens = charactersRead.map(estimateTokens(characterCount:)) ?? book.estimatedTokenCount
         let fitsWholeBook = !provider.isLocal && bookTokens <= budget
 
         if fitsWholeBook {
@@ -149,6 +173,7 @@ public struct AdaptiveContextStrategy: ContextStrategy {
             // carries the anchor. Providers that support prompt caching cache
             // the prefix, the rest send it as a plain system message — either
             // way the answer must be grounded in the book.
+            let bookText = frontier.map { book.textRead(upTo: $0) } ?? book.fullText
             let ask = ChatMessage(
                 role: .user, content: anchor + "\n\nQuestion: " + question
             )
@@ -161,17 +186,39 @@ public struct AdaptiveContextStrategy: ContextStrategy {
         }
 
         // Tier 2: hybrid retrieval over the rest of the book. With a frontier,
-        // anything the reader hasn't reached is dropped before it can be
-        // quoted — including passages whose position the index doesn't know.
-        let passages = try await index.retrieve(
+        // the index is asked for passages at or before the last chapter the
+        // reader has finished — filtered before its limit, so a scoped
+        // question still gets a full set — and the strategy checks again
+        // here, so nothing the reader hasn't reached can be quoted, including
+        // passages whose position the index doesn't know.
+        let maxChapterIndex: Int? = frontier.map { frontier in
+            book.hasFinishedChapter(at: frontier) ? frontier.chapterIndex : frontier.chapterIndex - 1
+        }
+        var passages = try await index.retrieve(
             query: question,
             bookID: book.id,
-            limit: 8
+            limit: 8,
+            maxChapterIndex: maxChapterIndex
         ).filter { passage in
-            guard let frontier else { return true }
+            guard let maxChapterIndex else { return true }
             guard let chapter = passage.chapterIndex else { return false }
-            if chapter < frontier.chapterIndex { return true }
-            return chapter == frontier.chapterIndex && book.hasFinishedChapter(at: frontier)
+            return chapter <= maxChapterIndex
+        }
+        if passages.isEmpty, let frontier {
+            // The reader has read something (the empty case returned above),
+            // but none of it survived the chapter filter — they are partway
+            // through the first chapter, say. The end of what they've read is
+            // the best available grounding, so the passage block is never
+            // empty: the last budget's worth of it, as one passage.
+            let tail = book.textRead(upTo: frontier, lastCharacters: budget * 4)
+            if !tail.isEmpty {
+                passages = [
+                    RetrievedPassage(
+                        text: tail, locator: Self.readSoFarLocator, score: 0,
+                        chapterIndex: frontier.chapterIndex
+                    ),
+                ]
+            }
         }
         let retrieved = passages
             .map { "[\($0.locator)] \($0.text)" }
@@ -195,6 +242,10 @@ public struct AdaptiveContextStrategy: ContextStrategy {
         )
         return AssembledContext(tier: .retrieval, request: request, citations: citations)
     }
+
+    /// Locator of the fallback passage: the end of what the reader has read,
+    /// when no indexed passage sits before the frontier.
+    static let readSoFarLocator = "Read so far"
 
     /// How many earlier turns ride along. Enough for a real back-and-forth,
     /// bounded so a long session can't crowd out the book itself — the book
@@ -266,10 +317,10 @@ public struct AdaptiveContextStrategy: ContextStrategy {
     question without repeating what you already said.
     """
 
-    /// Appended to the system prompt whenever a `ReadingFrontier` is in force.
-    /// The text past the frontier is already withheld; this covers the other
-    /// source of spoilers — what the model knows about the book from
-    /// elsewhere — and defines what a recap means. Pinned by
+    /// Appended to the system prompt whenever the scope is `.upTo` a
+    /// frontier. The text past the frontier is already withheld; this covers
+    /// the other source of spoilers — what the model knows about the book
+    /// from elsewhere — and defines what a recap means. Pinned by
     /// `ReadingFrontierTests`.
     static let spoilerGuard = """
     The reader has only read up to the point marked in the anchor, and the \
@@ -285,6 +336,13 @@ public struct AdaptiveContextStrategy: ContextStrategy {
     stopped.
     """
 
+    /// Appended, in place of any book text, when the frontier is at the very
+    /// start of the book. Pinned by `ReadingFrontierTests`.
+    static let notStartedNote = """
+    The reader has not started the book yet, so no book text is included. \
+    If asked for a recap or summary, say there is nothing to recap yet.
+    """
+
     /// A short, trimmed preview of a retrieved passage for display as a citation.
     static func snippet(from text: String, maxLength: Int = 160) -> String {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -298,22 +356,23 @@ public struct AdaptiveContextStrategy: ContextStrategy {
         return clipped.trimmingCharacters(in: .whitespacesAndNewlines) + "…"
     }
 
-    /// The always-injected "where you are" anchor (Tier 3).
+    /// The always-injected "where you are" anchor (Tier 3). With a scope,
+    /// the "read so far" line is the panel's own `ReadingPositionSummary`.
     static func anchor(
-        for book: Book, selection: Selection?, frontier: ReadingFrontier? = nil
+        for book: Book,
+        selection: Selection?,
+        position: ReadingPositionSummary?,
+        scoped: Bool
     ) -> String {
         var parts: [String] = []
         parts.append("Book: \"\(book.metadata.title)\" by \(book.metadata.authors.joined(separator: ", "))")
-        if let frontier {
-            let ordered = book.chaptersInReadingOrder
-            let index = min(frontier.chapterIndex, max(ordered.count - 1, 0))
-            let title = ordered.indices.contains(index)
-                ? (ordered[index].title ?? "chapter \(index + 1)")
-                : "the end"
+        if let position {
             parts.append(
-                "Read so far: through \"\(title)\" (chapter \(index + 1) of \(ordered.count)). "
+                "Read so far: through \"\(position.chapterTitle)\" (\(position.chapterLine), \(position.percent)%). "
                 + "The reader has not read past this point."
             )
+        } else if scoped {
+            parts.append("Read so far: nothing yet. The reader has not read past this point.")
         }
         if let sel = selection {
             if let ch = sel.chapterTitle { parts.append("Current chapter: \(ch)") }

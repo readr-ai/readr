@@ -25,6 +25,31 @@ final class FileLibraryStoreTests: XCTestCase {
         )
     }
 
+    // MARK: hasPersistedLibrary
+
+    /// The first-run seed reads this: a store pointed at a file that does not
+    /// exist yet has never been used; the moment anything is written, it has.
+    func testHasPersistedLibraryFollowsTheFileOnDisk() throws {
+        let store = FileLibraryStore(fileURL: fileURL)
+        XCTAssertFalse(store.hasPersistedLibrary, "no file yet")
+        try store.add(makeBook())
+        XCTAssertTrue(store.hasPersistedLibrary)
+        try store.removeBook(id: store.allBooks()[0].id)
+        XCTAssertTrue(store.allBooks().isEmpty)
+        XCTAssertTrue(store.hasPersistedLibrary, "an emptied library was still used")
+        XCTAssertTrue(FileLibraryStore(fileURL: fileURL).hasPersistedLibrary, "and a relaunch sees the same")
+    }
+
+    /// A library we had to set aside as corrupt was a library the user
+    /// filled: seeding a sample over it would bury their recovery.
+    func testACorruptFileSetAsideStillCountsAsPersisted() throws {
+        try Data("not json".utf8).write(to: fileURL)
+        let store = FileLibraryStore(fileURL: fileURL)
+        XCTAssertTrue(store.allBooks().isEmpty)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fileURL.path), "the corrupt file was moved aside")
+        XCTAssertTrue(store.hasPersistedLibrary)
+    }
+
     func testBooksPositionsAndHighlightsSurviveReload() throws {
         let book = makeBook(title: "Persisted")
         let chapterID = book.chapters[0].id
