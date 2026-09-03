@@ -456,7 +456,7 @@ enum TextRangeConvert {
         // reads perfectly on the background it was authored for.
         let backdrops: [(ns: NSRange, color: CSSColor)] = character.compactMap {
             guard case let .highlighted(color) = $0.kind else { return nil }
-            return ($0.ns, color)
+            return ($0.ns, color.adapted(toPage: style.theme.pageColor))
         }
         func backdrop(under ns: NSRange) -> CSSColor {
             let page = style.theme.pageColor
@@ -557,10 +557,14 @@ enum TextRangeConvert {
                     )
                 }
 
-            case let .highlighted(color):
+            case let .highlighted(declared):
                 // The book's own highlight styling (#47). The background is
-                // honoured as declared; the ink on top has to be legible on
-                // it whatever the reader's theme is.
+                // honoured as declared unless it would flip the page's
+                // polarity — an opaque white pull-quote panel on the dark
+                // theme painted as a white block with black ink — in which
+                // case it is toned down to a wash (`adapted(toPage:)`). The
+                // ink on top has to be legible on it whatever the theme is.
+                let color = declared.adapted(toPage: style.theme.pageColor)
                 attributed.addAttribute(
                     .backgroundColor, value: PlatformColor(color), range: ns
                 )

@@ -650,9 +650,8 @@ final class ReadrAppUITests: XCTestCase {
     // question as sent, the "where am I" line names the chapter, and the
     // stub streams its canned answer. -uiTestStubLLM supplies the provider;
     // without one the panel shows its empty state and holds the question
-    // until a key is connected. An EPUB has a reading position, so it gets
-    // the button (a native PDF page does not, and would not).
-    func testRecapButtonOpensAskWithTheRecapAlreadySent() {
+    // until a key is connected.
+    func testAskOffersTheRecapAsItsFirstStarter() {
         let app = launchSeeded(stubLLM: true)
 
         let bookCell = app.staticTexts["Sample Book"].firstMatch
@@ -660,14 +659,24 @@ final class ReadrAppUITests: XCTestCase {
         bookCell.tap()
         XCTAssertTrue(app.staticTexts["Chapter One"].waitForExistence(timeout: 10))
 
-        let recap = button(app, id: "reader.recap", label: "Recap what you've read so far")
-        XCTAssertTrue(recap.waitForExistence(timeout: 5), "an EPUB has a frontier, so it gets a Recap button")
-        recap.tap()
+        // One AI entry point in the reader: the Recap toolbar button is gone
+        // (it opened the same panel as Ask); the recap is Ask's first starter.
+        let ask = button(app, id: "reader.ask", label: "Ask the book")
+        XCTAssertTrue(ask.waitForExistence(timeout: 5))
+        XCTAssertFalse(app.buttons["reader.recap"].exists, "the reader toolbar no longer carries a separate Recap button")
+        ask.tap()
         XCTAssertTrue(app.navigationBars["Ask the book"].waitForExistence(timeout: 5))
+
+        let recap = app.buttons["Recap what I've read so far \u{2014} no spoilers"].firstMatch
+        XCTAssertTrue(recap.waitForExistence(timeout: 5), "a scoped panel leads with the recap starter")
+        recap.tap()
+        let send = app.buttons["ask.send"].firstMatch
+        XCTAssertTrue(send.waitForExistence(timeout: 3))
+        send.tap()
 
         XCTAssertTrue(
             sentQuestion(app, startingWith: "Recap what I've read so far").waitForExistence(timeout: 5),
-            "the recap question should be sent on open, not left in the field"
+            "the recap question should show as sent"
         )
 
         // The seeded position is halfway down chapter one.

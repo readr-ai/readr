@@ -715,9 +715,6 @@ struct ReaderView: View {
                 }
                 appearanceButton
                 listenButton
-                if !isPDFOriginal && !isImageOnlyPDF {
-                    recapButton
-                }
                 askButton
                 notesButton
             }
@@ -736,9 +733,6 @@ struct ReaderView: View {
                     Spacer()
                 }
                 listenButton
-                if !isPDFOriginal && !isImageOnlyPDF {
-                    recapButton
-                }
                 askButton
             }
         }
@@ -759,11 +753,6 @@ struct ReaderView: View {
                 pdfDisplayMenu
             }
             listenButton
-            // A native PDF page is not a reading position: nothing to recap
-            // up to (see `askScope`).
-            if !isPDFOriginal && !isImageOnlyPDF {
-                recapButton
-            }
             askButton
             notesButton
         }
@@ -1314,18 +1303,11 @@ struct ReaderView: View {
 
     /// Recap: Ask, with "recap what I've read so far" already sent. The
     /// answer stops where the reader stopped (`askScope`), and the panel
-    /// says where that is. Only offered when there IS a frontier — a native
-    /// PDF page is not a reading position, so PDFs never get the button.
-    private var recapButton: some View {
-        Button(action: openRecap) {
-            Label("Recap", systemImage: "text.book.closed")
-        }
-        .keyboardShortcut("r", modifiers: [.command, .shift])
-        .accessibilityIdentifier("reader.recap")
-        .accessibilityLabel("Recap what you've read so far")
-        .help("Recap what you've read so far, spoiler-free (\u{21E7}\u{2318}R)")
-    }
-
+    /// says where that is. Reached from Home's Continue Reading card (see
+    /// below); inside the reader the Ask panel's first starter row is the
+    /// recap, so the toolbar carries one ✦ entry point, not two doors into
+    /// the same panel (owner feedback, 3.3.1). A native PDF page is not a
+    /// reading position, so a PDF never gets a recap.
     private func openRecap() {
         let scope = askScope(selection: nil)
         guard scope.isScoped else { return }

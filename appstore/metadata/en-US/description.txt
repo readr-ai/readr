@@ -12,14 +12,14 @@ an idea aged, and you get a useful answer that shows which part came from
 the book and which from outside it. Readr won't attribute an outside claim
 to the book you're reading.
 
-Back after a week away? Tap Recap and Readr tells you the story so far,
-from only the pages you've read — it can't spoil what comes next.
+Back after a week away? Tap Recap on your Continue Reading card and Readr
+tells you the story so far, from only the pages you've read — it can't
+spoil what comes next.
 
 Ask needs an AI account of your own: connect an Anthropic, OpenAI or
 OpenRouter key, or sign in with OpenRouter. You pay that company directly for
 what you use, and you can change or disconnect at any time. On an Apple
-silicon Mac you can point Readr at a local Ollama model instead and stay
-offline. Without one, Readr is still a complete reader — Ask simply stays off.
+silicon Mac you can use a local Ollama model instead and stay offline. Without one, Readr is still a complete reader — Ask simply stays off.
 
 LISTEN
 Press Listen and Readr reads the book aloud, starting from the page you're on
