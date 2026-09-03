@@ -127,6 +127,10 @@ final class KokoroSpeechEngine: NSObject, ReadrVoiceEngine {
     /// paths); the model publishes it to the Listen bar.
     var onReadinessChange: ((Readiness) -> Void)?
     var isReady: Bool { readiness == .ready }
+    /// FluidAudio's download reports no progress; the bar shows the wait as
+    /// indeterminate with the size.
+    let downloadProgress: Double? = nil
+    var onDownloadProgressChange: ((Double?) -> Void)?
 
     // MARK: - State
 
@@ -147,6 +151,10 @@ final class KokoroSpeechEngine: NSObject, ReadrVoiceEngine {
             guard let self else { return }
             self.delegate?.speechEngine(self, didFail: id, error: error)
         }
+        audio.onStart = { [weak self] id in
+            guard let self else { return }
+            self.delegate?.speechEngine(self, didBeginSpeaking: id)
+        }
     }
 
     var state: SpeechEngineState { audio.state }
@@ -159,6 +167,12 @@ final class KokoroSpeechEngine: NSObject, ReadrVoiceEngine {
                 self, didFail: request.id, error: SpeechEngineError.audioUnavailable
             )
             return
+        }
+        // Not in yet: the sentence waits for the download (started below if
+        // it hasn't been), and the bar shows the wait rather than an Apple
+        // voice reading meanwhile.
+        if readiness != .ready {
+            delegate?.speechEngine(self, isPreparing: request.id)
         }
         audio.speak(request) { [weak self] request in
             guard let self else { throw CancellationError() }
@@ -183,19 +197,24 @@ final class KokoroSpeechEngine: NSObject, ReadrVoiceEngine {
 
     func resume() {
         audio.resume()
+        // Resumed into the same wait: say so again, since the pause took
+        // the controller out of its preparing state.
+        if readiness != .ready, let request = audio.activeRequest {
+            delegate?.speechEngine(self, isPreparing: request.id)
+        }
     }
 
     func stop() {
         audio.stop()
     }
 
-    /// Start the model download/load without speaking — called when the
-    /// reader picks this voice, so the first sentence doesn't carry the whole
-    /// ~104MB wait.
+    /// Start the model download/load without speaking — the explicit pick,
+    /// and the Retry after a failure. Main-thread-confined like the rest of
+    /// the engine; `readiness` leaves `.failed` before this returns.
     func prepare() {
         guard readiness != .unsupported else { return }
-        Task { @MainActor [weak self] in
-            try? await self?.ensureInitialized()
+        MainActor.assumeIsolated {
+            _ = startInitializing()
         }
     }
 
@@ -206,20 +225,30 @@ final class KokoroSpeechEngine: NSObject, ReadrVoiceEngine {
         guard readiness != .unsupported else {
             throw SpeechEngineError.audioUnavailable
         }
-        if let initializeTask {
-            return try await initializeTask.value
-        }
+        try await startInitializing().value
+    }
+
+    /// The download, started at most once at a time. Readiness moves to
+    /// `.downloading` synchronously so a request routed in the same turn as
+    /// a Retry sees an engine that is trying; the outcome is bookkept on
+    /// the main actor when the task ends.
+    @MainActor
+    private func startInitializing() -> Task<Void, Error> {
+        if let initializeTask { return initializeTask }
         readiness = .downloading
         let task = Task { try await manager.initialize() }
         initializeTask = task
-        do {
-            try await task.value
-            readiness = .ready
-        } catch {
-            // A failed download must not poison every later attempt.
-            initializeTask = nil
-            readiness = .failed
-            throw error
+        Task { @MainActor [weak self] in
+            do {
+                try await task.value
+                self?.readiness = .ready
+            } catch {
+                // A failed download must not poison every later attempt.
+                guard let self, self.initializeTask == task else { return }
+                self.initializeTask = nil
+                self.readiness = .failed
+            }
         }
+        return task
     }
 }

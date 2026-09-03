@@ -29,23 +29,27 @@ final class NarrationModel: ObservableObject {
     @Published private(set) var voices: [SpeechVoice] = []
     /// Where the Readr Voice model stands (first use is a download: ~104MB of
     /// CoreML weights on a Mac; ~330MB of MLX weights, ~60MB of voice packs
-    /// and ~20MB of pronunciation assets on an iPhone or iPad). The Listen
-    /// bar's voice menu narrates this state;
-    /// until `.ready`, the platform voice reads and the switch happens at a
-    /// sentence boundary.
+    /// and ~20MB of pronunciation assets on an iPhone or iPad). While it is
+    /// on its way narration sits in `.preparing` — the bar shows the wait,
+    /// with `readrVoiceDownloadProgress` when the download reports it — and
+    /// starts the moment it is in; nothing else reads meanwhile.
     @Published private(set) var readrVoiceReadiness: ReadrVoiceReadiness = .notReady
+    /// Fraction of the model download done, when the download library
+    /// reports it; nil for an indeterminate wait.
+    @Published private(set) var readrVoiceDownloadProgress: Double?
     /// True when this reader would otherwise use Readr Voice, but neither
     /// Kokoro runtime can serve here (macOS builds with the uncatchable Apple
     /// BNNS crash; an iOS device with no Metal GPU, or the simulator) and a
     /// platform voice must read.
     @Published private(set) var readrVoiceUnavailable = false
-    /// On iPhone and iPad Readr Voice runs on the GPU, which Metal withholds
-    /// from a backgrounded app: with the screen locked an Apple voice reads
-    /// and Readr Voice returns at the next sentence once the app is back in
-    /// the foreground. The voice menu says so. Taken from the router rather
-    /// than the static, so the UI-test stub (no router) never probes for a
-    /// Metal device.
-    let readrVoiceStepsAsideWhenLocked: Bool
+    /// Readr Voice is in the voice menu for this book: an English book on a
+    /// platform where a Kokoro runtime can serve. The menu then shows Readr
+    /// Voice alone with the Apple voices under "Other voices".
+    @Published private(set) var readrVoiceOffered = false
+    /// The runtime behind Readr Voice here, for copy that depends on it (the
+    /// download size). Taken from the router rather than the static, so the
+    /// UI-test stub (no router) never probes for a Metal device.
+    private let readrVoiceRuntime: NarrationEnginePolicy.KokoroRuntime?
 
     /// Where the voice is — the reader follows this to keep the page under it.
     var onPosition: ((NarrationPosition) -> Void)?
@@ -76,6 +80,25 @@ final class NarrationModel: ObservableObject {
 
     var isActive: Bool { status != .idle }
     var isSpeaking: Bool { status == .speaking }
+    /// Waiting for the Readr Voice model before the first sentence can be
+    /// heard — the bar's "Preparing Readr Voice" state.
+    var isPreparing: Bool { status == .preparing }
+    /// Speaking or preparing: what the play/pause control shows as Pause.
+    var isUnderway: Bool { status == .speaking || status == .preparing }
+    /// The selected narrator is Readr Voice.
+    var usesReadrVoice: Bool { KokoroSpeechEngine.isKokoroVoiceID(voiceID) }
+    /// Readr Voice is selected and its model could not be fetched (or a
+    /// synthesis hung): narration is paused on the sentence and the bar
+    /// offers Retry. No Apple voice reads in its place.
+    var readrVoiceFailed: Bool { usesReadrVoice && readrVoiceReadiness == .failed }
+    /// The Apple voices, for the "Other voices" disclosure.
+    var platformVoices: [SpeechVoice] {
+        voices.filter { !KokoroSpeechEngine.isKokoroVoiceID($0.id) }
+    }
+    /// What the first Listen fetches, for the preparing state's copy.
+    var readrVoiceDownloadSize: String {
+        readrVoiceRuntime == .mlx ? "410MB" : "104MB"
+    }
     /// Where the voice is right now — for the reader to re-sync its page after
     /// an overlay kept `onPosition` unwired (events fired meanwhile are gone).
     var position: NarrationPosition? { narration?.position }
@@ -98,7 +121,7 @@ final class NarrationModel: ObservableObject {
             self.engine = router
             self.router = router
         }
-        readrVoiceStepsAsideWhenLocked = router?.readrVoiceRuntime == .mlx
+        readrVoiceRuntime = router?.readrVoiceRuntime
         // Speed and voice are the reader's, not the book's — carried across
         // books the way the reading theme is.
         self.rate = defaults.object(forKey: Self.rateKey) as? Double ?? 1
@@ -108,6 +131,9 @@ final class NarrationModel: ObservableObject {
         // whatever thread a future engine reports from.
         router?.onReadrVoiceReadinessChange = { [weak self] readiness in
             Task { @MainActor in self?.readrVoiceReadiness = readiness }
+        }
+        router?.onReadrVoiceDownloadProgressChange = { [weak self] progress in
+            Task { @MainActor in self?.readrVoiceDownloadProgress = progress }
         }
     }
 
@@ -231,6 +257,7 @@ final class NarrationModel: ObservableObject {
             offered.insert(KokoroSpeechEngine.pickerVoice, at: 0)
         }
         voices = offered
+        readrVoiceOffered = readrVoiceAvailable
         // Resolve from the PERSISTED preference ONLY — never the session's
         // last resolution. `voiceID` is per-book (a French book resolves to a
         // French voice), and any fallback to it lets one book in another
@@ -247,7 +274,7 @@ final class NarrationModel: ObservableObject {
             // reader with no stored choice gets it, and a stored Readr Voice
             // pick keeps it. Only an explicit platform-voice choice (below)
             // overrides. The download starts with the first spoken sentence
-            // (the router's not-ready path); no separate prepare needed here.
+            // (the engine waits for it); no separate prepare needed here.
             voiceID = KokoroSpeechEngine.isKokoroVoiceID(preferred)
                 ? preferred : KokoroSpeechEngine.defaultVoiceID
         } else {
@@ -294,13 +321,33 @@ final class NarrationModel: ObservableObject {
     // MARK: - Controls
 
     func togglePlayPause() {
-        narration?.togglePlayPause()
-        refresh()
+        if narration?.isUnderway == true {
+            pause()
+        } else {
+            play()
+        }
     }
 
     func play() {
+        retryReadrVoiceIfFailed()
         narration?.play()
         refresh()
+    }
+
+    /// The bar's Retry after a failed Readr Voice download: fetch again and
+    /// pick narration back up on the same sentence.
+    func retryReadrVoice() {
+        play()
+    }
+
+    /// A Readr Voice request must never reach an engine that has given up —
+    /// the policy's backstop would hand it to an Apple voice. So every play
+    /// that would speak Readr Voice re-prepares a failed engine first; the
+    /// engine leaves `.failed` synchronously, and the sentence routes to it
+    /// and waits. Nothing to do when the engine is fine.
+    private func retryReadrVoiceIfFailed() {
+        guard usesReadrVoice, router?.readrVoiceReadiness == .failed else { return }
+        router?.prepareKokoro()
     }
 
     func pause() {
@@ -345,14 +392,13 @@ final class NarrationModel: ObservableObject {
 
     func setVoice(_ id: String?) {
         voiceID = id
-        narration?.settings.voiceID = id
-        // Picking the Readr Voice starts the model download immediately, so
-        // as little as possible of the wait (~104MB on a Mac, ~410MB on an
-        // iPhone or iPad) lands on the next sentence (the settings change
-        // above already re-speaks it via the router).
+        // Picking Readr Voice after a failure is the other Retry: re-prepare
+        // BEFORE the settings change re-speaks the sentence, so the
+        // re-spoken request finds an engine that is trying, not the backstop.
         if KokoroSpeechEngine.isKokoroVoiceID(id) {
             router?.prepareKokoro()
         }
+        narration?.settings.voiceID = id
         if let id {
             defaults.set(id, forKey: Self.voiceKey)
         } else {
@@ -449,7 +495,10 @@ final class NarrationModel: ObservableObject {
         }
         var info: [String: Any] = [
             MPMediaItemPropertyTitle: book.metadata.title,
-            MPNowPlayingInfoPropertyPlaybackRate: isSpeaking ? rate : 0,
+            // Preparing counts as playing here, so the lock screen shows a
+            // pause control for the wait rather than a play control that
+            // would do nothing.
+            MPNowPlayingInfoPropertyPlaybackRate: isUnderway ? rate : 0,
         ]
         if !book.metadata.authors.isEmpty {
             info[MPMediaItemPropertyArtist] = book.metadata.authors.joined(separator: ", ")

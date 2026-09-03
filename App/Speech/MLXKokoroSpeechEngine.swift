@@ -131,6 +131,18 @@ final class MLXKokoroSpeechEngine: NSObject, ReadrVoiceEngine {
     var onReadinessChange: ((Readiness) -> Void)?
     var isReady: Bool { readiness == .ready }
 
+    /// Byte-weighted fraction of the weights download, from the hub client;
+    /// nil before it starts, once it ends (the G2P assets, the load and the
+    /// warm-up that follow are short and indeterminate), and outside
+    /// `.downloading`.
+    private(set) var downloadProgress: Double? {
+        didSet {
+            guard downloadProgress != oldValue else { return }
+            onDownloadProgressChange?(downloadProgress)
+        }
+    }
+    var onDownloadProgressChange: ((Double?) -> Void)?
+
     // MARK: - Foreground
 
     /// The app is NOT backgrounded, so Metal will accept GPU work. Read by
@@ -184,6 +196,10 @@ final class MLXKokoroSpeechEngine: NSObject, ReadrVoiceEngine {
                 .warning, .reader, "Readr Voice (MLX) could not speak a sentence", error: error
             )
             self.delegate?.speechEngine(self, didFail: id, error: error)
+        }
+        audio.onStart = { [weak self] id in
+            guard let self else { return }
+            self.delegate?.speechEngine(self, didBeginSpeaking: id)
         }
         let center = NotificationCenter.default
         lifecycleObservers = [
@@ -259,6 +275,12 @@ final class MLXKokoroSpeechEngine: NSObject, ReadrVoiceEngine {
             delegate?.speechEngine(self, didFail: request.id, error: MLXKokoroError.backgrounded)
             return
         }
+        // Not in yet: the sentence waits for the download and the load
+        // (started in `synthesize` if they haven't been), and the bar shows
+        // the wait rather than an Apple voice reading meanwhile.
+        if readiness != .ready {
+            delegate?.speechEngine(self, isPreparing: request.id)
+        }
         audio.speak(request) { [weak self] request in
             guard let self else { throw CancellationError() }
             return try await self.synthesize(request)
@@ -271,6 +293,11 @@ final class MLXKokoroSpeechEngine: NSObject, ReadrVoiceEngine {
 
     func resume() {
         audio.resume()
+        // Resumed into the same wait: say so again, since the pause took
+        // the controller out of its preparing state.
+        if readiness != .ready, let request = audio.activeRequest {
+            delegate?.speechEngine(self, isPreparing: request.id)
+        }
     }
 
     func stop() {
@@ -278,11 +305,13 @@ final class MLXKokoroSpeechEngine: NSObject, ReadrVoiceEngine {
     }
 
     /// Start the download and (in the foreground) the GPU load without
-    /// speaking — called when the reader picks this voice.
+    /// speaking — the explicit pick, and the Retry after a failure. Main-
+    /// thread-confined like the rest of the engine; `readiness` leaves
+    /// `.failed` before this returns.
     func prepare() {
         guard readiness != .unsupported else { return }
-        Task { @MainActor [weak self] in
-            try? await self?.ensureInitialized()
+        MainActor.assumeIsolated {
+            _ = startInitializing()
         }
     }
 
@@ -331,43 +360,58 @@ final class MLXKokoroSpeechEngine: NSObject, ReadrVoiceEngine {
     @MainActor
     private func ensureInitialized() async throws {
         guard readiness != .unsupported else { throw MLXKokoroError.unsupported }
-        if let initializeTask {
-            return try await initializeTask.value
-        }
+        try await startInitializing().value
+    }
+
+    /// The download and the load, started at most once at a time. Readiness
+    /// moves to `.downloading` synchronously so a request routed in the same
+    /// turn as a Retry sees an engine that is trying; the outcome is
+    /// bookkept on the main actor when the task ends.
+    @MainActor
+    private func startInitializing() -> Task<Void, Error> {
+        if let initializeTask { return initializeTask }
         readiness = .downloading
+        downloadProgress = nil
         let synthesizer = self.synthesizer
         let foreground = self.foreground
         let voice = KokoroSpeechEngine.kokoroVoice(from: nil)
         let task = Task { [weak self] in
             // Network first, GPU second, and never the GPU with the screen
             // locked: the download is safe anywhere, the load is not.
-            try await synthesizer.download(voice: voice)
+            try await synthesizer.download(voice: voice) { fraction in
+                self?.downloadProgress = fraction
+            }
             // An engine that was deallocated while the download ran has no
             // business loading anything.
-            guard self != nil else { throw CancellationError() }
-            // Readiness stays `.downloading` while this waits: the menu's
-            // "downloading — switching automatically when ready" is still
-            // true of what the reader will see.
+            guard let self else { throw CancellationError() }
+            await MainActor.run { self.downloadProgress = nil }
+            // Readiness stays `.downloading` while this waits: the bar's
+            // "Preparing Readr Voice" is still true of what the reader will
+            // see, and narration starts the moment the load lands.
             try await foreground.waitUntilForeground()
             try await synthesizer.load(
                 isForeground: { foreground.isForeground }, warmUpVoice: voice
             )
         }
         initializeTask = task
-        do {
-            try await task.value
-            readiness = .ready
-        } catch {
-            initializeTask = nil
-            // A failure with the app in the foreground is a failure, and the
-            // reader retries by re-picking the voice. A failure while
-            // backgrounded — the download dropped with the phone in a pocket,
-            // or the load refused for want of the GPU — must not poison the
-            // session: back to `.notReady`, and the router's auto-prepare
-            // tries again on the next foreground sentence.
-            readiness = isForeground ? .failed : .notReady
-            throw error
+        Task { @MainActor [weak self] in
+            do {
+                try await task.value
+                self?.readiness = .ready
+            } catch {
+                guard let self, self.initializeTask == task else { return }
+                self.initializeTask = nil
+                self.downloadProgress = nil
+                // A failure with the app in the foreground is a failure, and
+                // the reader retries from the bar. A failure while
+                // backgrounded — the download dropped with the phone in a
+                // pocket, or the load refused for want of the GPU — must not
+                // poison the session: back to `.notReady`, and the next
+                // sentence tries again.
+                self.readiness = self.isForeground ? .failed : .notReady
+            }
         }
+        return task
     }
 
     // MARK: - The model, off the main thread
@@ -389,18 +433,20 @@ final class MLXKokoroSpeechEngine: NSObject, ReadrVoiceEngine {
         /// after resolving, the files the load and the first synthesis will
         /// open are checked here; if one is missing, both the working copy
         /// and the hub cache are cleared and the download runs once more.
-        func download(voice: String) async throws {
+        func download(
+            voice: String, progress: @escaping @MainActor @Sendable (Double) -> Void
+        ) async throws {
             guard let repo = Repo.ID(rawValue: MLXKokoroSpeechEngine.weightsRepo) else {
                 throw MLXKokoroError.invalidRepository(MLXKokoroSpeechEngine.weightsRepo)
             }
-            var directory = try await Self.resolve(repo)
+            var directory = try await Self.resolve(repo, progress: progress)
             if let missing = Self.missingFile(in: directory, voice: voice) {
                 DiagnosticsLog.shared.record(
                     .warning, .reader,
                     "Readr Voice (MLX) download is missing \(missing); clearing and retrying once"
                 )
                 Self.clearCaches(modelDirectory: directory, repo: repo)
-                directory = try await Self.resolve(repo)
+                directory = try await Self.resolve(repo, progress: progress)
                 if let stillMissing = Self.missingFile(in: directory, voice: voice) {
                     throw MLXKokoroError.incompleteDownload(stillMissing)
                 }
@@ -409,9 +455,21 @@ final class MLXKokoroSpeechEngine: NSObject, ReadrVoiceEngine {
             try await textProcessor.prepare()
         }
 
-        private static func resolve(_ repo: Repo.ID) async throws -> URL {
-            try await ModelUtils.resolveOrDownloadModel(
-                repoID: repo, requiredExtension: "safetensors"
+        /// The package's resolve-or-download, with the hub client's
+        /// byte-weighted snapshot progress passed through for the bar. A
+        /// cached model reports nothing and returns at once.
+        private static func resolve(
+            _ repo: Repo.ID, progress: @escaping @MainActor @Sendable (Double) -> Void
+        ) async throws -> URL {
+            let cache = HubCache.default
+            return try await ModelUtils.resolveOrDownloadModel(
+                client: HubClient(cache: cache),
+                cache: cache,
+                repoID: repo,
+                requiredExtension: "safetensors",
+                progressHandler: { snapshot in
+                    progress(min(1, max(0, snapshot.fractionCompleted)))
+                }
             )
         }
 

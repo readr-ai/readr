@@ -63,11 +63,23 @@ public protocol SpeechEngineDelegate: AnyObject {
     func speechEngine(_ engine: any SpeechEngine, willSpeak range: Range<Int>, of requestID: UUID)
     /// The utterance could not be spoken.
     func speechEngine(_ engine: any SpeechEngine, didFail requestID: UUID, error: any Error)
+    /// The engine has taken the utterance but cannot voice it yet: its voice
+    /// is still being prepared — Readr Voice's first-use model download.
+    /// Narration shows a preparing state until `didBeginSpeaking` (or a
+    /// word boundary, a finish, or a failure) arrives for the same request.
+    /// An engine may report this more than once for one utterance — after a
+    /// `resume()` that finds the model still not in, for instance.
+    func speechEngine(_ engine: any SpeechEngine, isPreparing requestID: UUID)
+    /// Audio for the utterance has started. Only meaningful after
+    /// `isPreparing`; engines that never prepare need not send it.
+    func speechEngine(_ engine: any SpeechEngine, didBeginSpeaking requestID: UUID)
 }
 
 public extension SpeechEngineDelegate {
     func speechEngine(_ engine: any SpeechEngine, willSpeak range: Range<Int>, of requestID: UUID) {}
     func speechEngine(_ engine: any SpeechEngine, didFail requestID: UUID, error: any Error) {}
+    func speechEngine(_ engine: any SpeechEngine, isPreparing requestID: UUID) {}
+    func speechEngine(_ engine: any SpeechEngine, didBeginSpeaking requestID: UUID) {}
 }
 
 /// The narration back end.

@@ -783,3 +783,202 @@ final class NarrationControllerTests: XCTestCase {
         XCTAssertEqual(controller.status, .speaking)
     }
 }
+
+
+// MARK: - Preparing (a voice whose model is still downloading)
+
+extension NarrationControllerTests {
+
+    func testAnEnginePreparingItsVoiceIsShownAsPreparingUntilAudioStarts() {
+        let (controller, engine) = makeController()
+        var statuses: [NarrationStatus] = []
+        controller.onStatusChange = { statuses.append($0) }
+
+        controller.start(atChapter: 0)
+        engine.reportPreparing()
+        XCTAssertEqual(controller.status, .preparing)
+        XCTAssertTrue(controller.isActive, "The Listen bar stays up through the wait")
+        XCTAssertFalse(controller.isSpeaking)
+        XCTAssertTrue(controller.isPreparing)
+        XCTAssertEqual(controller.currentSegment?.text, "Alpha one.", "The place is kept")
+
+        engine.reportBeganSpeaking()
+        XCTAssertEqual(controller.status, .speaking)
+        XCTAssertEqual(statuses, [.speaking, .preparing, .speaking])
+        XCTAssertEqual(engine.spoken.count, 1, "Nothing was re-spoken")
+    }
+
+    func testBeganSpeakingWithoutAPreparingReportChangesNothing() {
+        let (controller, engine) = makeController()
+        var statuses: [NarrationStatus] = []
+        controller.onStatusChange = { statuses.append($0) }
+        controller.start(atChapter: 0)
+        engine.reportBeganSpeaking()
+        XCTAssertEqual(statuses, [.speaking])
+    }
+
+    func testAStalePreparingReportIsIgnored() {
+        let (controller, engine) = makeController()
+        controller.start(atChapter: 0)
+        let cancelled = engine.spoken[0].id
+        controller.skipToNextSentence()
+
+        engine.reportPreparing(stale: cancelled)
+        XCTAssertEqual(controller.status, .speaking)
+    }
+
+    func testAPreparingReportWhilePausedDoesNotUnpause() {
+        let (controller, engine) = makeController()
+        controller.start(atChapter: 0)
+        controller.pause()
+        engine.reportPreparing()
+        XCTAssertEqual(controller.status, .paused)
+    }
+
+    func testAWordBoundaryAlsoEndsPreparing() {
+        // An engine that reported preparing and then simply starts reporting
+        // words is speaking, whatever else it forgot to say.
+        let (controller, engine) = makeController()
+        controller.start(atChapter: 0)
+        engine.reportPreparing()
+        engine.speakWord(0..<5)
+        XCTAssertEqual(controller.status, .speaking)
+    }
+
+    func testPausingWhilePreparingHoldsAndPlayResumesTheSameUtterance() {
+        let (controller, engine) = makeController()
+        controller.start(atChapter: 0)
+        engine.reportPreparing()
+
+        controller.pause()
+        XCTAssertEqual(controller.status, .paused)
+        XCTAssertEqual(engine.pauseCount, 1)
+
+        controller.play()
+        XCTAssertEqual(controller.status, .speaking)
+        XCTAssertEqual(engine.resumeCount, 1)
+        XCTAssertEqual(engine.spoken.count, 1, "The engine still holds the utterance")
+
+        // The engine is still waiting for its model, and says so again.
+        engine.reportPreparing()
+        XCTAssertEqual(controller.status, .preparing)
+    }
+
+    func testTogglePlayPauseTreatsPreparingAsPlaying() {
+        let (controller, engine) = makeController()
+        controller.start(atChapter: 0)
+        engine.reportPreparing()
+
+        controller.togglePlayPause()
+        XCTAssertEqual(controller.status, .paused, "The bar's pause control pauses a wait")
+        controller.togglePlayPause()
+        XCTAssertEqual(controller.status, .speaking)
+    }
+
+    func testPlayWhilePreparingDoesNothing() {
+        let (controller, engine) = makeController()
+        controller.start(atChapter: 0)
+        engine.reportPreparing()
+        controller.play()
+        XCTAssertEqual(controller.status, .preparing)
+        XCTAssertEqual(engine.resumeCount, 0)
+        XCTAssertEqual(engine.spoken.count, 1)
+    }
+
+    func testSkippingWhilePreparingMovesOnAndSpeaks() {
+        let (controller, engine) = makeController()
+        controller.start(atChapter: 0)
+        engine.reportPreparing()
+
+        controller.skipToNextSentence()
+        XCTAssertEqual(engine.spokenTexts, ["Alpha one.", "Alpha two."])
+        XCTAssertEqual(controller.status, .speaking, "Until the engine says otherwise")
+        engine.reportPreparing()
+        XCTAssertEqual(controller.status, .preparing)
+    }
+
+    func testASettingsChangeWhilePreparingReSpeaksWithTheNewSettings() {
+        let (controller, engine) = makeController()
+        controller.start(atChapter: 0)
+        engine.reportPreparing()
+
+        controller.settings.voiceID = "com.apple.voice.other"
+        XCTAssertEqual(engine.spoken.count, 2)
+        XCTAssertEqual(engine.spoken.last?.voiceID, "com.apple.voice.other")
+        XCTAssertEqual(controller.status, .speaking)
+    }
+
+    func testAFailureWhilePreparingPausesWithThePlaceKept() {
+        // The download failed: narration holds on the sentence and the bar
+        // offers a retry — it must not read on, and nothing else speaks.
+        let (controller, engine) = makeController()
+        controller.start(atChapter: 0)
+        engine.reportPreparing()
+        engine.fail()
+
+        XCTAssertEqual(controller.status, .paused)
+        XCTAssertEqual(controller.currentSegment?.text, "Alpha one.")
+        controller.play()
+        XCTAssertEqual(engine.spokenTexts, ["Alpha one.", "Alpha one."])
+    }
+
+    func testAFinishWhilePreparingReadsOn() {
+        // A punctuation-only "sentence" yields no audio: the engine finishes
+        // it without ever starting to speak.
+        let (controller, engine) = makeController()
+        controller.start(atChapter: 0)
+        engine.reportPreparing()
+        engine.finishCurrent()
+        XCTAssertEqual(engine.spokenTexts, ["Alpha one.", "Alpha two."])
+        XCTAssertEqual(controller.status, .speaking)
+    }
+
+    func testTheSleepTimerWaitsWhileTheVoicePrepares() {
+        let clock = Clock(epoch)
+        let (controller, engine) = makeController(clock: clock)
+        controller.start(atChapter: 0)
+        controller.setSleepTimer(.after(minutes: 10))
+        engine.reportPreparing()
+
+        clock.advance(minutes: 60)
+        controller.tick()
+        XCTAssertEqual(controller.status, .preparing, "A wait for the model is not listening")
+
+        engine.reportBeganSpeaking()
+        clock.advance(minutes: 9)
+        controller.tick()
+        XCTAssertEqual(controller.status, .speaking, "The ten minutes are still owed")
+        clock.advance(minutes: 1)
+        controller.tick()
+        XCTAssertEqual(controller.status, .paused)
+    }
+
+    func testTheBackstopHoldsAPreparingUtteranceTheEngineDropped() {
+        // The engine went idle without a finish, a failure, or audio: the
+        // sentence was never heard, so advancing past it would lose it. Hold
+        // instead; play re-speaks it.
+        let (controller, engine) = makeController()
+        controller.start(atChapter: 0)
+        engine.reportPreparing()
+        engine.fallSilentWithoutReporting()
+
+        controller.tick()
+        XCTAssertEqual(controller.status, .preparing, "One quiet tick is not enough")
+        controller.tick()
+        XCTAssertEqual(controller.status, .paused)
+        XCTAssertEqual(controller.currentSegment?.text, "Alpha one.")
+
+        controller.play()
+        XCTAssertEqual(engine.spokenTexts, ["Alpha one.", "Alpha one."])
+        XCTAssertEqual(controller.status, .speaking)
+    }
+
+    func testStopWhilePreparingClosesTheSession() {
+        let (controller, engine) = makeController()
+        controller.start(atChapter: 0)
+        engine.reportPreparing()
+        controller.stop()
+        XCTAssertEqual(controller.status, .idle)
+        XCTAssertEqual(engine.state, .idle)
+    }
+}

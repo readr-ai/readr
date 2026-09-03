@@ -3,6 +3,12 @@ import Foundation
 public enum NarrationStatus: Hashable, Sendable {
     /// Not narrating; the Listen bar is closed.
     case idle
+    /// The engine has the sentence but its voice is not ready to say it —
+    /// Readr Voice's first-use model download. Narration starts the moment
+    /// it is: nothing else reads meanwhile. Counts as active (the bar stays
+    /// up) and as playing (the pause control pauses the wait), but not as
+    /// listening (the sleep timer waits with it).
+    case preparing
     case speaking
     /// Held — by the reader, by the sleep timer, or at a chapter end when
     /// auto-advance is off. `play()` picks up where it stopped.
@@ -86,6 +92,10 @@ public final class NarrationController {
     // MARK: - Reading
 
     public var isSpeaking: Bool { status == .speaking }
+    public var isPreparing: Bool { status == .preparing }
+    /// Speaking, or about to as soon as the voice is ready — the states the
+    /// play/pause control shows as Pause.
+    public var isUnderway: Bool { status == .speaking || status == .preparing }
     /// True whenever the Listen bar should be on screen.
     public var isActive: Bool { status != .idle }
     /// Progress through the chapter being narrated, 0...1.
@@ -125,7 +135,7 @@ public final class NarrationController {
 
     public func play() {
         switch status {
-        case .speaking:
+        case .speaking, .preparing:
             return
         case .paused:
             sleepTimer.resume(at: now())
@@ -150,13 +160,13 @@ public final class NarrationController {
     }
 
     public func pause() {
-        guard status == .speaking else { return }
+        guard isUnderway else { return }
         engine.pause()
         setStatus(.paused)
     }
 
     public func togglePlayPause() {
-        if status == .speaking {
+        if isUnderway {
             pause()
         } else {
             play()
@@ -241,7 +251,7 @@ public final class NarrationController {
     /// consecutive ticks rather than one, because an engine may report idle for
     /// an instant between `speak()` and the audio actually starting.
     private func checkForSilentEngine() {
-        guard status == .speaking, activeRequestID != nil, engine.state != .speaking else {
+        guard isUnderway, activeRequestID != nil, engine.state != .speaking else {
             silentTicks = 0
             return
         }
@@ -254,6 +264,14 @@ public final class NarrationController {
         // sentence as spoken and machine-gunned through pages nobody heard —
         // hold instead, and `play()` resumes the same utterance.
         if engine.state == .paused {
+            setStatus(.paused)
+            return
+        }
+        // Dropped while still preparing: the sentence was never heard, so
+        // it is not spoken. Hold on it; `play()` re-speaks it.
+        if status == .preparing {
+            activeRequestID = nil
+            mustRespeakToResume = true
             setStatus(.paused)
             return
         }
@@ -280,7 +298,7 @@ public final class NarrationController {
         engine.stop()
         activeRequestID = nil
         // Skipping back from the end of the book puts narration in hand again.
-        let wasSpeaking = status == .speaking
+        let wasSpeaking = isUnderway
         if status == .finished { setStatus(.paused) }
 
         guard let segment = step(&playlist) else {
@@ -417,7 +435,7 @@ public final class NarrationController {
     private func applySettingsChange() {
         guard let segment = currentSegment else { return }
         switch status {
-        case .speaking:
+        case .speaking, .preparing:
             engine.stop()
             activeRequestID = nil
             speak(segment, from: spokenOffset)
@@ -434,6 +452,11 @@ public final class NarrationController {
 
     private func setStatus(_ new: NarrationStatus) {
         guard status != new else { return }
+        // The wait for the voice is over: the countdown that paused with
+        // `.preparing` picks up here (a reader's pause is resumed by `play()`).
+        if new == .speaking, status == .preparing {
+            sleepTimer.resume(at: now())
+        }
         status = new
         // The countdown only runs while narration does, whatever the reason it
         // stopped — the reader pausing, a chapter wall with auto-advance off,
@@ -470,10 +493,25 @@ extension NarrationController: SpeechEngineDelegate {
         handleFinishedSegment()
     }
 
+    public func speechEngine(_ engine: any SpeechEngine, isPreparing requestID: UUID) {
+        // Only an utterance we asked for and are waiting on: a report for a
+        // cancelled one is stale, and one arriving while paused must not
+        // un-pause the reader.
+        guard requestID == activeRequestID, status == .speaking else { return }
+        setStatus(.preparing)
+    }
+
+    public func speechEngine(_ engine: any SpeechEngine, didBeginSpeaking requestID: UUID) {
+        guard requestID == activeRequestID, status == .preparing else { return }
+        setStatus(.speaking)
+    }
+
     public func speechEngine(
         _ engine: any SpeechEngine, willSpeak range: Range<Int>, of requestID: UUID
     ) {
         guard requestID == activeRequestID, let segment = currentSegment else { return }
+        // A word boundary is audio, whatever else the engine forgot to say.
+        if status == .preparing { setStatus(.speaking) }
         let localLower = min(activeRequestOrigin + range.lowerBound, currentSegmentLength)
         let localUpper = min(activeRequestOrigin + range.upperBound, currentSegmentLength)
         spokenOffset = localLower

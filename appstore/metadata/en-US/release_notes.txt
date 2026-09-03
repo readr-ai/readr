@@ -1,15 +1,10 @@
-Readr 3.3.0: Readr Voice is back on iPhone and iPad.
+Readr 3.3.1: Readr Voice is the only voice you hear.
 
-• Readr Voice — our natural neural narrator that runs entirely on your
-  device — reads English books again on iPhone and iPad, on a new engine
-  that avoids the iOS issue behind 3.2.2's pause. Listening starts instantly
-  with an Apple voice while the voice model downloads once, then switches
-  over on its own; with the screen locked an Apple voice reads and Readr
-  Voice returns when you come back
-• Tap Recap — in the reader, or on a Continue Reading card — and Readr tells
-  you what's happened so far, from only the pages you've read. Nothing ahead
-  of your place is used, so it can't spoil what comes next
-• A first book in your library: Alice's Adventures in Wonderland is there on
-  first launch, so you can try reading, listening and asking right away
-• Your book never leaves the device to be read aloud; Apple's zero-download
-  voices remain one tap away
+• The first time you listen, Readr waits for Readr Voice instead of
+  reading in an Apple voice meanwhile — the Listen bar shows the one-time
+  download's progress, and the book starts the moment the voice is ready
+• The voice menu is Readr Voice, with Apple's voices a tap away under
+  "Other voices" for anyone who prefers them; books in other languages
+  keep Apple's voices as before
+• If the download can't finish, the bar says so with a Retry — no
+  surprise voice

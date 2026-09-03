@@ -26,6 +26,11 @@ import ReadrKit
 /// Main-thread-confined like every engine; synthesis hops away and back.
 final class SentenceAudioPlayer: NSObject {
 
+    /// Audio for the request has started coming out — after the synthesis
+    /// gap and, on first use, the model download. Fired on the main thread;
+    /// also on every resume, which the controller ignores unless it was
+    /// showing the wait.
+    var onStart: ((UUID) -> Void)?
     /// Playback of the request finished (or there was nothing to play).
     /// Fired on the main thread with the player already idle.
     var onFinish: ((UUID) -> Void)?
@@ -87,8 +92,10 @@ final class SentenceAudioPlayer: NSObject {
         pausedByCaller = false
         // With no player yet (paused mid-synthesis), synthesizeThenPlay
         // starts playback itself once the audio lands.
-        guard let player else { return }
-        if !player.play(), let request = activeRequest {
+        guard let player, let request = activeRequest else { return }
+        if player.play() {
+            onStart?(request.id)
+        } else {
             // Same contract as the speak path: a refused start is a failure,
             // not a silent no-op the watchdog has to discover two ticks later.
             self.player = nil
@@ -134,7 +141,9 @@ final class SentenceAudioPlayer: NSObject {
             self.player = player
             if pausedByCaller {
                 player.prepareToPlay()
-            } else if !player.play() {
+            } else if player.play() {
+                onStart?(request.id)
+            } else {
                 // The session refused to start audio; pretending to speak
                 // would wedge narration on a silent "playing".
                 self.player = nil

@@ -176,15 +176,21 @@ known failure modes live. Use an iPhone on iOS 26.4 or later, on Wi-Fi, with
 Xcode attached for the memory gauge. Record the device model and iOS version
 with the results.
 
-- [ ] **First Listen downloads and switches.** Fresh install (or delete the
-      app first). Open Alice, press Listen: an Apple voice starts within a
-      second. Open the voice menu: Readr Voice is the first row and checked,
-      a "Readr Voice is downloading" note shows, and the locked-screen note
-      ("With the screen locked, an Apple voice reads…") shows under it. Wait
-      for the ~350MB fetch. The voice changes to Readr Voice **at a sentence
-      boundary** — no gap longer than a breath, no sentence repeated, none
-      skipped — and the downloading note is gone. Note how long the switch
-      took from pressing Listen.
+- [ ] **First Listen waits for Readr Voice.** Fresh install (or delete the
+      app first). Open Alice, press Listen: no voice starts. The bar's
+      middle reads "Preparing Readr Voice… N% of 410MB, once" with a
+      progress line while the weights download, then a small spinner for
+      the pronunciation assets and the load; the play/pause control shows
+      Pause. Open the voice menu: Readr Voice is the only row, checked, with
+      an "Other voices…" submenu holding the Apple voices; no downloading
+      note, no locked-screen note. When the model is in (one to two minutes
+      on Wi-Fi) the first sentence is Readr Voice — **no Apple voice at any
+      point**, no sentence repeated, none skipped — and the bar shows the
+      sentence. Note how long it took from pressing Listen. Press pause
+      during the wait: the bar flips to Play and the download carries on;
+      press play: "Preparing" is back. Turn Wi-Fi off before pressing
+      Listen: the bar reads "Readr Voice couldn't download." with a Retry;
+      turn Wi-Fi on, press Retry: preparing, then Readr Voice.
 - [ ] **Thirty minutes continuous.** Leave it reading. No quit, no stall, no
       sentence heard twice, no sentence in an Apple voice once Readr Voice
       has taken over (unless you locked the phone). Watch the read-along line

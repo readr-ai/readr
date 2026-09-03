@@ -17,10 +17,15 @@ import ReadrKit
 /// BNNS) — and each platform builds, prepares and speaks through at most one
 /// of them, `readrVoice`. Which runtime that is, and which engine gets a
 /// sentence, are both `NarrationEnginePolicy`'s call (ReadrKit,
-/// table-tested); the router only carries out the answer. The per-sentence
-/// evaluation is what makes the fallbacks seamless — while the model
-/// downloads, or while the app is backgrounded on iOS, the platform voice
-/// reads that sentence and Readr Voice returns at the next boundary.
+/// table-tested); the router only carries out the answer.
+///
+/// There is no fallback in here. Since 3.3.1 a Readr Voice request goes to
+/// the Readr Voice engine whether or not its model is in: the engine waits
+/// (reporting `isPreparing`, which the bar shows) and speaks the moment it
+/// can, and a failure is reported to the controller as a failure — narration
+/// pauses and the bar offers Retry. An Apple voice reads only what the
+/// reader gave it: a non-English book, or a voice picked under "Other
+/// voices".
 ///
 /// Every sub-engine reports through this router; a callback is forwarded only
 /// if it comes from the engine that owns the current utterance, so a stale
@@ -47,9 +52,6 @@ final class RoutingSpeechEngine: SpeechEngine {
     private let readrVoice: (any ReadrVoiceEngine)?
     /// The engine the last `speak` was routed to — the one allowed to report.
     private var current: (any SpeechEngine)?
-    /// The request `current` is on — what the failure fallback re-speaks
-    /// through the platform engine when Kokoro can't deliver it.
-    private var currentRequest: SpeechRequest?
 
     /// The Kokoro runtime this process would use for Readr Voice; nil when
     /// neither can serve, in which case the voice is not offered.
@@ -121,29 +123,28 @@ final class RoutingSpeechEngine: SpeechEngine {
     private func situation(for request: SpeechRequest) -> NarrationEnginePolicy.Situation {
         #if os(iOS)
         let mlxAvailable = mlx != nil
-        let mlxReady = mlx?.isReady ?? false
-        let isForeground = mlx?.isForeground ?? true
+        let mlxFailed = mlx?.readiness == .failed
         #else
         let mlxAvailable = false
-        let mlxReady = false
-        let isForeground = true
+        let mlxFailed = false
         #endif
+        // A CoreML engine exists only outside the OS gate, so "exists and
+        // hasn't failed" is the whole of "can serve" — downloading counts.
+        let coreMLAvailable = coreML.map { $0.readiness != .failed } ?? false
         return NarrationEnginePolicy.Situation(
             requestsReadrVoice: KokoroSpeechEngine.isKokoroVoiceID(request.voiceID),
-            coreMLKokoroUsable: coreML?.isReady ?? false,
+            coreMLKokoroAvailable: coreMLAvailable,
             mlxKokoroAvailable: mlxAvailable,
-            mlxKokoroReady: mlxReady,
-            isForeground: isForeground
+            mlxKokoroFailed: mlxFailed
         )
     }
 
     func speak(_ request: SpeechRequest) {
-        let situation = situation(for: request)
         let target: any SpeechEngine
-        switch NarrationEnginePolicy.engine(for: situation) {
+        switch NarrationEnginePolicy.engine(for: situation(for: request)) {
         case .coreMLKokoro:
-            // `coreMLKokoroUsable` is false whenever `coreML` is nil, so the
-            // fallback here is unreachable — kept so the switch is total.
+            // `coreMLKokoroAvailable` is false whenever `coreML` is nil, so
+            // the fallback here is unreachable — kept so the switch is total.
             target = coreML ?? platform
         case .mlxKokoro:
             #if os(iOS)
@@ -152,28 +153,11 @@ final class RoutingSpeechEngine: SpeechEngine {
             target = platform
             #endif
         case .platform:
-            // Readr Voice may be chosen while its model isn't in yet (a
-            // first-use download), or — on iOS — while the app is
-            // backgrounded. Narration must start NOW, so the platform voice
-            // reads in the meantime (AVSpeechEngine treats the unknown voice
-            // id as "pick for the language") and the very next sentence after
-            // the model lands, or the app is back in the foreground, routes
-            // to Kokoro and switches voices at the sentence boundary.
-            //
-            // Auto-prepare only from the UNTRIED state, and only in the
-            // foreground. A `.failed` download must not restart per sentence
-            // — that hammered a flaky connection with a fresh
-            // multi-hundred-MB attempt every few seconds and flapped the
-            // menu note; after a failure, retry is the explicit re-pick
-            // (`NarrationModel.setVoice`), which is exactly what the menu's
-            // failure note tells the reader. And a download that failed
-            // while backgrounded resets to `.notReady` (see the MLX engine)
-            // so that it CAN retry — on the next foreground sentence, not on
-            // every sentence read from a pocket.
-            if situation.requestsReadrVoice, situation.isForeground,
-               let readrVoice, readrVoice.readiness == .notReady {
-                readrVoice.prepare()
-            }
+            // A platform voice id, a language Readr Voice can't read, or —
+            // the backstop — a Readr Voice engine that has failed. That last
+            // case is never reached from the app without a Retry first
+            // (`NarrationModel.play`), because an Apple voice must not read
+            // a Readr Voice book on its own account.
             target = platform
         }
         // Switching engines mid-flight: silence the one being left, so two
@@ -182,7 +166,6 @@ final class RoutingSpeechEngine: SpeechEngine {
             current.stop()
         }
         current = target
-        currentRequest = request
         target.speak(request)
     }
 
@@ -197,7 +180,6 @@ final class RoutingSpeechEngine: SpeechEngine {
     func stop() {
         // Every engine, unconditionally — stop is the everything-off switch
         // and must never depend on routing state.
-        currentRequest = nil
         platform.stop()
         coreML?.stop()
         #if os(iOS)
@@ -205,11 +187,15 @@ final class RoutingSpeechEngine: SpeechEngine {
         #endif
     }
 
-    /// Pre-download the Kokoro model for this platform's runtime — called
-    /// when the reader picks the Readr Voice so the first spoken sentence
-    /// doesn't carry the wait.
+    /// Download the Kokoro model for this platform's runtime without
+    /// speaking — the explicit pick, and the bar's Retry after a failure.
     func prepareKokoro() {
         readrVoice?.prepare()
+    }
+
+    /// Where the Readr Voice engine stands, for the model's Retry decision.
+    var readrVoiceReadiness: ReadrVoiceReadiness? {
+        readrVoice?.readiness
     }
 
     /// Download/readiness changes of the Readr Voice, for the Listen bar
@@ -217,6 +203,13 @@ final class RoutingSpeechEngine: SpeechEngine {
     var onReadrVoiceReadinessChange: ((ReadrVoiceReadiness) -> Void)? {
         get { readrVoice?.onReadinessChange }
         set { readrVoice?.onReadinessChange = newValue }
+    }
+
+    /// Download progress of the Readr Voice model, for the bar's preparing
+    /// state.
+    var onReadrVoiceDownloadProgressChange: ((Double?) -> Void)? {
+        get { readrVoice?.onDownloadProgressChange }
+        set { readrVoice?.onDownloadProgressChange = newValue }
     }
 
     /// Narration is over (the Listen bar closed): hand the audio session back.
@@ -240,19 +233,21 @@ extension RoutingSpeechEngine: SpeechEngineDelegate {
 
     func speechEngine(_ engine: any SpeechEngine, didFail requestID: UUID, error: any Error) {
         guard engine === current else { return }
-        // The promised platform fallback: a Kokoro failure AFTER the model is
-        // in (synthesis fault, refused playback, the app backgrounded
-        // mid-synthesis on iOS) must not pause the default voice in a fail
-        // loop — the same request is re-spoken through the platform engine
-        // under the same id, so the controller never notices. Per-sentence,
-        // deliberately: the next sentence tries Kokoro again, which
-        // self-heals transient faults and costs one failed synthesis when it
-        // doesn't. A platform failure is reported as before.
-        if engine !== platform, let request = currentRequest, request.id == requestID {
-            current = platform
-            platform.speak(request)
-            return
-        }
+        // Reported as it is, whichever engine it came from. A Readr Voice
+        // failure used to be re-spoken through the Apple voice under the
+        // same id; now it pauses narration on the sentence with the bar
+        // saying why and offering Retry — the reader decides, not a
+        // fallback.
         delegate?.speechEngine(self, didFail: requestID, error: error)
+    }
+
+    func speechEngine(_ engine: any SpeechEngine, isPreparing requestID: UUID) {
+        guard engine === current else { return }
+        delegate?.speechEngine(self, isPreparing: requestID)
+    }
+
+    func speechEngine(_ engine: any SpeechEngine, didBeginSpeaking requestID: UUID) {
+        guard engine === current else { return }
+        delegate?.speechEngine(self, didBeginSpeaking: requestID)
     }
 }

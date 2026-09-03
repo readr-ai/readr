@@ -84,4 +84,22 @@ final class MockSpeechEngine: SpeechEngine {
         state = .idle
         delegate?.speechEngine(self, didFail: request.id, error: error)
     }
+
+    /// The engine has taken the utterance but cannot voice it yet — its
+    /// model is still downloading (Readr Voice on first use).
+    func reportPreparing() {
+        guard let request = active else { return }
+        delegate?.speechEngine(self, isPreparing: request.id)
+    }
+
+    /// Audio for the current utterance has started.
+    func reportBeganSpeaking() {
+        guard let request = active else { return }
+        delegate?.speechEngine(self, didBeginSpeaking: request.id)
+    }
+
+    /// A "preparing" report from an utterance already cancelled.
+    func reportPreparing(stale requestID: UUID) {
+        delegate?.speechEngine(self, isPreparing: requestID)
+    }
 }

@@ -2,7 +2,7 @@
 public enum NarrationEngineChoice: Equatable, Sendable {
     /// Kokoro through FluidAudio's CoreML port — macOS.
     case coreMLKokoro
-    /// Kokoro on the Metal GPU through MLX — iPhone and iPad.
+    /// Kokoro through MLX — iPhone and iPad.
     case mlxKokoro
     /// The platform synthesizer (`AVSpeechSynthesizer`).
     case platform
@@ -11,10 +11,14 @@ public enum NarrationEngineChoice: Equatable, Sendable {
 /// Which engine speaks a request — the one routing rule, kept pure so every
 /// row of it is table-tested (`NarrationEnginePolicyTests`).
 ///
-/// The app's `RoutingSpeechEngine` evaluates this per sentence, which is
-/// what makes the fallbacks seamless: while a model downloads, or while the
-/// screen is locked on iOS, the platform voice reads that sentence and Readr
-/// Voice returns at the next boundary once it can.
+/// The app's `RoutingSpeechEngine` evaluates this per sentence. Since 3.3.1
+/// the rule has no fallback in it: a Readr Voice request goes to the Kokoro
+/// engine whether or not its model is in, and the engine *waits* for it —
+/// narration shows "Preparing Readr Voice" and starts the moment it is
+/// ready. The platform voice reads only what was never Readr Voice's — a
+/// non-English book, an Apple voice the reader picked under "Other voices"
+/// — or a Readr Voice request the engine has already given up on
+/// (`.failed`), which the app never issues without a retry first.
 public enum NarrationEnginePolicy {
 
     /// Everything the rule looks at.
@@ -22,51 +26,42 @@ public enum NarrationEnginePolicy {
         /// The request names a Readr Voice id (anything else is a platform
         /// voice, or nil for "pick for the language").
         public var requestsReadrVoice: Bool
-        /// The CoreML engine can speak right now: this OS is outside the BNNS
-        /// crash gate (`NeuralVoiceAvailability`) AND its model is loaded.
-        public var coreMLKokoroUsable: Bool
+        /// A CoreML engine exists — this OS is outside the BNNS crash gate
+        /// (`NeuralVoiceAvailability`), so it was built — and it has not
+        /// failed. Whether its model is loaded does not matter: it waits.
+        public var coreMLKokoroAvailable: Bool
         /// An MLX engine exists on this platform — an iOS/iPadOS device build
         /// with a Metal GPU. Never true on macOS or the iOS Simulator.
         public var mlxKokoroAvailable: Bool
-        /// The MLX engine's weights and G2P assets are loaded.
-        public var mlxKokoroReady: Bool
-        /// The app is not backgrounded (from `didEnterBackground` until
-        /// `willEnterForeground`, plus the engine's short head start on
-        /// `willResignActive` for the lock — Control Center, banners and an
-        /// iPad Split View neighbour do not count). Metal refuses GPU work
-        /// from a backgrounded app and the refusal is an uncatchable abort
-        /// (mlx-swift#274/#407), so MLX must not be entered with the screen
-        /// locked. Always true where there is no MLX engine.
-        public var isForeground: Bool
+        /// The MLX engine gave up: its download failed in the foreground, or
+        /// a synthesis hung. It refuses every request until re-prepared.
+        public var mlxKokoroFailed: Bool
 
         public init(
             requestsReadrVoice: Bool,
-            coreMLKokoroUsable: Bool,
+            coreMLKokoroAvailable: Bool,
             mlxKokoroAvailable: Bool,
-            mlxKokoroReady: Bool,
-            isForeground: Bool
+            mlxKokoroFailed: Bool
         ) {
             self.requestsReadrVoice = requestsReadrVoice
-            self.coreMLKokoroUsable = coreMLKokoroUsable
+            self.coreMLKokoroAvailable = coreMLKokoroAvailable
             self.mlxKokoroAvailable = mlxKokoroAvailable
-            self.mlxKokoroReady = mlxKokoroReady
-            self.isForeground = isForeground
+            self.mlxKokoroFailed = mlxKokoroFailed
         }
     }
 
     /// Platform voice ids go to the platform. Readr Voice goes to MLX where
-    /// an MLX engine exists (iOS) — but only ready and in the foreground,
-    /// otherwise the platform voice reads this sentence — and to CoreML
-    /// where it doesn't (macOS) whenever CoreML can serve. A platform with
-    /// an MLX engine never enters CoreML, even on an OS that passes the
-    /// CoreML gate: one runtime and one model download per platform, and no
-    /// BNNS exposure at all on the phone.
+    /// an MLX engine exists (iOS) unless that engine has failed, and to
+    /// CoreML where it doesn't (macOS) whenever a CoreML engine can serve. A
+    /// platform with an MLX engine never enters CoreML, even on an OS that
+    /// passes the CoreML gate: one runtime and one model download per
+    /// platform, and no BNNS exposure at all on the phone.
     public static func engine(for situation: Situation) -> NarrationEngineChoice {
         guard situation.requestsReadrVoice else { return .platform }
         if situation.mlxKokoroAvailable {
-            return situation.mlxKokoroReady && situation.isForeground ? .mlxKokoro : .platform
+            return situation.mlxKokoroFailed ? .platform : .mlxKokoro
         }
-        return situation.coreMLKokoroUsable ? .coreMLKokoro : .platform
+        return situation.coreMLKokoroAvailable ? .coreMLKokoro : .platform
     }
 
     /// The Kokoro runtime a platform prepares (downloads and warms) for

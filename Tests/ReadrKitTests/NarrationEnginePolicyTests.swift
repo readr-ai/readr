@@ -4,8 +4,8 @@ import XCTest
 /// Which engine speaks a request. The router in the app applies this table
 /// per sentence; every row is pinned here because the failure modes on
 /// either side of it are ugly — a Kokoro request on a crash-prone CoreML
-/// build kills the process, and MLX GPU work started with the screen locked
-/// aborts it (mlx-swift#274).
+/// build kills the process, and an Apple voice reading a Readr Voice book
+/// is the thing 3.3.1 exists to end.
 final class NarrationEnginePolicyTests: XCTestCase {
 
     private typealias Situation = NarrationEnginePolicy.Situation
@@ -17,20 +17,17 @@ final class NarrationEnginePolicyTests: XCTestCase {
         // for Readr Voice never lands on one.
         for coreML in [false, true] {
             for mlxAvailable in [false, true] {
-                for mlxReady in [false, true] {
-                    for foreground in [false, true] {
-                        let situation = Situation(
-                            requestsReadrVoice: false,
-                            coreMLKokoroUsable: coreML,
-                            mlxKokoroAvailable: mlxAvailable,
-                            mlxKokoroReady: mlxReady,
-                            isForeground: foreground
-                        )
-                        XCTAssertEqual(
-                            NarrationEnginePolicy.engine(for: situation), .platform,
-                            "\(situation)"
-                        )
-                    }
+                for mlxFailed in [false, true] {
+                    let situation = Situation(
+                        requestsReadrVoice: false,
+                        coreMLKokoroAvailable: coreML,
+                        mlxKokoroAvailable: mlxAvailable,
+                        mlxKokoroFailed: mlxFailed
+                    )
+                    XCTAssertEqual(
+                        NarrationEnginePolicy.engine(for: situation), .platform,
+                        "\(situation)"
+                    )
                 }
             }
         }
@@ -38,56 +35,46 @@ final class NarrationEnginePolicyTests: XCTestCase {
 
     // MARK: - Readr Voice on macOS (no MLX engine)
 
-    func testReadrVoiceOnMacOSUsesCoreMLWhenUsable() {
+    func testReadrVoiceOnMacOSUsesCoreMLWheneverItCanServe() {
+        // Loaded or still downloading alike: the engine waits for its model
+        // and narration shows "preparing" — no Apple voice meanwhile.
         let situation = Situation(
-            requestsReadrVoice: true, coreMLKokoroUsable: true,
-            mlxKokoroAvailable: false, mlxKokoroReady: false, isForeground: true
+            requestsReadrVoice: true, coreMLKokoroAvailable: true,
+            mlxKokoroAvailable: false, mlxKokoroFailed: false
         )
         XCTAssertEqual(NarrationEnginePolicy.engine(for: situation), .coreMLKokoro)
     }
 
-    func testReadrVoiceOnMacOSFallsToPlatformWhileCoreMLIsNotUsable() {
-        // Downloading, failed, or the OS gate: the platform voice reads.
+    func testReadrVoiceOnMacOSFallsToPlatformOnlyWithoutACoreMLEngine() {
+        // The OS gate (macOS 26.4–26.5) or a failed download: the request
+        // should not have been a Readr Voice one, and the platform reads.
         let situation = Situation(
-            requestsReadrVoice: true, coreMLKokoroUsable: false,
-            mlxKokoroAvailable: false, mlxKokoroReady: false, isForeground: true
+            requestsReadrVoice: true, coreMLKokoroAvailable: false,
+            mlxKokoroAvailable: false, mlxKokoroFailed: false
         )
         XCTAssertEqual(NarrationEnginePolicy.engine(for: situation), .platform)
-    }
-
-    func testMacOSIgnoresForegroundForCoreML() {
-        // CoreML has no background restriction; the flag is an MLX concern.
-        let situation = Situation(
-            requestsReadrVoice: true, coreMLKokoroUsable: true,
-            mlxKokoroAvailable: false, mlxKokoroReady: false, isForeground: false
-        )
-        XCTAssertEqual(NarrationEnginePolicy.engine(for: situation), .coreMLKokoro)
     }
 
     // MARK: - Readr Voice on iOS (MLX engine present)
 
-    func testReadrVoiceOnIOSUsesMLXWhenReadyAndInForeground() {
+    func testReadrVoiceOnIOSUsesMLXWhetherOrNotTheModelIsIn() {
+        // No foreground and no readiness in the rule any more: the engine
+        // plays from its buffer with the screen locked and waits for a
+        // download rather than handing the sentence to an Apple voice.
         let situation = Situation(
-            requestsReadrVoice: true, coreMLKokoroUsable: false,
-            mlxKokoroAvailable: true, mlxKokoroReady: true, isForeground: true
+            requestsReadrVoice: true, coreMLKokoroAvailable: false,
+            mlxKokoroAvailable: true, mlxKokoroFailed: false
         )
         XCTAssertEqual(NarrationEnginePolicy.engine(for: situation), .mlxKokoro)
     }
 
-    func testReadrVoiceOnIOSFallsToPlatformWhileMLXIsNotReady() {
+    func testReadrVoiceOnIOSFallsToPlatformOnlyOnceMLXHasFailed() {
+        // The one platform row for Readr Voice on iOS. The app never issues
+        // a Readr Voice request to a failed engine without re-preparing it
+        // first, so this row is a backstop, not a fallback the reader hears.
         let situation = Situation(
-            requestsReadrVoice: true, coreMLKokoroUsable: false,
-            mlxKokoroAvailable: true, mlxKokoroReady: false, isForeground: true
-        )
-        XCTAssertEqual(NarrationEnginePolicy.engine(for: situation), .platform)
-    }
-
-    func testReadrVoiceOnIOSFallsToPlatformWithTheScreenLocked() {
-        // Metal refuses GPU work from a backgrounded app and the failure is
-        // an uncatchable abort, so a ready MLX engine still steps aside.
-        let situation = Situation(
-            requestsReadrVoice: true, coreMLKokoroUsable: false,
-            mlxKokoroAvailable: true, mlxKokoroReady: true, isForeground: false
+            requestsReadrVoice: true, coreMLKokoroAvailable: false,
+            mlxKokoroAvailable: true, mlxKokoroFailed: true
         )
         XCTAssertEqual(NarrationEnginePolicy.engine(for: situation), .platform)
     }
@@ -96,18 +83,15 @@ final class NarrationEnginePolicyTests: XCTestCase {
         // iOS 26.3 and earlier pass the CoreML OS gate, but with an MLX engine
         // on the platform CoreML is never entered — one runtime per platform,
         // one model download, and no BNNS exposure at all.
-        for mlxReady in [false, true] {
-            for foreground in [false, true] {
-                let situation = Situation(
-                    requestsReadrVoice: true, coreMLKokoroUsable: true,
-                    mlxKokoroAvailable: true, mlxKokoroReady: mlxReady,
-                    isForeground: foreground
-                )
-                XCTAssertNotEqual(
-                    NarrationEnginePolicy.engine(for: situation), .coreMLKokoro,
-                    "\(situation)"
-                )
-            }
+        for mlxFailed in [false, true] {
+            let situation = Situation(
+                requestsReadrVoice: true, coreMLKokoroAvailable: true,
+                mlxKokoroAvailable: true, mlxKokoroFailed: mlxFailed
+            )
+            XCTAssertNotEqual(
+                NarrationEnginePolicy.engine(for: situation), .coreMLKokoro,
+                "\(situation)"
+            )
         }
     }
 
@@ -115,7 +99,7 @@ final class NarrationEnginePolicyTests: XCTestCase {
 
     func testEveryRowOfTheTable() {
         struct Row {
-            let readr: Bool, coreML: Bool, mlxAvail: Bool, mlxReady: Bool, fg: Bool
+            let readr: Bool, coreML: Bool, mlxAvail: Bool, mlxFailed: Bool
             let expected: NarrationEngineChoice
         }
         // Enumerated in full so a future rule change has to edit a row here,
@@ -124,33 +108,30 @@ final class NarrationEnginePolicyTests: XCTestCase {
         for readr in [false, true] {
             for coreML in [false, true] {
                 for mlxAvail in [false, true] {
-                    for mlxReady in [false, true] {
-                        for fg in [false, true] {
-                            let expected: NarrationEngineChoice
-                            if !readr {
-                                expected = .platform
-                            } else if mlxAvail {
-                                expected = (mlxReady && fg) ? .mlxKokoro : .platform
-                            } else if coreML {
-                                expected = .coreMLKokoro
-                            } else {
-                                expected = .platform
-                            }
-                            rows.append(Row(
-                                readr: readr, coreML: coreML, mlxAvail: mlxAvail,
-                                mlxReady: mlxReady, fg: fg, expected: expected
-                            ))
+                    for mlxFailed in [false, true] {
+                        let expected: NarrationEngineChoice
+                        if !readr {
+                            expected = .platform
+                        } else if mlxAvail {
+                            expected = mlxFailed ? .platform : .mlxKokoro
+                        } else if coreML {
+                            expected = .coreMLKokoro
+                        } else {
+                            expected = .platform
                         }
+                        rows.append(Row(
+                            readr: readr, coreML: coreML, mlxAvail: mlxAvail,
+                            mlxFailed: mlxFailed, expected: expected
+                        ))
                     }
                 }
             }
         }
-        XCTAssertEqual(rows.count, 32)
+        XCTAssertEqual(rows.count, 16)
         for row in rows {
             let situation = Situation(
-                requestsReadrVoice: row.readr, coreMLKokoroUsable: row.coreML,
-                mlxKokoroAvailable: row.mlxAvail, mlxKokoroReady: row.mlxReady,
-                isForeground: row.fg
+                requestsReadrVoice: row.readr, coreMLKokoroAvailable: row.coreML,
+                mlxKokoroAvailable: row.mlxAvail, mlxKokoroFailed: row.mlxFailed
             )
             XCTAssertEqual(
                 NarrationEnginePolicy.engine(for: situation), row.expected, "\(situation)"
