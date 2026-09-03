@@ -1,24 +1,61 @@
-Readr is an ebook reader. AI features are optional and bring-your-own: the
-user connects their own AI provider account or API key. Readr has no
-subscription, no account system, and no server — the developer receives no
-user data.
+THERE IS NO ACCOUNT AND NO LOGIN. Readr has no account system, no sign-up,
+no subscription and no server, so there is no demo account to provide.
+Nothing in the app is gated behind credentials — every feature is reachable
+on a fresh install. Readr is a reader for DRM-free files the user already
+owns, and a fresh install opens with one book already in the library: a
+public-domain sample (Alice's Adventures in Wonderland, Lewis Carroll,
+1865), so every feature can be tried immediately, with nothing to import.
 
-TO TEST WITHOUT AI: the app is fully functional as a reader with no setup.
-Import any DRM-free EPUB or PDF (Files app, or drag one into the Simulator),
-then read, change layouts and themes, highlight, take notes, bookmark, and
-export notes as Markdown. None of this needs a network connection or an
-account.
+HOW TO GET ANOTHER BOOK ONTO THE REVIEW DEVICE (optional, about 60 seconds)
+The sample book is enough to review every feature. To test with a file of
+your own:
+Readr is registered as an open-with target for EPUB, PDF, TXT and Markdown,
+so any of these works:
 
-TO TEST THE AI FEATURES: Settings (gear icon) → paste an API key for
-Anthropic, OpenAI or OpenRouter, or use Sign in with OpenRouter. Then select
-any sentence while reading and tap Ask. Without credentials these features
-show an explanatory empty state rather than failing — that is intended, not
-a broken build.
+1. On the device, open Safari and go to:  gutenberg.org/ebooks/2701
+   Under "Download", tap "EPUB3". Safari saves it to Files.
+2. Open the Files app -> Downloads -> tap the downloaded .epub.
+   It opens directly in Readr and is added to the library.
+   (Or, in Readr, tap "Import a book" and pick the file from Files.)
 
-CONTENT: Readr bundles and downloads no books. It opens only DRM-free files
-the user already has. It refuses DRM-protected files with an explanatory
-message.
+Any DRM-free EPUB or PDF already on the device works the same way — for
+example, tap any PDF in Files and choose Readr.
 
-PURCHASES: Readr sells nothing and contains no in-app purchases. The iOS
-build deliberately contains no links to provider pricing or key-console
-pages (Guideline 3.1.1).
+WHAT TO TEST ONCE A BOOK IS OPEN (no account, no network needed)
+- Read: three layouts (scroll, single page, two-page spread), Paper/Sepia/
+  Dark themes, typeface and spacing, table of contents, bookmarks, in-book
+  search, footnote popups.
+- Listen: tap Listen and the book is read aloud from the current page, with
+  sentence and chapter skip, speed and voice changes mid-sentence, a sleep
+  timer, and lock-screen and headphone controls. On iOS 26.4 and later
+  narration uses Apple's system voices only: Readr's own neural voice
+  (Readr Voice) is disabled on these versions by design, and nothing is
+  downloaded.
+- Highlight and take notes, then open the Notes panel and export to Markdown.
+- iPad specifically: sidebar and reader side by side, two-page spreads, and
+  hardware keyboard page turns.
+
+THE AI FEATURES ARE OPTIONAL AND BRING-YOUR-OWN
+"Ask" needs an AI account belonging to the user: Settings (gear icon) ->
+paste an API key for Anthropic, OpenAI or OpenRouter, or use Sign in with
+OpenRouter. This is the user's own third-party account, not a Readr account,
+and Readr never receives it — keys are stored in the device Keychain.
+Without credentials, Ask shows an explanatory empty state rather than
+failing; that is intended, not a broken build. With a key connected, Ask
+answers from the pages read so far and never reveals what is ahead; a
+"Whole book" switch at the top of the panel lifts that for readers who
+want it. Everything described above works fully without a key.
+
+CONTENT
+Readr bundles one public-domain sample book (Alice's Adventures in
+Wonderland, Lewis Carroll, 1865), downloads no books, and contains no
+storefront. It opens only DRM-free files the user already has, and refuses
+DRM-protected files with an explanatory message.
+
+PURCHASES
+Readr sells nothing and contains no in-app purchases. The iOS build
+deliberately contains no links to provider pricing or key-console pages
+(Guideline 3.1.1).
+
+If any step above does not work on the review device, please reply here and
+we will respond the same day.

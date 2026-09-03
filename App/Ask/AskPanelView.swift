@@ -1,6 +1,23 @@
 import SwiftUI
 import ReadrKit
 
+/// Everything one presentation of the Ask panel needs, decided by whoever
+/// opens it. Driving the sheet with `.sheet(item:)` on one of these gives
+/// each presentation a fresh identity, so the panel's `@StateObject` is
+/// created from THIS request's values — not from whatever a stale `isPresented`
+/// sheet body captured when it was first evaluated.
+struct AskRequest: Identifiable {
+    let id = UUID()
+    /// The passage the question is about, or nil for a book-wide question.
+    var selection: Selection?
+    /// What the answer may see. `.upTo` for a text book — the reader has a
+    /// place in it — and `.wholeBook` for a native PDF page, which has none.
+    var scope: ReadingScope
+    /// Sent on the panel's behalf as soon as it has a provider (the Recap
+    /// button). Nil opens a plain panel.
+    var initialQuestion: String?
+}
+
 /// "Ask the book" panel (J4): shows the selected sentence (when there is one —
 /// nil selection means a whole-book question), takes a question, and streams an
 /// answer grounded in the book's context. Wears the design's ask popover: ✦
@@ -10,12 +27,25 @@ import ReadrKit
 /// It is a CONVERSATION, not a single exchange: the transcript scrolls above a
 /// composer pinned to the bottom, each question shows as sent the moment it is
 /// sent, and follow-ups carry the earlier turns with them.
+///
+/// Opened from a text book it is spoiler-scoped: answers see only what the
+/// reader has read. A small "Whole book" switch in the header lifts that for
+/// the questions that follow; it is not offered when there is no reading
+/// position to scope to (a native PDF page).
 struct AskPanelView: View {
     let book: Book
     let selection: Selection?
+    /// The scope the panel was opened with. `frontier` is what a scoped
+    /// question is held to; nil means the toggle is hidden and every
+    /// question is about the whole book.
+    private let frontier: ReadingFrontier?
+    private let initialQuestion: String?
 
     @StateObject private var vm: AskViewModel
     @State private var question = ""
+    /// The reader's current choice — starts scoped whenever a frontier
+    /// exists, and every question sent after a flip uses the new value.
+    @State private var wholeBook: Bool
     @State private var expandedCitation: ExpandedCitation?
     /// Provider settings sheet, reachable from the no-provider empty state so
     /// the guidance is actionable (J4: "guided to set up a provider first").
@@ -33,9 +63,12 @@ struct AskPanelView: View {
         var index: Int
     }
 
-    init(app: AppModel, book: Book, selection: Selection?) {
+    init(app: AppModel, book: Book, request: AskRequest) {
         self.book = book
-        self.selection = selection
+        self.selection = request.selection
+        self.frontier = request.scope.frontier
+        self.initialQuestion = request.initialQuestion
+        _wholeBook = State(initialValue: request.scope.frontier == nil)
         _vm = StateObject(wrappedValue: AskViewModel(
             makeService: { app.makeAskService() },
             prepare: {
@@ -43,9 +76,28 @@ struct AskPanelView: View {
                 await app.refreshActiveProviderCredentialsIfNeeded()
             },
             book: book,
-            selection: selection,
+            selection: request.selection,
+            initialQuestion: request.initialQuestion,
             providerName: { app.providerManager.selection?.kind.rawValue ?? "none" }
         ))
+    }
+
+    /// What the next question will be allowed to see.
+    private var scope: ReadingScope {
+        if let frontier, !wholeBook { return .upTo(frontier) }
+        return .wholeBook
+    }
+
+    private var isScoped: Bool { scope.isScoped }
+
+    /// "Chapter 7 of 24 · 31% · The Whale" — where a scoped answer stops.
+    /// Computed here from the book and the frontier, from the app's cached
+    /// chapter lengths; there is no separate state to fall out of date.
+    private var positionCaption: String? {
+        guard let frontier else { return nil }
+        return ReadingPositionSummary(
+            book: book, frontier: frontier, lengths: model.readingLengths(for: book)
+        )?.caption
     }
 
     var body: some View {
@@ -106,6 +158,13 @@ struct AskPanelView: View {
                 }
             }
         }
+        // Recap: the question arrives already sent. Sent once, the first
+        // time the panel has a provider to send it to — a panel opened into
+        // the empty state sends it when a key is connected there. The
+        // request drove this view's identity, so the values the view model
+        // was created with are the values it was presented with.
+        .onAppear { vm.sendInitialQuestionIfReady(scope: scope) }
+        .onChange(of: vm.hasProvider) { vm.sendInitialQuestionIfReady(scope: scope) }
     }
 
     private var askContent: some View {
@@ -154,29 +213,75 @@ struct AskPanelView: View {
         proxy.scrollTo(Self.bottomAnchor, anchor: .bottom)
     }
 
-    /// What the question is anchored to: the selected sentence, or a note that
-    /// the whole book is in scope.
-    @ViewBuilder
+    /// What the question is anchored to — the selected sentence, or a note
+    /// saying how much of the book is in scope — with the scope switch
+    /// beside it whenever there is a reading position to scope to.
     private var contextHeader: some View {
-        if let selection, !selection.quotedText.isEmpty {
-            Text(selection.quotedText)
-                .font(.system(.footnote, design: .serif))
-                .italic()
-                .lineSpacing(4)
-                .foregroundStyle(theme.muted)
-                .lineLimit(2)
-                .padding(.leading, 10)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .overlay(alignment: .leading) {
-                    RoundedRectangle(cornerRadius: 1).fill(theme.iris).frame(width: 2)
+        VStack(alignment: .leading, spacing: 8) {
+            if let selection, !selection.quotedText.isEmpty {
+                Text(selection.quotedText)
+                    .font(.system(.footnote, design: .serif))
+                    .italic()
+                    .lineSpacing(4)
+                    .foregroundStyle(theme.muted)
+                    .lineLimit(2)
+                    .padding(.leading, 10)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .overlay(alignment: .leading) {
+                        RoundedRectangle(cornerRadius: 1).fill(theme.iris).frame(width: 2)
+                    }
+            } else {
+                VStack(alignment: .leading, spacing: 4) {
+                    Label(scopeHeadline, systemImage: "book")
+                        .font(.footnote)
+                        .foregroundStyle(theme.muted)
+                    if isScoped, let positionCaption {
+                        // Say where a scoped answer stops, so the reader can
+                        // see it covers the right stretch of the book.
+                        Text(positionCaption)
+                            .font(.caption)
+                            .foregroundStyle(theme.faint)
+                            .accessibilityIdentifier("ask.position")
+                    }
                 }
-        } else {
-            // No selection: the panel was opened for whole-book questions —
-            // say so instead of showing an empty quote box.
-            Label("Ask anything about this book", systemImage: "book")
-                .font(.footnote)
+            }
+            if frontier != nil {
+                scopeToggle
+            }
+        }
+    }
+
+    /// The no-selection headline: what the panel is for, and how far it
+    /// can see.
+    private var scopeHeadline: String {
+        if initialQuestion != nil, isScoped {
+            return "Recap up to where you are"
+        }
+        return isScoped ? "Ask about what you've read so far" : "Ask anything about this book"
+    }
+
+    /// "Whole book" on, "Up to where I am" off. Flipping it changes the scope
+    /// of every question sent after — the answers already on screen keep
+    /// the scope they were asked under.
+    private var scopeToggle: some View {
+        Toggle(isOn: $wholeBook) {
+            Text(wholeBook ? "Whole book" : "Up to where I am")
+                .font(.caption)
                 .foregroundStyle(theme.muted)
         }
+        .toggleStyle(.switch)
+        #if os(macOS)
+        .controlSize(.mini)
+        #endif
+        .tint(theme.iris)
+        .accessibilityIdentifier("ask.scope")
+        .accessibilityLabel("Whole book")
+        .accessibilityHint(
+            wholeBook
+                ? "Answers may draw on the whole book, including what you haven't read"
+                : "Answers stop where you stopped reading"
+        )
+        .help(wholeBook ? "Answers may use the whole book" : "Answers stop where you stopped reading")
     }
 
     private func exchangeView(_ exchange: AskViewModel.Exchange) -> some View {
@@ -191,7 +296,7 @@ struct AskPanelView: View {
             if exchange.tier?.providesCitations == true, !exchange.citations.isEmpty {
                 citationsSection(exchange)
             } else if exchange.tier?.providesCitations == false, !exchange.answerText.isEmpty {
-                wholeBookNote
+                wholeBookNote(scoped: exchange.scope.isScoped)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -218,6 +323,7 @@ struct AskPanelView: View {
         }
         .accessibilityElement(children: .combine)
         .accessibilityLabel("You asked: \(text)")
+        .accessibilityIdentifier("ask.sentQuestion")
     }
 
     // MARK: - Composer
@@ -292,7 +398,9 @@ struct AskPanelView: View {
                     .fixedSize(horizontal: false, vertical: true)
                 if let tier = vm.tier {
                     Label(
-                        tier.providesCitations ? "Using relevant passages" : "Using the whole book",
+                        tier.providesCitations
+                            ? "Using relevant passages"
+                            : (isScoped ? "Using everything you've read" : "Using the whole book"),
                         systemImage: tier.providesCitations ? "doc.text.magnifyingglass" : "book.closed"
                     )
                     .font(.caption2)
@@ -317,27 +425,34 @@ struct AskPanelView: View {
     /// A4: the grounding caption promises citations only when the answer will
     /// actually carry them. Before a tier is known (or on the citation-backed
     /// retrieval tier) it keeps the full promise; on the whole-book tier it
-    /// drops the "with citations" claim it can't honor.
+    /// drops the "with citations" claim it can't honor. Under a scope it
+    /// says what the grounding is: what the reader has read, not the book.
     private var groundingCaption: String {
+        let grounding = isScoped ? "what you\u{2019}ve read so far" : (vm.tier?.providesCitations == false ? "the whole book" : "this book")
         if vm.tier?.providesCitations == false {
-            return "Grounded in the whole book — plus the model\u{2019}s wider knowledge."
+            return "Grounded in \(grounding) — plus the model\u{2019}s wider knowledge."
         }
-        return "Grounded in this book with citations — plus the model\u{2019}s wider knowledge."
+        return "Grounded in \(grounding) with citations — plus the model\u{2019}s wider knowledge."
     }
 
-    /// A4: the honest whole-book footer — the answer drew on the entire text,
-    /// so there is no passage retrieval and no citation list to show.
-    private var wholeBookNote: some View {
+    /// A4: the honest whole-book footer — the answer drew on the entire text
+    /// (or, scoped, on everything read so far), so there is no passage
+    /// retrieval and no citation list to show.
+    private func wholeBookNote(scoped: Bool) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("USING THE WHOLE BOOK")
+            Text(scoped ? "USING EVERYTHING YOU\u{2019}VE READ" : "USING THE WHOLE BOOK")
                 .font(.caption2.weight(.semibold))
                 .tracking(1.2)
                 .foregroundStyle(theme.faint)
-            Text("This book is short enough to read in full, so the answer draws on the entire text — no passage retrieval, no citation list.")
-                .font(.caption)
-                .lineSpacing(3)
-                .foregroundStyle(theme.muted)
-                .frame(maxWidth: .infinity, alignment: .leading)
+            Text(
+                scoped
+                    ? "Everything you've read so far fits in one request, so the answer draws on all of it — no passage retrieval, no citation list."
+                    : "This book is short enough to read in full, so the answer draws on the entire text — no passage retrieval, no citation list."
+            )
+            .font(.caption)
+            .lineSpacing(3)
+            .foregroundStyle(theme.muted)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityIdentifier("ask.wholeBookNote")
@@ -369,7 +484,7 @@ struct AskPanelView: View {
             }
             // Retry is always shown: `errorCard` only renders when
             // `errorMessage` is set, and every path that sets it runs after
-            // `AskViewModel.ask` records `lastQuestion` — so there is always a
+            // `AskViewModel.ask` records `lastRequest` — so there is always a
             // question to re-run. (A prior `if vm.lastQuestion != nil` gate was
             // both redundant and, because `lastQuestion` isn't `@Published`,
             // risked dropping the button from the accessibility tree.)
@@ -456,13 +571,27 @@ struct AskPanelView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    /// Static starters, tuned to the mode: passage questions when there's a
-    /// selection, whole-book questions otherwise.
+    /// Static starters, tuned to the mode and the scope: passage questions
+    /// when there's a selection, book questions otherwise — worded "so far"
+    /// whenever answers stop where the reader stopped, because "summarize
+    /// this book" is not a question a scoped answer can honestly take. The
+    /// recap leads the scoped set: it is the question a reader coming back
+    /// to a book actually has, and the one the store copy promises.
     private var suggestedQuestions: [String] {
         if selection != nil {
             return [
                 "What does this passage mean?",
-                "How does this connect to the rest of the book?",
+                isScoped
+                    ? "How does this connect to what I've read so far?"
+                    : "How does this connect to the rest of the book?",
+            ]
+        }
+        if isScoped {
+            return [
+                Self.recapQuestion,
+                "Summarize what I've read so far",
+                "What are the key themes so far?",
+                "Who are the main characters so far?",
             ]
         }
         return [
@@ -479,13 +608,18 @@ struct AskPanelView: View {
         let q = question.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !q.isEmpty, !vm.isStreaming else { return }
         question = ""
-        Task { await vm.ask(q) }
+        let scope = self.scope
+        Task { await vm.ask(q, scope: scope) }
     }
 
     /// A5: re-run the last question after a failure.
     private func retry() {
         Task { await vm.retry() }
     }
+
+    /// The recap, word for word — the first suggestion chip and what the
+    /// Recap button (reader toolbar, Continue Reading card) sends.
+    static let recapQuestion = "Recap what I've read so far \u{2014} no spoilers"
 }
 
 /// The design's streaming indicator: three 5pt iris dots pulsing in a

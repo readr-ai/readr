@@ -28,7 +28,10 @@ final class RoutingSpeechEngine: SpeechEngine {
     /// through the platform engine when Kokoro can't deliver it.
     private var currentRequest: SpeechRequest?
 
-    init(platform: AVSpeechEngine = AVSpeechEngine(), kokoro: KokoroSpeechEngine = KokoroSpeechEngine()) {
+    init(
+        platform: AVSpeechEngine = AVSpeechEngine(),
+        kokoro: KokoroSpeechEngine = KokoroSpeechEngine()
+    ) {
         self.platform = platform
         self.kokoro = kokoro
         platform.delegate = self
@@ -45,6 +48,7 @@ final class RoutingSpeechEngine: SpeechEngine {
             if kokoro.isReady {
                 target = kokoro
             } else {
+                // An `.unsupported` engine is routed around here too.
                 // Readr Voice is chosen but its model isn't in yet (first-use
                 // ~104MB download). Narration must start NOW — a Listen button
                 // that buffers for minutes reads as broken — so the platform

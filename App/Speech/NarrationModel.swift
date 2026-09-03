@@ -31,6 +31,9 @@ final class NarrationModel: ObservableObject {
     /// The Listen bar's voice menu narrates this state; until `.ready`, the
     /// platform voice reads and the switch happens at a sentence boundary.
     @Published private(set) var readrVoiceReadiness: KokoroSpeechEngine.Readiness = .notReady
+    /// True when this reader would otherwise use Readr Voice, but the current
+    /// OS has the uncatchable Apple BNNS crash and must use a platform voice.
+    @Published private(set) var readrVoiceUnavailable = false
 
     /// Where the voice is — the reader follows this to keep the page under it.
     var onPosition: ((NarrationPosition) -> Void)?
@@ -187,6 +190,8 @@ final class NarrationModel: ObservableObject {
         // matching. Without that the exact-locale branch can never succeed on
         // such a device and every lookup falls through to a language-wide one.
         let language = book.metadata.language ?? Locale.current.identifier(.bcp47)
+        let supportsReadrVoice = KokoroSpeechEngine.supports(language: language)
+        let readrVoiceAvailable = supportsReadrVoice && KokoroSpeechEngine.isSupportedOnThisOS
         // What the platform would pick for this language, which is a better
         // judge of "the sensible voice" than any ranking of ours: macOS ships
         // novelty voices that tie on quality and win on name.
@@ -207,7 +212,7 @@ final class NarrationModel: ObservableObject {
         // English books (its ~104MB model downloads on first Listen; the
         // router reads through the platform voice until it's in — see
         // RoutingSpeechEngine.speak).
-        if KokoroSpeechEngine.supports(language: language) {
+        if readrVoiceAvailable {
             offered.insert(KokoroSpeechEngine.pickerVoice, at: 0)
         }
         voices = offered
@@ -218,7 +223,10 @@ final class NarrationModel: ObservableObject {
         // later English book in the session. Defaults are written on every
         // explicit pick, so they are the whole story.
         let preferred = defaults.string(forKey: Self.voiceKey)
-        if KokoroSpeechEngine.supports(language: language),
+        readrVoiceUnavailable = supportsReadrVoice
+            && !KokoroSpeechEngine.isSupportedOnThisOS
+            && (preferred == nil || KokoroSpeechEngine.isKokoroVoiceID(preferred))
+        if readrVoiceAvailable,
            preferred == nil || KokoroSpeechEngine.isKokoroVoiceID(preferred) {
             // Readr Voice is the default narrator for English books — a
             // reader with no stored choice gets it, and a stored Readr Voice
@@ -231,8 +239,12 @@ final class NarrationModel: ObservableObject {
             // A stored voice may have been deleted since (voices are
             // downloadable), and a book in another language needs one that
             // can read it.
+            // A Readr Voice id is not an installed platform voice. UserDefaults
+            // is deliberately not rewritten, so the choice returns on a safe OS.
+            let platformPreferred = KokoroSpeechEngine.isKokoroVoiceID(preferred) ? nil : preferred
             voiceID = selector.voice(
-                for: language, in: installed, preferring: preferred, systemDefault: systemDefault
+                for: language, in: installed, preferring: platformPreferred,
+                systemDefault: systemDefault
             )?.id
         }
         // The picker hides the accessibility/novelty families, but a stored

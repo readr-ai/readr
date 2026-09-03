@@ -103,6 +103,7 @@ final class ConversationHistoryTests: XCTestCase {
             in: makeBook(),
             selection: nil,
             history: [turn("Why are roads 2D?", "Because they are laid out on the surface.")],
+            scope: .wholeBook,
             provider: provider()
         )
 
@@ -123,6 +124,7 @@ final class ConversationHistoryTests: XCTestCase {
             for: "What happens?",
             in: makeBook(),
             selection: nil,
+            scope: .wholeBook,
             provider: provider()
         )
         XCTAssertEqual(result.request.messages.map(\.role), [.system, .user])
@@ -140,6 +142,7 @@ final class ConversationHistoryTests: XCTestCase {
             in: makeBook(tokenCount: 5_000_000),
             selection: nil,
             history: [turn("What happens first?", "The tunnel is dug.")],
+            scope: .wholeBook,
             provider: provider()
         )
 

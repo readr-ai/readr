@@ -24,5 +24,12 @@ public protocol BookParser: Sendable {
 /// Rough token estimate (~4 chars/token) used at import time so the context
 /// router can decide whole-book vs. retrieval before any provider is attached.
 public func estimateTokens(_ text: String) -> Int {
-    max(1, text.count / 4)
+    estimateTokens(characterCount: text.count)
+}
+
+/// The same estimate from a character count that has already been taken —
+/// so a scoped question can be budgeted from `ReadingLengthTable` without
+/// assembling the text it would send.
+public func estimateTokens(characterCount: Int) -> Int {
+    max(1, characterCount / 4)
 }

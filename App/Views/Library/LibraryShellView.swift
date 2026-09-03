@@ -388,6 +388,13 @@ struct LibraryShellView: View {
     /// reflects the open even before the reader view finishes appearing (the
     /// reader also records it — double-recording is harmless).
     private func open(_ book: Book) {
+        // A book that has left the library (deleted from another window, or
+        // a card that outlived its book) cannot be opened — and a recap the
+        // card asked for must not stay pending for a reader that never comes.
+        guard model.books.contains(where: { $0.id == book.id }) else {
+            if model.pendingRecapBookID == book.id { model.pendingRecapBookID = nil }
+            return
+        }
         model.markOpened(book)
         #if os(macOS)
         openWindow(value: book.id)

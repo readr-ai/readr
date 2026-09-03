@@ -12,6 +12,15 @@ final class LibraryStoreTests: XCTestCase {
         )
     }
 
+    /// Nothing in memory outlives the process, so an in-memory store is never
+    /// "persisted" — even with books in it.
+    func testInMemoryStoreIsNeverPersisted() throws {
+        let store = InMemoryLibraryStore()
+        XCTAssertFalse(store.hasPersistedLibrary)
+        try store.add(makeBook())
+        XCTAssertFalse(store.hasPersistedLibrary)
+    }
+
     func testAddedBooksAppearInOrder() throws {
         let store = InMemoryLibraryStore()
         let a = makeBook(title: "A"), b = makeBook(title: "B")

@@ -1,5 +1,8 @@
 import SwiftUI
 import ReadrKit
+#if os(iOS)
+import UIKit
+#endif
 
 /// The narration bar: what the reader sees while the book is being read aloud.
 ///
@@ -120,6 +123,14 @@ struct ListenBar: View {
 
     // MARK: - Voice controls
 
+    private var osName: String {
+        #if os(iOS)
+        UIDevice.current.systemName
+        #else
+        "macOS"
+        #endif
+    }
+
     private var speedMenu: some View {
         Menu {
             Picker("Speed", selection: speedBinding) {
@@ -160,12 +171,27 @@ struct ListenBar: View {
             if KokoroSpeechEngine.isKokoroVoiceID(narration.voiceID) {
                 switch narration.readrVoiceReadiness {
                 case .downloading:
-                    menuNote("Readr Voice is downloading \u{2014} switching automatically when ready")
+                    menuNote(
+                        "Readr Voice is downloading \u{2014} "
+                            + "switching automatically when ready"
+                    )
                 case .failed:
                     menuNote("Readr Voice couldn't download \u{2014} pick it again to retry")
-                case .notReady, .ready:
+                case .unsupported, .notReady, .ready:
                     EmptyView()
                 }
+            }
+            // This is scoped to readers who would otherwise have Readr Voice:
+            // an English book with no stored choice, or a stored Readr Voice.
+            // An explicitly chosen Apple voice needs no warning about a voice
+            // the reader did not ask for.
+            if narration.readrVoiceUnavailable {
+                menuNote(
+                    """
+                    Readr Voice isn't available on this version of \(osName) — an Apple bug \
+                    crashes it. The Apple voice reads instead.
+                    """
+                )
             }
             Divider()
             if narration.voices.isEmpty {

@@ -1,21 +1,37 @@
-Readr is an ebook reader you can talk to, and listen to.
+Read, listen, and ask questions as you go. Readr answers from what you've
+read so far and never spoils what's ahead — and clearly labels anything it
+adds from elsewhere.
 
-Open an EPUB or PDF you already own, select a sentence, and ask about it.
-Readr answers with the whole book as context — and it isn't limited to the
+ASK THE BOOK
+Open an EPUB, PDF, plain-text or Markdown file you already own, select a
+sentence, and ask about it. Readr answers from the pages you've read, not
+the pages you haven't, so nothing ahead of your place can slip out. Flip
+the "Whole book" switch to ask about all of it. And it isn't limited to the
 book: ask how the science has moved on, who directed the adaptation, or how
-an idea aged, and you get a real answer, with a clear signal for which part
-came from the book and which from beyond it. What it will never do is invent
-what the book says.
+an idea aged, and you get a useful answer that shows which part came from
+the book and which from outside it. Readr won't attribute an outside claim
+to the book you're reading.
 
-Highlight as you read, then turn those highlights into a first draft. Readr
-orders them by reading position, keeps your quotes intact, and composes an
-editable article you can export as Markdown.
+Back after a week away? Tap Recap and Readr tells you the story so far,
+from only the pages you've read — it can't spoil what comes next.
 
-LISTEN TO IT
+Ask needs an AI account of your own: connect an Anthropic, OpenAI or
+OpenRouter key, or sign in with OpenRouter. You pay that company directly for
+what you use, and you can change or disconnect at any time. On an Apple
+silicon Mac you can point Readr at a local Ollama model instead and stay
+offline. Without one, Readr is still a complete reader — Ask simply stays off.
+
+LISTEN
 Press Listen and Readr reads the book aloud, starting from the page you're on
 — not the top of the chapter. The page turns itself to follow the voice, and
 the place it saves is where the voice left off, so switching between reading
 and listening never costs you your spot.
+
+On iPhone and iPad, narration uses Apple's built-in voices, which run on your
+device with nothing to download, so nothing about your book is sent away to
+be read aloud. On the Mac (macOS 26.6 and later), Readr Voice — our more
+natural on-device narrator for English books — reads by default, with
+Apple's voices a pick away.
 
 Skip by sentence or by chapter, change the speed or the voice mid-sentence and
 it carries on from that word, and set a sleep timer that counts listening
@@ -23,29 +39,22 @@ rather than clock time — pause for lunch and the countdown waits for you. It
 keeps playing with the screen locked, with lock-screen and headphone controls,
 and it works on PDFs as well as EPUBs.
 
-The narrator for English books is Readr Voice, a neural voice that runs
-entirely on your device: no account, no subscription, and nothing about your
-book ever leaves the device to be read aloud. Books in other languages are
-read by Apple's voices. Its voice model downloads once (about 104MB) the
-first time you listen; until it's in, an Apple voice reads and the switch
-happens mid-chapter on its own. Prefer Apple's built-in voices? They're one
-tap away in the voice menu, with nothing to download at all.
+HIGHLIGHTS BECOME A DRAFT
+Highlight as you read, then turn those highlights into a first draft. Readr
+orders them by reading position, keeps your quotes intact, and turns them into
+an editable draft you can export as Markdown.
 
-BRING YOUR OWN AI
-Readr has no subscription and no account. Connect your own Anthropic, OpenAI
-or OpenRouter key, or sign in with OpenRouter — you pay your provider
-directly, at cost, and you can change or disconnect at any time. Without a
-provider Readr is still a complete reader; the AI features simply sit idle.
-
-PRIVATE BY CONSTRUCTION
-No telemetry. No analytics. No account. Your books, highlights, notes and
-questions live on your device, and reading them aloud happens there too. A
-question leaves it only when you choose to ask a cloud model, and it goes
-straight to your provider — never through a server of ours, because we don't
-run one. API keys are stored in the device Keychain.
+PRIVACY
+No usage tracking. No account. No subscription. Your books, highlights, notes and questions
+live on your device, and reading them aloud happens there too. When you use
+Ask, your question and the book text needed to answer it go straight to the
+company you connected — never through a Readr server, because there isn't
+one. Your keys are stored in the device Keychain.
 
 READING THAT FEELS LIKE READING
 • EPUB, PDF, plain-text and Markdown — DRM-free files you own
+• A book to start on: Alice's Adventures in Wonderland is in your library on
+  first launch, so you can try everything before importing your own
 • Three layouts: continuous scroll, single page, or two facing pages
 • Paper, Sepia and Dark themes, with your choice of typeface and spacing
 • Table of contents, bookmarks, in-book search, footnote popups
@@ -54,8 +63,8 @@ READING THAT FEELS LIKE READING
 • On iPad: sidebar and reader side by side, two-page spreads, and hardware
   keyboard page turns
 
-OPEN SOURCE
-Readr is MIT-licensed and developed in the open. Read the code, file an
+FREE AND OPEN SOURCE
+Readr is free and MIT-licensed, developed in the open. Read the code, file an
 issue, or send a bug report from inside the app — there's a Report a bug
 button in Settings that attaches your app version and recent errors, and
 nothing about what you've been reading.

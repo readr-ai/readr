@@ -34,7 +34,11 @@ struct ReaderView: View {
     /// voice — is the one moving.
     @State private var narrationResumeAnchor: Int?
     @State private var didRestorePosition = false
-    @State private var askSelection: Selection?
+    /// Set once the reader is on screen and its position restored. A recap
+    /// asked for by the library (`AppModel.pendingRecapBookID`) is only
+    /// presented after this, so the sheet never goes up over a reader that
+    /// is still being pushed and the frontier it uses is the restored one.
+    @State private var hasAppeared = false
     /// The committed text selection in chapter coordinates, reported by the
     /// reading surfaces. Drives the selection-dependent keyboard shortcuts
     /// (⇧⌘H highlight, ⇧⌘M note, and the selection-aware ⇧⌘A ask) — the
@@ -55,7 +59,11 @@ struct ReaderView: View {
     /// annotation-shortcut registration and dispatches per mode — a single
     /// owner, so no mode can register a duplicate key equivalent.
     @State private var pdfAnnotationActions: PDFAnnotationActions?
-    @State private var showAsk = false
+    /// The Ask panel's request — selection, scope and any question to send
+    /// on open — and, by being non-nil, the fact that it is presented. One
+    /// value carries the whole presentation, so `.sheet(item:)` gives every
+    /// opening a fresh identity and nothing lingers for the next one.
+    @State private var askRequest: AskRequest?
     @State private var showNotes = false
     @State private var showTOC = false
     @State private var showSearch = false
@@ -207,8 +215,8 @@ struct ReaderView: View {
             #endif
             .background(hiddenFontShortcuts)
             .background(hiddenAnnotationShortcuts)
-            .sheet(isPresented: $showAsk) {
-                AskPanelView(app: model, book: book, selection: askSelection)
+            .sheet(item: $askRequest) { request in
+                AskPanelView(app: model, book: book, request: request)
                     .environmentObject(model)
             }
             .sheet(item: $editingNote) { highlight in
@@ -305,6 +313,15 @@ struct ReaderView: View {
             }
             .onAppear {
                 restoreOnce()
+                // A recap the library asked for is for ONE book. Any reader
+                // appearing for a different one means that request has gone
+                // stale (the push was abandoned, another book was opened),
+                // and it must not fire a paid recap the reader never asked
+                // for the next time that book happens to open.
+                if let pending = model.pendingRecapBookID, pending != book.id {
+                    model.pendingRecapBookID = nil
+                }
+                hasAppeared = true
                 updateMinutesCache()
                 // The page follows the voice: narration reports the sentence
                 // it moves to, and the reader turns to it.
@@ -384,6 +401,22 @@ struct ReaderView: View {
             // Build the retrieval index in the background when the book opens
             // so the first "ask" is fast. Safe to call repeatedly.
             .task(id: book.id) { await model.ensureIndexed(book) }
+            // The library's Continue Reading card asked for a recap of this
+            // book. Keyed on both the pending id and appearance, so it runs
+            // once the reader is on screen with its position restored — and
+            // again if the library asks while this reader is already open
+            // (macOS: `openWindow` fronts the existing window instead of
+            // making one, so `onAppear` never fires). Presenting straight
+            // from the task works on the iPhone simulator; no deferral.
+            .task(id: RecapTrigger(pending: model.pendingRecapBookID, appeared: hasAppeared)) {
+                consumePendingRecap()
+            }
+    }
+
+    /// What re-runs the pending-recap task: see its `.task(id:)`.
+    private struct RecapTrigger: Equatable {
+        var pending: UUID?
+        var appeared: Bool
     }
 
     // MARK: - Reading surface
@@ -395,8 +428,9 @@ struct ReaderView: View {
                     book: book,
                     url: url,
                     onAsk: { selection in
-                        askSelection = selection
-                        showAsk = true
+                        // A native PDF page is not a reading position: no
+                        // frontier, so the whole document is in scope.
+                        askRequest = AskRequest(selection: selection, scope: .wholeBook, initialQuestion: nil)
                     },
                     annotationActions: $pdfAnnotationActions
                 )
@@ -548,10 +582,13 @@ struct ReaderView: View {
             return
         }
         guard minutesCache?.chapterID != chapter.id else { return }
+        // From the app's cached chapter lengths — measured once per book,
+        // never re-counted here.
+        let words = model.readingLengths(for: book).entries
         minutesCache = (
             chapterID: chapter.id,
-            minutes: ReadingTimeEstimator().minutesLeft(
-                inChapterText: chapter.text, fromCharacterOffset: 0
+            minutes: ReadingTimeEstimator().minutes(
+                forWords: words.indices.contains(chapterIndex) ? words[chapterIndex].words : 0
             )
         )
     }
@@ -635,6 +672,9 @@ struct ReaderView: View {
                 }
                 appearanceButton
                 listenButton
+                if !isPDFOriginal {
+                    recapButton
+                }
                 askButton
                 notesButton
             }
@@ -653,6 +693,9 @@ struct ReaderView: View {
                     Spacer()
                 }
                 listenButton
+                if !isPDFOriginal {
+                    recapButton
+                }
                 askButton
             }
         }
@@ -673,6 +716,11 @@ struct ReaderView: View {
                 pdfDisplayMenu
             }
             listenButton
+            // A native PDF page is not a reading position: nothing to recap
+            // up to (see `askScope`).
+            if !isPDFOriginal {
+                recapButton
+            }
             askButton
             notesButton
         }
@@ -743,9 +791,40 @@ struct ReaderView: View {
         narrationResumeAnchor ?? pagedAnchor
     }
 
+    /// How far the reader has got, for Ask. Answers are built only from the
+    /// text before this point, so "recap what I've read" can't spoil — but
+    /// the point must never sit behind the page in front of the reader.
+    ///
+    /// Paged layouts: the top of the visible page (the same anchor the
+    /// reading position uses), pushed forward to the end of `selection` when
+    /// the question is about one — a passage the reader can see is read.
+    ///
+    /// Scroll layout: `pagedAnchor` only moves on restore and on jumps, and
+    /// the scrolling text view reports no visible range, so there is no
+    /// character anchor to use. The whole current chapter counts as read:
+    /// the reader may be anywhere in it, and hiding the text they are looking
+    /// at is the worse error. (If the scroll surface ever reports the end of
+    /// its visible text, that is the anchor to use here instead.)
+    ///
+    /// Native PDF pages have no text position at all, so they get no
+    /// frontier — and the whole document, as before.
+    private func askScope(selection: Range<Int>?) -> ReadingScope {
+        guard !isPDFOriginal else { return .wholeBook }
+        var frontier: ReadingFrontier
+        if layout == .scroll {
+            frontier = ReadingFrontier(chapterIndex: chapterIndex, characterOffset: chapter?.text.count ?? 0)
+        } else {
+            frontier = ReadingFrontier(chapterIndex: chapterIndex, characterOffset: anchorToPersist)
+        }
+        if let selection {
+            frontier = frontier.extended(toInclude: selection)
+        }
+        return .upTo(frontier)
+    }
+
     /// True while something is presented over the reader.
     private var isPresentingOverlay: Bool {
-        showAsk || showNotes || showTOC || showSearch || showAppearance
+        askRequest != nil || showNotes || showTOC || showSearch || showAppearance
             || editingNote != nil || footnotePopup != nil
     }
 
@@ -1157,13 +1236,58 @@ struct ReaderView: View {
     /// published actions.
     private func askTheBook() {
         if isPDFOriginal {
-            askSelection = pdfAnnotationActions?.askSelection()
+            askRequest = AskRequest(
+                selection: pdfAnnotationActions?.askSelection(), scope: .wholeBook, initialQuestion: nil
+            )
         } else if let chapter, let selected = currentSelection.value {
-            askSelection = model.makeSelection(in: chapter, range: selected)
+            askRequest = AskRequest(
+                selection: model.makeSelection(in: chapter, range: selected),
+                scope: askScope(selection: selected),
+                initialQuestion: nil
+            )
         } else {
-            askSelection = nil // whole-book question
+            // No selection: a question about the book — scoped to what has
+            // been read, with the panel's switch to widen it.
+            askRequest = AskRequest(selection: nil, scope: askScope(selection: nil), initialQuestion: nil)
         }
-        showAsk = true
+    }
+
+    /// Recap: Ask, with "recap what I've read so far" already sent. The
+    /// answer stops where the reader stopped (`askScope`), and the panel
+    /// says where that is. Only offered when there IS a frontier — a native
+    /// PDF page is not a reading position, so PDFs never get the button.
+    private var recapButton: some View {
+        Button(action: openRecap) {
+            Label("Recap", systemImage: "text.book.closed")
+        }
+        .keyboardShortcut("r", modifiers: [.command, .shift])
+        .accessibilityIdentifier("reader.recap")
+        .accessibilityLabel("Recap what you've read so far")
+        .help("Recap what you've read so far, spoiler-free (\u{21E7}\u{2318}R)")
+    }
+
+    private func openRecap() {
+        let scope = askScope(selection: nil)
+        guard scope.isScoped else { return }
+        askRequest = AskRequest(selection: nil, scope: scope, initialQuestion: AskPanelView.recapQuestion)
+    }
+
+    /// The library's Continue Reading card asked for a recap of this book
+    /// (`AppModel.pendingRecapBookID`). Runs from the `.task(id:)` in `body`
+    /// once the reader has appeared; the pending id is cleared at the moment
+    /// the request is set, and only then — a task that runs too early leaves
+    /// it for the run that can act on it.
+    private func consumePendingRecap() {
+        guard hasAppeared, model.pendingRecapBookID == book.id else { return }
+        let scope = askScope(selection: nil)
+        guard scope.isScoped else {
+            // A PDF card never offers Recap, but the id must not outlive a
+            // request the reader cannot be shown.
+            model.pendingRecapBookID = nil
+            return
+        }
+        askRequest = AskRequest(selection: nil, scope: scope, initialQuestion: AskPanelView.recapQuestion)
+        model.pendingRecapBookID = nil
     }
 
     private var notesButton: some View {
@@ -1474,8 +1598,11 @@ struct ReaderView: View {
             case let .span(span):
                 range = highlight(withID: span.id)?.range ?? span.range
             }
-            askSelection = model.makeSelection(in: chapter, range: range)
-            showAsk = true
+            askRequest = AskRequest(
+                selection: model.makeSelection(in: chapter, range: range),
+                scope: askScope(selection: range),
+                initialQuestion: nil
+            )
 
         case .copy:
             let copied: String
@@ -1573,23 +1700,10 @@ extension Book {
         return rows
     }
 
-    /// The nearest TOC title at/before a chapter index (a chapter without an
-    /// entry of its own belongs to the preceding section), or nil without a
-    /// TOC.
-    func tocTitle(forChapterIndex index: Int) -> String? {
-        flattenedTOC.last(where: { $0.entry.chapterIndex <= index })?.entry.title
-    }
-
-    /// Display title for a chapter: its own title, else the nearest TOC
-    /// title, else a neutral "Section N" — never the synthetic "Chapter N"
-    /// that mislabeled front matter and split documents as chapters.
-    func chapterDisplayTitle(_ index: Int) -> String {
-        if chapters.indices.contains(index), let title = chapters[index].title,
-           !title.isEmpty {
-            return title
-        }
-        return tocTitle(forChapterIndex: index) ?? "Section \(index + 1)"
-    }
+    // `tocTitle(forChapterIndex:)` and `chapterDisplayTitle(_:)` live in
+    // ReadrKit (Book.swift) so the reader header, the Contents list, the
+    // "where am I" caption and the prompt anchor share one lookup and one
+    // fallback wording.
 }
 
 // MARK: - Selection mirror

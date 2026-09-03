@@ -14,6 +14,12 @@ options:
   fileTypes:
     xcprivacy:
       buildPhase: resources
+    # The bundled sample book (App/Resources/alice-in-wonderland.epub) is data,
+    # not something to compile. Without this, `sources: - App` sweeps it into
+    # Compile Sources on some XcodeGen versions and it never reaches the
+    # bundle — where `SampleBookSeeder` expects to find it on first launch.
+    epub:
+      buildPhase: resources
 
 packages:
   # The core logic lives in the local Swift package at the repo root.
@@ -117,7 +123,7 @@ targets:
         # local or CI build otherwise reported 0.1.0, which made crash and
         # feedback triage lie about which version a report came from. Bump this
         # with each release tag.
-        MARKETING_VERSION: "3.2.0"
+        MARKETING_VERSION: "3.2.2"
         CURRENT_PROJECT_VERSION: "1"
         SWIFT_VERSION: "5.9"
         # FluidAudio is Apple-silicon-only in practice: its NemoTextProcessing

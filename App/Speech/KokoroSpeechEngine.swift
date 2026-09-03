@@ -34,6 +34,34 @@ final class KokoroSpeechEngine: NSObject, SpeechEngine {
 
     // MARK: - The picker's view of this engine
 
+    /// Evaluated once per process. FluidAudio's Kokoro path can crash inside
+    /// Apple's BNNS runtime on affected OS builds, so it must never be entered
+    /// there; the signal cannot be caught and compute-unit routing does not
+    /// avoid it (FluidAudio #817/#844).
+    static let isSupportedOnThisOS: Bool = {
+        let version = ProcessInfo.processInfo.operatingSystemVersion
+        #if os(macOS)
+        let onMacOS = true
+        let platform = "macOS"
+        #else
+        let onMacOS = false
+        let platform = "iOS/iPadOS"
+        #endif
+        let isSupported = !NeuralVoiceAvailability.isCrashProneOS(
+            major: version.majorVersion,
+            minor: version.minorVersion,
+            onMacOS: onMacOS
+        )
+        if !isSupported {
+            let versionText = "\(version.majorVersion).\(version.minorVersion)"
+            DiagnosticsLog.shared.record(
+                .warning, .reader,
+                "Readr Voice disabled on \(platform) \(versionText): Apple BNNS crash-prone OS"
+            )
+        }
+        return isSupported
+    }()
+
     /// Sentinel voice-id namespace. Nothing AVFoundation could ever report
     /// collides with it, which is what routes a request here (see
     /// `RoutingSpeechEngine`) and what `NarrationModel` special-cases when
@@ -76,13 +104,18 @@ final class KokoroSpeechEngine: NSObject, SpeechEngine {
     /// is never silent. While it isn't `.ready`, `RoutingSpeechEngine` narrates
     /// through the platform voice and switches over at a sentence boundary.
     enum Readiness: Equatable {
+        /// This OS build crashes the process inside Apple's BNNS during
+        /// Kokoro inference (FluidAudio#817/#844); the engine refuses every
+        /// request. See `NeuralVoiceAvailability`.
+        case unsupported
         case notReady
         case downloading
         case ready
         case failed
     }
 
-    private(set) var readiness: Readiness = .notReady {
+    private(set) var readiness: Readiness = KokoroSpeechEngine.isSupportedOnThisOS
+        ? .notReady : .unsupported {
         didSet {
             guard readiness != oldValue else { return }
             onReadinessChange?(readiness)
@@ -127,6 +160,12 @@ final class KokoroSpeechEngine: NSObject, SpeechEngine {
     // MARK: - SpeechEngine
 
     func speak(_ request: SpeechRequest) {
+        guard readiness != .unsupported else {
+            delegate?.speechEngine(
+                self, didFail: request.id, error: SpeechEngineError.audioUnavailable
+            )
+            return
+        }
         cancelInFlight()
         activeRequest = request
         pausedByCaller = false
@@ -169,6 +208,7 @@ final class KokoroSpeechEngine: NSObject, SpeechEngine {
     /// reader picks this voice, so the first sentence doesn't carry the whole
     /// ~104MB wait.
     func prepare() {
+        guard readiness != .unsupported else { return }
         Task { @MainActor [weak self] in
             try? await self?.ensureInitialized()
         }
@@ -224,6 +264,9 @@ final class KokoroSpeechEngine: NSObject, SpeechEngine {
 
     @MainActor
     private func ensureInitialized() async throws {
+        guard readiness != .unsupported else {
+            throw SpeechEngineError.audioUnavailable
+        }
         if let initializeTask {
             return try await initializeTask.value
         }

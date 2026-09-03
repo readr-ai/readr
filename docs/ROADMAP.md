@@ -275,12 +275,16 @@ wiring does not close them):
 
 - [x] **Legal read on the G2P model** — closed 2026-08-20 by the project owner:
   determined no legal issue with shipping the espeak-trained G2P.
-- [x] **The iOS BNNS crash** (FluidAudio#844) — closed upstream as completed
-  on 2026-08-11 (no new FluidAudio tag yet; late thread comments still show
-  crashes, so this stays a watch item). With v3.2.0 the owner promoted Readr
-  Voice to the DEFAULT for English books; the platform voice is the automatic
-  fallback whenever Kokoro isn't ready or a synthesis fails. Re-check the
-  issue and bump the pin when a release lands.
+- [ ] **The iOS BNNS crash** (FluidAudio#817/#844) — FluidAudio#844 was closed
+  upstream as completed on 2026-08-11, but late comments still report crashes.
+  No FluidAudio tag newer than 0.15.6 exists; bump the pin when one lands.
+  Readr Voice remains the English default on ungated builds, with the platform
+  voice as fallback. It is hard-gated off on iOS/iPadOS 26.4+ (fail-closed
+  through iOS 27+ until each line passes a device check) and macOS 26.4–26.5:
+  Kokoro inference can crash inside Apple's `libBNNS`, so the platform voice
+  reads and the model is not downloaded. iOS/iPadOS 26.6 still reproduces the
+  crash; macOS 26.6+ is outside the gate. Re-enable any iOS line only after
+  FluidAudio#844's crash signature no longer reproduces on a device build.
 - [ ] **Phone-device numbers** (latency/memory/battery) — still unmeasured.
 - [ ] **Word timings** — `predictedDurations` gives exact token timestamps;
   mapping tokens back to character ranges (for read-along highlighting and

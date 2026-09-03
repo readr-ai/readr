@@ -17,6 +17,10 @@ final class AskViewModel: ObservableObject {
         /// Shown immediately, as sent — the reader's message must appear the
         /// moment they send it, not when the answer starts arriving.
         var question: String
+        /// What this answer was allowed to see. Kept per exchange because the
+        /// panel's toggle can flip between questions, and the footer under
+        /// an answer must describe that answer.
+        var scope: ReadingScope
         var answerText: String = ""
         var tier: AssembledContext.Tier? = nil
         var citations: [Citation] = []
@@ -62,15 +66,27 @@ final class AskViewModel: ObservableObject {
     private let providerName: () -> String
     private let book: Book
     private let selection: Selection?
-    /// The last question submitted, kept so a Retry can re-run it after an
-    /// error (A5) without the reader retyping.
-    private(set) var lastQuestion: String?
+    /// The question the panel was opened with, if any — the Recap button
+    /// opens the panel with the recap already asked. Sent once, the first
+    /// time there is a provider to send it to.
+    private let initialQuestion: String?
+    /// Whether `initialQuestion` has gone out. Set the moment it is sent, so
+    /// no number of re-appearances or provider refreshes sends it twice.
+    private var didSendInitialQuestion = false
+    /// The last question submitted and the scope it was asked under, kept so
+    /// a Retry can re-run it verbatim after an error (A5) without the reader
+    /// retyping — or re-choosing.
+    private(set) var lastRequest: (question: String, scope: ReadingScope)?
 
+    /// The scope is NOT an init argument: the panel hands it to every
+    /// `ask(_:scope:)` from its toggle, so a panel opened scoped can ask the
+    /// next question about the whole book without a new view model.
     init(
         makeService: @escaping () -> AskService?,
         prepare: @escaping () async -> Void,
         book: Book,
         selection: Selection?,
+        initialQuestion: String?,
         providerName: @escaping () -> String = { "unknown" }
     ) {
         self.makeService = makeService
@@ -78,6 +94,7 @@ final class AskViewModel: ObservableObject {
         self.providerName = providerName
         self.book = book
         self.selection = selection
+        self.initialQuestion = initialQuestion
         let resolved = makeService()
         self.service = resolved
         self.hasProvider = resolved != nil
@@ -91,26 +108,36 @@ final class AskViewModel: ObservableObject {
         hasProvider = resolved != nil
     }
 
-    func ask(_ question: String) async {
-        await run(question, replacingLastExchange: false)
+    func ask(_ question: String, scope: ReadingScope) async {
+        await run(question, scope: scope, replacingLastExchange: false)
     }
 
-    /// Re-run the last question after an error (A5). No-op when nothing has
-    /// been asked yet.
+    /// Send the question the panel was opened with, if there is one and a
+    /// provider to send it to. The panel calls this on appearance and
+    /// whenever the provider binding changes; flipping the flag before the
+    /// send is the once-guard.
+    func sendInitialQuestionIfReady(scope: ReadingScope) {
+        guard let initialQuestion, !didSendInitialQuestion, hasProvider, !isStreaming else { return }
+        didSendInitialQuestion = true
+        Task { await ask(initialQuestion, scope: scope) }
+    }
+
+    /// Re-run the last question after an error (A5), under the scope it was
+    /// asked with. No-op when nothing has been asked yet.
     func retry() async {
-        guard let question = lastQuestion else { return }
-        await run(question, replacingLastExchange: true)
+        guard let last = lastRequest else { return }
+        await run(last.question, scope: last.scope, replacingLastExchange: true)
     }
 
     // MARK: - Streaming
 
-    private func run(_ question: String, replacingLastExchange: Bool) async {
+    private func run(_ question: String, scope: ReadingScope, replacingLastExchange: Bool) async {
         let trimmed = question.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         // Ignore re-entrant submits while a stream is already in flight.
         guard !isStreaming else { return }
-        // Keep the question so a Retry can re-run it verbatim after a failure.
-        lastQuestion = trimmed
+        // Keep the request so a Retry can re-run it verbatim after a failure.
+        lastRequest = (trimmed, scope)
         errorMessage = nil
         errorRecovery = nil
 
@@ -120,7 +147,7 @@ final class AskViewModel: ObservableObject {
             exchanges.removeLast()
         }
         let id = UUID()
-        exchanges.append(Exchange(id: id, question: trimmed))
+        exchanges.append(Exchange(id: id, question: trimmed, scope: scope))
 
         guard self.service != nil else {
             fail(id, "Connect an AI provider in settings to ask questions.", recovery: nil)
@@ -145,7 +172,8 @@ final class AskViewModel: ObservableObject {
         }
         do {
             for try await event in service.ask(
-                trimmed, about: book, selection: selection, history: history
+                trimmed, about: book, selection: selection, history: history,
+                scope: scope
             ) {
                 switch event {
                 case let .contextAssembled(tier):
