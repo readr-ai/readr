@@ -7,6 +7,13 @@ import Foundation
 /// than refuse the sentence.
 public enum ClauseSplitter {
 
+    /// How far from the target a clause break may be and still win over a
+    /// better-placed space, as a fraction of the target. Without a window,
+    /// "Well, " followed by four hundred unbroken characters cut after the
+    /// comma — a one-word head and a tail that recursed, when the nearest
+    /// space would have made two balanced halves.
+    static let clauseWindow = 0.4
+
     /// Punctuation a listener already hears as a pause; the split lands
     /// after it so the mark stays with its clause.
     private static let clauseBreaks: Set<Character> = [
@@ -15,7 +22,8 @@ public enum ClauseSplitter {
 
     /// Pieces of `text` no longer than `maxLength` characters, each trimmed
     /// and non-empty. Preference order for the cut: the clause break nearest
-    /// the middle (or as near as the limit allows), then whitespace, then a
+    /// the middle (or as near as the limit allows) if one lies within
+    /// `clauseWindow` of the target, then the nearest whitespace, then a
     /// hard cut. Joining the pieces with single spaces reproduces every word.
     public static func split(_ text: String, maxLength: Int) -> [String] {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -47,7 +55,10 @@ public enum ClauseSplitter {
                 spaceCuts.append(index)
             }
         }
-        if let cut = nearest(to: target, in: clauseCuts) { return cut }
+        let window = Int((Double(target) * clauseWindow).rounded(.down))
+        if let cut = nearest(to: target, in: clauseCuts), abs(cut - target) <= window {
+            return cut
+        }
         if let cut = nearest(to: target, in: spaceCuts) { return cut }
         return limit
     }

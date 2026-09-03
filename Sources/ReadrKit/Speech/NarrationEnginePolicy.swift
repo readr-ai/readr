@@ -30,10 +30,13 @@ public enum NarrationEnginePolicy {
         public var mlxKokoroAvailable: Bool
         /// The MLX engine's weights and G2P assets are loaded.
         public var mlxKokoroReady: Bool
-        /// The app is active. Metal refuses GPU work from a backgrounded app
-        /// and the refusal is an uncatchable abort (mlx-swift#274/#407), so
-        /// MLX must not be entered with the screen locked. Always true where
-        /// there is no MLX engine.
+        /// The app is not backgrounded (from `didEnterBackground` until
+        /// `willEnterForeground`, plus the engine's short head start on
+        /// `willResignActive` for the lock — Control Center, banners and an
+        /// iPad Split View neighbour do not count). Metal refuses GPU work
+        /// from a backgrounded app and the refusal is an uncatchable abort
+        /// (mlx-swift#274/#407), so MLX must not be entered with the screen
+        /// locked. Always true where there is no MLX engine.
         public var isForeground: Bool
 
         public init(
