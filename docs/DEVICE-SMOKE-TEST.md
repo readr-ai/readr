@@ -201,22 +201,24 @@ with the results.
 - [ ] **Thirty minutes continuous, foreground.** Leave it reading. No quit,
       no stall, no sentence heard twice, no Apple voice at any point. Watch
       the read-along line keep pace with the audio.
-- [ ] **Mandatory lock-race test — 20 times.** Since 3.3.1 prefetch runs on
-      the CPU by default, so the only GPU exposure left is a sentence the
-      reader is about to hear that wasn't buffered in time — read ahead so
-      that keeps happening (skip forward past the buffer, or read as fast as
-      the CPU refill), and lock the phone right as the "ready" figure is
+- [ ] **Mandatory lock-race test — 20 times.** Prefetch now defaults to
+      `.gpuWhileActive` — GPU while the app is foreground, same as
+      playback, CPU only once backgrounded — so with the app foreground and
+      reading normally, prefetch is a GPU sentence like any other. Read
+      ahead so a sentence is regularly being synthesized right as you lock
+      (skip forward past the buffer, or read as fast as the GPU/CPU
+      refill), and lock the phone right as the "ready" figure is
       momentarily thin, unlock it, and repeat for 20 total locks. MLX cannot
       cancel the one Metal graph already submitted, so diagnostics
       warning-log each lock that catches one with its elapsed milliseconds
       (every GPU use is also logged at `.info` with its duration, so the
       diagnostics file shows exactly how much exposure there was). Record
       the warning count and elapsed values. **Any crash is still a
-      release blocker** — there is no more conservative prefetch setting to
-      fall back to, since CPU is already the default; file it with the full
-      diagnostics log. `readrVoice.prefetchOnGPU` (default off) forces
-      prefetch back onto the GPU too, for comparing against the pre-3.3.1
-      behaviour while investigating.
+      release blocker**; file it with the full diagnostics log.
+      `readrVoice.prefetchOnCPUOnly` (default off) forces prefetch onto the
+      CPU even in the foreground, for the more conservative pre-fix
+      behaviour while investigating; `readrVoice.prefetchOnGPU` is a no-op
+      now that GPU-while-active is the default.
 - [ ] **Memory.** In Xcode's Debug navigator, the Memory gauge during that
       half hour: note the peak. It must stay **under 1GB** and must not climb
       sentence over sentence (a rising line is the MLX cache leak the 64MB
@@ -229,13 +231,28 @@ with the results.
       no quit, no stall; lock-screen pause/play and the headphone pinch
       work. Unlock: still Readr Voice, no sentence twice. Then **measure**,
       from the diagnostics log (Settings › Report a bug attaches it; Xcode's
-      console shows it live): the `Readr Voice (MLX) sentence N: cpu …`
-      lines — every sentence now, not one in ten. Write down every
-      `cpu rtf over last 5` value, the `ms for … ms of audio`
+      console shows it live): the one-time `Readr Voice (MLX) CPU
+      synthesis starting with MLX compilation disabled` line (should appear
+      once, at the first CPU sentence — the background warm-up, if playback
+      had already started before background), then the `Readr Voice (MLX)
+      sentence N: cpu …` lines — every sentence now, not one in ten. Write
+      down every `cpu rtf over last 5` value, the `ms for … ms of audio`
       pairs, the "s ahead" figure at lock and at unlock, and the peak
       memory during the locked half hour. An rtf under 0.8 means the CPU
       refill cannot keep up with playback on this phone and the buffer is
       what carries the locked screen.
+- [ ] **CPU synthesis failure (`readrVoice.prefetchOnCPUOnly=1` on a device
+      known to hit `[Compiled::eval_cpu] CPU compilation not supported on
+      the platform`, or any device where the CPU throws even with
+      compilation disabled).** Lock the phone with the buffer thin. A CPU
+      synthesis failure logs `Readr Voice (MLX) CPU synthesis failed with
+      MLX compilation disabled; CPU unavailable for the rest of this
+      session` at `.warning` with the underlying error, once. **The app
+      must not crash.** From then on: no further CPU attempts (no more
+      `sentence N: cpu` lines), the buffer plays out normally, and once it
+      runs dry the bar shows "Paused — unlock Readr to keep listening" (the
+      existing hold) rather than silence or an Apple voice. Unlocking
+      resumes on the GPU.
 - [ ] **Lock with nothing ready.** Fresh install; press Listen and lock
       the phone as soon as the first sentence is heard. The next sentence
       either arrives in Readr Voice after a CPU synthesis or narration

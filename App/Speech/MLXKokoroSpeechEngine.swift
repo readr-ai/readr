@@ -8,6 +8,13 @@ import MLX
 import MLXAudioCore
 import MLXAudioTTS
 import ReadrKit
+// mlx-swift's `Cmlx` C target has no product entry in Package.swift, but
+// the "MLX" product depends on it, so its module map is in the build graph
+// for anything that (transitively) links "MLX" — this compiles even though
+// Cmlx is not one of the package's declared libraries. `mlx_disable_compile`
+// / `mlx_enable_compile` (Source/Cmlx/mlx-c/mlx/c/compile.h) have no Swift
+// wrapper in mlx-swift; see the CPU-compile note below for why they're used.
+import Cmlx
 
 /// "Readr Voice" on iPhone and iPad: the same Kokoro-82M as
 /// `KokoroSpeechEngine`, run through MLX (Blaizzy/mlx-audio-swift) instead
@@ -26,29 +33,46 @@ import ReadrKit
 ///   book, voice and text. A sentence that is already there plays at once,
 ///   whatever the app's state; the reader's speed is applied at playback,
 ///   so a speed change keeps the buffer. A pump works through the lookahead
-///   on the CPU by default (`PrefetchDevicePolicy.cpuAlways`) so the GPU is
-///   never holding a graph Metal could be asked to drop mid-flight; the
-///   sentence being spoken always goes first, and always wins the actor.
-/// - **The GPU only for what must play now.** A sentence the reader is
-///   about to hear that isn't buffered yet is synthesized on the GPU, and
-///   only while the app is foreground — active, not backgrounded, not
+///   on the same device split as playback (`PrefetchDevicePolicy.
+///   gpuWhileActive`, the default): GPU while the app is foreground, CPU
+///   while it isn't; the sentence being spoken always goes first, and
+///   always wins the actor.
+/// - **The GPU only in the foreground.** A sentence is synthesized on the
+///   GPU only while the app is foreground — active, not backgrounded, not
 ///   resigning (`isForeground`). That is the one place the GPU is used at
 ///   all; every use is logged at `.info` with its duration so the exposure
 ///   the lock race depends on is visible after the fact. `readrVoice.
-///   prefetchOnGPU` (default off) forces the pump back onto the GPU too —
-///   the pre-3.3.1 behaviour, kept as a fallback for the device smoke
-///   test's lock-race procedure.
-/// - **The CPU with the screen locked.** Metal refuses command buffers
-///   from a backgrounded app and MLX surfaces that as a C++ `runtime_error`
-///   inside Metal's completion handler — a `std::terminate`, not something
-///   Swift can catch (mlx-swift#274, #407). So from `didEnterBackground` to
-///   `willEnterForeground` (plus a head start on `willResignActive` for the
-///   lock) every synthesis runs on MLX's CPU device instead, chosen on the
-///   actor immediately before the call. Playback carries on from the
-///   buffer while the CPU refills it — only while the buffer ahead is below
-///   `backgroundRefillStartsBelow`, and until it reaches
-///   `backgroundRefillStopsAt`. The weights are still loaded (and warmed)
-///   on the GPU in the foreground only.
+///   prefetchOnCPUOnly` (default off) forces the pump onto the CPU even in
+///   the foreground, for measuring `cpuRealtimeFactor` against a live GPU
+///   baseline; `readrVoice.prefetchOnGPU` is kept as a no-op alias for the
+///   (now default) GPU-while-active behaviour.
+/// - **The CPU with the screen locked, compiled out.** Metal refuses
+///   command buffers from a backgrounded app and MLX surfaces that as a
+///   C++ `runtime_error` inside Metal's completion handler — a
+///   `std::terminate`, not something Swift can catch (mlx-swift#274,
+///   #407). So from `didEnterBackground` to `willEnterForeground` (plus a
+///   head start on `willResignActive` for the lock) every synthesis runs
+///   on MLX's CPU device instead, chosen on the actor immediately before
+///   the call. Kokoro's layers compile their activation functions
+///   (`compile(shapeless:)`, MLXNN/Activations.swift) and on-device
+///   evidence shows some hardware cannot JIT those on the CPU backend at
+///   all (`[Compiled::eval_cpu] CPU compilation not supported on the
+///   platform`, mlx-c array.cpp:352) — an uncaught error that used to
+///   reach MLX's default handler. Every CPU synthesis now runs with MLX
+///   compilation globally disabled (`mlx_disable_compile`/
+///   `mlx_enable_compile`, `Cmlx` — no Swift wrapper exists) around
+///   exactly that one admitted graph; the actor never admits a second, so
+///   the global toggle never crosses a GPU synthesis, which keeps
+///   compilation on. If a CPU synthesis still throws — compilation
+///   disabled or not — the session marks the CPU unavailable, logs it, and
+///   never tries the CPU again: playback then relies on the buffer alone,
+///   with a hold when it runs dry (below). Playback carries on from the
+///   buffer while the CPU refills it — only while the buffer ahead is
+///   below `backgroundRefillStartsBelow`, and until it reaches
+///   `backgroundRefillStopsAt`, and only while the CPU hasn't been marked
+///   unavailable this session. The weights are still loaded (and warmed,
+///   on the CPU first — see `scheduleCPUWarmUpIfPossible`) on the GPU in
+///   the foreground only.
 /// - **A hold, not a substitute.** Nothing buffered for the next sentence
 ///   with the screen locked — and no CPU synthesis of it about to land — is
 ///   reported to the controller as a suspension: narration pauses on the
@@ -141,15 +165,25 @@ final class MLXKokoroSpeechEngine:
         case gpuWhileActive
         case cpuAlways
 
-        /// CPU by default, since 3.3.1: prefetch never holds a GPU graph
-        /// Metal could be asked to drop mid-flight, and the lock-race
-        /// exposure is only ever a foreground playback sentence's, not the
-        /// pump's. `readrVoice.prefetchOnGPU` forces the pump back onto the
-        /// GPU while active — an escape hatch for the device smoke test,
-        /// not something the app offers a reader.
+        /// GPU-while-active by default: prefetch takes the same
+        /// foreground/backgrounded split as playback, since CPU synthesis
+        /// now runs with MLX compilation disabled (see the type's doc
+        /// comment) and a CPU failure degrades to buffer-only listening
+        /// instead of taking the process down — the 3.3.1 rationale for
+        /// always parking prefetch on the CPU (never holding a GPU graph
+        /// Metal could be asked to drop mid-flight) no longer outweighs the
+        /// cost of a slower CPU-only lookahead in the foreground.
+        /// `readrVoice.prefetchOnCPUOnly` (true) forces the pump onto the
+        /// CPU even while active, to measure `cpuRealtimeFactor` against a
+        /// live GPU baseline. `readrVoice.prefetchOnGPU` is read but is now
+        /// a no-op — it forced this same behaviour pre-fix — kept only so
+        /// the device smoke test's existing scripts don't need editing.
         static func configured(defaults: UserDefaults = .standard) -> Self {
-            defaults.bool(forKey: "readrVoice.prefetchOnGPU")
-                ? .gpuWhileActive : .cpuAlways
+            if defaults.bool(forKey: "readrVoice.prefetchOnCPUOnly") {
+                return .cpuAlways
+            }
+            _ = defaults.bool(forKey: "readrVoice.prefetchOnGPU")
+            return .gpuWhileActive
         }
     }
 
@@ -294,7 +328,17 @@ final class MLXKokoroSpeechEngine:
     /// rather than retrying every pass.
     private var unsynthesizable: Set<ReadrVoiceAudioCache.Key> = []
     private var hasStartedPlayback = false
-    private var cpuWarmUpTask: Task<Void, Never>?
+    /// `Error?` rather than `Void`: `warmUpCPU` reports its failure (if any)
+    /// so it can be routed to `markCPUUnavailable`.
+    private var cpuWarmUpTask: Task<Error?, Never>?
+    /// Set once a CPU synthesis has thrown this session — the warm-up, a
+    /// prefetch, or an on-demand synthesis — even with MLX compilation
+    /// disabled. Sticky for the engine's lifetime: the pump stops trying
+    /// the CPU, background refill is skipped, and locked-screen listening
+    /// becomes buffer-only, holding (`didSuspend(.needsForeground)`) when
+    /// the buffer runs out rather than reaching for a device that keeps
+    /// failing.
+    private(set) var cpuUnavailable = false
 
     // MARK: - Measurement
 
@@ -670,6 +714,10 @@ final class MLXKokoroSpeechEngine:
     /// Whether the pump has a reason to work right now.
     private func shouldRefill() -> Bool {
         guard !lookahead.isEmpty else { return false }
+        // Backgrounded refill is CPU-only (see the type's doc comment); once
+        // the CPU has failed this session there is nothing left to refill
+        // with, and trying again would just fail again.
+        guard isForeground || !cpuUnavailable else { return false }
         let ahead = secondsBuffered(ahead: lookahead)
         let refill = SpeechPrefetchWindow.shouldRefill(
             frontier: synthesizedFrontier,
@@ -793,7 +841,32 @@ final class MLXKokoroSpeechEngine:
             readiness = .failed
             initializeTask = nil
             throw MLXKokoroError.timedOut(seconds)
+        } catch MLXKokoroError.cpuSynthesisFailed(let underlying) {
+            markCPUUnavailable(underlying)
+            throw underlying
         }
+    }
+
+    /// A CPU synthesis — the warm-up, a prefetch, or an on-demand one —
+    /// failed even with MLX compilation disabled (`performGraph`). CPU is
+    /// not tried again this session: further background refill is skipped
+    /// (`shouldRefill`), the warm-up stops rescheduling itself
+    /// (`scheduleCPUWarmUpIfPossible`), and a locked-screen sentence with
+    /// nothing buffered falls straight to the existing
+    /// `didSuspend(.needsForeground)` hold rather than waiting on a device
+    /// that keeps failing. Never an Apple voice in its place.
+    @MainActor
+    private func markCPUUnavailable(_ error: Error) {
+        guard !cpuUnavailable else { return }
+        cpuUnavailable = true
+        DiagnosticsLog.shared.record(
+            .warning, .reader,
+            "Readr Voice (MLX) CPU synthesis failed with MLX compilation disabled; "
+                + "CPU unavailable for the rest of this session",
+            error: error
+        )
+        pump?.cancel()
+        pump = nil
     }
 
     /// Bookkeeping for one synthesis: the sentence count, the CPU window,
@@ -906,7 +979,8 @@ final class MLXKokoroSpeechEngine:
     /// synthesize: prefetch always gets the CPU first.
     @MainActor
     private func scheduleCPUWarmUpIfPossible() {
-        guard hasStartedPlayback, readiness == .ready, cpuWarmUpTask == nil else { return }
+        guard hasStartedPlayback, readiness == .ready, cpuWarmUpTask == nil, !cpuUnavailable
+        else { return }
         guard !(shouldRefill() && nextToSynthesize() != nil) else { return }
         let synthesizer = self.synthesizer
         let gpuWork = self.gpuWork
@@ -916,9 +990,15 @@ final class MLXKokoroSpeechEngine:
         }
         cpuWarmUpTask = task
         Task { @MainActor [weak self] in
-            await task.value
+            let error = await task.value
             guard let self, self.cpuWarmUpTask == task else { return }
             self.cpuWarmUpTask = nil
+            // The warm-up is deliberately the first CPU use (see the doc
+            // comment above), so its own failure is exactly what should
+            // surface before the buffer needs the CPU for real.
+            if let error, case MLXKokoroError.cpuSynthesisFailed(let underlying) = error {
+                self.markCPUUnavailable(underlying)
+            }
         }
     }
 
@@ -941,6 +1021,10 @@ final class MLXKokoroSpeechEngine:
         private var modelDirectory: URL?
         private var model: KokoroModel?
         private var graphIsRunning = false
+        /// So the `.info` "CPU synthesis starting with MLX compilation
+        /// disabled" line (see `performGraph`) is logged once, not once per
+        /// sentence.
+        private var hasLoggedCPUCompileDisabled = false
         private var playbackWaiters: [CheckedContinuation<Void, Never>] = []
         private var backgroundWaiters: [CheckedContinuation<Void, Never>] = []
 
@@ -1079,10 +1163,14 @@ final class MLXKokoroSpeechEngine:
         }
 
         /// The same warm-up on the CPU device, so the first locked-screen
-        /// sentence is not a cold compile. Safe anywhere; failures are
-        /// logged and otherwise ignored — the CPU path is best-effort.
-        func warmUpCPU(voice: String, gpuWork: GPUWorkTracker) async {
-            guard let model else { return }
+        /// sentence is not a cold compile — and, deliberately, so a CPU
+        /// that cannot synthesize at all fails here first, on a throwaway
+        /// sentence, rather than on one the reader is waiting for. Safe
+        /// anywhere; the caller decides what a failure means (it marks the
+        /// session's CPU unavailable — see `markCPUUnavailable`) and logs
+        /// it, so nothing is logged here.
+        func warmUpCPU(voice: String, gpuWork: GPUWorkTracker) async -> Error? {
+            guard let model else { return nil }
             do {
                 _ = try await performGraph(
                     text: MLXKokoroSpeechEngine.warmUpText,
@@ -1094,10 +1182,9 @@ final class MLXKokoroSpeechEngine:
                     isForeground: { false },
                     gpuWork: gpuWork
                 )
+                return nil
             } catch {
-                DiagnosticsLog.shared.record(
-                    .warning, .reader, "Readr Voice (MLX) CPU warm-up failed", error: error
-                )
+                return error
             }
         }
 
@@ -1176,6 +1263,28 @@ final class MLXKokoroSpeechEngine:
             if device == .gpu {
                 gpuWork.begin(at: started)
             }
+            // Kokoro's layers compile their activation functions
+            // (`compile(shapeless:)`, MLXNN/Activations.swift), and some
+            // hardware cannot JIT-compile on MLX's CPU backend at all
+            // (`[Compiled::eval_cpu] CPU compilation not supported on the
+            // platform`, mlx-c array.cpp:352) — device evidence, not a
+            // simulator-only limit. So every CPU synthesis disables MLX
+            // compilation globally for exactly the one graph this call
+            // admits, and restores it once that graph — including a late
+            // result after a timeout, below — has fully finished. Safe as a
+            // global toggle only because `acquireGraph`/`releaseGraph` above
+            // admit one graph at a time, so this never overlaps a GPU
+            // synthesis and GPU compilation stays on.
+            if device == .cpu {
+                if !hasLoggedCPUCompileDisabled {
+                    hasLoggedCPUCompileDisabled = true
+                    DiagnosticsLog.shared.record(
+                        .info, .reader,
+                        "Readr Voice (MLX) CPU synthesis starting with MLX compilation disabled"
+                    )
+                }
+                mlx_disable_compile()
+            }
             // `samples` is `nonisolated`: run here, on the Task's own
             // executor, never on the actor's. Before this the call to
             // `self.samples(...)` needed the actor's executor to run at
@@ -1205,17 +1314,31 @@ final class MLXKokoroSpeechEngine:
                 }
                 let elapsed = Date().timeIntervalSince(started)
                 releaseGraph()
+                if device == .cpu { mlx_enable_compile() }
                 return GraphResult(samples: produced, device: device, elapsed: elapsed)
             } catch let deadline as DeadlineExceeded {
-                // MLX cannot cancel a submitted graph. Keep the admission lock
+                // MLX cannot cancel a submitted graph. Keep the admission
+                // lock — and compilation disabled, if this is a CPU graph —
                 // until its late result lands, while the caller fails on time.
                 Task {
                     _ = try? await work.value
+                    if device == .cpu { mlx_enable_compile() }
                     self.releaseGraphAfterLateResult()
                 }
                 throw MLXKokoroError.timedOut(deadline.seconds)
             } catch {
                 releaseGraph()
+                if device == .cpu {
+                    mlx_enable_compile()
+                    // A cancellation is not a CPU failure — the request was
+                    // superseded or the engine went away, not the hardware
+                    // refusing to synthesize. Only a real synthesis error
+                    // marks the session's CPU unavailable (see
+                    // `MLXKokoroSpeechEngine.markCPUUnavailable`).
+                    if !(error is CancellationError) {
+                        throw MLXKokoroError.cpuSynthesisFailed(underlying: error)
+                    }
+                }
                 throw error
             }
         }
@@ -1397,6 +1520,11 @@ enum MLXKokoroError: Error, LocalizedError {
     case incompleteDownload(String)
     case notDownloaded
     case notLoaded
+    /// A CPU synthesis threw even with MLX compilation disabled
+    /// (`Synthesizer.performGraph`) — a real synthesis failure, not a
+    /// cancellation. `MLXKokoroSpeechEngine.markCPUUnavailable` catches
+    /// this to stop trying the CPU for the rest of the session.
+    case cpuSynthesisFailed(underlying: Error)
 
     var errorDescription: String? {
         switch self {
@@ -1414,6 +1542,8 @@ enum MLXKokoroError: Error, LocalizedError {
             return "Readr Voice model has not been downloaded"
         case .notLoaded:
             return "Readr Voice model has not been loaded"
+        case .cpuSynthesisFailed(let underlying):
+            return "Readr Voice CPU synthesis failed: \(underlying.localizedDescription)"
         }
     }
 }
