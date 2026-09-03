@@ -165,6 +165,66 @@ these four shipped on unit tests and the simulator alone.
 - [ ] A headphone/AirPods pinch pauses and resumes
 - [ ] Leave the app: playback continues in the background
 
+## 9. Readr Voice on MLX — iPhone and iPad `[blocker for 3.3]`
+
+Readr Voice on iOS runs Kokoro on the Metal GPU through MLX
+(`App/Speech/MLXKokoroSpeechEngine.swift`). **None of it can run on the
+simulator** — MLX aborts there (mlx#2605) — and CI proves only that it
+compiles and links. Every line below is unverified until a device has done
+it; two of them (the lock and the memory ceiling) are exactly where the
+known failure modes live. Use an iPhone on iOS 26.4 or later, on Wi-Fi, with
+Xcode attached for the memory gauge. Record the device model and iOS version
+with the results.
+
+- [ ] **First Listen downloads and switches.** Fresh install (or delete the
+      app first). Open Alice, press Listen: an Apple voice starts within a
+      second. Open the voice menu: Readr Voice is the first row and checked,
+      a "Readr Voice is downloading" note shows, and the locked-screen note
+      ("With the screen locked, an Apple voice reads…") shows under it. Wait
+      for the ~350MB fetch. The voice changes to Readr Voice **at a sentence
+      boundary** — no gap longer than a breath, no sentence repeated, none
+      skipped — and the downloading note is gone. Note how long the switch
+      took from pressing Listen.
+- [ ] **Thirty minutes continuous.** Leave it reading. No quit, no stall, no
+      sentence heard twice, no sentence in an Apple voice once Readr Voice
+      has taken over (unless you locked the phone). Watch the read-along line
+      keep pace with the audio.
+- [ ] **Memory.** In Xcode's Debug navigator, the Memory gauge during that
+      half hour: note the peak. It must stay **under 1GB** and must not climb
+      sentence over sentence (a rising line is the MLX cache leak the 64MB
+      cap is meant to stop).
+- [ ] **Lock the screen mid-sentence.** While Readr Voice is in the middle
+      of a sentence, press the side button. Expected: audio continues from
+      the lock screen; the **next** sentence is an Apple voice (the current
+      one either finishes in Readr Voice or is re-read by the Apple voice —
+      both are fine); and the app does **not** quit. Unlock and return to the
+      app: within one sentence the voice is Readr Voice again. Repeat five
+      times, at different points in a sentence — the in-flight-synthesis
+      window is the one the code cannot close.
+- [ ] **Lock during the first download.** Fresh install again. Press Listen,
+      then lock the phone immediately and leave it locked past the point the
+      download would have finished (five minutes on Wi-Fi). The Apple voice
+      keeps reading throughout and the app does not quit — the GPU load
+      waits for the foreground. Unlock: Readr Voice takes over within a few
+      sentences.
+- [ ] **Pause and resume.** Pause mid-sentence from the bar, wait ten
+      seconds, play: it resumes rather than restarting the sentence. Same
+      from the lock screen and with a headphone pinch.
+- [ ] **Skips and a chapter crossing.** Skip forward and back a sentence in
+      Readr Voice; skip to the next chapter; let a chapter end on its own
+      and roll into the next. Every one continues in Readr Voice.
+- [ ] **Speed.** Change speed mid-sentence: Readr Voice takes the multiplier
+      directly, so 1.5× should be audibly faster and still intelligible.
+- [ ] **No crash logs.** After all of the above: Settings › Privacy &
+      Security › Analytics & Improvements › Analytics Data. There must be no
+      new `Readr-…` entry. Any that appears goes in the bug with the full
+      text — the BNNS signature is `BNNSGraphContextExecute`; the MLX one
+      is `[METAL] Command buffer execution failed` from
+      `com.Metal.CompletionQueueDispatch`.
+- [ ] **A long sentence.** Find or paste a sentence of 300+ characters (the
+      segmenter's cap is 320). It is read in full, in Readr Voice, possibly
+      with a small pause at a comma where it was split.
+
 ## Not on this list, on purpose
 
 **ChatGPT subscription sign-in.** `.chatGPT` is filtered out of the iOS build

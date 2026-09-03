@@ -259,16 +259,29 @@ wiring does not close them):
 
 - [x] **Legal read on the G2P model** — closed 2026-08-20 by the project owner:
   determined no legal issue with shipping the espeak-trained G2P.
-- [ ] **The iOS BNNS crash** (FluidAudio#817/#844) — FluidAudio#844 was closed
-  upstream as completed on 2026-08-11, but late comments still report crashes.
-  No FluidAudio tag newer than 0.15.6 exists; bump the pin when one lands.
-  Readr Voice remains the English default on ungated builds, with the platform
-  voice as fallback. It is hard-gated off on iOS/iPadOS 26.4+ (fail-closed
-  through iOS 27+ until each line passes a device check) and macOS 26.4–26.5:
-  Kokoro inference can crash inside Apple's `libBNNS`, so the platform voice
-  reads and the model is not downloaded. iOS/iPadOS 26.6 still reproduces the
-  crash; macOS 26.6+ is outside the gate. Re-enable any iOS line only after
-  FluidAudio#844's crash signature no longer reproduces on a device build.
+- [x] **The iOS BNNS crash** (FluidAudio#817/#844) — sidestepped rather than
+  fixed. FluidAudio#844 was closed upstream as completed on 2026-08-11, but
+  late comments still report crashes and no FluidAudio tag newer than 0.15.6
+  exists. The CoreML engine stays hard-gated off on iOS/iPadOS 26.4+
+  (fail-closed through iOS 27+) and macOS 26.4–26.5, where Kokoro inference
+  can crash inside Apple's `libBNNS`. *v3.3.0: on iPhone and iPad Readr Voice
+  runs on **MLX** instead — the same Kokoro-82M on the Metal GPU
+  (`MLXKokoroSpeechEngine`, Blaizzy/mlx-audio-swift pinned to `d20cbd6`,
+  mlx-swift 0.31.6, weights `mlx-community/Kokoro-82M-bf16`), which never
+  enters BNNS. CoreML remains the macOS runtime. `NarrationEnginePolicy`
+  (ReadrKit, table-tested) picks the engine per sentence. Decision memo:
+  `docs/research/MLX-KOKORO-IOS.md`.*
+- [ ] **Next: the MLX background limitation.** Metal refuses GPU work from a
+  backgrounded app, and MLX surfaces the refusal as a C++ exception in
+  Metal's completion handler — an uncatchable abort (mlx-swift#274/#407). So
+  the MLX engine never starts GPU work unless the app is active: with the
+  screen locked an Apple voice reads, and Readr Voice returns at the next
+  sentence when the reader comes back (the voice menu says so). A synthesis
+  already in flight at the moment of the lock is the residual risk — well
+  under a second per sentence, but not zero. Closing this means synthesizing
+  ahead in the foreground and buffering a few sentences of audio, or iOS 26's
+  background-GPU continued-processing task (a separate entitlement); either
+  way, measure on a device first — the phone numbers below are still open.
 - [ ] **Phone-device numbers** (latency/memory/battery) — still unmeasured.
 - [ ] **Word timings** — `predictedDurations` gives exact token timestamps;
   mapping tokens back to character ranges (for read-along highlighting and
