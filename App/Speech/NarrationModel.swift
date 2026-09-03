@@ -64,9 +64,11 @@ final class NarrationModel: ObservableObject {
     @Published private(set) var holdReason: NarrationHoldReason?
 
     /// The hold, as the bar, the lock screen and the notification say it.
+    /// "Paused" leads because a listener who glances at the bar mid-hold sees
+    /// a stopped state before they read why — the same shape as `failedLine`.
     var holdText: String? {
         switch holdReason {
-        case .needsForeground: return "Unlock Readr to keep listening"
+        case .needsForeground: return "Paused \u{2014} unlock Readr to keep listening"
         case nil: return nil
         }
     }
@@ -561,7 +563,17 @@ final class NarrationModel: ObservableObject {
         guard readrVoiceKeepsReadingWhenLocked, usesReadrVoice,
               !defaults.bool(forKey: Self.notificationsRequestedKey) else { return }
         defaults.set(true, forKey: Self.notificationsRequestedKey)
-        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) {
+            granted, error in
+            // A decline (or an OS-level failure) means the hold goes on
+            // exactly as before — narration still pauses, just silently, off
+            // the lock screen. Logged so a reader who reports "it just
+            // stopped" is diagnosable without guessing at Settings state.
+            guard !granted else { return }
+            DiagnosticsLog.shared.record(
+                .warning, .app, "hold notification permission not granted", error: error
+            )
+        }
         #endif
     }
 
@@ -626,7 +638,11 @@ final class NarrationModel: ObservableObject {
             return
         }
         var info: [String: Any] = [
-            MPMediaItemPropertyTitle: book.metadata.title,
+            // A hold takes the title line: it's the first thing the lock
+            // screen shows, and the lock screen is exactly where the reader
+            // is when a hold happens. The book's own title returns once
+            // `play()` (foreground return, or the reader's own tap) clears it.
+            MPMediaItemPropertyTitle: holdText ?? book.metadata.title,
             // Preparing counts as playing here, so the lock screen shows a
             // pause control for the wait rather than a play control that
             // would do nothing.
@@ -634,11 +650,6 @@ final class NarrationModel: ObservableObject {
         ]
         if !book.metadata.authors.isEmpty {
             info[MPMediaItemPropertyArtist] = book.metadata.authors.joined(separator: ", ")
-        }
-        // A hold takes the second line: the lock screen is where the reader
-        // is when it happens.
-        if let holdText {
-            info[MPMediaItemPropertyArtist] = holdText
         }
         MPNowPlayingInfoCenter.default().nowPlayingInfo = info
     }

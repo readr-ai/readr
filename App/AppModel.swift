@@ -50,6 +50,18 @@ final class AppModel: ObservableObject {
         parsers: BookParserRegistry? = nil,
         seedsSampleBook: Bool
     ) {
+        // Diagnostics-to-file, in ALL builds (not gated on any UI-test
+        // launch argument): `DiagnosticsLog` is in-memory only by design —
+        // see its doc comment — and on a device the in-app bug report is the
+        // only way to read it. This sink appends every event to
+        // Library/Caches/Diagnostics/readr.log, where `xcrun devicectl` can
+        // pull it off between sessions or after a crash — the exact commands
+        // are in docs/DEVICE-SMOKE-TEST.md. Installed first, so nothing
+        // recorded during the rest of this initializer (sample-book seeding,
+        // state restore) is missed.
+        Self.installDiagnosticsFileSink()
+        DiagnosticsLog.shared.record(.info, .app, "launched Readr \(Self.appVersionAndBuild)")
+
         // `-uiTestEmptyLibrary`: a throwaway EMPTY store, so the empty-library
         // guidance can be asserted without inheriting whatever books happen to
         // sit in this device's on-disk library. Without it the test read the
@@ -196,6 +208,30 @@ final class AppModel: ObservableObject {
     }
 
     private static let sampleBookSeededKey = "hasSeededSampleBook"
+
+    // MARK: Diagnostics
+
+    /// Installs the file sink once per process. Idempotent (re-running it —
+    /// a second `AppModel`, an Xcode preview — just replaces the closure
+    /// with an equivalent one pointed at the same file), so it's safe to
+    /// call unconditionally from `init`.
+    private static func installDiagnosticsFileSink() {
+        guard let cachesDirectory = FileManager.default.urls(
+            for: .cachesDirectory, in: .userDomainMask
+        ).first else { return }
+        let logURL = cachesDirectory
+            .appendingPathComponent("Diagnostics", isDirectory: true)
+            .appendingPathComponent("readr.log")
+        let fileSink = DiagnosticsFileSink(fileURL: logURL)
+        DiagnosticsLog.shared.sink = { event in fileSink.write(event) }
+    }
+
+    private static var appVersionAndBuild: String {
+        let info = Bundle.main.infoDictionary
+        let version = info?["CFBundleShortVersionString"] as? String ?? "unknown"
+        let build = info?["CFBundleVersion"] as? String ?? "unknown"
+        return "\(version) (\(build))"
+    }
 
     private static func makeCredentialStore() -> any CredentialStore {
         // `-uiTestInMemoryCredentials`: keep the Ask refresh-on-connect UI test

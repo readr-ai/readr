@@ -64,6 +64,16 @@ public final class DiagnosticsLog: @unchecked Sendable {
     private let capacity: Int
     private let lock = NSLock()
     private var buffer: [DiagnosticEvent] = []
+    /// An optional tap that sees every sanitized event as it's recorded — the
+    /// app installs `DiagnosticsFileSink` here so a device build's evidence
+    /// survives past this in-memory ring buffer. Forward-only: a sink
+    /// installed mid-session never sees what was recorded before it.
+    private var _sink: ((DiagnosticEvent) -> Void)?
+
+    public var sink: ((DiagnosticEvent) -> Void)? {
+        get { lock.lock(); defer { lock.unlock() }; return _sink }
+        set { lock.lock(); _sink = newValue; lock.unlock() }
+    }
 
     public init(capacity: Int = 200) {
         self.capacity = max(1, capacity)
@@ -81,11 +91,18 @@ public final class DiagnosticsLog: @unchecked Sendable {
         safe.message = Self.sanitize(event.message)
         safe.detail = event.detail.map(Self.sanitize)
 
-        lock.lock(); defer { lock.unlock() }
+        lock.lock()
         buffer.append(safe)
         if buffer.count > capacity {
             buffer.removeFirst(buffer.count - capacity)
         }
+        // Captured under the lock, but invoked after it's released: a sink
+        // that calls back into `record` (a file write failure logging
+        // itself, say) must not deadlock against this same lock.
+        let currentSink = _sink
+        lock.unlock()
+
+        currentSink?(safe)
     }
 
     /// The call-site shorthand. `error` contributes its `diagnosticDescription`

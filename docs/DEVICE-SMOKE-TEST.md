@@ -231,10 +231,12 @@ with the results.
 - [ ] **Lock with nothing ready.** Fresh install; press Listen and lock
       the phone as soon as the first sentence is heard. The next sentence
       either arrives in Readr Voice after a CPU synthesis or narration
-      pauses at the boundary with "Unlock Readr to keep listening" on the
-      lock screen and as a notification (the first Listen asked for
-      permission). No Apple voice. Unlock and open Readr: it resumes on the
-      same sentence by itself; the notification is gone.
+      pauses at the boundary with "Paused — unlock Readr to keep listening"
+      on the bar, the lock screen's title, and as a notification (the first
+      Listen asked for permission — decline it and the diagnostics file
+      should carry a "hold notification permission not granted" line). No
+      Apple voice. Unlock and open Readr: it resumes on the same sentence by
+      itself; the notification is gone.
 - [ ] **Lock during the first download.** Fresh install again. Press
       Listen, then lock the phone immediately and leave it locked past the
       point the download would have finished (five minutes on Wi-Fi). The
@@ -264,6 +266,39 @@ with the results.
 - [ ] **A long sentence.** Find or paste a sentence of 300+ characters (the
       segmenter's cap is 320). It is read in full, in Readr Voice, possibly
       with a small pause at a comma where it was split.
+
+## 10. Pulling the diagnostics file off a device
+
+`DiagnosticsLog` is an in-memory ring buffer — see its doc comment — so a
+crash or a session that never got to Settings › Report a bug takes it with
+it. In every build, `AppModel` also appends each event to
+`Library/Caches/Diagnostics/readr.log` inside the app's own container
+(`DiagnosticsFileSink`, ~1MB cap with a single rotation to a `.1` sibling).
+Two `devicectl` commands get it off a connected device without touching the
+app:
+
+```sh
+# List what's there (find <device-id> with `xcrun devicectl list devices`):
+xcrun devicectl device info files \
+  --device <device-id> \
+  --domain-type appDataContainer \
+  --domain-identifier com.readrai.app \
+  --subdirectory Library/Caches/Diagnostics
+
+# Copy it to the current directory:
+xcrun devicectl device copy from \
+  --device <device-id> \
+  --domain-type appDataContainer \
+  --domain-identifier com.readrai.app \
+  --source Library/Caches/Diagnostics/readr.log \
+  --destination .
+```
+
+- [ ] After using the app for a minute or two, both commands succeed and
+      `readr.log` has lines with a timestamp, level, category and message —
+      no book text, no secrets
+- [ ] The first line of a fresh app container reads `launched Readr
+      <version> (<build>)`
 
 ## Not on this list, on purpose
 

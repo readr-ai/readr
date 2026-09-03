@@ -49,7 +49,8 @@ public struct SpeechRequest: Hashable, Sendable, Identifiable {
 public enum NarrationHoldReason: Hashable, Sendable {
     /// The engine has nothing synthesized for the next sentence and cannot
     /// make it where the app is (backgrounded, with the GPU withheld): the
-    /// reader unlocks the phone to go on. "Unlock Readr to keep listening."
+    /// reader unlocks the phone to go on. "Paused — unlock Readr to keep
+    /// listening."
     case needsForeground
 }
 

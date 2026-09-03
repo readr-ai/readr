@@ -122,6 +122,56 @@ final class DiagnosticsLogTests: XCTestCase {
         }
         XCTAssertEqual(log.entries.count, 400)
     }
+
+    // MARK: - Sink
+
+    /// The optional sink — installed by the app for `DiagnosticsFileSink` —
+    /// sees the same sanitized event that lands in the buffer.
+    func testSinkReceivesTheSanitizedEvent() {
+        let log = makeLog()
+        var seen: [DiagnosticEvent] = []
+        log.sink = { seen.append($0) }
+
+        log.record(.error, .provider, "sent key sk-proj-AbC123dEf456GhI789jKl0mno")
+
+        XCTAssertEqual(seen.count, 1)
+        XCTAssertFalse(seen[0].message.contains("sk-proj"), seen[0].message)
+        XCTAssertEqual(seen[0].message, log.entries.last?.message)
+    }
+
+    /// A sink with no events recorded before it was installed hears nothing
+    /// retroactively — it is a forward-only tap, not a replay.
+    func testSinkHearsOnlyEventsRecordedAfterInstallation() {
+        let log = makeLog()
+        log.record(.info, .app, "before")
+        var seen: [DiagnosticEvent] = []
+        log.sink = { seen.append($0) }
+        log.record(.info, .app, "after")
+
+        XCTAssertEqual(seen.map(\.message), ["after"])
+    }
+
+    /// The sink must run with the buffer lock released — a sink that turns
+    /// around and calls `record` again (as `DiagnosticsFileSink` writing a
+    /// failure back to the log would) must not deadlock against `record`'s
+    /// own lock. Run off the main thread and bounded by a timeout so a
+    /// regression fails the test instead of hanging the suite.
+    func testSinkRunsWithoutHoldingTheLockSoReentrantRecordingWorks() {
+        let log = makeLog()
+        let sinkObservedReentrantRecord = expectation(description: "reentrant record completed")
+        log.sink = { event in
+            guard event.message == "original" else { return }
+            log.record(.info, .app, "from sink")
+            sinkObservedReentrantRecord.fulfill()
+        }
+
+        DispatchQueue.global().async {
+            log.record(.info, .app, "original")
+        }
+
+        wait(for: [sinkObservedReentrantRecord], timeout: 2)
+        XCTAssertEqual(log.entries.map(\.message), ["original", "from sink"])
+    }
 }
 
 /// The report a reader actually sends.

@@ -1,0 +1,138 @@
+import Foundation
+
+/// Appends `DiagnosticsLog` events to a file, one line per event, so a
+/// device build's diagnostics survive past the in-memory ring buffer and can
+/// be pulled off without going through the in-app bug report.
+///
+/// `DiagnosticsLog` stays in-memory by design — see its doc comment — this
+/// is an opt-in tap the app installs alongside it:
+///
+/// ```swift
+/// let fileSink = DiagnosticsFileSink(fileURL: logURL)
+/// DiagnosticsLog.shared.sink = { [fileSink] event in fileSink.write(event) }
+/// ```
+///
+/// On a device the file lives under the app's own container, so it can be
+/// fetched with `xcrun devicectl` between sessions or after a crash — see
+/// `docs/DEVICE-SMOKE-TEST.md` for the exact commands.
+///
+/// Capped at ~1MB with a single rotation: past the cap the current file is
+/// moved to a `.1` sibling (replacing whatever was there) and a fresh file
+/// starts. One backup generation is enough to catch a bug report window —
+/// this is not an archive, and it never chains a `.2`.
+public final class DiagnosticsFileSink: @unchecked Sendable {
+
+    /// ~1MB: enough for hours of session diagnostics, small enough to attach
+    /// or copy off a device without thinking about it.
+    public static let defaultMaxBytes = 1_000_000
+
+    /// A file line's message is trimmed harder than the in-memory cap
+    /// (`DiagnosticsLog.maxMessageLength`, 300) — the file is read on a
+    /// terminal or in a text editor, one line per event, and a message this
+    /// long is already a sign something is off rather than useful detail.
+    public static let maxLineMessageLength = 200
+
+    public let fileURL: URL
+    private let rotatedURL: URL
+    private let maxBytes: Int
+    private let fileManager: FileManager
+    private let lock = NSLock()
+
+    public init(
+        fileURL: URL,
+        maxBytes: Int = DiagnosticsFileSink.defaultMaxBytes,
+        fileManager: FileManager = .default
+    ) {
+        self.fileURL = fileURL
+        // Appended to the whole last path component (not swapped in as the
+        // extension), so "readr.log" rotates to "readr.log.1" rather than
+        // "readr.1.log" — a sibling, as the name says.
+        self.rotatedURL = fileURL.deletingLastPathComponent()
+            .appendingPathComponent(fileURL.lastPathComponent + ".1")
+        self.maxBytes = max(1, maxBytes)
+        self.fileManager = fileManager
+    }
+
+    /// Append one line for `event`. Best-effort: a write failure (a full
+    /// disk, an unwritable path) is swallowed rather than thrown — installed
+    /// on `DiagnosticsLog`'s recording path, this must never be the reason
+    /// an event fails to record.
+    public func write(_ event: DiagnosticEvent) {
+        let line = Self.line(for: event)
+        lock.lock()
+        defer { lock.unlock() }
+        appendLocked(line)
+    }
+
+    // MARK: - Formatting
+
+    private static let timestampFormatter: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter
+    }()
+
+    /// `[timestamp] LEVEL category: message — detail`, always exactly one
+    /// physical line: a detail carrying a newline (a multi-line HTTP body,
+    /// say) is collapsed rather than allowed to split one event across two
+    /// lines a reader of the raw file would count as two events.
+    static func line(for event: DiagnosticEvent) -> String {
+        let timestamp = timestampFormatter.string(from: event.timestamp)
+        var message = event.message
+        if message.count > maxLineMessageLength {
+            message = String(message.prefix(maxLineMessageLength)) + "\u{2026}"
+        }
+        var line = "[\(timestamp)] \(event.level.rawValue.uppercased()) "
+            + "\(event.category.rawValue): \(oneLine(message))"
+        if let detail = event.detail, !detail.isEmpty {
+            line += " \u{2014} \(oneLine(detail))"
+        }
+        return line
+    }
+
+    private static func oneLine(_ text: String) -> String {
+        text.replacingOccurrences(of: "\r\n", with: " ")
+            .replacingOccurrences(of: "\n", with: " ")
+            .replacingOccurrences(of: "\r", with: " ")
+    }
+
+    // MARK: - File I/O
+
+    private func appendLocked(_ line: String) {
+        guard let data = (line + "\n").data(using: .utf8) else { return }
+        do {
+            try ensureParentDirectoryExists()
+            if let currentSize = try? currentFileSize(), currentSize + data.count > maxBytes {
+                rotateLocked()
+            }
+            if !fileManager.fileExists(atPath: fileURL.path) {
+                guard fileManager.createFile(atPath: fileURL.path, contents: nil) else { return }
+            }
+            let handle = try FileHandle(forWritingTo: fileURL)
+            defer { try? handle.close() }
+            try handle.seekToEnd()
+            try handle.write(contentsOf: data)
+        } catch {
+            // Diagnostics writing is best-effort — see `write(_:)`.
+        }
+    }
+
+    private func currentFileSize() throws -> Int {
+        guard fileManager.fileExists(atPath: fileURL.path) else { return 0 }
+        let attributes = try fileManager.attributesOfItem(atPath: fileURL.path)
+        return (attributes[.size] as? Int) ?? 0
+    }
+
+    private func ensureParentDirectoryExists() throws {
+        let directory = fileURL.deletingLastPathComponent()
+        guard !fileManager.fileExists(atPath: directory.path) else { return }
+        try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+    }
+
+    /// Move the current file to the `.1` sibling, replacing whatever was
+    /// there — one backup generation, never a chain of them.
+    private func rotateLocked() {
+        try? fileManager.removeItem(at: rotatedURL)
+        try? fileManager.moveItem(at: fileURL, to: rotatedURL)
+    }
+}

@@ -42,7 +42,7 @@ import ReadrKit
 /// - **A hold, not a substitute.** Nothing buffered for the next sentence
 ///   with the screen locked — and no CPU synthesis of it about to land — is
 ///   reported to the controller as a suspension: narration pauses on the
-///   sentence with "Unlock Readr to keep listening", and play on return
+///   sentence with "Paused — unlock Readr to keep listening", and play on return
 ///   speaks it on the GPU. No Apple voice reads in its place.
 ///
 /// Per sentence the device, synthesis time and audio length are measured;
