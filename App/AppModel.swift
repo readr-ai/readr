@@ -41,6 +41,10 @@ final class AppModel: ObservableObject {
     /// M3, by "ask the book").
     let credentialStore: any CredentialStore
     let providerManager: ProviderManager
+    /// OpenRouter's live catalogue (disk-cached, curated fallback). One per
+    /// app so the settings sheet and the launch-time budget registration
+    /// share a cache.
+    let openRouterModelStore = OpenRouterModelStore()
 
     /// - Parameter seedsSampleBook: whether a never-used library gets the
     ///   bundled sample on this launch. The app entry point decides from the
@@ -114,6 +118,14 @@ final class AppModel: ObservableObject {
             }
         }
 
+        // A live-picked OpenRouter model persists by id alone; its context
+        // budget lives in the catalogue's disk cache. Register that copy now
+        // — no network, see `cachedModels()` — so the router budget is right
+        // from the first question after a relaunch, before Settings has been
+        // opened. Under the UI-test flags the store returns nothing.
+        let openRouterStore = openRouterModelStore
+        Task.detached(priority: .utility) { _ = await openRouterStore.cachedModels() }
+
         // `-uiTestOpenURL <path>`: deterministic stand-in for the Files-app /
         // Finder open-in flow. XCUITest can't drive the system Files UI, so a
         // UI test passes a fixture path and we import it through the exact same
@@ -137,7 +149,8 @@ final class AppModel: ObservableObject {
             UserDefaults.standard.removeObject(forKey: "readerLayout")
         }
 
-        // `-uiTestSeedProviderKeys`: mark both remote providers as configured
+        // `-uiTestSeedProviderKeys`: mark the remote key providers (Anthropic,
+        // OpenAI, OpenRouter) as configured
         // (with obvious non-secret placeholder values — NOT real or realistic
         // API keys) and make Anthropic the active selection, so provider-
         // switching UI tests need no keyboard input (typing into a second
@@ -150,6 +163,7 @@ final class AppModel: ObservableObject {
            ProcessInfo.processInfo.arguments.contains("-uiTestInMemoryCredentials") {
             try? credentials.save(.apiKey("uitest-placeholder-not-a-secret"), for: .anthropic)
             try? credentials.save(.apiKey("uitest-placeholder-not-a-secret"), for: .openAI)
+            try? credentials.save(.apiKey("uitest-placeholder-not-a-secret"), for: .openRouter)
             providerManager.setActive(kind: .anthropic)
         }
 

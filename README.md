@@ -43,8 +43,9 @@ a shareable article.
   reflowing on window resize (macOS).
 - 🤖 **Ask the book**: select a sentence, ask a question, get a streamed answer
   grounded in what you've read so far, with **source citations** — and ask
-  follow-ups. Answers never reach past your place (a **Whole book** switch
-  lifts that), and the book is the context, not the ceiling: questions that
+  follow-ups. Answers never reach past your place (an **Answers from** choice
+  — up to where you are, or the whole book — lifts that), and the book is the
+  context, not the ceiling: questions that
   reach past it (later research, the film adaptation) get real answers,
   marked as coming from beyond the book.
 - 🎧 **Listen to the book**: read-aloud from the page you're on, narrated by

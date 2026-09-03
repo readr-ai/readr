@@ -4,9 +4,11 @@ import Foundation
 /// `ProviderInfo` values. This is the source of truth the `ProviderManager`
 /// consults when resolving a `ProviderSelection` into a concrete `ProviderInfo`.
 ///
-/// Last verified against vendor model lists: 2026-07-23 (#46). This list
-/// drifts as models launch and retire — re-verify on each release, or
-/// replace with a live `/v1/models` fetch (tracked follow-up in #46).
+/// Last verified against vendor model lists: 2026-07-23 (#46); the OpenRouter
+/// rows on 2026-09-03. The vendor lists drift as models launch and retire —
+/// re-verify on each release. OpenRouter alone is live: `OpenRouterModelStore`
+/// fetches `/api/v1/models`, and the static rows here are only its curated
+/// "Recommended" slice.
 ///
 /// `contextBudget` is the ROUTER budget (drives whole-book vs retrieval in
 /// `AdaptiveContextStrategy`), deliberately capped below some models' real
@@ -100,33 +102,116 @@ public enum ProviderCatalog {
         ),
     ]
 
-    /// OpenRouter models (OpenAI-compatible API; slugs are namespaced).
-    /// A deliberately small starter set: one strong default, one budget
-    /// option, one free-tier model users can try before adding credits.
-    /// NEEDS-VERIFICATION: slugs drift — especially the `:free` lineup.
-    public static let openRouterModels: [ProviderInfo] = [
-        ProviderInfo(
-            kind: .openRouter,
-            modelID: "anthropic/claude-sonnet-5",
-            contextBudget: 200_000,
-            supportsPromptCaching: false,
-            isLocal: false
-        ),
-        ProviderInfo(
-            kind: .openRouter,
-            modelID: "openai/gpt-5.6",
-            contextBudget: 200_000,
-            supportsPromptCaching: false,
-            isLocal: false
-        ),
-        ProviderInfo(
-            kind: .openRouter,
-            modelID: "meta-llama/llama-3.3-70b-instruct:free",
-            contextBudget: 65_536,
-            supportsPromptCaching: false,
-            isLocal: false
-        ),
+    /// The curated OpenRouter rows: the recommended set the picker leads
+    /// with, and the only list the app has before the live catalogue arrives
+    /// (offline, first launch, UI tests). Names, context windows and prices
+    /// verified against `GET /api/v1/models` on 2026-09-03; prices are USD
+    /// per million tokens and are what the picker shows offline. The order
+    /// is the picker's "Recommended" order — strong defaults first, then the
+    /// cheap fast tiers, then the `:free` rows.
+    public static let openRouterCurated: [OpenRouterModel] = [
+        OpenRouterModel(id: "anthropic/claude-sonnet-5", name: "Anthropic: Claude Sonnet 5",
+                        contextLength: 1_000_000, promptUSDPerMillion: 2, completionUSDPerMillion: 10),
+        OpenRouterModel(id: "anthropic/claude-haiku-4.5", name: "Anthropic: Claude Haiku 4.5",
+                        contextLength: 200_000, promptUSDPerMillion: 1, completionUSDPerMillion: 5),
+        OpenRouterModel(id: "openai/gpt-5.6-sol", name: "OpenAI: GPT-5.6 Sol",
+                        contextLength: 1_050_000, promptUSDPerMillion: 2, completionUSDPerMillion: 10),
+        OpenRouterModel(id: "openai/gpt-5.6-luna", name: "OpenAI: GPT-5.6 Luna",
+                        contextLength: 1_050_000, promptUSDPerMillion: 0.20, completionUSDPerMillion: 1.20),
+        OpenRouterModel(id: "google/gemini-3.8-flash", name: "Google: Gemini 3.8 Flash",
+                        contextLength: 1_048_576, promptUSDPerMillion: 0.75, completionUSDPerMillion: 3.75),
+        OpenRouterModel(id: "google/gemini-3.1-flash-lite", name: "Google: Gemini 3.1 Flash Lite",
+                        contextLength: 1_048_576, promptUSDPerMillion: 0.25, completionUSDPerMillion: 1.50),
+        OpenRouterModel(id: "moonshotai/kimi-k3", name: "MoonshotAI: Kimi K3",
+                        contextLength: 1_048_576, promptUSDPerMillion: 3, completionUSDPerMillion: 15),
+        OpenRouterModel(id: "moonshotai/kimi-k2.6", name: "MoonshotAI: Kimi K2.6",
+                        contextLength: 262_144, promptUSDPerMillion: 0.95, completionUSDPerMillion: 4),
+        OpenRouterModel(id: "meta/muse-spark-1.3", name: "Meta: Muse Spark 1.3",
+                        contextLength: 1_048_576, promptUSDPerMillion: 1.25, completionUSDPerMillion: 4.25),
+        OpenRouterModel(id: "meta/muse-glimmer-30b", name: "Meta: Muse Glimmer 30B",
+                        contextLength: 131_072, promptUSDPerMillion: 0.30, completionUSDPerMillion: 1.10),
+        OpenRouterModel(id: "deepseek/deepseek-v4-pro", name: "DeepSeek: DeepSeek V4 Pro",
+                        contextLength: 1_048_576, promptUSDPerMillion: 1.04, completionUSDPerMillion: 2.07),
+        OpenRouterModel(id: "deepseek/deepseek-v4-flash", name: "DeepSeek: DeepSeek V4 Flash",
+                        contextLength: 1_048_576, promptUSDPerMillion: 0.08, completionUSDPerMillion: 0.17),
+        OpenRouterModel(id: "qwen/qwen3.8-flash", name: "Qwen: Qwen3.8 Flash",
+                        contextLength: 1_000_000, promptUSDPerMillion: 0.15, completionUSDPerMillion: 0.47),
+        OpenRouterModel(id: "z-ai/glm-5.3-flash", name: "Z.ai: GLM 5.3 Flash",
+                        contextLength: 1_310_720, promptUSDPerMillion: 0.07, completionUSDPerMillion: 0.25),
+        OpenRouterModel(id: "x-ai/grok-4.6", name: "xAI: Grok 4.6",
+                        contextLength: 500_000, promptUSDPerMillion: 2, completionUSDPerMillion: 6),
+        OpenRouterModel(id: "minimax/minimax-m3:free", name: "MiniMax: MiniMax M3 (free)",
+                        contextLength: 1_048_576, promptUSDPerMillion: 0, completionUSDPerMillion: 0),
+        OpenRouterModel(id: "z-ai/glm-5.2:free", name: "Z.ai: GLM 5.2 (free)",
+                        contextLength: 256_000, promptUSDPerMillion: 0, completionUSDPerMillion: 0),
+        OpenRouterModel(id: "nvidia/nemotron-3.5-lightning:free", name: "NVIDIA: Nemotron 3.5 Lightning (free)",
+                        contextLength: 1_000_000, promptUSDPerMillion: 0, completionUSDPerMillion: 0),
     ]
+
+    /// The curated ids, in picker order — the "Recommended" section.
+    public static let openRouterRecommendedIDs: [String] = openRouterCurated.map(\.id)
+
+    /// The curated row for `id`, or nil when it isn't one — the offline
+    /// price/context source for the model row in Settings.
+    public static func openRouterCuratedModel(id: String) -> OpenRouterModel? {
+        openRouterCurated.first { $0.id == id }
+    }
+
+    /// OpenRouter models (OpenAI-compatible API; slugs are namespaced),
+    /// derived from `openRouterCurated`. The static list is only the
+    /// recommended set — anything else in the live catalogue resolves
+    /// through `resolve(modelID:for:)` with a registered budget. No prompt
+    /// caching assumed across the router.
+    public static let openRouterModels: [ProviderInfo] = openRouterCurated.map { model in
+        ProviderInfo(
+            kind: .openRouter,
+            modelID: model.id,
+            contextBudget: Self.openRouterBudget(forContext: model.contextLength),
+            supportsPromptCaching: false,
+            isLocal: false
+        )
+    }
+
+    /// The router ceiling (see the type comment) applied to a real context
+    /// window; a window the catalogue didn't report gets the conservative
+    /// default.
+    static func openRouterBudget(forContext contextLength: Int) -> Int {
+        contextLength > 0 ? min(contextLength, 200_000) : openRouterFallbackBudget
+    }
+
+    /// The budget for an OpenRouter id the app knows nothing about — a
+    /// persisted live pick before the catalogue has loaded this launch.
+    static let openRouterFallbackBudget = 128_000
+
+    /// Context budgets for live-catalogue OpenRouter models, keyed by id.
+    /// Filled by `OpenRouterModelStore` whenever a list arrives; read by
+    /// `resolve`. Lock-protected: the store is an actor, the resolve
+    /// happens on whatever thread `ProviderManager` is called from.
+    private static let openRouterBudgets = OpenRouterBudgetRegistry()
+
+    private final class OpenRouterBudgetRegistry: @unchecked Sendable {
+        private let lock = NSLock()
+        private var budgets: [String: Int] = [:]
+
+        func register(_ models: [OpenRouterModel]) {
+            lock.lock(); defer { lock.unlock() }
+            for model in models {
+                budgets[model.id] = openRouterBudget(forContext: model.contextLength)
+            }
+        }
+
+        func budget(for id: String) -> Int? {
+            lock.lock(); defer { lock.unlock() }
+            return budgets[id]
+        }
+    }
+
+    /// Remember the context windows of a live OpenRouter list so a model
+    /// picked from it resolves with a real budget. Idempotent; later lists
+    /// overwrite earlier rows.
+    public static func registerOpenRouterModels(_ models: [OpenRouterModel]) {
+        openRouterBudgets.register(models)
+    }
 
     /// On-device models — enable the zero-egress privacy mode.
     public static let localModels: [ProviderInfo] = [
@@ -171,10 +256,22 @@ public enum ProviderCatalog {
         "claude-opus-4-8": "claude-opus-5",
         "gpt-4.1": "gpt-5.6-sol",
         "gpt-4.1-mini": "gpt-5.6-luna",
+        // OpenRouter's unsuffixed GPT-5.6 slug retired with the Sol/Luna
+        // split (flagship → flagship); the Llama free row left the `:free`
+        // tier, so it maps to the free row that replaced it.
+        "openai/gpt-5.6": "openai/gpt-5.6-sol",
+        "meta-llama/llama-3.3-70b-instruct:free": "minimax/minimax-m3:free",
     ]
 
     /// Resolve a (possibly retired) model ID for `kind`: exact catalog match
     /// first, then the same-tier legacy replacement, then the kind's default.
+    ///
+    /// OpenRouter is the exception to the default fallback: its catalogue is
+    /// live and the static list is only the recommended slice, so an unknown
+    /// id there is a real model the reader picked, not a typo — it resolves
+    /// as itself, with the budget the catalogue registered for it (see
+    /// `registerOpenRouterModels`) or `openRouterFallbackBudget` before the
+    /// catalogue has loaded this launch.
     public static func resolve(modelID: String?, for kind: ProviderInfo.Kind) -> ProviderInfo {
         let catalog = models(for: kind)
         if let id = modelID {
@@ -182,6 +279,15 @@ public enum ProviderCatalog {
             if let replacement = legacyReplacements[id],
                let mapped = catalog.first(where: { $0.modelID == replacement }) {
                 return mapped
+            }
+            if kind == .openRouter, !id.isEmpty {
+                return ProviderInfo(
+                    kind: .openRouter,
+                    modelID: id,
+                    contextBudget: openRouterBudgets.budget(for: id) ?? openRouterFallbackBudget,
+                    supportsPromptCaching: false,
+                    isLocal: false
+                )
             }
         }
         return defaultModel(for: kind)

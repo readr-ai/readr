@@ -162,6 +162,12 @@ Toolbar (unifiedCompact, auto-hides in full screen):
 - Now openable with no selection (whole-book questions). Shows selection quote
   when present, streams the answer, citations as clickable disclosure rows
   (future: jump-to-passage). Tier badge stays ("whole book" / "passages").
+- Scope is a labelled two-way choice, not a switch: an "Answers from"
+  segmented control — "Up to where I am" / "Whole book" — with a one-line
+  note under it saying what the chosen scope means ("Answers stop where you
+  stopped reading — no spoilers." / "Answers may use the whole book,
+  including what you haven't read."). Shown only when there is a reading
+  position to scope to.
 
 ### Recap
 - **Recap** is a toolbar button in the reader (next to Listen and Ask, ⇧⌘R)

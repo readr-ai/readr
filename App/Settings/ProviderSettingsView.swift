@@ -31,11 +31,13 @@ struct ProviderSettingsView: View {
     private var theme: ReadingTheme { ReadingTheme(rawValue: themeRaw) ?? .paper }
 
     @State private var showingBugReport = false
+    @State private var showingOpenRouterPicker = false
 
     init(app: AppModel) {
         _model = StateObject(wrappedValue: SettingsModel(
             manager: app.providerManager,
-            store: app.credentialStore
+            store: app.credentialStore,
+            openRouterStore: app.openRouterModelStore
         ))
     }
 
@@ -85,6 +87,15 @@ struct ProviderSettingsView: View {
                 // Verify stored keys / probe Ollama so the cards reflect real
                 // readiness rather than a premature "Connected".
                 await model.validateDisplayed()
+            }
+            .task {
+                // The OpenRouter catalogue, alongside validation rather than
+                // after it — the picker row shows the current model's price
+                // as soon as the list is in.
+                await model.loadOpenRouterModels()
+            }
+            .sheet(isPresented: $showingOpenRouterPicker) {
+                OpenRouterModelPickerView(model: model, theme: theme)
             }
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
@@ -224,15 +235,30 @@ struct ProviderSettingsView: View {
                 method(kind, in: vendor)
             }
 
-            ModelPicker(
-                kind: pickerKind,
-                models: model.models(for: pickerKind),
-                selection: model.activeSelection,
-                enabled: vendor.methods.contains {
-                    (model.hasCredential[$0] ?? false) || $0 == .local
+            let pickerEnabled = vendor.methods.contains {
+                (model.hasCredential[$0] ?? false) || $0 == .local
+            }
+            if pickerKind == .openRouter {
+                // OpenRouter's list is live and hundreds long — a menu can't
+                // hold it. The row names the current model and its price and
+                // opens the searchable picker sheet.
+                OpenRouterModelRow(
+                    model: currentOpenRouterModel,
+                    modelID: currentOpenRouterModelID,
+                    enabled: pickerEnabled,
+                    theme: theme
+                ) {
+                    showingOpenRouterPicker = true
                 }
-            ) { modelID in
-                model.makeActive(kind: pickerKind, modelID: modelID)
+            } else {
+                ModelPicker(
+                    kind: pickerKind,
+                    models: model.models(for: pickerKind),
+                    selection: model.activeSelection,
+                    enabled: pickerEnabled
+                ) { modelID in
+                    model.makeActive(kind: pickerKind, modelID: modelID)
+                }
             }
         }
         .padding(15)
@@ -246,6 +272,14 @@ struct ProviderSettingsView: View {
     /// One connection method inside a vendor card: its own status, its own
     /// controls, and its own Active/Make Active/Disconnect — the kinds stay
     /// independently connected and activated even though they share a card.
+    ///
+    /// A method with a stored credential is *connected*, and a connected
+    /// method drops its connect controls: no sign-in button, no key field, no
+    /// console link — just the status line (with the Active badge or Make
+    /// Active), Disconnect, and the card's model picker. An OpenRouter card
+    /// that still said "Sign in" over a live key read as not connected. The
+    /// one exception is a rejected key (`.invalid`): the key field comes
+    /// back so the reader can replace it, with Disconnect still beside it.
     @ViewBuilder
     private func method(_ kind: ProviderInfo.Kind, in vendor: ProviderVendor) -> some View {
         let isConfigured = model.configured[kind] ?? false
@@ -254,6 +288,12 @@ struct ProviderSettingsView: View {
         let hasCredential = model.hasCredential[kind] ?? false
         let state = model.validation[kind]
         let status = cardStatus(for: kind, isConfigured: isConfigured, state: state)
+        let isRejected: Bool = {
+            if case .invalid = state { return true }
+            return false
+        }()
+        let showsSignIn = !hasCredential
+        let showsKeyField = !hasCredential || isRejected
 
         VStack(alignment: .leading, spacing: 10) {
             // Only when the card offers a choice — a lone method needs no
@@ -304,7 +344,7 @@ struct ProviderSettingsView: View {
                 .accessibilityIdentifier("settings.recheck.local")
                 .disabled(state == .validating)
             } else {
-                if model.supportsOAuth(kind) {
+                if showsSignIn, model.supportsOAuth(kind) {
                     Button {
                         Task { await model.signIn(kind) }
                     } label: {
@@ -336,16 +376,17 @@ struct ProviderSettingsView: View {
                             .accessibilityIdentifier("settings.tosCaveat.chatgpt")
                     }
                 }
-                if kind.usesAPIKey {
+                if showsKeyField, kind.usesAPIKey {
                     APIKeyField(kind: kind, theme: theme) { model.saveAPIKey($0, for: kind) }
                     // First-run users stall at the key field with no idea where
                     // keys come from — link straight to the provider's console.
                     // macOS only: on iOS an outbound link to a page where the
                     // user can buy API credits is an App Review liability
                     // (Guideline 3.1.1 — purchases outside IAP), and the App
-                    // Store build must not carry it.
+                    // Store build must not carry it. Not on a rejected-key
+                    // card: the reader has a key, it just isn't accepted.
                     #if os(macOS)
-                    if let console = keyConsole(for: kind) {
+                    if showsSignIn, let console = keyConsole(for: kind) {
                         Link(destination: console.url) {
                             CardActionLabel(
                                 title: "Get an API key",
@@ -363,6 +404,23 @@ struct ProviderSettingsView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// The OpenRouter id the picker row names: the active selection when it
+    /// is an OpenRouter one, else the catalog default (what Make Active
+    /// would choose).
+    private var currentOpenRouterModelID: String {
+        if let selection = model.activeSelection, selection.kind == .openRouter {
+            return selection.modelID
+        }
+        return ProviderCatalog.defaultModel(for: .openRouter).modelID
+    }
+
+    /// Name and price for the row — the live list first, the curated table
+    /// offline, nil for an id the app has no data on (the row then shows the
+    /// bare id).
+    private var currentOpenRouterModel: OpenRouterModel? {
+        model.openRouterModel(id: currentOpenRouterModelID)
     }
 
     /// Names one door into a vendor, used only on cards that offer more than
@@ -682,6 +740,50 @@ private struct APIKeyField: View {
             .accessibilityIdentifier("settings.saveKey.\(kind.rawValue)")
             .disabled(!canSave)
         }
+    }
+}
+
+/// The OpenRouter card's model control: the current model's name with its
+/// price beneath, as a tappable row that opens `OpenRouterModelPickerView`.
+/// A `Picker` menu of the catalogue's four hundred rows would be unusable,
+/// and it could not show prices.
+private struct OpenRouterModelRow: View {
+    let model: OpenRouterModel?
+    let modelID: String
+    let enabled: Bool
+    let theme: ReadingTheme
+    let onTap: () -> Void
+
+    var body: some View {
+        Button(action: onTap) {
+            HStack(spacing: 8) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(model?.name ?? modelID)
+                        .font(.callout)
+                        .foregroundStyle(theme.inkColor)
+                        .lineLimit(1)
+                    Text(model?.priceLabel ?? modelID)
+                        .font(.caption)
+                        .foregroundStyle(theme.muted)
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 0)
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(theme.faint)
+            }
+            .padding(.vertical, 7)
+            .padding(.horizontal, 10)
+            .background(theme.paper, in: RoundedRectangle(cornerRadius: 8))
+            .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(theme.line, lineWidth: 1))
+            .contentShape(RoundedRectangle(cornerRadius: 8))
+        }
+        .buttonStyle(.plain)
+        .disabled(!enabled)
+        .opacity(enabled ? 1 : 0.5)
+        .accessibilityLabel("Model")
+        .accessibilityValue(model?.name ?? modelID)
+        .accessibilityIdentifier("settings.model.openRouter")
     }
 }
 

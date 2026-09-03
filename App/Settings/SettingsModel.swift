@@ -22,8 +22,17 @@ final class SettingsModel: ObservableObject {
     /// the cards can show Validating… / Connected / an error inline (A2/A3).
     @Published private(set) var validation: [ProviderInfo.Kind: ProviderManager.ValidationState] = [:]
 
+    /// OpenRouter's catalogue as the picker shows it — the curated list until
+    /// `loadOpenRouterModels()` brings the live (or disk-cached) one — and
+    /// where the current list came from, so the picker can say when only the
+    /// curated list is available. Nil until the first load settles.
+    @Published private(set) var openRouterModels: [OpenRouterModel] = ProviderCatalog.openRouterCurated
+    @Published private(set) var openRouterListSource: OpenRouterModelStore.Source?
+    @Published private(set) var isLoadingOpenRouterModels = false
+
     private let manager: ProviderManager
     private let store: any CredentialStore
+    private let openRouterStore: OpenRouterModelStore
 
     /// `-uiTestSkipProviderValidation`: skip the live validate/probe calls so
     /// the Active-badge XCUITest is deterministic offline (a saved key stays
@@ -117,9 +126,14 @@ final class SettingsModel: ObservableObject {
         }
     }
 
-    init(manager: ProviderManager, store: any CredentialStore) {
+    init(
+        manager: ProviderManager,
+        store: any CredentialStore,
+        openRouterStore: OpenRouterModelStore = OpenRouterModelStore()
+    ) {
         self.manager = manager
         self.store = store
+        self.openRouterStore = openRouterStore
         self.activeSelection = manager.selection
         // No Keychain I/O here: SwiftUI re-evaluates `StateObject(wrappedValue:)`
         // on every re-render and discards all but the first instance. The view
@@ -191,6 +205,26 @@ final class SettingsModel: ObservableObject {
 
     func models(for kind: ProviderInfo.Kind) -> [ProviderInfo] {
         ProviderCatalog.models(for: kind)
+    }
+
+    /// Bring in the OpenRouter catalogue: the disk copy when it is fresh,
+    /// the network otherwise, the curated list when neither is to be had.
+    /// The store registers every list it hands out with `ProviderCatalog`,
+    /// so a model picked from it resolves with its real context budget.
+    /// Called from the settings view's `.task`.
+    func loadOpenRouterModels() async {
+        guard !isLoadingOpenRouterModels else { return }
+        isLoadingOpenRouterModels = true
+        defer { isLoadingOpenRouterModels = false }
+        let loaded = await openRouterStore.load()
+        openRouterModels = loaded.models
+        openRouterListSource = loaded.source
+    }
+
+    /// The row for an OpenRouter id — from the loaded list, else the curated
+    /// table (offline prices), else nil for an id the app has no data on.
+    func openRouterModel(id: String) -> OpenRouterModel? {
+        openRouterModels.first { $0.id == id } ?? ProviderCatalog.openRouterCuratedModel(id: id)
     }
 
     func saveAPIKey(_ key: String, for kind: ProviderInfo.Kind) {

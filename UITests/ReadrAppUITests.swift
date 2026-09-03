@@ -330,6 +330,64 @@ final class ReadrAppUITests: XCTestCase {
         )
     }
 
+    // A connected card must not go on offering the door the reader already
+    // walked through: with a key stored, the sign-in button, the key field
+    // and the console link go, leaving the status line, Disconnect and the
+    // model picker. -uiTestSeedProviderKeys stores placeholder keys for
+    // Anthropic, OpenAI and OpenRouter; -uiTestSkipProviderValidation keeps
+    // the whole run off the network, and the -uiTest flags pin the OpenRouter
+    // picker to its built-in (curated) list.
+    func testConnectedCardHidesSignInAndKeyField() {
+        let app = XCUIApplication()
+        app.launchArguments += [
+            "-uiTestSeed", "-uiTestInMemoryCredentials",
+            "-uiTestSkipProviderValidation", "-uiTestSeedProviderKeys",
+        ]
+        app.launch()
+
+        let settingsButton = button(app, id: "library.settings", label: "Settings")
+        XCTAssertTrue(settingsButton.waitForExistence(timeout: 10))
+        settingsButton.tap()
+        XCTAssertTrue(
+            app.staticTexts["settings.activeBadge.anthropic"].firstMatch.waitForExistence(timeout: 5),
+            "the seeded Anthropic key is connected and active"
+        )
+
+        XCTAssertFalse(
+            app.secureTextFields["settings.apiKey.anthropic"].firstMatch.exists,
+            "a connected Anthropic card offers no key field"
+        )
+        XCTAssertFalse(
+            app.secureTextFields["settings.apiKey.openRouter"].firstMatch.exists,
+            "a connected OpenRouter card offers no key field"
+        )
+        XCTAssertFalse(
+            app.buttons["Sign in with OpenRouter"].firstMatch.exists,
+            "a connected OpenRouter card does not still say Sign in"
+        )
+        XCTAssertTrue(
+            app.buttons["Disconnect"].firstMatch.waitForExistence(timeout: 5),
+            "Disconnect stays"
+        )
+
+        // The model control stays too, and opens the catalogue picker; a
+        // pick from the Recommended section lands on the row.
+        let modelRow = app.buttons["settings.model.openRouter"].firstMatch
+        XCTAssertTrue(modelRow.waitForExistence(timeout: 5), "the OpenRouter card keeps its model row")
+        if !modelRow.isHittable { app.swipeUp() }
+        modelRow.tap()
+        let search = app.textFields["settings.modelPicker.search"].firstMatch
+        XCTAssertTrue(search.waitForExistence(timeout: 5), "the model row opens the picker sheet")
+        let haiku = app.buttons["settings.modelPicker.row.anthropic/claude-haiku-4.5"].firstMatch
+        XCTAssertTrue(haiku.waitForExistence(timeout: 5), "the curated Recommended rows are offered offline")
+        haiku.tap()
+        XCTAssertTrue(
+            modelRow.waitForExistence(timeout: 5)
+                && app.buttons["settings.model.openRouter"].firstMatch.value.map { "\($0)" }?.contains("Haiku") == true,
+            "picking a model dismisses the sheet and names it on the row"
+        )
+    }
+
     // Launch-friction guard: a first-run user must be able to get from the
     // key field to the provider's key console without hunting for the URL.
     // SwiftUI `Link` surfaces as a link or a button depending on platform,
@@ -550,12 +608,10 @@ final class ReadrAppUITests: XCTestCase {
         XCTAssertFalse(app.buttons["Summarize this book"].exists)
         XCTAssertTrue(app.staticTexts["ask.position"].firstMatch.exists, "a scoped panel says where it stops")
 
-        let scope = app.switches["ask.scope"].firstMatch
-        XCTAssertTrue(scope.waitForExistence(timeout: 3), "a text book offers the whole-book switch")
-        scope.tap()
+        selectWholeBook(app)
 
         let suggestion = app.buttons["Summarize this book"].firstMatch
-        XCTAssertTrue(suggestion.waitForExistence(timeout: 5), "flipping the switch swaps in the whole-book chips")
+        XCTAssertTrue(suggestion.waitForExistence(timeout: 5), "choosing Whole book swaps in the whole-book chips")
         XCTAssertFalse(app.staticTexts["ask.position"].exists, "no stopping point when the whole book is in scope")
         suggestion.tap()
         let send = app.buttons["ask.send"].firstMatch
