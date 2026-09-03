@@ -49,11 +49,26 @@ final class DeterministicEmbeddingProvider: EmbeddingProvider, @unchecked Sendab
 
     init(dimensions: Int = 16) { self.dimensions = dimensions }
 
+    /// FNV-1a over the token's UTF-8 — the same bucket in every process.
+    static func fnv1a(_ token: Substring) -> UInt64 {
+        var hash: UInt64 = 0xcbf29ce484222325
+        for byte in token.utf8 {
+            hash ^= UInt64(byte)
+            hash = hash &* 0x100000001b3
+        }
+        return hash
+    }
+
     func embed(_ texts: [String]) async throws -> [[Float]] {
         texts.map { text in
             var vector = [Float](repeating: 0, count: dimensions)
             for token in text.lowercased().split(whereSeparator: { !$0.isLetter && !$0.isNumber }) {
-                let bucket = abs(token.hashValue) % dimensions
+                // A stable hash, not `hashValue`: Swift seeds String hashing
+                // per process, so `hashValue % 16` bucketed tokens differently
+                // on every run and "planets orbiting the sun" collided with
+                // the dog chapter's tokens on some seeds — the chapter-ceiling
+                // test failed about one run in three, locally and on CI.
+                let bucket = Int(Self.fnv1a(token) % UInt64(dimensions))
                 vector[bucket] += 1
             }
             return vector
