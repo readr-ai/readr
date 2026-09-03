@@ -458,6 +458,9 @@ final class AppModel: ObservableObject {
                 as extracted text for now — fixed-layout rendering is on the \
                 roadmap.
                 """
+            } else if book.metadata.isImageOnly == true {
+                // The reader repeats the short form as a banner each open.
+                importNotice = ScannedPDFCopy.importNotice(title: book.metadata.title)
             }
             DiagnosticsLog.shared.recordBookOpened(
                 book, format: url.pathExtension.lowercased()

@@ -6,6 +6,12 @@ import ReadrKit
 /// PDF import via Apple's PDFKit — no third-party dependency. Extracts text one
 /// chapter per page (a coarse but real first cut; the Readium-backed parser will
 /// add proper outline/TOC-aware chaptering). Encrypted/locked PDFs are rejected.
+///
+/// A PDF with no text layer — a scanned book, or screenshots exported as a
+/// PDF — is not rejected: PDFKit renders its pages fine. It imports with one
+/// empty chapter per page and `isImageOnly` set, so the reader shows the
+/// original pages and says which text features have nothing to work with.
+/// The page-to-chapter rule itself is `PDFPageChapters` in ReadrKit.
 struct PDFKitBookParser: BookParser {
     func canParse(_ url: URL) -> Bool {
         url.pathExtension.lowercased() == "pdf"
@@ -18,33 +24,39 @@ struct PDFKitBookParser: BookParser {
         if document.isEncrypted && document.isLocked {
             throw BookParserError.drmProtected
         }
+        guard document.pageCount > 0 else {
+            throw BookParserError.corrupted("PDF has no pages")
+        }
 
-        var chapters: [Chapter] = []
-        var fullText = ""
+        // A page object PDFKit cannot build is damage; a page with no text
+        // is not. The two must not be flattened into the same nil.
+        var pageTexts: [String?] = []
         for index in 0..<document.pageCount {
-            guard let page = document.page(at: index), let text = page.string else { continue }
-            fullText += text + "\n"
-            chapters.append(Chapter(title: "Page \(index + 1)", order: chapters.count, text: text))
+            guard let page = document.page(at: index) else {
+                throw BookParserError.corrupted("page \(index + 1) could not be loaded")
+            }
+            pageTexts.append(page.string)
         }
-        guard !chapters.isEmpty else {
-            throw BookParserError.corrupted("no extractable text — this may be a scanned PDF")
-        }
+        let pages = PDFPageChapters.build(fromPageTexts: pageTexts)
 
         let title = (document.documentAttributes?[PDFDocumentAttribute.titleAttribute] as? String)
             .flatMap { $0.isEmpty ? nil : $0 }
             ?? url.deletingPathExtension().lastPathComponent
         let author = document.documentAttributes?[PDFDocumentAttribute.authorAttribute] as? String
-        let toc = chapters.compactMap { chapter in
+        let toc = pages.chapters.compactMap { chapter in
             chapter.title.map { TOCEntry(title: $0, chapterIndex: chapter.order) }
         }
         let metadata = BookMetadata(
             title: title,
             authors: author.map { [$0] } ?? [],
-            tableOfContents: toc
+            tableOfContents: toc,
+            isImageOnly: pages.isImageOnly ? true : nil
         )
+        // Estimated from the same join `Book.fullText` sends as whole-book context.
+        let fullText = pages.chapters.map(\.text).joined(separator: "\n\n")
         return Book(
             metadata: metadata,
-            chapters: chapters,
+            chapters: pages.chapters,
             estimatedTokenCount: estimateTokens(fullText)
         )
     }

@@ -72,11 +72,23 @@ struct PDFReaderView: View {
     @AppStorage("readingTheme") private var themeRaw = ReadingTheme.paper.rawValue
     @State private var showTOC = false
     @State private var showSearch = false
+    /// The scanned-PDF banner, dismissed for this visit. It returns on the
+    /// next open: the reason the text controls are dead is worth a line each
+    /// time, and the line is small.
+    @State private var scanNoticeDismissed = false
+
+    /// No text layer: the pages render, find-in-PDF has nothing to search.
+    private var isImageOnly: Bool { book.metadata.isImageOnly == true }
 
     private var theme: ReadingTheme { ReadingTheme(rawValue: themeRaw) ?? .paper }
 
     var body: some View {
         content
+            .safeAreaInset(edge: .top, spacing: 0) {
+                if isImageOnly, !scanNoticeDismissed {
+                    scanNotice
+                }
+            }
             .toolbar { toolbarItems }
             // Keep the selection menu (rendered by the controller in its
             // NSPopover / the iOS floating bar) on the current reading theme.
@@ -110,6 +122,44 @@ struct PDFReaderView: View {
     }
 
     // MARK: Layout
+
+    /// One line explaining the dead controls, above the first page. Themed
+    /// like the other PDF overlays so it reads as part of the reader.
+    private var scanNotice: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "doc.viewfinder")
+                .foregroundStyle(theme.muted)
+                .accessibilityHidden(true)
+            Text(ScannedPDFCopy.banner)
+                .font(.callout)
+                .foregroundStyle(theme.inkColor)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+            Button {
+                scanNoticeDismissed = true
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(theme.muted)
+                    .frame(width: 28, height: 28)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Dismiss")
+            .accessibilityIdentifier("pdf.scanNotice.dismiss")
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
+        .background(theme.elevated)
+        .overlay(alignment: .bottom) {
+            Rectangle().fill(theme.line).frame(height: 1)
+        }
+        // `.contain`, not `.combine`: the Dismiss button must stay its own
+        // focusable element (same shape as `ListenBar`).
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Scanned PDF notice")
+        .accessibilityIdentifier("pdf.scanNotice")
+    }
 
     private var content: some View {
         #if canImport(UIKit)
@@ -242,7 +292,8 @@ struct PDFReaderView: View {
         // The host reader's text search is disabled in PDF mode, so ⌘F
         // is ours here.
         .keyboardShortcut("f", modifiers: .command)
-        .help("Find in PDF (⌘F)")
+        .help(isImageOnly ? ScannedPDFCopy.needsText("Find") : "Find in PDF (⌘F)")
+        .disabled(isImageOnly)
         .accessibilityIdentifier("pdf.search")
         .popover(isPresented: $showSearch, arrowEdge: .bottom) {
             PDFSearchView(controller: controller) {

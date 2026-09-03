@@ -198,3 +198,10 @@ schemes:
     test:
       targets:
         - ReadrSnapshotTests
+      # The host app reads the Keychain at launch (provider line in the
+      # sidebar); an unsigned local build gets a "Readr wants to use your
+      # confidential information" prompt that blocks the runner before
+      # XCTest connects. In-memory credentials for the host, as the UI tests
+      # already do — CI runners have no Keychain items either way.
+      commandLineArguments:
+        "-uiTestInMemoryCredentials": true
