@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/readr-ai/readr/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/readr-ai/readr/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Platforms](https://img.shields.io/badge/platforms-macOS%2014%2B%20%7C%20iOS%2017%2B-lightgrey.svg)](#architecture)
+[![Platforms](https://img.shields.io/badge/platforms-macOS%2014%2B%20%28Apple%20silicon%29%20%7C%20iOS%2017%2B-lightgrey.svg)](#architecture)
 [![Swift](https://img.shields.io/badge/Swift-5.9-orange.svg)](Package.swift)
 
 An AI-powered, native **macOS & iOS** ebook reader — think Apple Books, but you can
@@ -12,19 +12,20 @@ built for the love of reading.
 ![Readr: reading with highlights, and asking the book a question with cited sources](docs/screenshots/hero-reader-ask.png)
 
 <p align="center">
-  <a href="https://github.com/readr-ai/readr/releases/latest"><b>⬇️&nbsp;&nbsp;Download for macOS</b></a>
+  <a href="https://apps.apple.com/app/id6789784856"><b>📱&nbsp;&nbsp;Download on the App Store</b></a> (iPhone &amp; iPad)
   &nbsp;·&nbsp;
-  <a href="#ios--ipad-beta-testflight">iPhone &amp; iPad beta (TestFlight)</a>
+  <a href="https://github.com/readr-ai/readr/releases/latest"><b>⬇️&nbsp;&nbsp;Download for macOS</b></a> (Apple silicon)
   &nbsp;·&nbsp;
   <a href="#building-from-source">Build from source</a>
   &nbsp;·&nbsp;
   <a href="https://readr-ai.github.io/">Website</a>
 </p>
 
-> Status: **3.0 — read it, or listen to it.** All features below are
-> implemented, unit/integration tested, and CI builds, signs, and ships the
-> app: notarized macOS releases and iPhone/iPad TestFlight builds. CI runs the
-> UI-test suite on iPhone **and iPad** simulators, and the macOS suite on
+> Status: **3.2 — on the App Store.** Readr for iPhone and iPad is live on
+> the [App Store](https://apps.apple.com/app/id6789784856); macOS ships as
+> notarized GitHub Releases. All features below are implemented,
+> unit/integration tested, and CI builds, signs, and ships both. CI runs
+> the UI-test suite on iPhone **and iPad** simulators, and the macOS suite on
 > signed builds. What's next is tracked in [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ## Why
@@ -78,7 +79,7 @@ always stays on-device. Full rationale and citations in
 
 ## Architecture
 
-- **SwiftUI** multiplatform app (iOS 17+ / macOS 14+).
+- **SwiftUI** multiplatform app (iOS 17+ / macOS 14+ on Apple silicon).
 - **`ReadrKit`** — platform-agnostic Swift Package with the core logic (parsing,
   context router, RAG, LLM providers, article composer).
 - Custom EPUB/text parsing in `ReadrKit`; **PDFKit** for native PDF rendering
@@ -103,7 +104,18 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 - Launch & PR materials (Product Hunt kit, TestFlight plan, launch assets)
   live in [readr-ai/PR](https://github.com/readr-ai/PR).
 
-## Installing (macOS)
+## Installing
+
+### iPhone & iPad (App Store)
+
+**[Download on the App Store](https://apps.apple.com/app/id6789784856)** —
+Readr is a free download for iPhone and iPad running iOS 17 or later.
+
+### macOS (GitHub Release)
+
+From **v3.1.0** the Mac build **requires Apple silicon** (M1 or later):
+Readr Voice's on-device narration depends on Float16 and the Neural Engine,
+which Intel Macs don't have, so releases are built for `arm64` only.
 
 Grab the `.dmg` from the
 [latest GitHub Release](https://github.com/readr-ai/readr/releases/latest)
@@ -117,18 +129,18 @@ zip-only.)
 right-click → **Open**, or **System Settings → Privacy & Security → Open
 Anyway** on macOS 15+.)
 
-## iOS & iPad beta (TestFlight)
+### Beta builds (iPhone & iPad, TestFlight)
 
-Readr for iPhone and iPad is in beta on TestFlight.
-
-Join with one tap:
-**[testflight.apple.com/join/U5dBEsSG](https://testflight.apple.com/join/U5dBEsSG)**
-— install Apple's TestFlight app first, then open the link on your iPhone or
-iPad. You can also [build from source](#building-from-source) with Xcode.
+Pre-release iPhone and iPad builds go out through TestFlight ahead of each
+App Store release. To try them, install Apple's TestFlight app and open
+[testflight.apple.com/join/U5dBEsSG](https://testflight.apple.com/join/U5dBEsSG)
+on your iPhone or iPad. You can also [build from source](#building-from-source)
+with Xcode.
 
 ## Building from source
 
-> Requires **macOS + Xcode 16+**. (The app cannot be built on Linux.)
+> Requires **macOS + Xcode 16+** on an **Apple silicon** Mac. (The app is
+> `arm64`-only, and cannot be built on Linux.)
 
 ```sh
 brew install xcodegen
