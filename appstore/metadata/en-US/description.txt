@@ -1,18 +1,19 @@
-Read, listen, and ask questions as you go. Readr answers from the whole book,
-not just the page in front of you — and clearly labels anything it adds from
-elsewhere.
+Read, listen, and ask questions as you go. Readr answers from what you've
+read so far and never spoils what's ahead — and clearly labels anything it
+adds from elsewhere.
 
 ASK THE BOOK
 Open an EPUB, PDF, plain-text or Markdown file you already own, select a
-sentence, and ask about it. Readr answers using the whole book — and it isn't
-limited to the book: ask how the science has moved on, who directed the
-adaptation, or how an idea aged, and you get a useful answer that shows which
-part came from the book and which from outside it. Readr won't attribute an
-outside claim to the book you're reading.
+sentence, and ask about it. Readr answers from the pages you've read, not
+the pages you haven't, so nothing ahead of your place can slip out. Flip
+the "Whole book" switch to ask about all of it. And it isn't limited to the
+book: ask how the science has moved on, who directed the adaptation, or how
+an idea aged, and you get a useful answer that shows which part came from
+the book and which from outside it. Readr won't attribute an outside claim
+to the book you're reading.
 
 Back after a week away? Tap Recap and Readr tells you the story so far,
-from only the pages you've read. Nothing ahead of your place is ever used, so
-it can't spoil what comes next.
+from only the pages you've read — it can't spoil what comes next.
 
 Ask needs an AI account of your own: connect an Anthropic, OpenAI or
 OpenRouter key, or sign in with OpenRouter. You pay that company directly for

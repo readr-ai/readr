@@ -20,30 +20,38 @@ public enum SampleBookSeeder {
     /// - Parameters:
     ///   - hasSeededBefore: whether seeding has ever run on this install.
     ///     Persisted by the caller, and true even if the book is now gone.
+    ///   - hasPersistedLibrary: whether the library has ever been written —
+    ///     `LibraryStore.hasPersistedLibrary`. A library the user emptied
+    ///     has been written; a fresh install's has not.
     ///   - existingBookCount: books already in the library.
-    public static func shouldSeed(hasSeededBefore: Bool, existingBookCount: Int) -> Bool {
-        !hasSeededBefore && existingBookCount == 0
+    public static func shouldSeed(
+        hasSeededBefore: Bool, hasPersistedLibrary: Bool, existingBookCount: Int
+    ) -> Bool {
+        !hasSeededBefore && !hasPersistedLibrary && existingBookCount == 0
     }
 
-    /// Adds the sample to `store` if it belongs there, and returns it.
-    /// Returns `nil` when seeding was not called for — in which case
-    /// `makeBook` is never invoked, so no bundled file is opened or parsed.
+    /// Runs `importBook` if the sample belongs in `store`, and returns what it
+    /// imported. Returns `nil` when seeding was not called for — in which
+    /// case `importBook` is never invoked, so no bundled file is opened or
+    /// parsed.
     ///
-    /// Errors from `makeBook` propagate rather than being swallowed: the
-    /// caller decides what a broken bundled resource means, and the library
-    /// is left untouched either way.
+    /// `importBook` is the app's regular import — the same path a file the
+    /// user opens takes, so the sample gets its retained source, cover and
+    /// added-on date like any other book — and it is responsible for adding
+    /// the book to `store`. Errors from it propagate rather than being
+    /// swallowed: the caller decides what a broken bundled resource means,
+    /// and must record that seeding happened only when a book came back.
     @discardableResult
     public static func seedIfNeeded(
         into store: LibraryStore,
         hasSeededBefore: Bool,
-        makeBook: () throws -> Book
-    ) throws -> Book? {
+        importBook: () async throws -> Book
+    ) async throws -> Book? {
         guard shouldSeed(
             hasSeededBefore: hasSeededBefore,
+            hasPersistedLibrary: store.hasPersistedLibrary,
             existingBookCount: store.allBooks().count
         ) else { return nil }
-        let book = try makeBook()
-        try store.add(book)
-        return book
+        return try await importBook()
     }
 }

@@ -29,12 +29,14 @@ public struct AskService: Sendable {
     ///
     /// - Parameter history: earlier turns of this conversation, oldest first,
     ///   so a follow-up can lean on what was already asked and answered.
+    /// - Parameter scope: what the answer may draw on. Named by every caller
+    ///   — see `ReadingScope`.
     public func ask(
         _ question: String,
         about book: Book,
         selection: Selection?,
         history: [ConversationTurn] = [],
-        frontier: ReadingFrontier? = nil
+        scope: ReadingScope
     ) -> AsyncThrowingStream<AskEvent, Error> {
         let strategy = self.strategy
         let provider = self.provider
@@ -46,7 +48,7 @@ public struct AskService: Sendable {
                         in: book,
                         selection: selection,
                         history: history,
-                        frontier: frontier,
+                        scope: scope,
                         provider: provider.info
                     )
                     try Task.checkCancellation()

@@ -420,7 +420,7 @@ final class MacSnapshotTests: XCTestCase {
         )
         let store = InMemoryLibraryStore()
         try? store.add(book)
-        return (book, AppModel(store: store))
+        return (book, AppModel(store: store, seedsSampleBook: false))
     }
 
     /// R7: opening the studio for a book with zero highlights lands on the
@@ -515,8 +515,18 @@ final class MacSnapshotTests: XCTestCase {
     /// surface grows with the environment like Settings does.
     func testAskPanelDynamicTypeAccessibility() {
         snapshot(
-            AskPanelView(app: model, book: sampleBook, selection: nil)
-                .environmentObject(model)
+            // Opened as the reader opens it from a text book: scoped to the
+            // seeded mid-chapter position, so the header carries the
+            // where-am-I line and the Whole book switch.
+            AskPanelView(
+                app: model, book: sampleBook,
+                request: AskRequest(
+                    selection: nil,
+                    scope: .upTo(ReadingFrontier(chapterIndex: 0, characterOffset: sampleChapter.text.count / 2)),
+                    initialQuestion: nil
+                )
+            )
+            .environmentObject(model)
                 .dynamicTypeSize(.accessibility3),
             size: CGSize(width: 620, height: 900),
             name: "m18-ask-panel-dtype-ax3"

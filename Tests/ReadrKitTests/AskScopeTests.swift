@@ -109,7 +109,7 @@ final class AskScopeTests: XCTestCase {
         let strategy = AdaptiveContextStrategy(index: StubRAGIndex())
 
         let small = try await strategy.assembleContext(
-            for: "Q", in: book, selection: nil,
+            for: "Q", in: book, selection: nil, scope: .wholeBook,
             provider: ProviderInfo(
                 kind: .anthropic, modelID: "m",
                 contextBudget: 100_000, supportsPromptCaching: true, isLocal: false
@@ -119,7 +119,7 @@ final class AskScopeTests: XCTestCase {
         XCTAssertEqual(small.request.messages.first?.content, prompt)
 
         let large = try await strategy.assembleContext(
-            for: "Q", in: book, selection: nil,
+            for: "Q", in: book, selection: nil, scope: .wholeBook,
             provider: ProviderInfo(
                 kind: .local, modelID: "m",
                 contextBudget: 8_000, supportsPromptCaching: false, isLocal: true

@@ -38,6 +38,59 @@ public struct Book: Identifiable, Hashable, Sendable, Codable {
     }
 }
 
+// MARK: - Chapter titles
+
+/// One source for what a chapter is called, shared by the reader header, the
+/// Contents list, bookmarks, the "where am I" caption and the prompt anchor —
+/// so no two of them can disagree about the same chapter.
+public extension Book {
+    /// The one fallback wording for a chapter with no title of its own and
+    /// no table-of-contents entry: "Chapter N".
+    static func fallbackChapterTitle(number: Int) -> String {
+        "Chapter \(number)"
+    }
+
+    /// The nearest table-of-contents title at or before a chapter index — a
+    /// spine document without an entry of its own belongs to the section
+    /// that precedes it. Entries are walked in document order, children
+    /// after their parent, so the deepest entry that still precedes the
+    /// chapter wins. Blank titles are skipped. Nil without a usable entry.
+    func tocTitle(forChapterIndex index: Int) -> String? {
+        var best: String?
+        func walk(_ entries: [TOCEntry]) {
+            for entry in entries {
+                if entry.chapterIndex <= index {
+                    let title = entry.title.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !title.isEmpty { best = title }
+                }
+                walk(entry.children)
+            }
+        }
+        walk(metadata.tableOfContents)
+        return best
+    }
+
+    /// The chapter's own (non-blank) title, else the nearest TOC title, else
+    /// nil. `index` is a reading-order index — the same index the frontier,
+    /// the TOC and the reader use; parsers fill `chapters` in reading order,
+    /// so for a parsed book it is also the array position.
+    func chapterTitle(forChapterIndex index: Int) -> String? {
+        let ordered = chaptersInReadingOrder
+        if ordered.indices.contains(index),
+           let own = ordered[index].title?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !own.isEmpty {
+            return own
+        }
+        return tocTitle(forChapterIndex: index)
+    }
+
+    /// Display title for a chapter: `chapterTitle(forChapterIndex:)`, else
+    /// the fallback "Chapter N" with N the chapter's position from one.
+    func chapterDisplayTitle(_ index: Int) -> String {
+        chapterTitle(forChapterIndex: index) ?? Self.fallbackChapterTitle(number: index + 1)
+    }
+}
+
 public struct BookMetadata: Hashable, Sendable, Codable {
     public var title: String
     public var authors: [String]

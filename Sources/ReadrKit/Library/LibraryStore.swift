@@ -21,6 +21,12 @@ public struct ReadingPosition: Sendable, Hashable, Codable {
 /// GRDB-backed store (with iCloud sync) replaces it later without touching the
 /// UI, which depends only on this protocol.
 public protocol LibraryStore: Sendable {
+    /// Whether this library has ever been written to disk — the user has put
+    /// something in it before, even if it is empty now. The first-run sample
+    /// book is seeded only when this is false: an emptied library is a
+    /// decision, a never-used one is a blank shelf.
+    var hasPersistedLibrary: Bool { get }
+
     func add(_ book: Book) throws
     func allBooks() -> [Book]
     func book(id: UUID) -> Book?
@@ -62,6 +68,9 @@ public final class InMemoryLibraryStore: LibraryStore, @unchecked Sendable {
     private var states: [UUID: BookState] = [:]
 
     public init() {}
+
+    /// Nothing in memory outlives the process.
+    public var hasPersistedLibrary: Bool { false }
 
     public func add(_ book: Book) throws {
         lock.lock(); defer { lock.unlock() }

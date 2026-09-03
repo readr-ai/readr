@@ -8,7 +8,17 @@ struct ReadrApp: App {
     /// Scenes receive it via `environmentObject` — never a second instance, or
     /// a highlight made in a reader window wouldn't show up in the library's
     /// Highlights & Notes review.
-    @StateObject private var model = AppModel()
+    ///
+    /// The first-run sample book is seeded unless a UI-test launch owns the
+    /// library: `-uiTestEmptyLibrary` asserts the empty-library guidance,
+    /// which is still a real state (the user deletes everything), and
+    /// `-uiTestSeed` supplies its own fixtures. Decided here, at the entry
+    /// point, so the model itself never reads launch arguments for it and
+    /// tests and previews pass their own answer.
+    @StateObject private var model = AppModel(
+        seedsSampleBook: !ProcessInfo.processInfo.arguments.contains("-uiTestEmptyLibrary")
+            && !ProcessInfo.processInfo.arguments.contains("-uiTestSeed")
+    )
 
     /// The reading theme also decides the SYSTEM color scheme of every window.
     /// Readr paints its own paper surfaces, so the OS appearance must follow
@@ -89,6 +99,14 @@ private struct ReaderWindowRoot: View {
                 description: Text("This book is no longer in your library.")
             )
             .frame(minWidth: 400, minHeight: 300)
+            // A window that could not show its book cannot show its recap
+            // either: drop the request rather than leave it waiting to fire
+            // the next time this id resolves.
+            .onAppear {
+                if let bookID, model.pendingRecapBookID == bookID {
+                    model.pendingRecapBookID = nil
+                }
+            }
         }
     }
 }

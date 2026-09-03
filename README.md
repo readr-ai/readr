@@ -42,10 +42,11 @@ a shareable article.
   facing pages** like an open book — with page turns via buttons or arrow keys,
   reflowing on window resize (macOS).
 - 🤖 **Ask the book**: select a sentence, ask a question, get a streamed answer
-  with full book context and **source citations** — and ask follow-ups. The
-  book is the context, not the ceiling: questions that reach past it (later
-  research, the film adaptation) get real answers, marked as coming from
-  beyond the book.
+  grounded in what you've read so far, with **source citations** — and ask
+  follow-ups. Answers never reach past your place (a **Whole book** switch
+  lifts that), and the book is the context, not the ceiling: questions that
+  reach past it (later research, the film adaptation) get real answers,
+  marked as coming from beyond the book.
 - 🎧 **Listen to the book**: read-aloud from the page you're on, narrated by
   **Readr Voice** — a neural voice (Kokoro-82M) that runs entirely on your
   device — CoreML on the Mac (macOS 26.4–26.5 excepted, where an Apple bug

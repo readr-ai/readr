@@ -1,11 +1,10 @@
 THERE IS NO ACCOUNT AND NO LOGIN. Readr has no account system, no sign-up,
 no subscription and no server, so there is no demo account to provide.
 Nothing in the app is gated behind credentials — every feature is reachable
-on a fresh install. The empty library you saw on first launch is the correct
-initial state, not a locked one: Readr is a reader for DRM-free files the
-user already owns. A fresh install includes one public-domain sample book
-(Alice's Adventures in Wonderland, Project Gutenberg) so every feature can
-be tried immediately, with nothing to import.
+on a fresh install. Readr is a reader for DRM-free files the user already
+owns, and a fresh install opens with one book already in the library: a
+public-domain sample (Alice's Adventures in Wonderland, Lewis Carroll,
+1865), so every feature can be tried immediately, with nothing to import.
 
 HOW TO GET ANOTHER BOOK ONTO THE REVIEW DEVICE (optional, about 60 seconds)
 The sample book is enough to review every feature. To test with a file of
@@ -28,9 +27,10 @@ WHAT TO TEST ONCE A BOOK IS OPEN (no account, no network needed)
   search, footnote popups.
 - Listen: tap Listen and the book is read aloud from the current page, with
   sentence and chapter skip, speed and voice changes mid-sentence, a sleep
-  timer, and lock-screen and headphone controls. On iOS 26 narration uses
-  Apple's system voices only: Readr's own neural voice (Readr Voice) is
-  disabled on this iOS line by design, and nothing is downloaded.
+  timer, and lock-screen and headphone controls. On iOS 26.4 and later
+  narration uses Apple's system voices only: Readr's own neural voice
+  (Readr Voice) is disabled on these versions by design, and nothing is
+  downloaded.
 - Highlight and take notes, then open the Notes panel and export to Markdown.
 - iPad specifically: sidebar and reader side by side, two-page spreads, and
   hardware keyboard page turns.
@@ -41,15 +41,16 @@ paste an API key for Anthropic, OpenAI or OpenRouter, or use Sign in with
 OpenRouter. This is the user's own third-party account, not a Readr account,
 and Readr never receives it — keys are stored in the device Keychain.
 Without credentials, Ask shows an explanatory empty state rather than
-failing; that is intended, not a broken build. Everything described above
-works fully without it.
+failing; that is intended, not a broken build. With a key connected, Ask
+answers from the pages read so far and never reveals what is ahead; a
+"Whole book" switch at the top of the panel lifts that for readers who
+want it. Everything described above works fully without a key.
 
 CONTENT
 Readr bundles one public-domain sample book (Alice's Adventures in
-Wonderland, from Project Gutenberg), downloads no books, and contains no
-storefront. It opens
-only DRM-free files the user already has, and refuses DRM-protected files
-with an explanatory message.
+Wonderland, Lewis Carroll, 1865), downloads no books, and contains no
+storefront. It opens only DRM-free files the user already has, and refuses
+DRM-protected files with an explanatory message.
 
 PURCHASES
 Readr sells nothing and contains no in-app purchases. The iOS build

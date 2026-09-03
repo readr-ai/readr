@@ -9,6 +9,9 @@ final class StubRAGIndex: RAGIndex, @unchecked Sendable {
     private let lock = NSLock()
     private var built: Set<UUID> = []
     private(set) var retrieveCallCount = 0
+    /// The chapter ceiling of the most recent `retrieve`, so a test can
+    /// assert the strategy pushed its scope into the index.
+    private(set) var lastMaxChapterIndex: Int??
 
     init(passages: [RetrievedPassage] = [RetrievedPassage(text: "a relevant passage", locator: "Ch. 1", score: 1.0)]) {
         self.passages = passages
@@ -18,9 +21,20 @@ final class StubRAGIndex: RAGIndex, @unchecked Sendable {
         lock.lock(); built.insert(book.id); lock.unlock()
     }
 
-    func retrieve(query: String, bookID: UUID, limit: Int) async throws -> [RetrievedPassage] {
-        lock.lock(); retrieveCallCount += 1; lock.unlock()
-        return Array(passages.prefix(limit))
+    /// Filters by the ceiling BEFORE the limit, the way a real index must.
+    func retrieve(
+        query: String, bookID: UUID, limit: Int, maxChapterIndex: Int?
+    ) async throws -> [RetrievedPassage] {
+        lock.lock()
+        retrieveCallCount += 1
+        lastMaxChapterIndex = .some(maxChapterIndex)
+        lock.unlock()
+        let candidates = passages.filter { passage in
+            guard let maxChapterIndex else { return true }
+            guard let chapter = passage.chapterIndex else { return false }
+            return chapter <= maxChapterIndex
+        }
+        return Array(candidates.prefix(limit))
     }
 
     func isBuilt(bookID: UUID) async -> Bool {

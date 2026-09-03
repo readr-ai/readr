@@ -26,6 +26,36 @@ final class ReadingPositionSummaryTests: XCTestCase {
         ])
     }
 
+    // MARK: - From a cached table
+
+    /// The summary built from a `ReadingLengthTable` is the summary built
+    /// from the book — the table is the same measurement, taken once.
+    func testACachedTableGivesTheSameSummary() {
+        let book = makeBook(chapters: [
+            Chapter(title: "One", order: 0, text: String(repeating: "a", count: 100)),
+            Chapter(title: "Notes", order: 1, text: String(repeating: "n", count: 100), isLinear: false),
+            Chapter(title: nil, order: 2, text: String(repeating: "b", count: 100)),
+        ])
+        let table = ReadingLengthTable(book: book)
+        for frontier in [
+            ReadingFrontier(chapterIndex: 0, characterOffset: 25),
+            ReadingFrontier(chapterIndex: 1, characterOffset: 50),
+            ReadingFrontier(chapterIndex: 2, characterOffset: 50),
+            ReadingFrontier(chapterIndex: 7, characterOffset: 0),
+        ] {
+            XCTAssertEqual(
+                ReadingPositionSummary(book: book, frontier: frontier, lengths: table),
+                ReadingPositionSummary(book: book, frontier: frontier),
+                "frontier \(frontier)"
+            )
+        }
+        let position = ReadingPosition(chapterIndex: 2, characterOffset: 50)
+        XCTAssertEqual(
+            ReadingPositionSummary(book: book, position: position, lengths: table),
+            ReadingPositionSummary(book: book, position: position)
+        )
+    }
+
     // MARK: - Chapter N of M
 
     func testCountsTheChapterTheReaderIsInFromOne() {
