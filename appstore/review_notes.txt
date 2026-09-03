@@ -3,9 +3,13 @@ no subscription and no server, so there is no demo account to provide.
 Nothing in the app is gated behind credentials — every feature is reachable
 on a fresh install. The empty library you saw on first launch is the correct
 initial state, not a locked one: Readr is a reader for DRM-free files the
-user already owns, and it ships with no books.
+user already owns. A fresh install includes one public-domain sample book
+(Alice's Adventures in Wonderland, Project Gutenberg) so every feature can
+be tried immediately, with nothing to import.
 
-HOW TO GET A BOOK ONTO THE REVIEW DEVICE (about 60 seconds, no account)
+HOW TO GET ANOTHER BOOK ONTO THE REVIEW DEVICE (optional, about 60 seconds)
+The sample book is enough to review every feature. To test with a file of
+your own:
 Readr is registered as an open-with target for EPUB, PDF, TXT and Markdown,
 so any of these works:
 
@@ -24,10 +28,9 @@ WHAT TO TEST ONCE A BOOK IS OPEN (no account, no network needed)
   search, footnote popups.
 - Listen: tap Listen and the book is read aloud from the current page, with
   sentence and chapter skip, speed and voice changes mid-sentence, a sleep
-  timer, and lock-screen and headphone controls. For English books this uses
-  Readr Voice, an on-device narrator that downloads once (about 104MB); until
-  it arrives an Apple system voice reads and it switches over automatically.
-  Apple's voices are always available from the voice picker.
+  timer, and lock-screen and headphone controls. On iOS 26 narration uses
+  Apple's system voices only: Readr's own neural voice (Readr Voice) is
+  disabled on this iOS line by design, and nothing is downloaded.
 - Highlight and take notes, then open the Notes panel and export to Markdown.
 - iPad specifically: sidebar and reader side by side, two-page spreads, and
   hardware keyboard page turns.
@@ -42,7 +45,9 @@ failing; that is intended, not a broken build. Everything described above
 works fully without it.
 
 CONTENT
-Readr bundles and downloads no books, and contains no storefront. It opens
+Readr bundles one public-domain sample book (Alice's Adventures in
+Wonderland, from Project Gutenberg), downloads no books, and contains no
+storefront. It opens
 only DRM-free files the user already has, and refuses DRM-protected files
 with an explanatory message.
 

@@ -10,6 +10,10 @@ adaptation, or how an idea aged, and you get a useful answer that shows which
 part came from the book and which from outside it. Readr won't attribute an
 outside claim to the book you're reading.
 
+Back after a week away? Ask for a recap and Readr tells you the story so far,
+from only the pages you've read. Nothing ahead of your place is ever used, so
+it can't spoil what comes next.
+
 Ask needs an AI account of your own: connect an Anthropic, OpenAI or
 OpenRouter key, or sign in with OpenRouter. You pay that company directly for
 what you use, and you can change or disconnect at any time. On an Apple
@@ -22,11 +26,11 @@ Press Listen and Readr reads the book aloud, starting from the page you're on
 the place it saves is where the voice left off, so switching between reading
 and listening never costs you your spot.
 
-For English books, Readr Voice is a natural narrator that runs on your device,
-so nothing about your book is sent away to be read aloud. It downloads once,
-about 104MB: until it arrives an Apple voice reads and the switch happens on
-its own, mid-chapter. Books in other languages are read by Apple's voices,
-which need no download and are always one tap away.
+Narration uses Apple's built-in voices, which run on your device with nothing
+to download, so nothing about your book is sent away to be read aloud. Readr
+Voice, our more natural on-device narrator for English books, is taking a
+short break on iPhone and iPad while an iOS issue is resolved; it's in the Mac
+app today and returns here as soon as the fix ships.
 
 Skip by sentence or by chapter, change the speed or the voice mid-sentence and
 it carries on from that word, and set a sleep timer that counts listening
@@ -48,6 +52,8 @@ one. Your keys are stored in the device Keychain.
 
 READING THAT FEELS LIKE READING
 • EPUB, PDF, plain-text and Markdown — DRM-free files you own
+• A book to start on: Alice's Adventures in Wonderland is in your library on
+  first launch, so you can try everything before importing your own
 • Three layouts: continuous scroll, single page, or two facing pages
 • Paper, Sepia and Dark themes, with your choice of typeface and spacing
 • Table of contents, bookmarks, in-book search, footnote popups

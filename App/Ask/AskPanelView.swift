@@ -13,6 +13,9 @@ import ReadrKit
 struct AskPanelView: View {
     let book: Book
     let selection: Selection?
+    /// Where the reader is, when the reader has a place to be — see
+    /// `ReadingFrontier`. Decides whether a recap is offered.
+    private let frontier: ReadingFrontier?
 
     @StateObject private var vm: AskViewModel
     @State private var question = ""
@@ -38,6 +41,7 @@ struct AskPanelView: View {
     init(app: AppModel, book: Book, selection: Selection?, frontier: ReadingFrontier? = nil) {
         self.book = book
         self.selection = selection
+        self.frontier = frontier
         _vm = StateObject(wrappedValue: AskViewModel(
             makeService: { app.makeAskService() },
             prepare: {
@@ -460,7 +464,10 @@ struct AskPanelView: View {
     }
 
     /// Static starters, tuned to the mode: passage questions when there's a
-    /// selection, whole-book questions otherwise.
+    /// selection, whole-book questions otherwise. The recap leads whenever
+    /// there is a reading position to recap up to — it is the question a
+    /// reader coming back to a book actually has, and the one the store copy
+    /// promises; with no frontier (PDF pages) it would spoil, so it stays off.
     private var suggestedQuestions: [String] {
         if selection != nil {
             return [
@@ -468,11 +475,15 @@ struct AskPanelView: View {
                 "How does this connect to the rest of the book?",
             ]
         }
-        return [
+        var starters = [
             "Summarize this book",
             "What are the key themes?",
             "Who are the main characters?",
         ]
+        if frontier != nil {
+            starters.insert("Recap what I've read so far \u{2014} no spoilers", at: 0)
+        }
+        return starters
     }
 
     /// Sends the question and empties the field — the text belongs to the

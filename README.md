@@ -50,6 +50,8 @@ a shareable article.
   **Readr Voice** — a neural voice (Kokoro-82M) that runs entirely on your
   device. Its model downloads once (~104MB) on first listen; your book never
   leaves the device, and Apple's zero-download voices remain a pick away.
+  (Readr Voice is paused on iOS 26 pending an Apple fix; Apple's voices read
+  there meanwhile.)
   Sentence skip, speed, voice, and a sleep timer; the page turns itself to
   follow the voice, and lock-screen/headphone controls work with the screen
   off (iOS).

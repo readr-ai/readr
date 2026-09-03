@@ -1,12 +1,10 @@
-Readr 3.2.1 makes listening better.
+Readr 3.2.2: a recap when you need one, and a book to start on.
 
-• English books can now use Readr Voice, a more natural narrator that reads
-  on your device
-• Listening starts with an Apple voice while the one-time Readr Voice
-  download finishes (about 104MB), then switches over automatically
-• Footnote numbers are no longer read aloud (formulas still are — that
-  one's next)
-• Fixed: repeated sentences, narration jumping ahead, and playback wedging
-  after a phone call
-• Apple's built-in voices are still one tap away, and are used for books in
-  other languages
+• Ask for a recap — "what's happened so far?" — and Readr answers from only
+  the pages you've read. Nothing ahead of your place is used, so it can't
+  spoil what comes next
+• A first book in your library: Alice's Adventures in Wonderland is there on
+  first launch, so you can try reading, listening and asking right away
+• Fixed: Readr could quit a few minutes into listening on iOS 26. Readr Voice
+  is paused on iPhone and iPad until Apple's fix ships; Apple's voices read
+  meanwhile, and your voice choice is kept

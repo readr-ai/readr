@@ -41,6 +41,8 @@ Only when you explicitly connect a cloud AI provider and ask it something:
   read aloud. The request carries **nothing about you or your book** — it only
   fetches model files, and the voice then runs entirely on the device. Choose
   an Apple voice in the Listen bar and Readr makes no network requests at all.
+  On iOS 26.4 and later, where Readr Voice is disabled (see
+  `docs/releases/v3.2.2.md`), this download never happens.
 
 ## Your choices
 
