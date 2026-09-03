@@ -36,6 +36,8 @@ public protocol RAGIndex: Sendable {
     ///   is unknown are left out. Applied BEFORE `limit`, so a question scoped
     ///   to what the reader has read still comes back with `limit` usable
     ///   passages rather than a handful of survivors. Nil means the whole book.
+    ///   This is the spoiler boundary on the retrieval tier: the context
+    ///   strategy does not filter again, so a conforming index must honor it.
     func retrieve(
         query: String, bookID: UUID, limit: Int, maxChapterIndex: Int?
     ) async throws -> [RetrievedPassage]

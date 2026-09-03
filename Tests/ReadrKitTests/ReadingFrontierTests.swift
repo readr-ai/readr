@@ -203,8 +203,12 @@ final class ReadingFrontierTests: XCTestCase {
 
     // MARK: - Retrieval tier
 
+    /// The spoiler boundary on the retrieval tier is the index's ceiling: the
+    /// strategy asks for passages at or before the last finished chapter and
+    /// keeps what a scope-aware index returns. (`HybridRAGIndexTests` pins
+    /// that the real index applies the ceiling before its limit.)
     func testRetrievalTierDropsPassagesPastTheFrontier() async throws {
-        let index = LeakyIndex(passages: [
+        let index = StubRAGIndex(passages: [
             RetrievedPassage(text: "early", locator: "Ch. 1", score: 0.9, chapterIndex: 0),
             RetrievedPassage(text: "current chapter", locator: "Ch. 2", score: 0.8, chapterIndex: 1),
             RetrievedPassage(text: "later", locator: "Ch. 3", score: 0.7, chapterIndex: 2),
@@ -217,12 +221,31 @@ final class ReadingFrontierTests: XCTestCase {
             provider: provider(isLocal: true)
         )
         XCTAssertEqual(ctx.tier, .retrieval)
+        XCTAssertEqual(index.lastMaxChapterIndex, .some(0), "an unfinished chapter 2 caps the index at chapter 1")
         XCTAssertEqual(ctx.citations.map(\.locator), ["Ch. 1"])
         let user = userText(ctx)
         XCTAssertTrue(user.contains("early"))
         XCTAssertFalse(user.contains("later"), "a passage after the frontier leaked into the prompt")
         XCTAssertFalse(user.contains("current chapter"), "the unfinished chapter is only partly read; its passages are withheld")
-        XCTAssertFalse(user.contains("unknown"), "a passage of unknown position is withheld, not assumed safe")
+        XCTAssertFalse(user.contains("unknown"), "a passage of unknown position is withheld by the index, not assumed safe")
+    }
+
+    /// What a scope-aware index vouches for is used as is — the strategy
+    /// does not second-guess it, so a passage the index returns without a
+    /// chapter number (it may not track one) still reaches the prompt.
+    func testStrategyTrustsWhatAScopeAwareIndexReturns() async throws {
+        let index = TrustedIndex(passages: [
+            RetrievedPassage(text: "vouched for", locator: "p. 4", score: 0.9, chapterIndex: nil),
+            RetrievedPassage(text: "early", locator: "Ch. 1", score: 0.8, chapterIndex: 0),
+        ])
+        let strategy = AdaptiveContextStrategy(index: index)
+        let ctx = try await strategy.assembleContext(
+            for: "q", in: makeBook(tokenCount: 5_000_000), selection: nil, history: [],
+            scope: .upTo(ReadingFrontier(chapterIndex: 1, characterOffset: 3)),
+            provider: provider(isLocal: true)
+        )
+        XCTAssertEqual(ctx.citations.map(\.locator), ["p. 4", "Ch. 1"])
+        XCTAssertTrue(userText(ctx).contains("vouched for"))
     }
 
     func testRetrievalTierKeepsTheCurrentChapterOnceItIsFinished() async throws {
@@ -355,10 +378,10 @@ final class ReadingFrontierTests: XCTestCase {
     }
 }
 
-/// An index that ignores the chapter ceiling and hands back everything —
-/// so the strategy's own guard is the only thing standing between a later
-/// passage and the prompt.
-private struct LeakyIndex: RAGIndex {
+/// An index whose passages are taken as already inside the ceiling — it
+/// returns them untouched, the way an index that filtered before its limit
+/// and simply doesn't record chapter numbers would.
+private struct TrustedIndex: RAGIndex {
     var passages: [RetrievedPassage]
     func build(for book: Book, embeddings: EmbeddingProvider) async throws {}
     func retrieve(

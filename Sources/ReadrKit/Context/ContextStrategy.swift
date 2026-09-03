@@ -187,10 +187,12 @@ public struct AdaptiveContextStrategy: ContextStrategy {
 
         // Tier 2: hybrid retrieval over the rest of the book. With a frontier,
         // the index is asked for passages at or before the last chapter the
-        // reader has finished — filtered before its limit, so a scoped
-        // question still gets a full set — and the strategy checks again
-        // here, so nothing the reader hasn't reached can be quoted, including
-        // passages whose position the index doesn't know.
+        // reader has finished — the ceiling is the index's to apply, before
+        // its limit, so a scoped question still gets a full set (see
+        // `RAGIndex.retrieve`). What a scope-aware index returns is trusted
+        // as is: a second filter here would only throw away passages the
+        // index has already vouched for, including any it returns without a
+        // chapter number.
         let maxChapterIndex: Int? = frontier.map { frontier in
             book.hasFinishedChapter(at: frontier) ? frontier.chapterIndex : frontier.chapterIndex - 1
         }
@@ -199,11 +201,7 @@ public struct AdaptiveContextStrategy: ContextStrategy {
             bookID: book.id,
             limit: 8,
             maxChapterIndex: maxChapterIndex
-        ).filter { passage in
-            guard let maxChapterIndex else { return true }
-            guard let chapter = passage.chapterIndex else { return false }
-            return chapter <= maxChapterIndex
-        }
+        )
         if passages.isEmpty, let frontier {
             // The reader has read something (the empty case returned above),
             // but none of it survived the chapter filter — they are partway
