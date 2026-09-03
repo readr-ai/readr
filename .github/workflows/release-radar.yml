@@ -40,7 +40,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  PINNED_TARGET: "3.3.0"
+  PINNED_TARGET: "3.3.1"
   PINNED_AUTO_RELEASE: "yes"
 
 jobs:
