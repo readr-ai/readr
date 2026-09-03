@@ -10,7 +10,7 @@ adaptation, or how an idea aged, and you get a useful answer that shows which
 part came from the book and which from outside it. Readr won't attribute an
 outside claim to the book you're reading.
 
-Back after a week away? Ask for a recap and Readr tells you the story so far,
+Back after a week away? Tap Recap and Readr tells you the story so far,
 from only the pages you've read. Nothing ahead of your place is ever used, so
 it can't spoil what comes next.
 
