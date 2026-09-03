@@ -91,6 +91,14 @@ public extension Book {
     }
 }
 
+public extension Chapter {
+    /// False for an empty or whitespace-only chapter — a PDF page that
+    /// carries only an image keeps its slot with no text.
+    var hasText: Bool {
+        text.contains { !$0.isWhitespace }
+    }
+}
+
 public struct BookMetadata: Hashable, Sendable, Codable {
     public var title: String
     public var authors: [String]
@@ -104,6 +112,13 @@ public struct BookMetadata: Hashable, Sendable, Codable {
     /// Optional so libraries persisted before this field still decode;
     /// nil means reflowable.
     public var isFixedLayout: Bool?
+    /// True when the source has no text layer at all — a scanned PDF, or
+    /// screenshots exported as one. The pages still render natively, but
+    /// every text feature (Ask, Listen, search, highlights, the Reading
+    /// view) has nothing to work with, and the app says so. Optional so
+    /// libraries persisted before this field still decode; nil means the
+    /// book has text.
+    public var isImageOnly: Bool?
 
     public init(
         title: String,
@@ -111,7 +126,8 @@ public struct BookMetadata: Hashable, Sendable, Codable {
         language: String? = nil,
         publisher: String? = nil,
         tableOfContents: [TOCEntry] = [],
-        isFixedLayout: Bool? = nil
+        isFixedLayout: Bool? = nil,
+        isImageOnly: Bool? = nil
     ) {
         self.title = title
         self.authors = authors
@@ -119,6 +135,7 @@ public struct BookMetadata: Hashable, Sendable, Codable {
         self.publisher = publisher
         self.tableOfContents = tableOfContents
         self.isFixedLayout = isFixedLayout
+        self.isImageOnly = isImageOnly
     }
 }
 

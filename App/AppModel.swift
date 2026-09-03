@@ -512,6 +512,9 @@ final class AppModel: ObservableObject {
                 as extracted text for now — fixed-layout rendering is on the \
                 roadmap.
                 """
+            } else if book.metadata.isImageOnly == true {
+                // The reader repeats the short form as a banner each open.
+                importNotice = ScannedPDFCopy.importNotice(title: book.metadata.title)
             }
         } catch {
             // `readerFacingMessage` carries the recovery suggestion too — the
@@ -784,9 +787,11 @@ final class AppModel: ObservableObject {
         }
     }
 
-    /// True when the book's retained source is a PDF (native PDF reading).
+    /// True when the book is a PDF. The image-only parser verdict remains
+    /// authoritative if retaining the source copy failed and left no filename.
     func isPDF(_ book: Book) -> Bool {
-        book.sourceFilename?.lowercased().hasSuffix(".pdf") == true
+        book.metadata.isImageOnly == true
+            || book.sourceFilename?.lowercased().hasSuffix(".pdf") == true
     }
 
     // MARK: Bookmarks

@@ -177,7 +177,20 @@ struct ReaderView: View {
     /// TOC/search/bookmark toolbar, so the text-mode items step aside and the
     /// chapter chevrons disable (PDF pages, not chapters, are the unit there).
     private var isPDFOriginal: Bool {
-        pdfShowsOriginal && model.isPDF(book) && model.sourceURL(for: book) != nil
+        (pdfShowsOriginal || isImageOnlyPDF) && model.isPDF(book)
+            && model.sourceURL(for: book) != nil
+    }
+
+    /// A PDF with no text layer (scanned pages, screenshots). Its chapters
+    /// are empty, so the Reading view would be blank and Ask, Listen, and
+    /// search have nothing to work with: the original pages are the only
+    /// surface, and the text-mode controls disable with a reason.
+    ///
+    /// Keyed directly on the parser's verdict so the gates hold even when the
+    /// copy into the Books directory failed; `content` then explains the
+    /// missing file instead of showing a blank page.
+    private var isImageOnlyPDF: Bool {
+        book.metadata.isImageOnly == true
     }
 
     private var chapter: Chapter? {
@@ -423,7 +436,7 @@ struct ReaderView: View {
 
     private var content: some View {
         Group {
-            if let url = model.sourceURL(for: book), model.isPDF(book), pdfShowsOriginal {
+            if isPDFOriginal, let url = model.sourceURL(for: book) {
                 PDFReaderView(
                     book: book,
                     url: url,
@@ -434,6 +447,17 @@ struct ReaderView: View {
                     },
                     annotationActions: $pdfAnnotationActions
                 )
+            } else if isImageOnlyPDF {
+                // The retained file is gone (or was never copied), and every
+                // chapter is empty: nothing to fall back on but an explanation.
+                ContentUnavailableView(
+                    ScannedPDFCopy.missingFileTitle,
+                    systemImage: "doc.viewfinder",
+                    description: Text(ScannedPDFCopy.missingFileDescription)
+                )
+                .accessibilityIdentifier("reader.scanMissingFile")
+            } else if let chapter, model.isPDF(book), !chapter.hasText {
+                imagePagePlaceholder(for: chapter)
             } else if let chapter {
                 readingSurface(for: chapter)
             } else {
@@ -450,6 +474,25 @@ struct ReaderView: View {
                 }
             }
         }
+    }
+
+    /// The Reading view of a PDF that has text, on a page that has none (a
+    /// plate, a full-page figure). The page keeps its slot so numbering and
+    /// positions stay true to the document; here it says what it is instead
+    /// of rendering as an empty sheet.
+    private func imagePagePlaceholder(for chapter: Chapter) -> some View {
+        ContentUnavailableView {
+            Label(
+                ScannedPDFCopy.imagePageTitle(chapter.title ?? "This page"),
+                systemImage: "photo"
+            )
+        } description: {
+            Text(ScannedPDFCopy.imagePageDescription)
+        } actions: {
+            Button(ScannedPDFCopy.showOriginalPages) { pdfShowsOriginal = true }
+                .accessibilityIdentifier("reader.showOriginalPages")
+        }
+        .accessibilityIdentifier("reader.imagePage")
     }
 
     private func readingSurface(for chapter: Chapter) -> some View {
@@ -672,7 +715,7 @@ struct ReaderView: View {
                 }
                 appearanceButton
                 listenButton
-                if !isPDFOriginal {
+                if !isPDFOriginal && !isImageOnlyPDF {
                     recapButton
                 }
                 askButton
@@ -693,7 +736,7 @@ struct ReaderView: View {
                     Spacer()
                 }
                 listenButton
-                if !isPDFOriginal {
+                if !isPDFOriginal && !isImageOnlyPDF {
                     recapButton
                 }
                 askButton
@@ -712,13 +755,13 @@ struct ReaderView: View {
             fontStepperControl
             typographyMenu
             themeDotsControl
-            if model.isPDF(book) {
+            if model.isPDF(book), !isImageOnlyPDF {
                 pdfDisplayMenu
             }
             listenButton
             // A native PDF page is not a reading position: nothing to recap
             // up to (see `askScope`).
-            if !isPDFOriginal {
+            if !isPDFOriginal && !isImageOnlyPDF {
                 recapButton
             }
             askButton
@@ -740,7 +783,12 @@ struct ReaderView: View {
         .keyboardShortcut("l", modifiers: [.command, .shift])
         .accessibilityIdentifier("reader.listen")
         .accessibilityLabel(narration.isActive ? "Stop listening" : "Listen to this book")
-        .help("Read aloud from this page (\u{21E7}\u{2318}L)")
+        .help(
+            isImageOnlyPDF
+                ? ScannedPDFCopy.needsText("Listen")
+                : "Read aloud from this page (\u{21E7}\u{2318}L)"
+        )
+        .disabled(isImageOnlyPDF)
     }
 
     private func toggleListening() {
@@ -806,10 +854,11 @@ struct ReaderView: View {
     /// at is the worse error. (If the scroll surface ever reports the end of
     /// its visible text, that is the anchor to use here instead.)
     ///
-    /// Native PDF pages have no text position at all, so they get no
-    /// frontier — and the whole document, as before.
+    /// Native PDF pages have no text position at all, so they get no frontier
+    /// and the whole document, as before. An image-only PDF also never gets a
+    /// frontier, including when its retained source is missing.
     private func askScope(selection: Range<Int>?) -> ReadingScope {
-        guard !isPDFOriginal else { return .wholeBook }
+        guard !isPDFOriginal, !isImageOnlyPDF else { return .wholeBook }
         var frontier: ReadingFrontier
         if layout == .scroll {
             frontier = ReadingFrontier(chapterIndex: chapterIndex, characterOffset: chapter?.text.count ?? 0)
@@ -1007,7 +1056,12 @@ struct ReaderView: View {
         .keyboardShortcut("f", modifiers: .command)
         .accessibilityIdentifier("reader.search")
         .accessibilityLabel("Find in book")
-        .help("Find in book (⌘F)")
+        .help(
+            isImageOnlyPDF
+                ? ScannedPDFCopy.needsText("Find")
+                : "Find in book (⌘F)"
+        )
+        .disabled(isImageOnlyPDF)
         .popover(isPresented: $showSearch) {
             ReaderSearchPopover(book: book) { index, offset in
                 showSearch = false
@@ -1034,7 +1088,8 @@ struct ReaderView: View {
                 fontRaw: $fontRaw,
                 lineSpacingRaw: $lineSpacingRaw,
                 isJustified: $isJustified,
-                isPDF: model.isPDF(book),
+                // An image-only PDF has no Reading view to offer.
+                isPDF: model.isPDF(book) && !isImageOnlyPDF,
                 pdfShowsOriginal: $pdfShowsOriginal
             )
         }
@@ -1219,7 +1274,12 @@ struct ReaderView: View {
         .keyboardShortcut("a", modifiers: [.command, .shift])
         .accessibilityIdentifier("reader.ask")
         .accessibilityLabel("Ask the book")
-        .help("Ask the book (⇧⌘A) — asks about the selection when text is selected")
+        .help(
+            isImageOnlyPDF
+                ? ScannedPDFCopy.needsText("Ask")
+                : "Ask the book (⇧⌘A) — asks about the selection when text is selected"
+        )
+        .disabled(isImageOnlyPDF)
         #if os(macOS)
         // Plain style so the iris tint survives the toolbar's own styling.
         return button.buttonStyle(.plain)
