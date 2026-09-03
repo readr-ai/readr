@@ -982,3 +982,316 @@ extension NarrationControllerTests {
         XCTAssertEqual(engine.state, .idle)
     }
 }
+
+
+// MARK: - Lookahead (an engine that synthesizes ahead)
+
+extension NarrationControllerTests {
+
+    private func text(ofLength length: Int) -> String {
+        String(repeating: "a", count: length - 1) + "."
+    }
+
+    /// The horizon math, as a table: sentences of known length against a
+    /// horizon in seconds of estimated audio, at a rate.
+    func testSegmentsWithinHorizonTakeSentencesUntilTheEstimateReachesIt() {
+        // 150 characters at 15 per second is 10s; 300 is 20s.
+        let segments = [150, 150, 300, 150].enumerated().map { index, length in
+            SpeechSegment(chapterIndex: 0, range: index..<(index + 1), text: text(ofLength: length))
+        }
+        struct Row {
+            let horizon: NarrationController.LookaheadHorizon
+            let rate: Double
+            let expected: Int
+            let why: String
+        }
+        let rows: [Row] = [
+            Row(horizon: .seconds(0), rate: 1, expected: 0, why: "no horizon, nothing ahead"),
+            Row(horizon: .seconds(5), rate: 1, expected: 1,
+                why: "the first sentence is taken even when it alone overshoots"),
+            Row(horizon: .seconds(10), rate: 1, expected: 1, why: "10s reaches the horizon exactly"),
+            Row(horizon: .seconds(15), rate: 1, expected: 2, why: "10s is short of 15, 20s is not"),
+            Row(horizon: .seconds(40), rate: 1, expected: 3, why: "40s reached by three"),
+            Row(horizon: .seconds(41), rate: 1, expected: 4, why: "the whole list"),
+            Row(horizon: .seconds(15), rate: 2, expected: 3,
+                why: "at 2× each sentence is half as long: 5, 5, 10 reach 15 only with the third"),
+            Row(horizon: .seconds(15), rate: 0.5, expected: 1,
+                why: "at 0.5× the first sentence alone is 20s"),
+            Row(horizon: .restOfBook, rate: 1, expected: 4, why: "everything"),
+            Row(horizon: .restOfBook, rate: 2, expected: 4, why: "everything, whatever the rate"),
+        ]
+        for row in rows {
+            let taken = NarrationController.segments(
+                segments, within: row.horizon, rate: row.rate
+            )
+            XCTAssertEqual(taken.count, row.expected, row.why)
+            XCTAssertEqual(
+                taken.map(\.text), Array(segments.prefix(row.expected)).map(\.text),
+                "Taken from the front, in order: \(row.why)"
+            )
+        }
+    }
+
+    func testEstimatedSecondsScaleWithLengthAndRate() {
+        let sentence = SpeechSegment(chapterIndex: 0, range: 0..<150, text: text(ofLength: 150))
+        XCTAssertEqual(NarrationController.estimatedSeconds(of: sentence, rate: 1), 10, accuracy: 0.001)
+        XCTAssertEqual(NarrationController.estimatedSeconds(of: sentence, rate: 2), 5, accuracy: 0.001)
+        XCTAssertEqual(NarrationController.estimatedSeconds(of: sentence, rate: 0.5), 20, accuracy: 0.001)
+    }
+
+    func testTheDefaultHorizonIsAnHour() {
+        let (controller, _) = makeController()
+        XCTAssertEqual(controller.lookaheadHorizon, .seconds(60 * 60))
+        XCTAssertEqual(NarrationController.defaultLookaheadSeconds, 3600)
+    }
+
+    func testStartingHandsTheEngineTheSentencesThatFollow() {
+        let (controller, engine) = makeController(
+            settings: SpeechSettings(rate: 1.25, voiceID: "readr.voice.kokoro.af_heart")
+        )
+        controller.start(atChapter: 0)
+
+        XCTAssertEqual(
+            engine.lastPrefetchTexts, ["Alpha two.", "Alpha three.", "Beta one.", "Beta two."],
+            "Everything after the current sentence, across the chapter wall, notes skipped"
+        )
+        XCTAssertEqual(controller.lookahead.map(\.text), engine.lastPrefetchTexts)
+        let request = engine.prefetches.last?.first
+        XCTAssertEqual(request?.voiceID, "readr.voice.kokoro.af_heart")
+        XCTAssertEqual(request?.rate, 1.25)
+        XCTAssertEqual(request?.language, "en-GB")
+        XCTAssertEqual(request?.bookID, controller.bookID, "Keyed to the book for the engine's cache")
+        XCTAssertEqual(engine.spoken.first?.bookID, controller.bookID)
+    }
+
+    func testTheLookaheadSlidesAsSentencesFinish() {
+        let (controller, engine) = makeController()
+        controller.start(atChapter: 0)
+        engine.finishCurrent()
+        XCTAssertEqual(engine.lastPrefetchTexts, ["Alpha three.", "Beta one.", "Beta two."])
+        engine.finishCurrent()
+        XCTAssertEqual(engine.lastPrefetchTexts, ["Beta one.", "Beta two."])
+    }
+
+    func testTheLookaheadIsReissuedAfterASkip() {
+        let (controller, engine) = makeController()
+        controller.start(atChapter: 0)
+        controller.skipToNextChapter()
+        XCTAssertEqual(engine.lastPrefetchTexts, ["Beta two."])
+        controller.skipToPreviousSentence()
+        XCTAssertEqual(engine.lastPrefetchTexts, ["Beta one.", "Beta two."])
+    }
+
+    func testTheLookaheadIsReissuedWithANewVoice() {
+        let (controller, engine) = makeController()
+        controller.start(atChapter: 0)
+        controller.settings.voiceID = "com.apple.voice.other"
+        XCTAssertEqual(engine.prefetches.last?.first?.voiceID, "com.apple.voice.other")
+        XCTAssertEqual(engine.lastPrefetchTexts, ["Alpha two.", "Alpha three.", "Beta one.", "Beta two."])
+    }
+
+    func testTheHorizonBoundsTheLookahead() {
+        let (controller, engine) = makeController()
+        // "Alpha two." is ten characters: two thirds of a second.
+        controller.lookaheadHorizon = .seconds(0.5)
+        controller.start(atChapter: 0)
+        XCTAssertEqual(engine.lastPrefetchTexts, ["Alpha two."])
+
+        controller.lookaheadHorizon = .seconds(0)
+        XCTAssertEqual(engine.lastPrefetchTexts, [], "Changing the horizon re-issues at once")
+        XCTAssertEqual(controller.lookahead, [])
+
+        controller.lookaheadHorizon = .restOfBook
+        XCTAssertEqual(engine.lastPrefetchTexts, ["Alpha two.", "Alpha three.", "Beta one.", "Beta two."])
+    }
+
+    func testSettingTheSameHorizonDoesNotReissue() {
+        let (controller, engine) = makeController()
+        controller.start(atChapter: 0)
+        let issued = engine.prefetches.count
+        controller.lookaheadHorizon = .seconds(60 * 60)
+        XCTAssertEqual(engine.prefetches.count, issued)
+    }
+
+    func testChangingTheHorizonWhileIdleIssuesNothing() {
+        let (controller, engine) = makeController()
+        controller.lookaheadHorizon = .restOfBook
+        XCTAssertTrue(engine.prefetches.isEmpty)
+    }
+
+    func testStoppingClearsTheLookahead() {
+        let (controller, engine) = makeController()
+        controller.start(atChapter: 0)
+        controller.stop()
+        XCTAssertEqual(engine.lastPrefetchTexts, [])
+        XCTAssertEqual(controller.lookahead, [])
+    }
+
+    func testTheEndOfTheBookClearsTheLookahead() {
+        let (controller, engine) = makeController()
+        controller.start(atChapter: 2, characterOffset: 10)
+        XCTAssertEqual(engine.lastPrefetchTexts, [])
+        engine.finishCurrent()
+        XCTAssertEqual(controller.status, .finished)
+        XCTAssertEqual(engine.lastPrefetchTexts, [])
+    }
+
+    func testAnEngineThatCannotPrefetchIsNotAskedTo() {
+        let engine = PlainMockSpeechEngine()
+        let controller = NarrationController(book: makeBook(), engine: engine)
+        controller.start(atChapter: 0)
+        XCTAssertEqual(engine.spoken.count, 1)
+        XCTAssertEqual(controller.lookahead, [], "No list is built for an engine with no use for it")
+    }
+
+    // MARK: Speed, with and without an engine that adjusts in place
+
+    func testARateChangeIsAppliedInPlaceWhenTheEngineCan() {
+        let (controller, engine) = makeController()
+        engine.adoptsRateChanges = true
+        controller.start(atChapter: 0)
+        let issued = engine.prefetches.count
+
+        controller.settings.rate = 1.5
+        XCTAssertEqual(engine.adjustedRates, [1.5])
+        XCTAssertEqual(engine.spoken.count, 1, "Not re-spoken: the audio in flight just plays faster")
+        XCTAssertEqual(controller.status, .speaking)
+        XCTAssertEqual(engine.prefetches.count, issued, "The lookahead is not re-issued for speed")
+        XCTAssertEqual(
+            engine.prefetches.last?.first?.rate, 1,
+            "The list the engine holds still carries the old rate; the next sentence's does not"
+        )
+
+        engine.finishCurrent()
+        XCTAssertEqual(engine.spoken.last?.rate, 1.5, "The next sentence asks for the new speed")
+        XCTAssertEqual(engine.prefetches.last?.first?.rate, 1.5)
+    }
+
+    func testARateChangeReSpeaksWhenTheEngineCannotButDoesNotReissueTheLookahead() {
+        let (controller, engine) = makeController()
+        controller.start(atChapter: 0)
+        engine.speakWord(6..<9)
+        let issued = engine.prefetches.count
+
+        controller.settings.rate = 1.5
+        XCTAssertEqual(engine.spokenTexts, ["Alpha one.", "one."])
+        XCTAssertEqual(engine.spoken.last?.rate, 1.5)
+        XCTAssertEqual(engine.prefetches.count, issued)
+    }
+
+    func testARateChangeWhilePausedIsPickedUpByPlayEvenWhenTheEngineAdjustsInPlace() {
+        // Nothing is in flight to adjust; the re-speak on play carries it.
+        let (controller, engine) = makeController()
+        engine.adoptsRateChanges = true
+        controller.start(atChapter: 0)
+        controller.pause()
+        controller.settings.rate = 1.75
+        XCTAssertEqual(engine.adjustedRates, [], "A paused utterance is re-spoken, not adjusted")
+        controller.play()
+        XCTAssertEqual(engine.spoken.last?.rate, 1.75)
+    }
+
+    func testAVoiceAndRateChangeTogetherReSpeaksEvenWhenTheEngineAdjustsRate() {
+        let (controller, engine) = makeController()
+        engine.adoptsRateChanges = true
+        controller.start(atChapter: 0)
+        var settings = controller.settings
+        settings.rate = 2
+        settings.voiceID = "com.apple.voice.other"
+        controller.settings = settings
+        XCTAssertEqual(engine.adjustedRates, [])
+        XCTAssertEqual(engine.spoken.count, 2)
+        XCTAssertEqual(engine.spoken.last?.voiceID, "com.apple.voice.other")
+        XCTAssertEqual(engine.spoken.last?.rate, 2)
+    }
+}
+
+// MARK: - Holding for the foreground
+
+extension NarrationControllerTests {
+
+    func testASuspendedUtteranceHoldsWithItsReason() {
+        let (controller, engine) = makeController()
+        var statuses: [NarrationStatus] = []
+        controller.onStatusChange = { statuses.append($0) }
+        controller.start(atChapter: 0)
+
+        engine.suspend(.needsForeground)
+        XCTAssertEqual(controller.status, .paused)
+        XCTAssertEqual(controller.holdReason, .needsForeground)
+        XCTAssertEqual(controller.currentSegment?.text, "Alpha one.", "Held on the sentence")
+        XCTAssertEqual(statuses, [.speaking, .paused])
+        XCTAssertEqual(engine.spoken.count, 1, "Nothing else is spoken")
+    }
+
+    func testPlayAfterAHoldReSpeaksTheSentenceAndClearsTheReason() {
+        let (controller, engine) = makeController()
+        controller.start(atChapter: 0)
+        engine.suspend()
+
+        controller.play()
+        XCTAssertEqual(controller.status, .speaking)
+        XCTAssertNil(controller.holdReason)
+        XCTAssertEqual(engine.spokenTexts, ["Alpha one.", "Alpha one."])
+        XCTAssertEqual(engine.resumeCount, 0, "The engine set it down; it is spoken afresh")
+    }
+
+    func testAHoldDoesNotBurnTheSleepTimer() {
+        let clock = Clock(epoch)
+        let (controller, engine) = makeController(clock: clock)
+        controller.start(atChapter: 0)
+        controller.setSleepTimer(.after(minutes: 10))
+        engine.suspend()
+        clock.advance(minutes: 60)
+        controller.play()
+        clock.advance(minutes: 9)
+        controller.tick()
+        XCTAssertEqual(controller.status, .speaking)
+    }
+
+    func testAStaleSuspensionIsIgnored() {
+        let (controller, engine) = makeController()
+        controller.start(atChapter: 0)
+        let cancelled = engine.spoken[0].id
+        controller.skipToNextSentence()
+        engine.suspend(stale: cancelled)
+        XCTAssertEqual(controller.status, .speaking)
+        XCTAssertNil(controller.holdReason)
+    }
+
+    func testAReadersPauseCarriesNoReason() {
+        let (controller, _) = makeController()
+        controller.start(atChapter: 0)
+        controller.pause()
+        XCTAssertNil(controller.holdReason)
+    }
+
+    func testAReadersPauseAfterAHoldClearsTheReason() {
+        // The reason describes why narration stopped on its own; once the
+        // reader has taken over it no longer applies.
+        let (controller, engine) = makeController()
+        controller.start(atChapter: 0)
+        engine.suspend()
+        controller.play()
+        controller.pause()
+        XCTAssertNil(controller.holdReason)
+    }
+
+    func testASkipAfterAHoldClearsTheReasonAndMoves() {
+        let (controller, engine) = makeController()
+        controller.start(atChapter: 0)
+        engine.suspend()
+        controller.skipToNextSentence()
+        XCTAssertEqual(controller.status, .paused, "A skip while held does not start audio")
+        XCTAssertNil(controller.holdReason)
+        XCTAssertEqual(controller.currentSegment?.text, "Alpha two.")
+    }
+
+    func testStopAfterAHoldClearsTheReason() {
+        let (controller, engine) = makeController()
+        controller.start(atChapter: 0)
+        engine.suspend()
+        controller.stop()
+        XCTAssertNil(controller.holdReason)
+    }
+}

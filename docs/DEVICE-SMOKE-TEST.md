@@ -191,36 +191,62 @@ with the results.
       press play: "Preparing" is back. Turn Wi-Fi off before pressing
       Listen: the bar reads "Readr Voice couldn't download." with a Retry;
       turn Wi-Fi on, press Retry: preparing, then Readr Voice.
-- [ ] **Thirty minutes continuous.** Leave it reading. No quit, no stall, no
-      sentence heard twice, no sentence in an Apple voice once Readr Voice
-      has taken over (unless you locked the phone). Watch the read-along line
-      keep pace with the audio.
+- [ ] **The buffer fills.** In the foreground, watch the right of the bar:
+      "1 min ready" within a minute, climbing to about an hour and stopping
+      there. Plug the phone in: it climbs on, to the end of the book or two
+      hours. Unplug: it stops adding, keeps what it has. Skip back a
+      sentence: instant. Change speed to 1.5×: the sentence continues from
+      where it is, no restart, and the figure does not drop. **Record** how
+      long it took to reach 10 minutes ready.
+- [ ] **Thirty minutes continuous, foreground.** Leave it reading. No quit,
+      no stall, no sentence heard twice, no Apple voice at any point. Watch
+      the read-along line keep pace with the audio.
 - [ ] **Memory.** In Xcode's Debug navigator, the Memory gauge during that
       half hour: note the peak. It must stay **under 1GB** and must not climb
       sentence over sentence (a rising line is the MLX cache leak the 64MB
-      cap is meant to stop).
-- [ ] **Lock the screen mid-sentence.** While Readr Voice is in the middle
-      of a sentence, press the side button. Expected: audio continues from
-      the lock screen; the **next** sentence is an Apple voice (the current
-      one either finishes in Readr Voice or is re-read by the Apple voice —
-      both are fine); and the app does **not** quit. Unlock and return to the
-      app: within one sentence the voice is Readr Voice again. Repeat five
-      times, at different points in a sentence — the in-flight-synthesis
-      window is the one the code cannot close.
-- [ ] **Lock during the first download.** Fresh install again. Press Listen,
-      then lock the phone immediately and leave it locked past the point the
-      download would have finished (five minutes on Wi-Fi). The Apple voice
-      keeps reading throughout and the app does not quit — the GPU load
-      waits for the foreground. Unlock: Readr Voice takes over within a few
-      sentences.
+      cap is meant to stop). The on-disk buffer is not memory; check it
+      separately under Settings › General › iPhone Storage › Readr (about
+      30MB an hour of audio).
+- [ ] **Thirty minutes locked.** With "20 min ready" or more, lock the
+      phone. Readr Voice keeps reading from the lock screen — the same
+      voice, no gap. Leave it locked for thirty minutes with Xcode attached:
+      no quit, no stall; lock-screen pause/play and the headphone pinch
+      work. Unlock: still Readr Voice, no sentence twice. Then **measure**,
+      from the diagnostics log (Settings › Report a bug attaches it; Xcode's
+      console shows it live): the `Readr Voice (MLX) sentence N: cpu …`
+      lines — the first marks the switch to the CPU, then one in ten. Write
+      down every `cpu rtf over last 5` value, the `ms for … ms of audio`
+      pairs, the "s ahead" figure at lock and at unlock, and the peak
+      memory during the locked half hour. An rtf under 0.8 means the CPU
+      refill cannot keep up with playback on this phone and the buffer is
+      what carries the locked screen.
+- [ ] **Lock with nothing ready.** Fresh install; press Listen and lock
+      the phone as soon as the first sentence is heard. The next sentence
+      either arrives in Readr Voice after a CPU synthesis or narration
+      pauses at the boundary with "Unlock Readr to keep listening" on the
+      lock screen and as a notification (the first Listen asked for
+      permission). No Apple voice. Unlock and open Readr: it resumes on the
+      same sentence by itself; the notification is gone.
+- [ ] **Lock during the first download.** Fresh install again. Press
+      Listen, then lock the phone immediately and leave it locked past the
+      point the download would have finished (five minutes on Wi-Fi). The
+      bar was on "Preparing"; nothing speaks and the app does not quit —
+      the GPU load waits for the foreground. Unlock: preparing finishes and
+      Readr Voice reads.
+- [ ] **Relaunch from the buffer.** Force-quit, reopen, press Listen at the
+      same place: the sentence starts at once in Readr Voice before the
+      model has loaded, and "N min ready" shows what survived.
+- [ ] **Delete a book.** Delete Alice: Settings › General › iPhone Storage ›
+      Readr shrinks by its audio.
 - [ ] **Pause and resume.** Pause mid-sentence from the bar, wait ten
       seconds, play: it resumes rather than restarting the sentence. Same
       from the lock screen and with a headphone pinch.
 - [ ] **Skips and a chapter crossing.** Skip forward and back a sentence in
       Readr Voice; skip to the next chapter; let a chapter end on its own
       and roll into the next. Every one continues in Readr Voice.
-- [ ] **Speed.** Change speed mid-sentence: Readr Voice takes the multiplier
-      directly, so 1.5× should be audibly faster and still intelligible.
+- [ ] **Speed.** Change speed mid-sentence: the player applies the
+      multiplier to the buffered audio (pitch preserved), so 1.5× should be
+      audibly faster, still intelligible, and continue from where it was.
 - [ ] **No crash logs.** After all of the above: Settings › Privacy &
       Security › Analytics & Improvements › Analytics Data. There must be no
       new `Readr-…` entry. Any that appears goes in the bug with the full

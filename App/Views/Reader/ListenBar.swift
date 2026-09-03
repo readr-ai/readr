@@ -27,6 +27,7 @@ struct ListenBar: View {
                 transportControls
                 statusLine
                 Spacer(minLength: 8)
+                aheadFigure
                 speedMenu
                 voiceMenu
                 sleepMenu
@@ -105,9 +106,55 @@ struct ListenBar: View {
             preparingLine
         } else if narration.readrVoiceFailed, !narration.isUnderway {
             failedLine
+        } else if let holdText = narration.holdText {
+            holdLine(holdText)
         } else {
             sentenceLine
         }
+    }
+
+    /// Narration paused on its own — with the screen locked, nothing was
+    /// ready for the next sentence. Unlocking resumes it; this is for the
+    /// reader who has just done that and wants to know why it stopped.
+    private func holdLine(_ text: String) -> some View {
+        Text(text)
+            .font(.system(size: 12))
+            .foregroundStyle(theme.muted)
+            .lineLimit(1)
+            .truncationMode(.tail)
+            .frame(maxWidth: 420, alignment: .leading)
+            .accessibilityIdentifier("listen.hold")
+            .accessibilityLabel(text)
+    }
+
+    /// How much Readr Voice audio is already made for what follows — the
+    /// quiet reassurance that a locked screen has something to play from.
+    /// Shown from a minute up; nothing worth saying below that.
+    @ViewBuilder
+    private var aheadFigure: some View {
+        if narration.usesReadrVoice, let label = Self.aheadLabel(seconds: narration.secondsAhead) {
+            Text(label)
+                .font(.system(size: 11))
+                .foregroundStyle(theme.muted)
+                .monospacedDigit()
+                .lineLimit(1)
+                .fixedSize()
+                .accessibilityIdentifier("listen.ahead")
+                .accessibilityLabel("\(label) in Readr Voice")
+                .help("Readr Voice audio already prepared for what follows")
+        }
+    }
+
+    /// "48 min ready", "1 h 12 min ready"; nil under a minute.
+    static func aheadLabel(seconds: TimeInterval) -> String? {
+        let minutes = Int(seconds / 60)
+        guard minutes >= 1 else { return nil }
+        if minutes >= 60 {
+            let hours = minutes / 60
+            let rest = minutes % 60
+            return rest == 0 ? "\(hours) h ready" : "\(hours) h \(rest) min ready"
+        }
+        return "\(minutes) min ready"
     }
 
     /// The first Listen's one-time download, with the download library's
@@ -247,6 +294,13 @@ struct ListenBar: View {
                     "Readr Voice couldn\u{2019}t download or stopped responding \u{2014} "
                         + "Retry is on the Listen bar"
                 )
+            }
+            // iPhone/iPad: the buffer plays with the screen locked and the
+            // CPU refills it. Said once, up front, because 3.3.0 said the
+            // opposite here and a reader who remembers that deserves the
+            // correction where they read it.
+            if narration.readrVoiceKeepsReadingWhenLocked, narration.usesReadrVoice {
+                menuNote("Keeps reading with the screen locked")
             }
             // This is scoped to readers who would otherwise have Readr Voice:
             // an English book with no stored choice, or a stored Readr Voice.

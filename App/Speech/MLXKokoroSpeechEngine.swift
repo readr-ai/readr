@@ -10,44 +10,59 @@ import MLXAudioTTS
 import ReadrKit
 
 /// "Readr Voice" on iPhone and iPad: the same Kokoro-82M as
-/// `KokoroSpeechEngine`, run on the Metal GPU through MLX
-/// (Blaizzy/mlx-audio-swift) instead of CoreML. On iOS 26.4+ Apple's CoreML
-/// CPU path segfaults inside libBNNS during Kokoro inference — uncatchable,
-/// three App Store crash logs, FluidAudio#817/#844 — and MLX never touches
-/// BNNS. See docs/research/MLX-KOKORO-IOS.md for the decision and the
-/// alternatives that lost.
+/// `KokoroSpeechEngine`, run through MLX (Blaizzy/mlx-audio-swift) instead
+/// of CoreML. On iOS 26.4+ Apple's CoreML CPU path segfaults inside libBNNS
+/// during Kokoro inference — uncatchable, three App Store crash logs,
+/// FluidAudio#817/#844 — and MLX never touches BNNS. See
+/// docs/research/MLX-KOKORO-IOS.md for the decision and the alternatives
+/// that lost.
 ///
-/// Same shape and contract as the CoreML engine — playback is the shared
-/// `SentenceAudioPlayer`: synthesize the whole sentence, play it with
-/// `AVAudioPlayer`, report `.speaking` through the synthesis/download gap so
-/// the controller's silent-engine watchdog holds off, `didFail` on any error
-/// so `RoutingSpeechEngine`'s platform fallback re-speaks the sentence
-/// through the Apple voice. Main-thread-confined; synthesis hops to the
-/// `Synthesizer` actor and back.
+/// Since 3.3.1 this engine is the only voice an English book is heard in,
+/// and three things make that hold with the phone in a pocket:
 ///
-/// Two things are different, and both are Metal's rules, not ours:
+/// - **A buffer on disk.** Every sentence synthesized — the one being said
+///   and the ones the controller hands over ahead of it (`prefetch`) — is
+///   filed in `ReadrVoiceAudioCache` as compressed audio at 1×, keyed by
+///   book, voice and text. A sentence that is already there plays at once,
+///   whatever the app's state; the reader's speed is applied at playback,
+///   so a speed change keeps the buffer. In the foreground a pump works
+///   through the lookahead on the GPU until the horizon is met; the sentence
+///   being spoken always goes first.
+/// - **The CPU with the screen locked.** Metal refuses command buffers
+///   from a backgrounded app and MLX surfaces that as a C++ `runtime_error`
+///   inside Metal's completion handler — a `std::terminate`, not something
+///   Swift can catch (mlx-swift#274, #407). So from `didEnterBackground` to
+///   `willEnterForeground` (plus a head start on `willResignActive` for the
+///   lock) every synthesis runs on MLX's CPU device instead, chosen on the
+///   actor immediately before the call. Playback carries on from the
+///   buffer while the CPU refills it — only while the buffer ahead is below
+///   `backgroundRefillStartsBelow`, and until it reaches
+///   `backgroundRefillStopsAt`. The weights are still loaded (and warmed)
+///   on the GPU in the foreground only.
+/// - **A hold, not a substitute.** Nothing buffered for the next sentence
+///   with the screen locked — and no CPU synthesis of it about to land — is
+///   reported to the controller as a suspension: narration pauses on the
+///   sentence with "Unlock Readr to keep listening", and play on return
+///   speaks it on the GPU. No Apple voice reads in its place.
 ///
-/// - **No GPU work from the background.** Metal refuses command buffers
-///   from a backgrounded app, and MLX surfaces that as a C++
-///   `runtime_error` thrown inside Metal's completion handler — a
-///   `std::terminate`, not something Swift can catch (mlx-swift#274, #407).
-///   So this engine never *starts* GPU work unless `isForeground` — "not
-///   backgrounded", see that property for exactly what that means — and the
-///   router reads the same flag per sentence through
-///   `NarrationEnginePolicy`, handing the sentence to the Apple voice
-///   instead. The weights are loaded onto the GPU only in the foreground
-///   too — a first-use download that finishes with the phone in a pocket
-///   waits for the reader to come back. What remains is the sub-second
-///   window of a synthesis already in flight when the lock happens; the
-///   `do/catch` and the deadline below cover every failure that *is*
-///   catchable, and the smoke test exercises the rest on a device.
-/// - **No simulator.** MLX cannot run on the iOS Simulator at all
-///   (mlx#2605); `isAvailableOnThisDevice` is false there, this engine is
-///   never constructed, and the router narrates through the platform voice.
-///   Nothing here touches MLX before `prepare()` — `init` observes four
-///   notifications and nothing else — so a launch, and the UI tests'
-///   `-uiTestSilentNarration` stub, never load the runtime.
-final class MLXKokoroSpeechEngine: NSObject, ReadrVoiceEngine {
+/// Per sentence the device, synthesis time and audio length are measured;
+/// one line in ten (and the first after a device switch) goes to
+/// `DiagnosticsLog`, and `cpuRealtimeFactor` is the rolling ratio of audio
+/// to synthesis time over the last `cpuRealtimeWindow` CPU sentences.
+///
+/// Same shape and contract as the CoreML engine otherwise — playback is
+/// the shared `SentenceAudioPlayer`, `.speaking` is reported through the
+/// synthesis/download gap so the controller's silent-engine watchdog holds
+/// off, `isPreparing` while the model is not in, `didFail` on any error.
+/// Main-thread-confined; synthesis hops to the `Synthesizer` actor and back.
+///
+/// **No simulator.** MLX cannot run on the iOS Simulator at all
+/// (mlx#2605); `isAvailableOnThisDevice` is false there, this engine is
+/// never constructed, and the router narrates through the platform voice.
+/// Nothing here touches MLX before the first load — `init` observes four
+/// notifications and reads a directory listing — so a launch, and the UI
+/// tests' `-uiTestSilentNarration` stub, never load the runtime.
+final class MLXKokoroSpeechEngine: NSObject, ReadrVoiceEngine, SpeechPrefetching, SpeechRateAdjusting {
     weak var delegate: (any SpeechEngineDelegate)?
 
     /// Kokoro-82M weights (~330MB) and voice packs (~60MB), Apache-2.0.
@@ -62,10 +77,14 @@ final class MLXKokoroSpeechEngine: NSObject, ReadrVoiceEngine {
     /// every host the app talks to.
     static let g2pRepo = "beshkenadze/kitten-tts-g2p"
 
-    /// Kokoro refuses more than 510 phonemes per call; a synthesis over this
-    /// long has hung, not stalled. The sentence goes to the Apple voice and
-    /// the engine marks itself `.failed` — see `synthesize`.
-    static let synthesisTimeout: TimeInterval = 30
+    /// Kokoro refuses more than 510 phonemes per call; a GPU synthesis over
+    /// this long has hung, not stalled. The engine marks itself `.failed` —
+    /// see `synthesizeAndStore`.
+    static let gpuSynthesisTimeout: TimeInterval = 30
+    /// The CPU is slower by an amount only the device can tell us; the
+    /// deadline is generous so a slow-but-honest synthesis is not mistaken
+    /// for a hang.
+    static let cpuSynthesisTimeout: TimeInterval = 180
 
     /// MLX keeps freed buffers in a pool for reuse and lets that pool grow
     /// towards Metal's recommended working set — several GB on a Mac and a
@@ -78,12 +97,12 @@ final class MLXKokoroSpeechEngine: NSObject, ReadrVoiceEngine {
     /// ceiling, stays at its default of 1.5× the recommended working set.)
     static let gpuCacheLimit = 64 * 1024 * 1024
 
-    /// Spoken once, in the foreground, right after the load and thrown
-    /// away: `KokoroModel.fromModelDirectory` re-runs the G2P's `prepare()`,
-    /// the Misaki lexicons and the BART fallback are built lazily on the
-    /// first `process`, and Metal compiles the model's kernels on first use.
-    /// Paying for all of that here means the first real sentence carries
-    /// none of it.
+    /// Spoken once on each device right after the load and thrown away:
+    /// `KokoroModel.fromModelDirectory` re-runs the G2P's `prepare()`, the
+    /// Misaki lexicons and the BART fallback are built lazily on the first
+    /// `process`, and each device compiles the model's kernels on first
+    /// use. Paying for all of that here means the first real sentence — and
+    /// the first backgrounded one — carries none of it.
     static let warmUpText = "Ready."
 
     /// How long a `willResignActive` counts as "about to be backgrounded".
@@ -93,6 +112,23 @@ final class MLXKokoroSpeechEngine: NSObject, ReadrVoiceEngine {
     /// long with no `didEnterBackground`, the app is taken to be still in
     /// the foreground.
     static let resignGracePeriod: TimeInterval = 1.5
+
+    // MARK: - Buffer policy
+
+    /// With the screen locked the CPU refills only while the buffer ahead
+    /// of the voice is below this…
+    static let backgroundRefillStartsBelow: TimeInterval = 30 * 60
+    /// …and stops once it reaches this. In the foreground the pump works to
+    /// the controller's horizon (and never past the cache's capacity).
+    static let backgroundRefillStopsAt: TimeInterval = 60 * 60
+    /// How many CPU sentences the realtime factor is averaged over.
+    static let cpuRealtimeWindow = 5
+    /// A CPU synthesis of the next sentence is worth waiting for only if
+    /// the CPU has been producing audio at least this fast relative to
+    /// playback; below it, the hold is the better experience.
+    static let cpuKeepsUpFactor = 0.8
+    /// One measurement line per this many sentences.
+    static let logEverySentences = 10
 
     // MARK: - Availability
 
@@ -146,27 +182,23 @@ final class MLXKokoroSpeechEngine: NSObject, ReadrVoiceEngine {
     // MARK: - Foreground
 
     /// The app is NOT backgrounded, so Metal will accept GPU work. Read by
-    /// the router per sentence and by the actor before every load.
+    /// the actor right before every synthesis to choose the device, and
+    /// before every load.
     ///
     /// "Not backgrounded" rather than "active", deliberately. Only a
     /// backgrounded app is refused the GPU; `willResignActive` also fires
     /// for Control Center, a notification banner, an incoming call and — on
     /// iPad — every time focus moves to the other Split View or Stage
-    /// Manager app, and Metal accepts work in all of those. Keying on
-    /// "active" handed every one of those sentences to the Apple voice for
-    /// nothing, and on an iPad in Split View it did so for as long as the
-    /// reader was typing next door. So the flag is false from
-    /// `didEnterBackground` until `willEnterForeground`.
+    /// Manager app, and Metal accepts work in all of those. So the flag is
+    /// false from `didEnterBackground` until `willEnterForeground`.
     ///
     /// Plus a head start for the lock: `didEnterBackground` arrives a few
-    /// hundred milliseconds after `willResignActive`, and a synthesis
+    /// hundred milliseconds after `willResignActive`, and a GPU synthesis
     /// started in that gap would be in flight when the GPU goes away. So
     /// `willResignActive` also makes this false, until `didBecomeActive` —
     /// or, if no `didEnterBackground` follows within `resignGracePeriod`
     /// (the Control Center case), on its own.
     var isForeground: Bool { foreground.isForeground }
-    /// Thread-safe so the actor can re-check it from its own thread right
-    /// before the first Metal call. The main thread is the only writer.
     private let foreground: ForegroundGate
     private var lifecycleObservers: [NSObjectProtocol] = []
     private var resignGrace: Task<Void, Never>?
@@ -174,9 +206,41 @@ final class MLXKokoroSpeechEngine: NSObject, ReadrVoiceEngine {
     // MARK: - State
 
     private let synthesizer = Synthesizer()
+    private let cache = ReadrVoiceAudioCache.shared
     private var initializeTask: Task<Void, Error>?
     /// Playback, shared with the CoreML engine.
     private let audio = SentenceAudioPlayer()
+
+    /// The sentences after the current one, as the controller last handed
+    /// them over; the pump works through it from the front.
+    private var lookahead: [SpeechRequest] = []
+    /// Cache keys by request id, computed as they are first needed — the
+    /// list is walked from the front and stops at the first miss, so most
+    /// of a long list is never hashed.
+    private var keys: [UUID: ReadrVoiceAudioCache.Key] = [:]
+    private var pump: Task<Void, Never>?
+    /// The background refill's hysteresis: on below one threshold, off at
+    /// the other.
+    private var refilling = false
+    /// The synthesis the actor is on (or about to be), so a `speak` of that
+    /// very sentence awaits it rather than queueing a second one.
+    private var inFlight: (key: ReadrVoiceAudioCache.Key, task: Task<Synthesis, Error>)?
+    /// Sentences waiting to be spoken NOW — while any, the pump does not
+    /// start another prefetch.
+    private var speakWaiting = 0
+    /// Sentences this session could not synthesize; the pump skips them
+    /// rather than retrying every pass.
+    private var unsynthesizable: Set<ReadrVoiceAudioCache.Key> = []
+
+    // MARK: - Measurement
+
+    /// Audio seconds produced per second of CPU synthesis, over the last
+    /// `cpuRealtimeWindow` CPU sentences; nil until the CPU has done one.
+    /// 1.0 is exactly realtime.
+    private(set) var cpuRealtimeFactor: Double?
+    private var cpuWindow: [(synthesis: TimeInterval, audio: TimeInterval)] = []
+    private var sentenceCount = 0
+    private var lastDevice: DeviceType?
 
     override init() {
         // Main-thread-confined, like every engine; the model that builds the
@@ -216,6 +280,10 @@ final class MLXKokoroSpeechEngine: NSObject, ReadrVoiceEngine {
                 forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main
             ) { [weak self] _ in self?.didBecomeActive() },
         ]
+        // The buffer's index is a directory listing; take it off the main
+        // thread now rather than on the first sentence.
+        let cache = self.cache
+        Task.detached(priority: .utility) { cache.loadIndex() }
     }
 
     deinit {
@@ -223,6 +291,7 @@ final class MLXKokoroSpeechEngine: NSObject, ReadrVoiceEngine {
             NotificationCenter.default.removeObserver(observer)
         }
         resignGrace?.cancel()
+        pump?.cancel()
         // A download still in flight for an engine nobody owns must not go
         // on to load the weights onto the GPU: cancel it, and wake any wait
         // for the foreground with a cancellation so the task ends there.
@@ -234,10 +303,14 @@ final class MLXKokoroSpeechEngine: NSObject, ReadrVoiceEngine {
         resignGrace?.cancel()
         resignGrace = nil
         foreground.update(backgrounded: true, resigning: false)
+        // The refill decision changes with the device.
+        kickPump()
     }
 
     private func willEnterForeground() {
         foreground.update(backgrounded: false)
+        refilling = false
+        kickPump()
     }
 
     private func willResignActive() {
@@ -264,27 +337,44 @@ final class MLXKokoroSpeechEngine: NSObject, ReadrVoiceEngine {
     // MARK: - SpeechEngine
 
     func speak(_ request: SpeechRequest) {
-        // The router already routes an unsupported or backgrounded sentence
-        // to the platform voice; this is the engine refusing on its own
-        // account, so no caller can start GPU work with the screen locked.
         guard readiness != .unsupported else {
             delegate?.speechEngine(self, didFail: request.id, error: MLXKokoroError.unsupported)
             return
         }
-        guard isForeground else {
-            delegate?.speechEngine(self, didFail: request.id, error: MLXKokoroError.backgrounded)
+        let cacheKey = key(for: request)
+        // Already audio: play it, whatever the app's state and whether or
+        // not the model is even loaded this launch.
+        if let entry = cache.entry(for: cacheKey) {
+            audio.speak(request) { request in Self.playable(entry, rate: request.rate) }
+            kickPump()
+            return
+        }
+        // Nothing buffered with the screen locked. A CPU synthesis of this
+        // very sentence that is keeping up is worth the wait; anything else
+        // — no synthesis, a CPU that has been falling behind, a model not
+        // yet loaded — is a hold: pause here and say so, rather than a
+        // silence of unknown length or another voice.
+        if !isForeground, !(inFlight?.key == cacheKey && cpuKeepsUp) {
+            DiagnosticsLog.shared.record(
+                .info, .reader,
+                "Readr Voice (MLX) holding for the foreground: nothing buffered for the next "
+                    + "sentence, cpu rtf \(cpuRealtimeFactor.map { String(format: "%.2f", $0) } ?? "n/a")"
+            )
+            delegate?.speechEngine(self, didSuspend: request.id, reason: .needsForeground)
             return
         }
         // Not in yet: the sentence waits for the download and the load
-        // (started in `synthesize` if they haven't been), and the bar shows
-        // the wait rather than an Apple voice reading meanwhile.
+        // (started in `synthesizeForPlayback` if they haven't been), and the
+        // bar shows the wait rather than an Apple voice reading meanwhile.
         if readiness != .ready {
             delegate?.speechEngine(self, isPreparing: request.id)
         }
         audio.speak(request) { [weak self] request in
             guard let self else { throw CancellationError() }
-            return try await self.synthesize(request)
+            let synthesis = try await self.synthesizeForPlayback(request, key: cacheKey)
+            return Self.playable(synthesis.entry, rate: request.rate)
         }
+        kickPump()
     }
 
     func pause() {
@@ -315,46 +405,241 @@ final class MLXKokoroSpeechEngine: NSObject, ReadrVoiceEngine {
         }
     }
 
+    // MARK: - SpeechRateAdjusting
+
+    /// The buffer is at 1×; the player takes the speed. Nothing to re-speak.
+    func adjustRate(_ rate: Double) -> Bool {
+        audio.setRate(Float(rate))
+    }
+
+    // MARK: - SpeechPrefetching
+
+    func prefetch(_ requests: [SpeechRequest]) {
+        lookahead = requests
+        let listed = Set(requests.map(\.id))
+        keys = keys.filter { listed.contains($0.key) }
+        if requests.isEmpty {
+            pump?.cancel()
+            pump = nil
+            refilling = false
+        } else {
+            kickPump()
+        }
+    }
+
+    func secondsBuffered(ahead requests: [SpeechRequest]) -> TimeInterval {
+        var total: TimeInterval = 0
+        for request in requests {
+            guard let entry = cache.entry(for: key(for: request)) else { break }
+            total += entry.seconds
+        }
+        return total
+    }
+
+    private func key(for request: SpeechRequest) -> ReadrVoiceAudioCache.Key {
+        if let key = keys[request.id] { return key }
+        let key = ReadrVoiceAudioCache.key(for: request)
+        keys[request.id] = key
+        return key
+    }
+
+    private static func playable(_ entry: ReadrVoiceAudioCache.Entry, rate: Double) -> PlayableAudio {
+        entry.seconds > 0 ? .file(entry.url, rate: Float(rate)) : .nothing
+    }
+
+    // MARK: - The pump
+
+    /// Synthesize ahead, one sentence at a time, while there is something
+    /// to synthesize and a reason to: in the foreground, to the horizon; in
+    /// the background, on the CPU, between the two refill thresholds. The
+    /// sentence being spoken always goes first — the pump waits it out.
+    private func kickPump() {
+        guard pump == nil else { return }
+        pump = Task { @MainActor [weak self] in
+            await self?.runPump()
+            self?.pump = nil
+        }
+    }
+
+    @MainActor
+    private func runPump() async {
+        while !Task.isCancelled {
+            guard shouldRefill(), let next = nextToSynthesize() else {
+                refilling = false
+                return
+            }
+            if speakWaiting > 0 || inFlight != nil {
+                // The current sentence, or a synthesis already running,
+                // comes first.
+                try? await Task.sleep(nanoseconds: 100_000_000)
+                continue
+            }
+            // A failed engine does not retry its download on its own — that
+            // hammered flaky connections once already; the bar's Retry is
+            // the way back.
+            guard readiness != .failed else { return }
+            do {
+                try await ensureInitialized()
+            } catch {
+                return
+            }
+            // Re-checked after the wait: the load may have taken a while,
+            // and the world moved — the list, the device, a sentence the
+            // reader is waiting on.
+            guard !Task.isCancelled, shouldRefill(), speakWaiting == 0, inFlight == nil,
+                  let ready = nextToSynthesize()
+            else { continue }
+            _ = next
+            do {
+                _ = try await synthesizeAndStore(ready)
+            } catch is CancellationError {
+                return
+            } catch {
+                unsynthesizable.insert(key(for: ready))
+                DiagnosticsLog.shared.record(
+                    .warning, .reader, "Readr Voice (MLX) could not synthesize ahead", error: error
+                )
+            }
+        }
+    }
+
+    /// Whether the pump has a reason to work right now.
+    private func shouldRefill() -> Bool {
+        guard !lookahead.isEmpty else { return false }
+        let ahead = secondsBuffered(ahead: lookahead)
+        // Past the cache's capacity, more audio ahead only evicts the head.
+        guard ahead < ReadrVoiceAudioCache.capacitySeconds else { return false }
+        guard !isForeground else { return true }
+        if refilling {
+            if ahead >= Self.backgroundRefillStopsAt {
+                refilling = false
+                return false
+            }
+            return true
+        }
+        if ahead < Self.backgroundRefillStartsBelow {
+            refilling = true
+            return true
+        }
+        return false
+    }
+
+    private func nextToSynthesize() -> SpeechRequest? {
+        lookahead.first { request in
+            let cacheKey = key(for: request)
+            return cache.entry(for: cacheKey) == nil && !unsynthesizable.contains(cacheKey)
+        }
+    }
+
     // MARK: - Synthesis
 
-    /// The `synthesize` half of `SentenceAudioPlayer.speak`: wait for the
-    /// model, re-check that the request and the foreground still stand, then
-    /// synthesize against a deadline.
+    /// The `synthesize` half of `SentenceAudioPlayer.speak` for a sentence
+    /// not yet in the buffer: wait for the model, re-check that the request
+    /// still stands, then synthesize — unless the pump landed it meanwhile,
+    /// or is on it now.
     @MainActor
-    private func synthesize(_ request: SpeechRequest) async throws -> Data {
+    private func synthesizeForPlayback(
+        _ request: SpeechRequest, key: ReadrVoiceAudioCache.Key
+    ) async throws -> Synthesis {
+        speakWaiting += 1
+        defer { speakWaiting -= 1 }
+        if let inFlight, inFlight.key == key {
+            return try await inFlight.task.value
+        }
         try await ensureInitialized()
         // A skip/stop may have replaced this request during the wait.
         guard audio.isCurrent(request) else { throw CancellationError() }
-        // Re-checked after the wait: a first-use download is minutes long,
-        // and the phone may have been locked meanwhile.
-        guard isForeground else { throw MLXKokoroError.backgrounded }
-        let voice = KokoroSpeechEngine.kokoroVoice(from: request.voiceID)
-        // Kokoro takes the reader's multiplier directly (already clamped by
-        // SpeechSettings, the single clamping authority).
-        let speed = Float(request.rate)
-        let text = request.text
+        if let entry = cache.entry(for: key) {
+            return Synthesis(entry: entry, device: nil, seconds: 0)
+        }
+        if let inFlight, inFlight.key == key {
+            return try await inFlight.task.value
+        }
+        return try await synthesizeAndStore(request)
+    }
+
+    /// One synthesis on the actor, against a deadline, filed into the
+    /// buffer, measured. The device is the actor's choice at the moment it
+    /// starts; the deadline is this thread's guess at it.
+    @MainActor
+    private func synthesizeAndStore(_ request: SpeechRequest) async throws -> Synthesis {
+        let cacheKey = key(for: request)
         let synthesizer = self.synthesizer
+        let cache = self.cache
+        let foreground = self.foreground
+        let voice = KokoroSpeechEngine.kokoroVoice(from: request.voiceID)
+        let text = request.text
+        let task = Task<Synthesis, Error> {
+            try await synthesizer.synthesize(
+                text: text, voice: voice, key: cacheKey, into: cache,
+                isForeground: { foreground.isForeground }
+            )
+        }
+        inFlight = (cacheKey, task)
+        defer {
+            if inFlight?.key == cacheKey { inFlight = nil }
+        }
+        let timeout = foreground.isForeground ? Self.gpuSynthesisTimeout : Self.cpuSynthesisTimeout
         do {
             // The first of the synthesis or the deadline wins; a synthesis
             // that runs past the deadline keeps running (MLX has no mid-graph
             // cancellation) but nobody is waiting for it any more, and its
             // late result is dropped inside the helper.
-            return try await raceAgainstDeadline(seconds: Self.synthesisTimeout) {
-                try await synthesizer.synthesize(text: text, voice: voice, speed: speed)
+            let synthesis = try await raceAgainstDeadline(seconds: timeout) {
+                try await task.value
             }
+            record(synthesis)
+            return synthesis
         } catch let deadline as DeadlineExceeded {
             // The actor is wedged behind a call that will not return, or not
             // soon. Mark the engine sick: `.failed` takes it out of the
-            // router's per-sentence choice, so every following sentence goes
-            // straight to the Apple voice instead of queueing 30s behind the
-            // wedged call. The voice menu's failure note ("pick it again to
-            // retry") is the way back — the re-pick runs `ensureInitialized`
-            // afresh, which waits its turn on the actor and returns at once
-            // if the model is already loaded.
+            // router's choice, so no following sentence queues behind the
+            // wedged call. The bar's Retry is the way back — it runs
+            // `startInitializing` afresh, which returns at once if the
+            // model is already loaded.
             readiness = .failed
             initializeTask = nil
             throw MLXKokoroError.timedOut(deadline.seconds)
         }
+    }
+
+    /// Bookkeeping for one synthesis: the sentence count, the CPU window,
+    /// and — one line in ten, plus the first after a device switch — the
+    /// diagnostics line the owner reads the realtime factor from. Numbers
+    /// only, never text.
+    @MainActor
+    private func record(_ synthesis: Synthesis) {
+        guard let device = synthesis.device else { return }
+        sentenceCount += 1
+        let audioSeconds = synthesis.entry.seconds
+        if device == .cpu {
+            cpuWindow.append((synthesis.seconds, audioSeconds))
+            if cpuWindow.count > Self.cpuRealtimeWindow {
+                cpuWindow.removeFirst(cpuWindow.count - Self.cpuRealtimeWindow)
+            }
+            let synthesisTotal = cpuWindow.reduce(0) { $0 + $1.synthesis }
+            let audioTotal = cpuWindow.reduce(0) { $0 + $1.audio }
+            cpuRealtimeFactor = synthesisTotal > 0 ? audioTotal / synthesisTotal : nil
+        }
+        let switched = lastDevice != device
+        lastDevice = device
+        guard switched || sentenceCount % Self.logEverySentences == 0 else { return }
+        let factor = synthesis.seconds > 0 ? audioSeconds / synthesis.seconds : 0
+        let rolling = cpuRealtimeFactor.map { String(format: "%.2f", $0) } ?? "n/a"
+        DiagnosticsLog.shared.record(
+            .info, .reader,
+            "Readr Voice (MLX) sentence \(sentenceCount): \(device.rawValue) "
+                + "\(Int(synthesis.seconds * 1000))ms for \(Int(audioSeconds * 1000))ms of audio "
+                + "(\(String(format: "%.1f", factor))× realtime); cpu rtf over last "
+                + "\(cpuWindow.count): \(rolling); \(Int(secondsBuffered(ahead: lookahead)))s ahead"
+        )
+    }
+
+    /// Whether a CPU synthesis is worth waiting for: the rolling factor is
+    /// at or above `cpuKeepsUpFactor`. Unknown counts as no — a hold is
+    /// recovered in a tap; a silence of unknown length is not.
+    private var cpuKeepsUp: Bool {
+        (cpuRealtimeFactor ?? 0) >= Self.cpuKeepsUpFactor
     }
 
     @MainActor
@@ -397,7 +682,13 @@ final class MLXKokoroSpeechEngine: NSObject, ReadrVoiceEngine {
         Task { @MainActor [weak self] in
             do {
                 try await task.value
-                self?.readiness = .ready
+                guard let self else { return }
+                self.readiness = .ready
+                // The CPU's kernels and lexicons, compiled now rather than
+                // on the first locked-screen sentence. Queued on the actor
+                // behind whatever the reader is waiting to hear.
+                Task { await synthesizer.warmUpCPU(voice: voice) }
+                self.kickPump()
             } catch {
                 guard let self, self.initializeTask == task else { return }
                 self.initializeTask = nil
@@ -412,6 +703,16 @@ final class MLXKokoroSpeechEngine: NSObject, ReadrVoiceEngine {
             }
         }
         return task
+    }
+
+    /// One synthesis, as the actor reports it.
+    struct Synthesis: Sendable {
+        let entry: ReadrVoiceAudioCache.Entry
+        /// Nil when the audio was already in the buffer — nothing was
+        /// synthesized, so there is nothing to measure.
+        let device: DeviceType?
+        /// Wall-clock seconds the synthesis took.
+        let seconds: TimeInterval
     }
 
     // MARK: - The model, off the main thread
@@ -532,16 +833,43 @@ final class MLXKokoroSpeechEngine: NSObject, ReadrVoiceEngine {
             _ = try await samples(for: MLXKokoroSpeechEngine.warmUpText, voice: warmUpVoice, model: loaded)
         }
 
-        /// A whole sentence as 16-bit WAV, ready for `AVAudioPlayer`. EMPTY
-        /// for a sentence that produces no samples at all (punctuation-only):
-        /// the player reports that as finished rather than building a
-        /// 44-byte WAV for AVAudioPlayer to reject.
-        func synthesize(text: String, voice: String, speed: Float) async throws -> Data {
+        /// The same warm-up on the CPU device, so the first locked-screen
+        /// sentence is not a cold compile. Safe anywhere; failures are
+        /// logged and otherwise ignored — the CPU path is best-effort.
+        func warmUpCPU(voice: String) async {
+            guard let model else { return }
+            do {
+                let _: [Float] = try await Device.withDefaultDevice(Device.cpu) {
+                    try await self.samples(
+                        for: MLXKokoroSpeechEngine.warmUpText, voice: voice, model: model
+                    )
+                }
+            } catch {
+                DiagnosticsLog.shared.record(
+                    .warning, .reader, "Readr Voice (MLX) CPU warm-up failed", error: error
+                )
+            }
+        }
+
+        /// A whole sentence synthesized at 1× on whichever device the app's
+        /// state allows at this moment — the GPU in the foreground, the CPU
+        /// otherwise — and filed into the buffer. The reader's speed is the
+        /// player's business.
+        func synthesize(
+            text: String, voice: String, key: ReadrVoiceAudioCache.Key,
+            into cache: ReadrVoiceAudioCache, isForeground: @Sendable () -> Bool
+        ) async throws -> Synthesis {
             guard let model else { throw MLXKokoroError.notLoaded }
-            model.speed = speed
-            let samples = try await samples(for: text, voice: voice, model: model)
-            guard !samples.isEmpty else { return Data() }
-            return PCMWAVEncoder.data(samples: samples, sampleRate: model.sampleRate)
+            model.speed = 1
+            let device: DeviceType = isForeground() ? .gpu : .cpu
+            let mlxDevice: Device = device == .cpu ? Device.cpu : Device.gpu
+            let started = Date()
+            let produced: [Float] = try await Device.withDefaultDevice(mlxDevice) {
+                try await self.samples(for: text, voice: voice, model: model)
+            }
+            let elapsed = Date().timeIntervalSince(started)
+            let entry = try cache.store(samples: produced, sampleRate: model.sampleRate, for: key)
+            return Synthesis(entry: entry, device: device, seconds: elapsed)
         }
 
         /// The segmenter caps sentences at 320 characters, which keeps nearly
@@ -635,7 +963,7 @@ private final class ForegroundGate: @unchecked Sendable {
 enum MLXKokoroError: Error, LocalizedError {
     /// This device cannot run MLX (the simulator, or no Metal GPU).
     case unsupported
-    /// The app is backgrounded; Metal would refuse the GPU work.
+    /// The app is backgrounded; Metal would refuse the GPU load.
     case backgrounded
     case timedOut(TimeInterval)
     case invalidRepository(String)
@@ -650,7 +978,7 @@ enum MLXKokoroError: Error, LocalizedError {
         case .unsupported:
             return "Readr Voice cannot run on this device"
         case .backgrounded:
-            return "Readr Voice cannot synthesize while the app is in the background"
+            return "Readr Voice cannot load its model while the app is in the background"
         case .timedOut(let seconds):
             return "Readr Voice synthesis exceeded \(Int(seconds))s"
         case .invalidRepository(let repo):

@@ -695,6 +695,8 @@ final class AppModel: ObservableObject {
     /// annotations), the retained source file, and the cover file.
     func removeBook(_ book: Book) {
         try? store.removeBook(id: book.id)
+        // Its Readr Voice audio goes with it.
+        ReadrVoiceAudioCache.shared.removeBook(id: book.id)
         if let source = sourceURL(for: book) {
             try? FileManager.default.removeItem(at: source)
         }

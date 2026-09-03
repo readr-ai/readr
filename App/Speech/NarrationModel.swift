@@ -5,6 +5,7 @@ import ReadrKit
 #if os(iOS)
 import MediaPlayer
 import UIKit
+import UserNotifications
 #endif
 
 /// The reader's view of narration: a thin `ObservableObject` over
@@ -50,6 +51,32 @@ final class NarrationModel: ObservableObject {
     /// download size). Taken from the router rather than the static, so the
     /// UI-test stub (no router) never probes for a Metal device.
     private let readrVoiceRuntime: NarrationEnginePolicy.KokoroRuntime?
+    /// On iPhone and iPad Readr Voice plays from its buffer with the screen
+    /// locked and refills it on the CPU: the voice menu says "Keeps reading
+    /// with the screen locked". True only with the MLX engine.
+    let readrVoiceKeepsReadingWhenLocked: Bool
+    /// Seconds of Readr Voice audio already synthesized for what follows the
+    /// sentence being read — the Listen bar's "48 min ready". Zero for an
+    /// Apple voice, and until the engine has anything.
+    @Published private(set) var secondsAhead: TimeInterval = 0
+    /// Why narration paused on its own, when it did (nil for the reader's
+    /// pause): the bar and the lock screen show it.
+    @Published private(set) var holdReason: NarrationHoldReason?
+
+    /// The hold, as the bar, the lock screen and the notification say it.
+    var holdText: String? {
+        switch holdReason {
+        case .needsForeground: return "Unlock Readr to keep listening"
+        case nil: return nil
+        }
+    }
+
+    private static let holdNotificationID = "readr.narration.hold"
+    private static let notificationsRequestedKey = "narrationNotificationsRequested"
+    private var lifecycleObservers: [NSObjectProtocol] = []
+    /// Whether the current hold has been announced, so one hold posts one
+    /// notification.
+    private var announcedHold = false
 
     /// Where the voice is — the reader follows this to keep the page under it.
     var onPosition: ((NarrationPosition) -> Void)?
@@ -122,6 +149,7 @@ final class NarrationModel: ObservableObject {
             self.router = router
         }
         readrVoiceRuntime = router?.readrVoiceRuntime
+        readrVoiceKeepsReadingWhenLocked = router?.readrVoiceRuntime == .mlx
         // Speed and voice are the reader's, not the book's — carried across
         // books the way the reading theme is.
         self.rate = defaults.object(forKey: Self.rateKey) as? Double ?? 1
@@ -135,9 +163,31 @@ final class NarrationModel: ObservableObject {
         router?.onReadrVoiceDownloadProgressChange = { [weak self] progress in
             Task { @MainActor in self?.readrVoiceDownloadProgress = progress }
         }
+        #if os(iOS)
+        // Two things the lookahead and the hold need from the device: whether
+        // it is charging (the horizon becomes the rest of the book) and when
+        // the app comes back (a hold for the foreground resumes itself).
+        UIDevice.current.isBatteryMonitoringEnabled = true
+        let center = NotificationCenter.default
+        lifecycleObservers = [
+            center.addObserver(
+                forName: UIDevice.batteryStateDidChangeNotification, object: nil, queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor in self?.applyLookaheadHorizon() }
+            },
+            center.addObserver(
+                forName: UIApplication.willEnterForegroundNotification, object: nil, queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor in self?.didReturnToForeground() }
+            },
+        ]
+        #endif
     }
 
     deinit {
+        for observer in lifecycleObservers {
+            NotificationCenter.default.removeObserver(observer)
+        }
         // The backstop for narration outliving its reader. `ReaderView`'s
         // onDisappear deliberately skips `stop()` while something is presented
         // over the reader (asking about a passage must not cut the voice off)
@@ -192,6 +242,7 @@ final class NarrationModel: ObservableObject {
         startTicking()
         refresh()
         updateNowPlaying()
+        requestHoldNotificationsIfNeeded()
     }
 
     /// Tear narration down: closing the Listen bar, or leaving the reader.
@@ -305,6 +356,7 @@ final class NarrationModel: ObservableObject {
             engine: engine,
             settings: SpeechSettings(rate: rate, voiceID: voiceID)
         )
+        controller.lookaheadHorizon = lookaheadHorizon()
         controller.onStatusChange = { [weak self] _ in
             self?.refresh()
             self?.updateNowPlaying()
@@ -421,9 +473,21 @@ final class NarrationModel: ObservableObject {
             chapterProgress = 0
             sleepMode = .off
             sleepRemaining = nil
+            secondsAhead = 0
+            holdReason = nil
+            announcedHold = false
             return
         }
         status = narration.status
+        holdReason = narration.holdReason
+        if holdReason == nil {
+            announcedHold = false
+        } else if !announcedHold {
+            announcedHold = true
+            announceHold()
+        }
+        secondsAhead = usesReadrVoice
+            ? (router?.secondsBuffered(ahead: narration.lookahead) ?? 0) : 0
         // Muted footnote markers leave runs of spaces in segment text
         // (length-preserving by design); collapse them for display only.
         // The contains-check matters: refresh runs on a once-a-second tick,
@@ -448,6 +512,74 @@ final class NarrationModel: ObservableObject {
                 self.refresh()
             }
         }
+    }
+
+    // MARK: - Lookahead horizon
+
+    /// An hour of listening, or the rest of the book while the device is
+    /// charging — synthesis ahead costs battery, and a phone on a charger
+    /// has none to save.
+    private func lookaheadHorizon() -> NarrationController.LookaheadHorizon {
+        #if os(iOS)
+        switch UIDevice.current.batteryState {
+        case .charging, .full:
+            return .restOfBook
+        case .unplugged, .unknown:
+            return .seconds(NarrationController.defaultLookaheadSeconds)
+        @unknown default:
+            return .seconds(NarrationController.defaultLookaheadSeconds)
+        }
+        #else
+        return .seconds(NarrationController.defaultLookaheadSeconds)
+        #endif
+    }
+
+    private func applyLookaheadHorizon() {
+        narration?.lookaheadHorizon = lookaheadHorizon()
+    }
+
+    // MARK: - Holding for the foreground
+
+    /// The app is back: a hold for the foreground resumes itself, and its
+    /// notification, if one was posted, has served its purpose.
+    private func didReturnToForeground() {
+        #if os(iOS)
+        UNUserNotificationCenter.current().removeDeliveredNotifications(
+            withIdentifiers: [Self.holdNotificationID]
+        )
+        #endif
+        guard narration?.holdReason == .needsForeground else { return }
+        play()
+    }
+
+    /// Permission to say "Unlock Readr to keep listening" from the lock
+    /// screen, asked once, the first time Listen is used with Readr Voice on
+    /// a device where the hold can happen. Declined means the hold is
+    /// silent: narration simply pauses.
+    private func requestHoldNotificationsIfNeeded() {
+        #if os(iOS)
+        guard readrVoiceKeepsReadingWhenLocked, usesReadrVoice,
+              !defaults.bool(forKey: Self.notificationsRequestedKey) else { return }
+        defaults.set(true, forKey: Self.notificationsRequestedKey)
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
+        #endif
+    }
+
+    /// Narration held on its own. With the app backgrounded the bar cannot
+    /// be seen, so the reason is posted where it can — and the lock screen's
+    /// Now Playing carries it too.
+    private func announceHold() {
+        #if os(iOS)
+        guard let holdText, UIApplication.shared.applicationState != .active else { return }
+        let content = UNMutableNotificationContent()
+        content.title = holdText
+        content.body = "Readr Voice ran out of prepared audio while the screen was locked."
+        content.sound = .default
+        let request = UNNotificationRequest(
+            identifier: Self.holdNotificationID, content: content, trigger: nil
+        )
+        UNUserNotificationCenter.current().add(request)
+        #endif
     }
 
     // MARK: - Lock screen & headphone controls
@@ -502,6 +634,11 @@ final class NarrationModel: ObservableObject {
         ]
         if !book.metadata.authors.isEmpty {
             info[MPMediaItemPropertyArtist] = book.metadata.authors.joined(separator: ", ")
+        }
+        // A hold takes the second line: the lock screen is where the reader
+        // is when it happens.
+        if let holdText {
+            info[MPMediaItemPropertyArtist] = holdText
         }
         MPNowPlayingInfoCenter.default().nowPlayingInfo = info
     }

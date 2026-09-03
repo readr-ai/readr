@@ -3,6 +3,11 @@ Readr 3.3.1: Readr Voice is the only voice you hear.
 • The first time you listen, Readr waits for Readr Voice instead of
   reading in an Apple voice meanwhile — the Listen bar shows the one-time
   download's progress, and the book starts the moment the voice is ready
+• Readr Voice keeps reading with the screen locked. It reads ahead while
+  the app is open (an hour, or the rest of the book while charging) and
+  plays from that with the phone in your pocket; if it ever runs out, it
+  pauses and asks you to unlock rather than switching voices
+• Speed changes no longer restart the sentence
 • The voice menu is Readr Voice, with Apple's voices a tap away under
   "Other voices" for anyone who prefers them; books in other languages
   keep Apple's voices as before

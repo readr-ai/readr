@@ -50,6 +50,13 @@ Only when you explicitly connect a cloud AI provider and ask it something:
   about you or your book** — they only fetch model files, and the voice then
   runs entirely on the device. Choose an Apple voice in the Listen bar and
   Readr makes no network requests at all.
+- On iPhone and iPad, sentences Readr Voice has read or prepared ahead are
+  kept as compressed audio in the app's Caches folder (up to two hours,
+  oldest first, removed with the book) so they play again — and with the
+  screen locked — without being synthesized twice. They never leave the
+  device. Readr asks for notification permission the first time you listen
+  with Readr Voice, only to tell you from the lock screen if it runs out of
+  prepared audio; the notification is local and carries no book text.
 
 ## Your choices
 

@@ -32,7 +32,7 @@ import ReadrKit
 /// completion from the engine just switched *away from* can't advance the
 /// book (the same stale-callback discipline `AVSpeechEngine` applies per
 /// utterance).
-final class RoutingSpeechEngine: SpeechEngine {
+final class RoutingSpeechEngine: SpeechEngine, SpeechPrefetching, SpeechRateAdjusting {
     weak var delegate: (any SpeechEngineDelegate)?
 
     private let platform: AVSpeechEngine
@@ -187,6 +187,37 @@ final class RoutingSpeechEngine: SpeechEngine {
         #endif
     }
 
+    // MARK: - Synthesizing ahead
+
+    /// The controller's lookahead goes to whichever Kokoro engine the policy
+    /// would give each sentence to — in practice the MLX engine on iOS,
+    /// which keeps a buffer; the CoreML engine synthesizes as it goes and
+    /// gets nothing. A sentence the policy would give the platform voice
+    /// (an Apple voice picked under "Other voices") is nobody's to prepare.
+    func prefetch(_ requests: [SpeechRequest]) {
+        #if os(iOS)
+        guard let mlx else { return }
+        let forMLX = requests.filter {
+            NarrationEnginePolicy.engine(for: situation(for: $0)) == .mlxKokoro
+        }
+        mlx.prefetch(forMLX)
+        #endif
+    }
+
+    func secondsBuffered(ahead requests: [SpeechRequest]) -> TimeInterval {
+        #if os(iOS)
+        return mlx?.secondsBuffered(ahead: requests) ?? 0
+        #else
+        return 0
+        #endif
+    }
+
+    /// A speed change goes to the engine on the current sentence; only one
+    /// that can change speed in place says yes.
+    func adjustRate(_ rate: Double) -> Bool {
+        (current as? SpeechRateAdjusting)?.adjustRate(rate) ?? false
+    }
+
     /// Download the Kokoro model for this platform's runtime without
     /// speaking — the explicit pick, and the bar's Retry after a failure.
     func prepareKokoro() {
@@ -249,5 +280,12 @@ extension RoutingSpeechEngine: SpeechEngineDelegate {
     func speechEngine(_ engine: any SpeechEngine, didBeginSpeaking requestID: UUID) {
         guard engine === current else { return }
         delegate?.speechEngine(self, didBeginSpeaking: requestID)
+    }
+
+    func speechEngine(
+        _ engine: any SpeechEngine, didSuspend requestID: UUID, reason: NarrationHoldReason
+    ) {
+        guard engine === current else { return }
+        delegate?.speechEngine(self, didSuspend: requestID, reason: reason)
     }
 }

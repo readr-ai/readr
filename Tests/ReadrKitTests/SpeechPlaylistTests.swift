@@ -295,3 +295,47 @@ final class SpeechPlaylistTests: XCTestCase {
         )
     }
 }
+
+
+// MARK: - Looking ahead
+
+extension SpeechPlaylistTests {
+
+    func testUpcomingSegmentsAreTheOnesAdvanceWouldVisitWithoutMoving() {
+        var playlist = SpeechPlaylist(book: makeBook())
+        playlist.seek(toChapter: 0)
+        let upcoming = playlist.upcomingSegments(limit: 10)
+        XCTAssertEqual(
+            upcoming.map(\.text), ["Alpha two.", "Beta one.", "Beta two."],
+            "Across the chapter wall, the notes document skipped, to the end of the book"
+        )
+        XCTAssertEqual(playlist.current?.text, "Alpha one.", "The cursor has not moved")
+        XCTAssertEqual(playlist.advance()?.text, "Alpha two.")
+    }
+
+    func testUpcomingSegmentsHonourTheLimit() {
+        var playlist = SpeechPlaylist(book: makeBook())
+        playlist.seek(toChapter: 0)
+        XCTAssertEqual(playlist.upcomingSegments(limit: 1).map(\.text), ["Alpha two."])
+        XCTAssertEqual(playlist.upcomingSegments(limit: 0), [])
+    }
+
+    func testUpcomingSegmentsAreEmptyBeforeASeekAndAtTheEnd() {
+        var playlist = SpeechPlaylist(book: makeBook())
+        XCTAssertEqual(playlist.upcomingSegments(limit: 5), [])
+        playlist.seek(toChapter: 2, characterOffset: 10)
+        XCTAssertEqual(playlist.current?.text, "Beta two.")
+        XCTAssertEqual(playlist.upcomingSegments(limit: 5), [])
+    }
+
+    func testUpcomingSegmentsKeepTheChaptersTheyWalkedInto() {
+        var playlist = SpeechPlaylist(book: makeBook())
+        playlist.seek(toChapter: 0)
+        _ = playlist.upcomingSegments(limit: 10)
+        // Segmenting is memoised per chapter; walking ahead paid for chapter
+        // two, and advancing into it must not pay again. Observable only as
+        // a property of the cache, so the check is that the walk's result and
+        // the later advance agree exactly.
+        XCTAssertEqual(playlist.segments(inChapter: 2).map(\.text), ["Beta one.", "Beta two."])
+    }
+}

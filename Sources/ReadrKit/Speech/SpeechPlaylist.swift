@@ -113,6 +113,23 @@ public struct SpeechPlaylist: Sendable {
         return String(characters)
     }
 
+    /// The sentences that would follow `current` in continuous playback —
+    /// the same walk `advance()` takes, non-linear chapters skipped — up to
+    /// `limit` of them, without moving the cursor. Empty before the first
+    /// `seek`. Chapters walked into are segmented and stay cached, so the
+    /// eventual `advance()` into them is free.
+    public mutating func upcomingSegments(limit: Int) -> [SpeechSegment] {
+        guard limit > 0, cursor != nil else { return [] }
+        // A copy walks ahead; only its cache comes back.
+        var probe = self
+        var upcoming: [SpeechSegment] = []
+        while upcoming.count < limit, let next = probe.advance() {
+            upcoming.append(next)
+        }
+        cache = probe.cache
+        return upcoming
+    }
+
     // MARK: - Moving
 
     /// Place the cursor at the first sentence that *begins* at or after

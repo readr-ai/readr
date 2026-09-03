@@ -56,9 +56,11 @@ a shareable article.
   and ~20MB of pronunciation assets on an iPhone or iPad, kept as a cache
   plus a working copy so it can take up to twice that on disk until iOS
   purges the cache. The Listen bar shows that first wait ("Preparing Readr
-  Voice…") and narration starts the moment the model is in; your book never
-  leaves the device, and Apple's zero-download voices remain a pick away
-  under "Other voices".
+  Voice…") and narration starts the moment the model is in. On iPhone and
+  iPad Readr Voice reads ahead while the app is open and keeps reading
+  with the screen locked from that buffer (kept on disk, about 30MB an
+  hour, two hours at most); your book never leaves the device, and Apple's
+  zero-download voices remain a pick away under "Other voices".
   Sentence skip, speed, voice, and a sleep timer; the page turns itself to
   follow the voice, and lock-screen/headphone controls work with the screen
   off (iOS).

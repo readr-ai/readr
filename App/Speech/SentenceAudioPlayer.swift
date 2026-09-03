@@ -2,10 +2,22 @@ import Foundation
 import AVFoundation
 import ReadrKit
 
+/// What a synthesizer hands the player for one sentence.
+enum PlayableAudio {
+    /// Nothing to say (a punctuation-only "sentence"): finished at once.
+    case nothing
+    /// WAV bytes at the speed they were synthesized at — the CoreML engine,
+    /// which bakes the reader's speed into the synthesis.
+    case data(Data)
+    /// A compressed file synthesized at 1×, played at `rate` — the MLX
+    /// engine's buffer, where one file serves every speed.
+    case file(URL, rate: Float)
+}
+
 /// The one `AVAudioPlayer` contract behind both Kokoro engines — CoreML on
 /// macOS, MLX on iPhone and iPad. Each engine supplies a `synthesize`
-/// closure that turns a request into WAV bytes; everything after that (the
-/// synthesis gap, the activate-then-play step, pause/resume/stop, the
+/// closure that turns a request into playable audio; everything after that
+/// (the synthesis gap, the activate-then-play step, pause/resume/stop, the
 /// refused-play failure, both `AVAudioPlayerDelegate` callbacks) lives here
 /// once, so the two engines cannot drift apart on the parts that were
 /// hardened over three releases:
@@ -45,6 +57,9 @@ final class SentenceAudioPlayer: NSObject {
     /// The controller paused while we were still synthesizing — hold the
     /// finished audio instead of starting it.
     private var pausedByCaller = false
+    /// A speed change that arrived for this request, applied to the player
+    /// now if there is one and when it is made if not.
+    private var rateOverride: Float?
 
     var state: SpeechEngineState {
         guard activeRequest != nil else { return .idle }
@@ -65,19 +80,17 @@ final class SentenceAudioPlayer: NSObject {
         activeRequest?.id == request.id
     }
 
-    /// Synthesize, then play. `synthesize` returns the whole sentence as WAV
-    /// bytes for `AVAudioPlayer(data:)`; EMPTY data means there is nothing to
-    /// say (a punctuation-only "sentence") and the request finishes at once.
-    /// A `CancellationError` from `synthesize` is a skip/stop the controller
-    /// already moved on from and is reported to nobody; any other error is
-    /// `onFail`.
+    /// Synthesize, then play. A `CancellationError` from `synthesize` is a
+    /// skip/stop the controller already moved on from and is reported to
+    /// nobody; any other error is `onFail`.
     func speak(
         _ request: SpeechRequest,
-        synthesize: @escaping @MainActor (SpeechRequest) async throws -> Data
+        synthesize: @escaping @MainActor (SpeechRequest) async throws -> PlayableAudio
     ) {
         cancelInFlight()
         activeRequest = request
         pausedByCaller = false
+        rateOverride = nil
         synthesisTask = Task { @MainActor [weak self] in
             await self?.synthesizeThenPlay(request, synthesize)
         }
@@ -108,9 +121,24 @@ final class SentenceAudioPlayer: NSObject {
         cancelInFlight()
         activeRequest = nil
         pausedByCaller = false
+        rateOverride = nil
         // The audio session stays up between sentences for the same reason
         // AVSpeechEngine's does; `RoutingSpeechEngine.endAudioSession()` ends
         // it for real.
+    }
+
+    /// Change speed in place. Applies to the player if it is up, and to the
+    /// one about to be made if the audio is still on its way. False with no
+    /// request in hand — nothing to apply it to. Only meaningful for
+    /// `.file` audio, which is synthesized at 1×; an engine that bakes speed
+    /// into its synthesis does not offer this.
+    func setRate(_ rate: Float) -> Bool {
+        guard activeRequest != nil else { return false }
+        rateOverride = rate
+        if let player, player.enableRate {
+            player.rate = rate
+        }
+        return true
     }
 
     // MARK: - Synthesis
@@ -118,24 +146,36 @@ final class SentenceAudioPlayer: NSObject {
     @MainActor
     private func synthesizeThenPlay(
         _ request: SpeechRequest,
-        _ synthesize: @MainActor (SpeechRequest) async throws -> Data
+        _ synthesize: @MainActor (SpeechRequest) async throws -> PlayableAudio
     ) async {
         do {
-            let wav = try await synthesize(request)
+            let audio = try await synthesize(request)
             // A skip/stop may have replaced this request during synthesis.
             guard activeRequest?.id == request.id else { return }
-            if wav.isEmpty {
+            let player: AVAudioPlayer
+            switch audio {
+            case .nothing:
                 // Nothing to play: report the finish now rather than handing
                 // AVAudioPlayer a 44-byte header to reject.
                 activeRequest = nil
                 onFinish?(request.id)
                 return
+            case .data(let wav):
+                guard !wav.isEmpty else {
+                    activeRequest = nil
+                    onFinish?(request.id)
+                    return
+                }
+                player = try AVAudioPlayer(data: wav)
+            case .file(let url, let rate):
+                player = try AVAudioPlayer(contentsOf: url)
+                player.enableRate = true
+                player.rate = rateOverride ?? rate
             }
             // Claimed only once audio is ready to play: activating on
             // `speak()` interrupted whatever the reader was listening to for
             // the whole first-use model download, for nothing.
             NarrationAudioSession.activate()
-            let player = try AVAudioPlayer(data: wav)
             player.volume = Float(request.volume)
             player.delegate = self
             self.player = player

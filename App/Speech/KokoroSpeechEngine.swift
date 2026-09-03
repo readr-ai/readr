@@ -179,7 +179,7 @@ final class KokoroSpeechEngine: NSObject, ReadrVoiceEngine {
             try await self.ensureInitialized()
             // A skip/stop may have replaced this request during the wait.
             guard self.audio.isCurrent(request) else { throw CancellationError() }
-            return try await self.manager.synthesize(
+            return .data(try await self.manager.synthesize(
                 text: request.text,
                 voice: Self.kokoroVoice(from: request.voiceID),
                 // Kokoro takes the reader's multiplier directly — no
@@ -187,7 +187,7 @@ final class KokoroSpeechEngine: NSObject, ReadrVoiceEngine {
                 // SpeechSettings is the single clamping authority (init,
                 // didSet, and decode), and every request is built from it.
                 speed: Float(request.rate)
-            )
+            ))
         }
     }
 
