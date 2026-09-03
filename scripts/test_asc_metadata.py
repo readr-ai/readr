@@ -437,6 +437,7 @@ def main() -> None:
         test_submit_blockers_are_written,
         test_manual_steps_always_print,
         test_editable_draft_is_renamed_not_duplicated,
+        test_withdrawn_draft_is_renamed_too,
         test_submitted_version_is_never_renamed,
         test_limits_are_enforced_before_any_call,
     ]:
