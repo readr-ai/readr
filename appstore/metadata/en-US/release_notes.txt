@@ -5,6 +5,6 @@ Readr 3.2.2: a recap when you need one, and a book to start on.
   of your place is used, so it can't spoil what comes next
 • A first book in your library: Alice's Adventures in Wonderland is there on
   first launch, so you can try reading, listening and asking right away
-• Fixed: Readr could quit a few minutes into listening on iOS 26. Readr Voice
-  is paused on iPhone and iPad until Apple's fix ships; Apple's voices read
-  meanwhile, and your voice choice is kept
+• Fixed: Readr could quit a few minutes into listening on iOS 26.4 and
+  later. Readr Voice is paused on iPhone and iPad until Apple's fix ships;
+  Apple's voices read meanwhile, and your voice choice is kept
