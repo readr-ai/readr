@@ -201,14 +201,22 @@ with the results.
 - [ ] **Thirty minutes continuous, foreground.** Leave it reading. No quit,
       no stall, no sentence heard twice, no Apple voice at any point. Watch
       the read-along line keep pace with the audio.
-- [ ] **Mandatory lock-race test — 20 times.** While foreground prefetch is
-      actively growing the "ready" figure, lock the phone, unlock it, and
-      repeat for 20 total locks. MLX cannot cancel the one Metal graph already
-      submitted, so diagnostics warning-log each lock that catches one with
-      its elapsed milliseconds. Record the warning count and elapsed values.
-      **Any crash means this build must ship with CPU-only prefetch:** set the
-      `readrVoice.prefetchOnCPU` UserDefaults key to `true` (the engine's
-      `.cpuAlways` policy) and repeat the test before release.
+- [ ] **Mandatory lock-race test — 20 times.** Since 3.3.1 prefetch runs on
+      the CPU by default, so the only GPU exposure left is a sentence the
+      reader is about to hear that wasn't buffered in time — read ahead so
+      that keeps happening (skip forward past the buffer, or read as fast as
+      the CPU refill), and lock the phone right as the "ready" figure is
+      momentarily thin, unlock it, and repeat for 20 total locks. MLX cannot
+      cancel the one Metal graph already submitted, so diagnostics
+      warning-log each lock that catches one with its elapsed milliseconds
+      (every GPU use is also logged at `.info` with its duration, so the
+      diagnostics file shows exactly how much exposure there was). Record
+      the warning count and elapsed values. **Any crash is still a
+      release blocker** — there is no more conservative prefetch setting to
+      fall back to, since CPU is already the default; file it with the full
+      diagnostics log. `readrVoice.prefetchOnGPU` (default off) forces
+      prefetch back onto the GPU too, for comparing against the pre-3.3.1
+      behaviour while investigating.
 - [ ] **Memory.** In Xcode's Debug navigator, the Memory gauge during that
       half hour: note the peak. It must stay **under 1GB** and must not climb
       sentence over sentence (a rising line is the MLX cache leak the 64MB
@@ -222,8 +230,8 @@ with the results.
       work. Unlock: still Readr Voice, no sentence twice. Then **measure**,
       from the diagnostics log (Settings › Report a bug attaches it; Xcode's
       console shows it live): the `Readr Voice (MLX) sentence N: cpu …`
-      lines — the first marks the switch to the CPU, then one in ten. Write
-      down every `cpu rtf over last 5` value, the `ms for … ms of audio`
+      lines — every sentence now, not one in ten. Write down every
+      `cpu rtf over last 5` value, the `ms for … ms of audio`
       pairs, the "s ahead" figure at lock and at unlock, and the peak
       memory during the locked half hour. An rtf under 0.8 means the CPU
       refill cannot keep up with playback on this phone and the buffer is

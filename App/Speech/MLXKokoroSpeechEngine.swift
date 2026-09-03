@@ -25,9 +25,19 @@ import ReadrKit
 ///   filed in `ReadrVoiceAudioCache` as compressed audio at 1×, keyed by
 ///   book, voice and text. A sentence that is already there plays at once,
 ///   whatever the app's state; the reader's speed is applied at playback,
-///   so a speed change keeps the buffer. In the foreground a pump works
-///   through the lookahead on the GPU until the horizon is met; the sentence
-///   being spoken always goes first.
+///   so a speed change keeps the buffer. A pump works through the lookahead
+///   on the CPU by default (`PrefetchDevicePolicy.cpuAlways`) so the GPU is
+///   never holding a graph Metal could be asked to drop mid-flight; the
+///   sentence being spoken always goes first, and always wins the actor.
+/// - **The GPU only for what must play now.** A sentence the reader is
+///   about to hear that isn't buffered yet is synthesized on the GPU, and
+///   only while the app is foreground — active, not backgrounded, not
+///   resigning (`isForeground`). That is the one place the GPU is used at
+///   all; every use is logged at `.info` with its duration so the exposure
+///   the lock race depends on is visible after the fact. `readrVoice.
+///   prefetchOnGPU` (default off) forces the pump back onto the GPU too —
+///   the pre-3.3.1 behaviour, kept as a fallback for the device smoke
+///   test's lock-race procedure.
 /// - **The CPU with the screen locked.** Metal refuses command buffers
 ///   from a backgrounded app and MLX surfaces that as a C++ `runtime_error`
 ///   inside Metal's completion handler — a `std::terminate`, not something
@@ -45,10 +55,23 @@ import ReadrKit
 ///   sentence with "Paused — unlock Readr to keep listening", and play on return
 ///   speaks it on the GPU. No Apple voice reads in its place.
 ///
-/// Per sentence the device, synthesis time and audio length are measured;
-/// one line in ten (and the first after a device switch) goes to
-/// `DiagnosticsLog`, and `cpuRealtimeFactor` is the rolling ratio of audio
-/// to synthesis time over the last `cpuRealtimeWindow` CPU sentences.
+/// Per sentence the device, synthesis time and audio length are measured
+/// and logged to `DiagnosticsLog` at `.info` — every sentence, not one in
+/// ten: the file sink caps its size and rotates on its own, so the fuller
+/// record is what makes a pause between sentences legible after the fact.
+/// A sentence played straight from the buffer is logged with how far ahead
+/// it left the voice, and a playback that has to wait on a synthesis in
+/// progress is logged with how long it waited. `cpuRealtimeFactor` is the
+/// rolling ratio of audio to synthesis time over the last
+/// `cpuRealtimeWindow` CPU sentences.
+///
+/// Every call into MLX — the model load, a warm-up, and every synthesis —
+/// runs inside mlx-swift's scoped `withError`, so an MLX-reported error
+/// (a shape mismatch, an unsupported op) becomes a thrown Swift error the
+/// engine turns into `didFail` or a hold, never the process trap of MLX's
+/// default handler. `withError` cannot reach an error thrown from inside
+/// Metal's own completion handler off the cooperative thread pool — see
+/// the note on the residual GPU exposure below.
 ///
 /// Same shape and contract as the CoreML engine otherwise — playback is
 /// the shared `SentenceAudioPlayer`, `.speaking` is reported through the
@@ -63,10 +86,16 @@ import ReadrKit
 /// notifications and reads a directory listing — so a launch, and the UI
 /// tests' `-uiTestSilentNarration` stub, never load the runtime.
 ///
-/// MLX cannot cancel a Metal graph already submitted. The foreground pump
-/// therefore admits exactly one GPU sentence at a time and never queues a
-/// second. A lock can still land during that one graph; every such residual
-/// exposure is warning-logged with its elapsed time for the device smoke test.
+/// MLX cannot cancel a Metal graph already submitted, and a C++ exception
+/// thrown from inside Metal's completion handler for one that failed is
+/// uncatchable — `std::terminate`, not a Swift error `withError` can turn
+/// into a throw (mlx-swift#274, #407). The engine therefore admits exactly
+/// one GPU sentence at a time and never queues a second, and now reaches
+/// for the GPU only for a sentence that must play immediately — prefetch's
+/// default move to the CPU shrinks the window in which a lock can land on
+/// a live GPU graph, it does not close it. A lock that still lands during
+/// that one graph is warning-logged with its elapsed time for the device
+/// smoke test.
 final class MLXKokoroSpeechEngine:
     NSObject, ReadrVoiceEngine, SpeechPrefetching, SpeechRateAdjusting
 {
@@ -112,9 +141,15 @@ final class MLXKokoroSpeechEngine:
         case gpuWhileActive
         case cpuAlways
 
+        /// CPU by default, since 3.3.1: prefetch never holds a GPU graph
+        /// Metal could be asked to drop mid-flight, and the lock-race
+        /// exposure is only ever a foreground playback sentence's, not the
+        /// pump's. `readrVoice.prefetchOnGPU` forces the pump back onto the
+        /// GPU while active — an escape hatch for the device smoke test,
+        /// not something the app offers a reader.
         static func configured(defaults: UserDefaults = .standard) -> Self {
-            defaults.bool(forKey: "readrVoice.prefetchOnCPU")
-                ? .cpuAlways : .gpuWhileActive
+            defaults.bool(forKey: "readrVoice.prefetchOnGPU")
+                ? .gpuWhileActive : .cpuAlways
         }
     }
 
@@ -140,8 +175,10 @@ final class MLXKokoroSpeechEngine:
     /// the CPU has been producing audio at least this fast relative to
     /// playback; below it, the hold is the better experience.
     static let cpuKeepsUpFactor = 0.8
-    /// One measurement line per this many sentences.
-    static let logEverySentences = 10
+    /// Below this a playback wait is not worth a diagnostics line — the
+    /// join of an already in-flight synthesis is essentially instant and
+    /// would otherwise dominate the log.
+    static let waitLogThreshold: TimeInterval = 0.05
 
     // MARK: - Availability
 
@@ -267,7 +304,6 @@ final class MLXKokoroSpeechEngine:
     private(set) var cpuRealtimeFactor: Double?
     private var cpuWindow: [(synthesis: TimeInterval, audio: TimeInterval)] = []
     private var sentenceCount = 0
-    private var lastDevice: DeviceType?
 
     override convenience init() {
         self.init(prefetchDevicePolicy: .configured())
@@ -390,6 +426,11 @@ final class MLXKokoroSpeechEngine:
         // Already audio: play it, whatever the app's state and whether or
         // not the model is even loaded this launch.
         if let entry = cache.entry(for: cacheKey) {
+            DiagnosticsLog.shared.record(
+                .info, .reader,
+                "Readr Voice (MLX) sentence played from cache; "
+                    + "\(Int(secondsBuffered(ahead: lookahead)))s ahead"
+            )
             audio.speak(request) { request in Self.playable(entry, rate: request.rate) }
             kickPump()
             return
@@ -668,13 +709,27 @@ final class MLXKokoroSpeechEngine:
     /// The `synthesize` half of `SentenceAudioPlayer.speak` for a sentence
     /// not yet in the buffer: wait for the model, re-check that the request
     /// still stands, then synthesize — unless the pump landed it meanwhile,
-    /// or is on it now.
+    /// or is on it now. Every call here is, by construction, a sentence
+    /// `speak` did not find already buffered — a heading synthesized on
+    /// demand while the pump was aimed further ahead is exactly this path —
+    /// so the whole duration is logged as a wait when it is not negligible;
+    /// that is the heading-to-paragraph pause the device smoke test looks for.
     @MainActor
     private func synthesizeForPlayback(
         _ request: SpeechRequest, key: ReadrVoiceAudioCache.Key
     ) async throws -> Synthesis {
         speakWaiting += 1
-        defer { speakWaiting -= 1 }
+        let waitStarted = Date()
+        defer {
+            speakWaiting -= 1
+            let waited = Date().timeIntervalSince(waitStarted)
+            if waited > Self.waitLogThreshold {
+                DiagnosticsLog.shared.record(
+                    .info, .reader,
+                    "Readr Voice (MLX) playback waited \(Int(waited * 1000))ms for synthesis"
+                )
+            }
+        }
         if let inFlight, inFlight.key == key {
             return try await inFlight.task.value
         }
@@ -742,9 +797,11 @@ final class MLXKokoroSpeechEngine:
     }
 
     /// Bookkeeping for one synthesis: the sentence count, the CPU window,
-    /// and — one line in ten, plus the first after a device switch — the
-    /// diagnostics line the owner reads the realtime factor from. Numbers
-    /// only, never text.
+    /// and the diagnostics line the owner reads the realtime factor and the
+    /// device (so every GPU use, now rare, is visible with its duration)
+    /// from — every sentence, not one in ten; the file sink caps its size
+    /// and rotates, so the fuller record is affordable. Numbers only, never
+    /// text.
     @MainActor
     private func record(_ synthesis: Synthesis) {
         guard let device = synthesis.device else { return }
@@ -759,9 +816,6 @@ final class MLXKokoroSpeechEngine:
             let audioTotal = cpuWindow.reduce(0) { $0 + $1.audio }
             cpuRealtimeFactor = synthesisTotal > 0 ? audioTotal / synthesisTotal : nil
         }
-        let switched = lastDevice != device
-        lastDevice = device
-        guard switched || sentenceCount % Self.logEverySentences == 0 else { return }
         let factor = synthesis.seconds > 0 ? audioSeconds / synthesis.seconds : 0
         let rolling = cpuRealtimeFactor.map { String(format: "%.2f", $0) } ?? "n/a"
         DiagnosticsLog.shared.record(
@@ -841,10 +895,19 @@ final class MLXKokoroSpeechEngine:
     }
 
     /// CPU compilation is best-effort and begins only after real audio has
-    /// started. Actor admission keeps a waiting playback request ahead of it.
+    /// started. Actor admission keeps a waiting playback request ahead of
+    /// it, but the pump's own prefetch shares the warm-up's `.prefetch`
+    /// priority and would only win a race for the one admitted graph by
+    /// luck — that race, landing right as the first sentence starts
+    /// playing, is what starved the very next sentence's prefetch and
+    /// produced the pause the owner heard between a heading and the
+    /// paragraph after it. So the warm-up defers, and is retried from every
+    /// later `onStart`, while the pump still has a real sentence to
+    /// synthesize: prefetch always gets the CPU first.
     @MainActor
     private func scheduleCPUWarmUpIfPossible() {
         guard hasStartedPlayback, readiness == .ready, cpuWarmUpTask == nil else { return }
+        guard !(shouldRefill() && nextToSynthesize() != nil) else { return }
         let synthesizer = self.synthesizer
         let gpuWork = self.gpuWork
         let voice = KokoroSpeechEngine.kokoroVoice(from: nil)
@@ -998,15 +1061,20 @@ final class MLXKokoroSpeechEngine:
 
         /// Load and evaluate the weights. No throwaway inference runs here;
         /// readiness follows this return and the first real sentence warms GPU.
+        /// `withError` scopes MLX's error handler around the call so a
+        /// malformed checkpoint reports as a thrown Swift error instead of
+        /// MLX's default handler taking down the process.
         func load(isForeground: @Sendable () -> Bool) async throws {
             guard model == nil else { return }
             guard let modelDirectory else { throw MLXKokoroError.notDownloaded }
             guard isForeground() else { throw MLXKokoroError.backgrounded }
             // Before the first allocation, so the pool never grows past it.
             Memory.cacheLimit = MLXKokoroSpeechEngine.gpuCacheLimit
-            let loaded = try await KokoroModel.fromModelDirectory(
-                modelDirectory, textProcessor: textProcessor
-            )
+            let loaded = try await withError {
+                try await KokoroModel.fromModelDirectory(
+                    modelDirectory, textProcessor: textProcessor
+                )
+            }
             model = loaded
         }
 
@@ -1108,14 +1176,26 @@ final class MLXKokoroSpeechEngine:
             if device == .gpu {
                 gpuWork.begin(at: started)
             }
+            // `samples` is `nonisolated`: run here, on the Task's own
+            // executor, never on the actor's. Before this the call to
+            // `self.samples(...)` needed the actor's executor to run at
+            // all — pinning it for the whole synthesis — so a CPU warm-up
+            // or an earlier prefetch already admitted could hold the actor
+            // through its entire compute and starve a concurrently arriving
+            // playback request of even a chance to reach `acquireGraph`.
+            // `withError` turns an MLX-reported error (a shape mismatch, an
+            // unsupported op) into a thrown Swift error instead of letting
+            // MLX's default handler abort the process.
             let work = Task<[Float], Error> {
                 defer {
                     if device == .gpu {
                         gpuWork.end()
                     }
                 }
-                return try await Device.withDefaultDevice(mlxDevice) {
-                    try await self.samples(for: text, voice: voice, model: model)
+                return try await withError {
+                    try await Device.withDefaultDevice(mlxDevice) {
+                        try await self.samples(for: text, voice: voice, model: model)
+                    }
                 }
             }
 
@@ -1174,7 +1254,16 @@ final class MLXKokoroSpeechEngine:
         /// The segmenter caps sentences at 320 characters, which keeps nearly
         /// every one under Kokoro's 510-phoneme limit; the rest are cut at a
         /// clause and synthesized in pieces.
-        private func samples(
+        ///
+        /// `nonisolated` deliberately: this is where the actual MLX graph
+        /// runs, and it touches no actor state — only `model`, handed in by
+        /// the caller. Kept off the actor's executor so that the (possibly
+        /// multi-second) compute never pins the actor and blocks a
+        /// concurrently arriving playback request from even reaching
+        /// `acquireGraph`. `performGraph` still serializes admission to one
+        /// graph at a time and gives playback priority; this only frees the
+        /// actor to keep running while a graph is in flight.
+        private nonisolated func samples(
             for text: String, voice: String, model: KokoroModel
         ) async throws -> [Float] {
             do {
