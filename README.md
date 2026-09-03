@@ -48,10 +48,15 @@ a shareable article.
   beyond the book.
 - 🎧 **Listen to the book**: read-aloud from the page you're on, narrated by
   **Readr Voice** — a neural voice (Kokoro-82M) that runs entirely on your
-  device — CoreML on the Mac, the Metal GPU (MLX) on iPhone and iPad. Its
-  model downloads once on first listen (~104MB on a Mac, ~350MB on an iPhone
-  or iPad); your book never leaves the device, and Apple's zero-download
-  voices remain a pick away.
+  device — CoreML on the Mac (macOS 26.4–26.5 excepted, where an Apple bug
+  crashes it and an Apple voice reads instead), the Metal GPU (MLX) on
+  iPhone and iPad (an Apple voice reads while the screen is locked, and
+  Readr Voice returns when you come back). Its model downloads once on first
+  listen from huggingface.co — ~104MB on a Mac; ~330MB of weights, ~60MB of
+  voice packs and ~20MB of pronunciation assets on an iPhone or iPad, kept
+  as a cache plus a working copy so it can take up to twice that on disk
+  until iOS purges the cache; your book never leaves the device, and
+  Apple's zero-download voices remain a pick away.
   Sentence skip, speed, voice, and a sleep timer; the page turns itself to
   follow the voice, and lock-screen/headphone controls work with the screen
   off (iOS).

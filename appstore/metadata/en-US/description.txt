@@ -26,11 +26,13 @@ Press Listen and Readr reads the book aloud, starting from the page you're on
 the place it saves is where the voice left off, so switching between reading
 and listening never costs you your spot.
 
-Narration uses Apple's built-in voices, which run on your device with nothing
-to download, so nothing about your book is sent away to be read aloud. Readr
-Voice, our more natural on-device narrator for English books, is taking a
-short break on iPhone and iPad while an iOS issue is resolved; it's in the Mac
-app today and returns here as soon as the fix ships.
+The narrator is Readr Voice, a neural voice that runs entirely on your
+device: no account, no subscription, and nothing about your book ever leaves
+the device to be read aloud. Its voice model downloads once the first time
+you listen; until it's in, an Apple voice reads and the switch happens
+mid-chapter on its own. With the screen locked an Apple voice reads and
+Readr Voice returns when you come back. Prefer Apple's built-in voices?
+They're one tap away in the voice menu, with nothing to download at all.
 
 Skip by sentence or by chapter, change the speed or the voice mid-sentence and
 it carries on from that word, and set a sleep timer that counts listening
