@@ -57,10 +57,10 @@ jobs:
           fi
           sudo xcode-select -s "$XCODE"
           xcodebuild -version
-      # Xcode 26 ships the Metal compiler separately; mlx-swift needs it to
-      # build its GPU kernels for every SDK, macOS included — see ci.yml.
-      - name: Install Metal toolchain
-        run: xcodebuild -downloadComponent MetalToolchain
+      # No Metal toolchain here: the MLX packages carry `platformFilter: iOS`
+      # in project.yml, so the macOS build neither links MLX nor compiles
+      # mlx-swift's Metal shaders (the iOS lanes in ci.yml and testflight.yml
+      # still install it).
       - name: Install XcodeGen
         run: brew install xcodegen
       - name: Generate Xcode project
