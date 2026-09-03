@@ -28,8 +28,9 @@ final class NarrationModel: ObservableObject {
     /// Voices offered for the open book, best match first.
     @Published private(set) var voices: [SpeechVoice] = []
     /// Where the Readr Voice model stands (first use is a download: ~104MB of
-    /// CoreML weights on a Mac, ~350MB of MLX weights and G2P assets on an
-    /// iPhone or iPad). The Listen bar's voice menu narrates this state;
+    /// CoreML weights on a Mac; ~330MB of MLX weights, ~60MB of voice packs
+    /// and ~20MB of pronunciation assets on an iPhone or iPad). The Listen
+    /// bar's voice menu narrates this state;
     /// until `.ready`, the platform voice reads and the switch happens at a
     /// sentence boundary.
     @Published private(set) var readrVoiceReadiness: ReadrVoiceReadiness = .notReady
@@ -40,9 +41,11 @@ final class NarrationModel: ObservableObject {
     @Published private(set) var readrVoiceUnavailable = false
     /// On iPhone and iPad Readr Voice runs on the GPU, which Metal withholds
     /// from a backgrounded app: with the screen locked an Apple voice reads
-    /// and Readr Voice returns at the next sentence once the app is active.
-    /// The voice menu says so.
-    let readrVoiceStepsAsideWhenLocked = RoutingSpeechEngine.readrVoiceRuntime == .mlx
+    /// and Readr Voice returns at the next sentence once the app is back in
+    /// the foreground. The voice menu says so. Taken from the router rather
+    /// than the static, so the UI-test stub (no router) never probes for a
+    /// Metal device.
+    let readrVoiceStepsAsideWhenLocked: Bool
 
     /// Where the voice is — the reader follows this to keep the page under it.
     var onPosition: ((NarrationPosition) -> Void)?
@@ -95,6 +98,7 @@ final class NarrationModel: ObservableObject {
             self.engine = router
             self.router = router
         }
+        readrVoiceStepsAsideWhenLocked = router?.readrVoiceRuntime == .mlx
         // Speed and voice are the reader's, not the book's — carried across
         // books the way the reading theme is.
         self.rate = defaults.object(forKey: Self.rateKey) as? Double ?? 1
@@ -220,9 +224,9 @@ final class NarrationModel: ObservableObject {
             matching: language, in: installed, systemDefault: systemDefault
         )
         // "Readr Voice" — the bundled Kokoro neural narrator, the DEFAULT for
-        // English books (its ~104MB model downloads on first Listen; the
-        // router reads through the platform voice until it's in — see
-        // RoutingSpeechEngine.speak).
+        // English books (its model — ~104MB on a Mac, ~410MB on an iPhone or
+        // iPad — downloads on first Listen; the router reads through the
+        // platform voice until it's in — see RoutingSpeechEngine.speak).
         if readrVoiceAvailable {
             offered.insert(KokoroSpeechEngine.pickerVoice, at: 0)
         }
@@ -343,8 +347,9 @@ final class NarrationModel: ObservableObject {
         voiceID = id
         narration?.settings.voiceID = id
         // Picking the Readr Voice starts the model download immediately, so
-        // as little as possible of the ~104MB wait lands on the next sentence
-        // (the settings change above already re-speaks it via the router).
+        // as little as possible of the wait (~104MB on a Mac, ~410MB on an
+        // iPhone or iPad) lands on the next sentence (the settings change
+        // above already re-speaks it via the router).
         if KokoroSpeechEngine.isKokoroVoiceID(id) {
             router?.prepareKokoro()
         }

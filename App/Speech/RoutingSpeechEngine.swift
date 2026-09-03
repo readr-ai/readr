@@ -14,12 +14,13 @@ import ReadrKit
 ///
 /// Two Kokoro runtimes exist — CoreML (`KokoroSpeechEngine`, macOS) and MLX
 /// (`MLXKokoroSpeechEngine`, iPhone/iPad, where CoreML crashes inside Apple's
-/// BNNS) — and each platform prepares and speaks through exactly one of them,
-/// `readrVoice`. Which engine gets a sentence is `NarrationEnginePolicy`'s
-/// call (ReadrKit, table-tested), evaluated per request: that is what makes
-/// the fallbacks seamless — while the model downloads, or while the screen is
-/// locked on iOS, the platform voice reads that sentence and Readr Voice
-/// returns at the next boundary.
+/// BNNS) — and each platform builds, prepares and speaks through at most one
+/// of them, `readrVoice`. Which runtime that is, and which engine gets a
+/// sentence, are both `NarrationEnginePolicy`'s call (ReadrKit,
+/// table-tested); the router only carries out the answer. The per-sentence
+/// evaluation is what makes the fallbacks seamless — while the model
+/// downloads, or while the app is backgrounded on iOS, the platform voice
+/// reads that sentence and Readr Voice returns at the next boundary.
 ///
 /// Every sub-engine reports through this router; a callback is forwarded only
 /// if it comes from the engine that owns the current utterance, so a stale
@@ -30,15 +31,20 @@ final class RoutingSpeechEngine: SpeechEngine {
     weak var delegate: (any SpeechEngineDelegate)?
 
     private let platform: AVSpeechEngine
-    private let coreML: KokoroSpeechEngine
+    /// Built on macOS only, and only outside the BNNS crash gate. iOS is
+    /// MLX-or-platform: CoreML Kokoro is never constructed there, so an
+    /// iOS 18–26.3 device or simulator (which pass the gate) never prepares
+    /// or enters it.
+    private let coreML: KokoroSpeechEngine?
     #if os(iOS)
     /// Nil where MLX cannot run (the simulator, no Metal GPU) — the router
-    /// then behaves exactly as it did before MLX existed.
+    /// then narrates through the platform voice and nothing is downloaded.
     private let mlx: MLXKokoroSpeechEngine?
     #endif
     /// The Kokoro engine this platform prepares, and whose readiness the
-    /// Listen bar shows: MLX where it exists, CoreML otherwise.
-    private let readrVoice: any ReadrVoiceEngine
+    /// Listen bar shows — `readrVoiceRuntime`'s engine. Nil when no runtime
+    /// can serve; `NarrationModel.readrVoiceUnavailable` says why.
+    private let readrVoice: (any ReadrVoiceEngine)?
     /// The engine the last `speak` was routed to — the one allowed to report.
     private var current: (any SpeechEngine)?
     /// The request `current` is on — what the failure fallback re-speaks
@@ -49,37 +55,63 @@ final class RoutingSpeechEngine: SpeechEngine {
     /// neither can serve, in which case the voice is not offered.
     static var readrVoiceRuntime: NarrationEnginePolicy.KokoroRuntime? {
         #if os(iOS)
-        let mlxAvailable = MLXKokoroSpeechEngine.isAvailableOnThisDevice
-        #else
-        let mlxAvailable = false
-        #endif
+        // iOS is MLX-or-platform. `KokoroSpeechEngine.isSupportedOnThisOS`
+        // is true on iOS 18–26.3, but CoreML Kokoro must never be prepared on
+        // a phone: one runtime, one model download, and no BNNS exposure.
         return NarrationEnginePolicy.kokoroRuntime(
-            mlxAvailable: mlxAvailable, coreMLSupported: KokoroSpeechEngine.isSupportedOnThisOS
+            mlxAvailable: MLXKokoroSpeechEngine.isAvailableOnThisDevice, coreMLSupported: false
         )
+        #else
+        return NarrationEnginePolicy.kokoroRuntime(
+            mlxAvailable: false, coreMLSupported: KokoroSpeechEngine.isSupportedOnThisOS
+        )
+        #endif
     }
 
     static var isReadrVoiceAvailable: Bool { readrVoiceRuntime != nil }
 
-    init(
-        platform: AVSpeechEngine = AVSpeechEngine(),
-        coreML: KokoroSpeechEngine = KokoroSpeechEngine()
-    ) {
+    /// The runtime this router was built with — for the model, which must
+    /// not evaluate the static (it probes for a Metal device) when it runs
+    /// under the UI-test stub and has no router at all.
+    let readrVoiceRuntime: NarrationEnginePolicy.KokoroRuntime?
+
+    init(platform: AVSpeechEngine = AVSpeechEngine()) {
         self.platform = platform
-        self.coreML = coreML
-        #if os(iOS)
-        let mlx = MLXKokoroSpeechEngine.isAvailableOnThisDevice ? MLXKokoroSpeechEngine() : nil
-        self.mlx = mlx
-        if let mlx {
-            self.readrVoice = mlx
-        } else {
-            self.readrVoice = coreML
+        let runtime = Self.readrVoiceRuntime
+        readrVoiceRuntime = runtime
+        // The policy's answer, and nothing else, decides which engine exists.
+        switch runtime {
+        case .mlx:
+            #if os(iOS)
+            let mlx = MLXKokoroSpeechEngine()
+            self.mlx = mlx
+            coreML = nil
+            readrVoice = mlx
+            #else
+            // Unreachable: the policy answers `.mlx` only where an MLX engine
+            // exists, and one never exists on macOS.
+            coreML = nil
+            readrVoice = nil
+            #endif
+        case .coreML:
+            #if os(iOS)
+            mlx = nil
+            #endif
+            let coreML = KokoroSpeechEngine()
+            self.coreML = coreML
+            readrVoice = coreML
+        case nil:
+            #if os(iOS)
+            mlx = nil
+            #endif
+            coreML = nil
+            readrVoice = nil
         }
-        mlx?.delegate = self
-        #else
-        self.readrVoice = coreML
-        #endif
         platform.delegate = self
-        coreML.delegate = self
+        coreML?.delegate = self
+        #if os(iOS)
+        mlx?.delegate = self
+        #endif
     }
 
     var state: SpeechEngineState {
@@ -98,7 +130,7 @@ final class RoutingSpeechEngine: SpeechEngine {
         #endif
         return NarrationEnginePolicy.Situation(
             requestsReadrVoice: KokoroSpeechEngine.isKokoroVoiceID(request.voiceID),
-            coreMLKokoroUsable: coreML.isReady,
+            coreMLKokoroUsable: coreML?.isReady ?? false,
             mlxKokoroAvailable: mlxAvailable,
             mlxKokoroReady: mlxReady,
             isForeground: isForeground
@@ -106,37 +138,40 @@ final class RoutingSpeechEngine: SpeechEngine {
     }
 
     func speak(_ request: SpeechRequest) {
+        let situation = situation(for: request)
         let target: any SpeechEngine
-        switch NarrationEnginePolicy.engine(for: situation(for: request)) {
+        switch NarrationEnginePolicy.engine(for: situation) {
         case .coreMLKokoro:
-            target = coreML
+            // `coreMLKokoroUsable` is false whenever `coreML` is nil, so the
+            // fallback here is unreachable — kept so the switch is total.
+            target = coreML ?? platform
         case .mlxKokoro:
             #if os(iOS)
-            if let mlx {
-                target = mlx
-            } else {
-                target = platform
-            }
+            target = mlx ?? platform
             #else
             target = platform
             #endif
         case .platform:
             // Readr Voice may be chosen while its model isn't in yet (a
-            // first-use download), or — on iOS — while the screen is locked.
-            // Narration must start NOW, so the platform voice reads in the
-            // meantime (AVSpeechEngine treats the unknown voice id as "pick
-            // for the language") and the very next sentence after the model
-            // lands, or the app is active again, routes to Kokoro and
-            // switches voices at the sentence boundary.
+            // first-use download), or — on iOS — while the app is
+            // backgrounded. Narration must start NOW, so the platform voice
+            // reads in the meantime (AVSpeechEngine treats the unknown voice
+            // id as "pick for the language") and the very next sentence after
+            // the model lands, or the app is back in the foreground, routes
+            // to Kokoro and switches voices at the sentence boundary.
             //
-            // Auto-prepare only from the UNTRIED state. A `.failed` download
-            // must not restart per sentence — that hammered a flaky
-            // connection with a fresh multi-hundred-MB attempt every few
-            // seconds and flapped the menu note. After a failure, retry is
-            // the explicit re-pick (`NarrationModel.setVoice`), which is
-            // exactly what the menu's failure note tells the reader.
-            if KokoroSpeechEngine.isKokoroVoiceID(request.voiceID),
-               readrVoice.readiness == .notReady {
+            // Auto-prepare only from the UNTRIED state, and only in the
+            // foreground. A `.failed` download must not restart per sentence
+            // — that hammered a flaky connection with a fresh
+            // multi-hundred-MB attempt every few seconds and flapped the
+            // menu note; after a failure, retry is the explicit re-pick
+            // (`NarrationModel.setVoice`), which is exactly what the menu's
+            // failure note tells the reader. And a download that failed
+            // while backgrounded resets to `.notReady` (see the MLX engine)
+            // so that it CAN retry — on the next foreground sentence, not on
+            // every sentence read from a pocket.
+            if situation.requestsReadrVoice, situation.isForeground,
+               let readrVoice, readrVoice.readiness == .notReady {
                 readrVoice.prepare()
             }
             target = platform
@@ -164,7 +199,7 @@ final class RoutingSpeechEngine: SpeechEngine {
         // and must never depend on routing state.
         currentRequest = nil
         platform.stop()
-        coreML.stop()
+        coreML?.stop()
         #if os(iOS)
         mlx?.stop()
         #endif
@@ -174,14 +209,14 @@ final class RoutingSpeechEngine: SpeechEngine {
     /// when the reader picks the Readr Voice so the first spoken sentence
     /// doesn't carry the wait.
     func prepareKokoro() {
-        readrVoice.prepare()
+        readrVoice?.prepare()
     }
 
     /// Download/readiness changes of the Readr Voice, for the Listen bar
     /// (the model keeps its own published copy; there is no snapshot getter).
     var onReadrVoiceReadinessChange: ((ReadrVoiceReadiness) -> Void)? {
-        get { readrVoice.onReadinessChange }
-        set { readrVoice.onReadinessChange = newValue }
+        get { readrVoice?.onReadinessChange }
+        set { readrVoice?.onReadinessChange = newValue }
     }
 
     /// Narration is over (the Listen bar closed): hand the audio session back.

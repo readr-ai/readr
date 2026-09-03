@@ -162,9 +162,10 @@ struct ListenBar: View {
             // reader has voices installed, and anything under it is off the
             // bottom of the menu — unreachable, and never even rendered.
             menuNote("More voices: Settings \u{203A} Accessibility \u{203A} Spoken Content")
-            // The Readr Voice model is a one-time ~104MB download; narration
-            // reads through the platform voice meanwhile and switches at a
-            // sentence boundary. Said here so the wait is never a mystery —
+            // The Readr Voice model is a one-time download (~104MB on a Mac,
+            // ~410MB on an iPhone or iPad); narration reads through the
+            // platform voice meanwhile and switches at a sentence boundary.
+            // Said here so the wait is never a mystery —
             // but only while Readr Voice is actually the selected narrator:
             // a reader who picked a platform voice mid-download must not be
             // promised a switch the router will never perform.
@@ -176,15 +177,22 @@ struct ListenBar: View {
                             + "switching automatically when ready"
                     )
                 case .failed:
-                    menuNote("Readr Voice couldn't download \u{2014} pick it again to retry")
+                    // Also the state after a synthesis hangs (the MLX engine
+                    // marks itself failed rather than queue every sentence
+                    // behind the wedged one); the re-pick is the retry either way.
+                    menuNote(
+                        "Readr Voice couldn't download or stopped responding \u{2014} "
+                            + "pick it again to retry"
+                    )
                 case .unsupported, .notReady, .ready:
                     EmptyView()
                 }
                 // iPhone/iPad: Readr Voice runs on the GPU, which Metal
                 // withholds from a backgrounded app. Said once, up front, so
                 // the voice change on lock is expected rather than a bug.
-                if narration.readrVoiceStepsAsideWhenLocked,
-                   narration.readrVoiceReadiness != .unsupported {
+                // (True only with an MLX engine, whose readiness is never
+                // `.unsupported`, so no further guard is needed.)
+                if narration.readrVoiceStepsAsideWhenLocked {
                     menuNote(
                         "With the screen locked, an Apple voice reads; "
                             + "Readr Voice returns when you come back."
