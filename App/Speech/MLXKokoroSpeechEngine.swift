@@ -338,7 +338,15 @@ final class MLXKokoroSpeechEngine:
     /// becomes buffer-only, holding (`didSuspend(.needsForeground)`) when
     /// the buffer runs out rather than reaching for a device that keeps
     /// failing.
-    private(set) var cpuUnavailable = false
+    ///
+    /// Starts TRUE unless `readrVoice.cpuContinuation` (UserDefaults) is on:
+    /// on the owner's iPhone 17 Pro a "CPU" synthesis still finalized a
+    /// Metal stream from the background (`mlx::core::gpu::finalize` →
+    /// `check_error` throwing in the completion handler, uncatchable), so
+    /// no MLX work of any kind runs while the app is backgrounded. The key
+    /// exists for measuring a future MLX that keeps the CPU path off Metal.
+    private(set) var cpuUnavailable: Bool =
+        !UserDefaults.standard.bool(forKey: "readrVoice.cpuContinuation")
 
     // MARK: - Measurement
 
