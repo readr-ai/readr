@@ -407,6 +407,17 @@ final class AppModel: ObservableObject {
 
     // MARK: Import
 
+    /// The caveat shown once at import for a PDF with no text layer: the
+    /// pages open, the text features don't. The reader repeats the short
+    /// form as a banner (`PDFReaderView.scanNotice`) each time the book opens.
+    static func imageOnlyNotice(for book: Book) -> String {
+        """
+        “\(book.metadata.title)” is a scanned PDF with no text layer. Readr \
+        shows its pages, but Ask, Listen, search, highlights, and the Reading \
+        view all need text, so they're unavailable for this book.
+        """
+    }
+
     /// Files whose import is in flight, keyed by standardized URL. Guards
     /// against the same file being imported twice concurrently — `onOpenURL`
     /// can deliver one URL to more than one library scene (e.g. two macOS
@@ -458,6 +469,8 @@ final class AppModel: ObservableObject {
                 as extracted text for now — fixed-layout rendering is on the \
                 roadmap.
                 """
+            } else if book.metadata.isImageOnly == true {
+                importNotice = Self.imageOnlyNotice(for: book)
             }
             DiagnosticsLog.shared.recordBookOpened(
                 book, format: url.pathExtension.lowercased()

@@ -51,6 +51,13 @@ public struct BookMetadata: Hashable, Sendable, Codable {
     /// Optional so libraries persisted before this field still decode;
     /// nil means reflowable.
     public var isFixedLayout: Bool?
+    /// True when the source has no text layer at all — a scanned PDF, or
+    /// screenshots exported as one. The pages still render natively, but
+    /// every text feature (Ask, Listen, search, highlights, the Reading
+    /// view) has nothing to work with, and the app says so. Optional so
+    /// libraries persisted before this field still decode; nil means the
+    /// book has text.
+    public var isImageOnly: Bool?
 
     public init(
         title: String,
@@ -58,7 +65,8 @@ public struct BookMetadata: Hashable, Sendable, Codable {
         language: String? = nil,
         publisher: String? = nil,
         tableOfContents: [TOCEntry] = [],
-        isFixedLayout: Bool? = nil
+        isFixedLayout: Bool? = nil,
+        isImageOnly: Bool? = nil
     ) {
         self.title = title
         self.authors = authors
@@ -66,6 +74,7 @@ public struct BookMetadata: Hashable, Sendable, Codable {
         self.publisher = publisher
         self.tableOfContents = tableOfContents
         self.isFixedLayout = isFixedLayout
+        self.isImageOnly = isImageOnly
     }
 }
 

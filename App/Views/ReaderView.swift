@@ -169,7 +169,21 @@ struct ReaderView: View {
     /// TOC/search/bookmark toolbar, so the text-mode items step aside and the
     /// chapter chevrons disable (PDF pages, not chapters, are the unit there).
     private var isPDFOriginal: Bool {
-        pdfShowsOriginal && model.isPDF(book) && model.sourceURL(for: book) != nil
+        showsPDFOriginal && model.isPDF(book) && model.sourceURL(for: book) != nil
+    }
+
+    /// A PDF with no text layer (scanned pages, screenshots). Its chapters
+    /// are empty, so the Reading view would be blank and Ask, Listen, and
+    /// search have nothing to work with: the original pages are the only
+    /// surface, and the text-mode controls disable with a reason.
+    private var isImageOnlyPDF: Bool {
+        model.isPDF(book) && book.metadata.isImageOnly == true
+    }
+
+    /// The reader's "Original pages / Reading view" choice, except that an
+    /// image-only PDF always shows its pages.
+    private var showsPDFOriginal: Bool {
+        pdfShowsOriginal || isImageOnlyPDF
     }
 
     private var chapter: Chapter? {
@@ -390,7 +404,7 @@ struct ReaderView: View {
 
     private var content: some View {
         Group {
-            if let url = model.sourceURL(for: book), model.isPDF(book), pdfShowsOriginal {
+            if let url = model.sourceURL(for: book), model.isPDF(book), showsPDFOriginal {
                 PDFReaderView(
                     book: book,
                     url: url,
@@ -669,7 +683,7 @@ struct ReaderView: View {
             fontStepperControl
             typographyMenu
             themeDotsControl
-            if model.isPDF(book) {
+            if model.isPDF(book), !isImageOnlyPDF {
                 pdfDisplayMenu
             }
             listenButton
@@ -692,7 +706,12 @@ struct ReaderView: View {
         .keyboardShortcut("l", modifiers: [.command, .shift])
         .accessibilityIdentifier("reader.listen")
         .accessibilityLabel(narration.isActive ? "Stop listening" : "Listen to this book")
-        .help("Read aloud from this page (\u{21E7}\u{2318}L)")
+        .help(
+            isImageOnlyPDF
+                ? "Listen needs text, and this scanned PDF has none"
+                : "Read aloud from this page (\u{21E7}\u{2318}L)"
+        )
+        .disabled(isImageOnlyPDF)
     }
 
     private func toggleListening() {
@@ -955,7 +974,8 @@ struct ReaderView: View {
                 fontRaw: $fontRaw,
                 lineSpacingRaw: $lineSpacingRaw,
                 isJustified: $isJustified,
-                isPDF: model.isPDF(book),
+                // An image-only PDF has no Reading view to offer.
+                isPDF: model.isPDF(book) && !isImageOnlyPDF,
                 pdfShowsOriginal: $pdfShowsOriginal
             )
         }
@@ -1140,7 +1160,12 @@ struct ReaderView: View {
         .keyboardShortcut("a", modifiers: [.command, .shift])
         .accessibilityIdentifier("reader.ask")
         .accessibilityLabel("Ask the book")
-        .help("Ask the book (⇧⌘A) — asks about the selection when text is selected")
+        .help(
+            isImageOnlyPDF
+                ? "Ask needs text, and this scanned PDF has none"
+                : "Ask the book (⇧⌘A) — asks about the selection when text is selected"
+        )
+        .disabled(isImageOnlyPDF)
         #if os(macOS)
         // Plain style so the iris tint survives the toolbar's own styling.
         return button.buttonStyle(.plain)
