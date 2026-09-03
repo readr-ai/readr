@@ -19,28 +19,21 @@ public enum PDFPageChapters {
         /// True when the document has pages and none of them carries text.
         /// An empty document is false: that is a different failure.
         public var isImageOnly: Bool
-        /// Page texts joined in order, for token estimation.
-        public var fullText: String
     }
 
     /// - Parameter pageTexts: one entry per page, in page order — the text
-    ///   PDFKit extracted, or nil when it found none.
+    ///   PDFKit extracted, or nil when it found none. Whitespace-only text
+    ///   counts as none and is stored as empty, so `Chapter.hasText` and the
+    ///   flag agree.
     public static func build(fromPageTexts pageTexts: [String?]) -> Result {
-        var chapters: [Chapter] = []
-        var fullText = ""
-        var sawText = false
-        for (index, pageText) in pageTexts.enumerated() {
+        let chapters = pageTexts.enumerated().map { index, pageText in
             let text = pageText ?? ""
-            if !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                sawText = true
-                fullText += text + "\n"
-            }
-            chapters.append(Chapter(title: "Page \(index + 1)", order: index, text: text))
+            let hasText = text.contains { !$0.isWhitespace }
+            return Chapter(title: "Page \(index + 1)", order: index, text: hasText ? text : "")
         }
         return Result(
             chapters: chapters,
-            isImageOnly: !pageTexts.isEmpty && !sawText,
-            fullText: fullText
+            isImageOnly: !chapters.isEmpty && !chapters.contains(where: \.hasText)
         )
     }
 }

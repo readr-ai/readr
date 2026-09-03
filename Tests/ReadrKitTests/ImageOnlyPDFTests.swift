@@ -43,9 +43,17 @@ final class ImageOnlyPDFTests: XCTestCase {
         XCTAssertEqual(result.chapters[2].text, "three")
     }
 
-    func testFullTextJoinsPagesInOrderForTokenEstimation() {
-        let result = PDFPageChapters.build(fromPageTexts: ["one", nil, "three"])
-        XCTAssertEqual(result.fullText, "one\nthree\n")
+    func testWhitespaceOnlyPageIsStoredEmptySoTheFlagAndTheChapterAgree() {
+        let result = PDFPageChapters.build(fromPageTexts: [" \n", "\u{00A0}"])
+        XCTAssertTrue(result.isImageOnly)
+        XCTAssertTrue(result.chapters.allSatisfy { $0.text.isEmpty })
+        XCTAssertFalse(result.chapters.contains(where: \.hasText))
+    }
+
+    func testChapterHasTextIgnoresWhitespace() {
+        XCTAssertFalse(Chapter(title: nil, order: 0, text: "").hasText)
+        XCTAssertFalse(Chapter(title: nil, order: 0, text: " \n\t").hasText)
+        XCTAssertTrue(Chapter(title: nil, order: 0, text: " a ").hasText)
     }
 
     func testNoPagesIsNeitherImageOnlyNorReadable() {

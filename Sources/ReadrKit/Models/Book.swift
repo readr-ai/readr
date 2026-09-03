@@ -38,6 +38,14 @@ public struct Book: Identifiable, Hashable, Sendable, Codable {
     }
 }
 
+public extension Chapter {
+    /// False for an empty or whitespace-only chapter — a PDF page that
+    /// carries only an image keeps its slot with no text.
+    var hasText: Bool {
+        text.contains { !$0.isWhitespace }
+    }
+}
+
 public struct BookMetadata: Hashable, Sendable, Codable {
     public var title: String
     public var authors: [String]

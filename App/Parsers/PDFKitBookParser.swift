@@ -28,7 +28,15 @@ struct PDFKitBookParser: BookParser {
             throw BookParserError.corrupted("PDF has no pages")
         }
 
-        let pageTexts = (0..<document.pageCount).map { document.page(at: $0)?.string }
+        // A page object PDFKit cannot build is damage; a page with no text
+        // is not. The two must not be flattened into the same nil.
+        var pageTexts: [String?] = []
+        for index in 0..<document.pageCount {
+            guard let page = document.page(at: index) else {
+                throw BookParserError.corrupted("page \(index + 1) could not be loaded")
+            }
+            pageTexts.append(page.string)
+        }
         let pages = PDFPageChapters.build(fromPageTexts: pageTexts)
 
         let title = (document.documentAttributes?[PDFDocumentAttribute.titleAttribute] as? String)
@@ -44,10 +52,12 @@ struct PDFKitBookParser: BookParser {
             tableOfContents: toc,
             isImageOnly: pages.isImageOnly ? true : nil
         )
+        // Estimated from the same join `Book.fullText` sends as whole-book context.
+        let fullText = pages.chapters.map(\.text).joined(separator: "\n\n")
         return Book(
             metadata: metadata,
             chapters: pages.chapters,
-            estimatedTokenCount: estimateTokens(pages.fullText)
+            estimatedTokenCount: estimateTokens(fullText)
         )
     }
 }

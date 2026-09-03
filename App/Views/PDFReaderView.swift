@@ -130,7 +130,7 @@ struct PDFReaderView: View {
             Image(systemName: "doc.viewfinder")
                 .foregroundStyle(theme.muted)
                 .accessibilityHidden(true)
-            Text("Scanned PDF with no text layer — Ask, Listen, search, and highlights aren't available for this book.")
+            Text(ScannedPDFCopy.banner)
                 .font(.callout)
                 .foregroundStyle(theme.inkColor)
                 .fixedSize(horizontal: false, vertical: true)
@@ -154,7 +154,10 @@ struct PDFReaderView: View {
         .overlay(alignment: .bottom) {
             Rectangle().fill(theme.line).frame(height: 1)
         }
-        .accessibilityElement(children: .combine)
+        // `.contain`, not `.combine`: the Dismiss button must stay its own
+        // focusable element (same shape as `ListenBar`).
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Scanned PDF notice")
         .accessibilityIdentifier("pdf.scanNotice")
     }
 
@@ -289,7 +292,7 @@ struct PDFReaderView: View {
         // The host reader's text search is disabled in PDF mode, so ⌘F
         // is ours here.
         .keyboardShortcut("f", modifiers: .command)
-        .help(isImageOnly ? "Find needs text, and this scanned PDF has none" : "Find in PDF (⌘F)")
+        .help(isImageOnly ? ScannedPDFCopy.needsText("Find") : "Find in PDF (⌘F)")
         .disabled(isImageOnly)
         .accessibilityIdentifier("pdf.search")
         .popover(isPresented: $showSearch, arrowEdge: .bottom) {

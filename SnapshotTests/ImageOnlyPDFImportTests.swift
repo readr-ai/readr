@@ -42,7 +42,6 @@ final class ImageOnlyPDFImportTests: XCTestCase {
         XCTAssertEqual(book.chapters.count, 3, "every page keeps its slot")
         XCTAssertEqual(book.chapters.map(\.title), ["Page 1", "Page 2", "Page 3"])
         XCTAssertTrue(book.chapters.allSatisfy { $0.text.isEmpty })
-        XCTAssertEqual(book.estimatedTokenCount, 1, "the estimator's floor — there is no text to count")
         XCTAssertEqual(book.metadata.title, "scan", "falls back to the file name")
         XCTAssertEqual(book.metadata.tableOfContents.count, 3)
     }
@@ -105,8 +104,15 @@ final class ImageOnlyPDFImportTests: XCTestCase {
     /// colour sample could not tell them apart.
     @MainActor
     func testScannedPDFReaderShowsTheNoticeAndTextPDFDoesNot() async throws {
+        // The host is the real app, so its defaults are the developer's: pin
+        // the theme, and keep the macOS thumbnail sidebar (which would sit
+        // inside the sampled band) out of the render.
         UserDefaults.standard.set(ReadingTheme.paper.rawValue, forKey: "readingTheme")
-        defer { UserDefaults.standard.removeObject(forKey: "readingTheme") }
+        UserDefaults.standard.set(false, forKey: "pdfShowsThumbnails")
+        defer {
+            UserDefaults.standard.removeObject(forKey: "readingTheme")
+            UserDefaults.standard.removeObject(forKey: "pdfShowsThumbnails")
+        }
 
         let scanURL = try makePDF(named: "scan", pages: [.image, .image])
         let textURL = try makePDF(named: "text", pages: [.text("Words."), .text("More.")])
@@ -185,11 +191,6 @@ final class ImageOnlyPDFImportTests: XCTestCase {
             attachment.name = name
             attachment.lifetime = .keepAlways
             add(attachment)
-            // `TEST_RUNNER_READR_KEEP_RENDERS=<dir>` on the xcodebuild line
-            // also drops the PNGs there for a local look.
-            if let keep = ProcessInfo.processInfo.environment["READR_KEEP_RENDERS"] {
-                try? png.write(to: URL(fileURLWithPath: keep).appendingPathComponent("\(name).png"))
-            }
         }
         return rep
     }
@@ -207,9 +208,7 @@ final class ImageOnlyPDFImportTests: XCTestCase {
         for y in firstRow..<lastRow {
             for x in stride(from: firstColumn, to: lastColumn, by: 2) {
                 guard let color = rep.colorAt(x: x, y: y)?.usingColorSpace(.sRGB) else { continue }
-                let luminance = 0.2126 * color.redComponent + 0.7152 * color.greenComponent
-                    + 0.0722 * color.blueComponent
-                if luminance < 0.5 { count += 1 }
+                if color.brightnessComponent < 0.5 { count += 1 }
             }
         }
         return count

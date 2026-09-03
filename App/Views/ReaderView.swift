@@ -169,21 +169,21 @@ struct ReaderView: View {
     /// TOC/search/bookmark toolbar, so the text-mode items step aside and the
     /// chapter chevrons disable (PDF pages, not chapters, are the unit there).
     private var isPDFOriginal: Bool {
-        showsPDFOriginal && model.isPDF(book) && model.sourceURL(for: book) != nil
+        (pdfShowsOriginal || isImageOnlyPDF) && model.isPDF(book)
+            && model.sourceURL(for: book) != nil
     }
 
     /// A PDF with no text layer (scanned pages, screenshots). Its chapters
     /// are empty, so the Reading view would be blank and Ask, Listen, and
     /// search have nothing to work with: the original pages are the only
     /// surface, and the text-mode controls disable with a reason.
+    ///
+    /// Keyed on the parser's verdict alone — not on `isPDF`, which reads
+    /// `sourceFilename` and is false when the copy into the Books directory
+    /// failed. The gates must hold for that book too; `content` explains
+    /// the missing file instead of showing a blank page.
     private var isImageOnlyPDF: Bool {
-        model.isPDF(book) && book.metadata.isImageOnly == true
-    }
-
-    /// The reader's "Original pages / Reading view" choice, except that an
-    /// image-only PDF always shows its pages.
-    private var showsPDFOriginal: Bool {
-        pdfShowsOriginal || isImageOnlyPDF
+        book.metadata.isImageOnly == true
     }
 
     private var chapter: Chapter? {
@@ -404,7 +404,7 @@ struct ReaderView: View {
 
     private var content: some View {
         Group {
-            if let url = model.sourceURL(for: book), model.isPDF(book), showsPDFOriginal {
+            if isPDFOriginal, let url = model.sourceURL(for: book) {
                 PDFReaderView(
                     book: book,
                     url: url,
@@ -414,6 +414,17 @@ struct ReaderView: View {
                     },
                     annotationActions: $pdfAnnotationActions
                 )
+            } else if isImageOnlyPDF {
+                // The retained file is gone (or was never copied), and every
+                // chapter is empty: nothing to fall back on but an explanation.
+                ContentUnavailableView(
+                    ScannedPDFCopy.missingFileTitle,
+                    systemImage: "doc.viewfinder",
+                    description: Text(ScannedPDFCopy.missingFileDescription)
+                )
+                .accessibilityIdentifier("reader.scanMissingFile")
+            } else if let chapter, model.isPDF(book), !chapter.hasText {
+                imagePagePlaceholder(for: chapter)
             } else if let chapter {
                 readingSurface(for: chapter)
             } else {
@@ -430,6 +441,25 @@ struct ReaderView: View {
                 }
             }
         }
+    }
+
+    /// The Reading view of a PDF that has text, on a page that has none (a
+    /// plate, a full-page figure). The page keeps its slot so numbering and
+    /// positions stay true to the document; here it says what it is instead
+    /// of rendering as an empty sheet.
+    private func imagePagePlaceholder(for chapter: Chapter) -> some View {
+        ContentUnavailableView {
+            Label(
+                ScannedPDFCopy.imagePageTitle(chapter.title ?? "This page"),
+                systemImage: "photo"
+            )
+        } description: {
+            Text(ScannedPDFCopy.imagePageDescription)
+        } actions: {
+            Button(ScannedPDFCopy.showOriginalPages) { pdfShowsOriginal = true }
+                .accessibilityIdentifier("reader.showOriginalPages")
+        }
+        .accessibilityIdentifier("reader.imagePage")
     }
 
     private func readingSurface(for chapter: Chapter) -> some View {
@@ -708,7 +738,7 @@ struct ReaderView: View {
         .accessibilityLabel(narration.isActive ? "Stop listening" : "Listen to this book")
         .help(
             isImageOnlyPDF
-                ? "Listen needs text, and this scanned PDF has none"
+                ? ScannedPDFCopy.needsText("Listen")
                 : "Read aloud from this page (\u{21E7}\u{2318}L)"
         )
         .disabled(isImageOnlyPDF)
@@ -1162,7 +1192,7 @@ struct ReaderView: View {
         .accessibilityLabel("Ask the book")
         .help(
             isImageOnlyPDF
-                ? "Ask needs text, and this scanned PDF has none"
+                ? ScannedPDFCopy.needsText("Ask")
                 : "Ask the book (⇧⌘A) — asks about the selection when text is selected"
         )
         .disabled(isImageOnlyPDF)
