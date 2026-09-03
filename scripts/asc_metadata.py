@@ -862,11 +862,7 @@ def main() -> None:
     args = parser.parse_args()
 
     write = args.mode in ("push", "submit")
-    fields = read_metadata(args.root)
     print(f"mode={args.mode} version={args.version}")
-    for field, limit in LIMITS.items():
-        if fields.get(field):
-            print(f"  {field}: {len(fields[field])}/{limit}")
 
     bearer = token()
     app = find_app(bearer)
@@ -874,9 +870,17 @@ def main() -> None:
 
     report_app_state(bearer, app["id"])
     if args.mode == "withdraw":
+        # Withdrawing touches no listing copy, so it must not be blocked by
+        # the copy's length checks (a too-long draft description stopped the
+        # 3.2.2 withdrawal).
         withdraw(bearer, app["id"], args.version)
         report_app_state(bearer, app["id"])
         return
+
+    fields = read_metadata(args.root)
+    for field, limit in LIMITS.items():
+        if fields.get(field):
+            print(f"  {field}: {len(fields[field])}/{limit}")
     version = find_or_create_version(bearer, app["id"], args.version, write)
     if not version:
         print("\nplan only — nothing further to inspect without creating the version")
