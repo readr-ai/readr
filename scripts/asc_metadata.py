@@ -174,7 +174,20 @@ def find_app(bearer: str) -> dict:
 
 # The only version state safe to rename. Anything submitted, in review, or
 # live must be left alone.
-EDITABLE_STATE = "PREPARE_FOR_SUBMISSION"
+# States in which App Store Connect lets a version record be edited — and
+# renamed. PREPARE_FOR_SUBMISSION is the unsubmitted draft; the *_REJECTED
+# states are a draft that came back (a withdrawal lands the version in
+# DEVELOPER_REJECTED, which is what the 3.2.2 → 3.3.1 retarget hit); an
+# INVALID_BINARY draft is editable too. Anything in review, waiting for
+# review, or live is not, and must never be renamed out from under Apple.
+EDITABLE_STATES = frozenset({
+    "PREPARE_FOR_SUBMISSION",
+    "DEVELOPER_REJECTED",
+    "REJECTED",
+    "METADATA_REJECTED",
+    "INVALID_BINARY",
+})
+EDITABLE_STATE = "PREPARE_FOR_SUBMISSION"  # the canonical draft state
 
 
 def editable_draft(bearer: str, app_id: str) -> dict | None:
@@ -186,7 +199,7 @@ def editable_draft(bearer: str, app_id: str) -> dict | None:
     for existing in versions:
         attrs = existing["attributes"]
         state = attrs.get("appVersionState") or attrs.get("appStoreState")
-        if state == EDITABLE_STATE:
+        if state in EDITABLE_STATES:
             return existing
     return None
 
@@ -234,9 +247,10 @@ def find_or_create_version(bearer: str, app_id: str, version: str, write: bool) 
     # state." Readr's record had an empty 1.0 placeholder doing precisely that.
     #
     # Retargeting it is what you would do by hand in the web UI — rename the
-    # unsubmitted draft rather than make a second one. Only PREPARE_FOR_
-    # SUBMISSION qualifies: a submitted or live version must never be renamed
-    # out from under a review.
+    # unsubmitted draft rather than make a second one. Only the editable
+    # states qualify (`EDITABLE_STATES` — the draft, and a draft that was
+    # rejected or withdrawn): a submitted or live version must never be
+    # renamed out from under a review.
     editable = editable_draft(bearer, app_id)
     if editable:
         current = editable["attributes"].get("versionString")

@@ -361,6 +361,34 @@ def test_editable_draft_is_renamed_not_duplicated() -> None:
     )
 
 
+def test_withdrawn_draft_is_renamed_too() -> None:
+    """A withdrawal leaves the version DEVELOPER_REJECTED — still the one
+    editable draft, so it is retargeted rather than duplicated (the 3.2.2 →
+    3.3.1 submit hit a 409 here)."""
+    print("\nwithdrawn (developer-rejected) draft")
+    stub = StubAPI(routes={
+        "filter%5BversionString%5D": {"data": []},
+        "appStoreVersions": {"data": [
+            {"id": "DRAFT", "attributes": {
+                "versionString": "3.2.2",
+                "appVersionState": "DEVELOPER_REJECTED"}}]},
+    })
+    original, asc.call = asc.call, stub
+    out = io.StringIO()
+    try:
+        with redirect_stdout(out):
+            asc.find_or_create_version("tok", "APPID", "3.3.1", True)
+    finally:
+        asc.call = original
+    check("/appStoreVersions/DRAFT" in stub.paths("PATCH"), "renames the withdrawn draft")
+    check("/appStoreVersions" not in stub.paths("POST"), "does not POST a second version")
+    body = stub.body_for("PATCH", "/appStoreVersions/DRAFT") or {}
+    check(
+        body.get("data", {}).get("attributes", {}).get("versionString") == "3.3.1",
+        "renames it to the requested version",
+    )
+
+
 def test_submitted_version_is_never_renamed() -> None:
     """A version in review or live must never be renamed out from under it."""
     print("\nnon-editable version present")
@@ -409,6 +437,7 @@ def main() -> None:
         test_submit_blockers_are_written,
         test_manual_steps_always_print,
         test_editable_draft_is_renamed_not_duplicated,
+        test_withdrawn_draft_is_renamed_too,
         test_submitted_version_is_never_renamed,
         test_limits_are_enforced_before_any_call,
     ]:
