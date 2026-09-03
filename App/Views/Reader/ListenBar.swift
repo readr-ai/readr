@@ -159,8 +159,8 @@ struct ListenBar: View {
 
     /// The first Listen's one-time download, with the download library's
     /// progress while it reports one and an indeterminate spinner for the
-    /// rest (the G2P assets, the load, the warm-up). No Apple voice reads
-    /// meanwhile; narration starts the moment the model is in.
+    /// rest (the pronunciation assets and weight load). No Apple voice reads
+    /// meanwhile; narration starts the moment the weights are in.
     private var preparingLine: some View {
         HStack(spacing: 8) {
             if let progress = narration.readrVoiceDownloadProgress {

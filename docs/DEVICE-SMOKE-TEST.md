@@ -201,6 +201,14 @@ with the results.
 - [ ] **Thirty minutes continuous, foreground.** Leave it reading. No quit,
       no stall, no sentence heard twice, no Apple voice at any point. Watch
       the read-along line keep pace with the audio.
+- [ ] **Mandatory lock-race test — 20 times.** While foreground prefetch is
+      actively growing the "ready" figure, lock the phone, unlock it, and
+      repeat for 20 total locks. MLX cannot cancel the one Metal graph already
+      submitted, so diagnostics warning-log each lock that catches one with
+      its elapsed milliseconds. Record the warning count and elapsed values.
+      **Any crash means this build must ship with CPU-only prefetch:** set the
+      `readrVoice.prefetchOnCPU` UserDefaults key to `true` (the engine's
+      `.cpuAlways` policy) and repeat the test before release.
 - [ ] **Memory.** In Xcode's Debug navigator, the Memory gauge during that
       half hour: note the peak. It must stay **under 1GB** and must not climb
       sentence over sentence (a rising line is the MLX cache leak the 64MB

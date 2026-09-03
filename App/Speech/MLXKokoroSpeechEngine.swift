@@ -62,7 +62,14 @@ import ReadrKit
 /// Nothing here touches MLX before the first load — `init` observes four
 /// notifications and reads a directory listing — so a launch, and the UI
 /// tests' `-uiTestSilentNarration` stub, never load the runtime.
-final class MLXKokoroSpeechEngine: NSObject, ReadrVoiceEngine, SpeechPrefetching, SpeechRateAdjusting {
+///
+/// MLX cannot cancel a Metal graph already submitted. The foreground pump
+/// therefore admits exactly one GPU sentence at a time and never queues a
+/// second. A lock can still land during that one graph; every such residual
+/// exposure is warning-logged with its elapsed time for the device smoke test.
+final class MLXKokoroSpeechEngine:
+    NSObject, ReadrVoiceEngine, SpeechPrefetching, SpeechRateAdjusting
+{
     weak var delegate: (any SpeechEngineDelegate)?
 
     /// Kokoro-82M weights (~330MB) and voice packs (~60MB), Apache-2.0.
@@ -97,13 +104,19 @@ final class MLXKokoroSpeechEngine: NSObject, ReadrVoiceEngine, SpeechPrefetching
     /// ceiling, stays at its default of 1.5× the recommended working set.)
     static let gpuCacheLimit = 64 * 1024 * 1024
 
-    /// Spoken once on each device right after the load and thrown away:
-    /// `KokoroModel.fromModelDirectory` re-runs the G2P's `prepare()`, the
-    /// Misaki lexicons and the BART fallback are built lazily on the first
-    /// `process`, and each device compiles the model's kernels on first
-    /// use. Paying for all of that here means the first real sentence — and
-    /// the first backgrounded one — carries none of it.
+    /// Used only for the lazy CPU warm-up after real playback has begun. The
+    /// first real GPU sentence is deliberately its own warm-up.
     static let warmUpText = "Ready."
+
+    enum PrefetchDevicePolicy: Sendable, Equatable {
+        case gpuWhileActive
+        case cpuAlways
+
+        static func configured(defaults: UserDefaults = .standard) -> Self {
+            defaults.bool(forKey: "readrVoice.prefetchOnCPU")
+                ? .cpuAlways : .gpuWhileActive
+        }
+    }
 
     /// How long a `willResignActive` counts as "about to be backgrounded".
     /// The lock sends `willResignActive` and then `didEnterBackground`
@@ -168,9 +181,8 @@ final class MLXKokoroSpeechEngine: NSObject, ReadrVoiceEngine, SpeechPrefetching
     var isReady: Bool { readiness == .ready }
 
     /// Byte-weighted fraction of the weights download, from the hub client;
-    /// nil before it starts, once it ends (the G2P assets, the load and the
-    /// warm-up that follow are short and indeterminate), and outside
-    /// `.downloading`.
+    /// nil before it starts, once it ends (the cached G2P check and weight
+    /// load that follow are short and indeterminate), and outside `.downloading`.
     private(set) var downloadProgress: Double? {
         didSet {
             guard downloadProgress != oldValue else { return }
@@ -207,6 +219,8 @@ final class MLXKokoroSpeechEngine: NSObject, ReadrVoiceEngine, SpeechPrefetching
 
     private let synthesizer = Synthesizer()
     private let cache = ReadrVoiceAudioCache.shared
+    private let gpuWork = GPUWorkTracker()
+    private let prefetchDevicePolicy: PrefetchDevicePolicy
     private var initializeTask: Task<Void, Error>?
     /// Playback, shared with the CoreML engine.
     private let audio = SentenceAudioPlayer()
@@ -219,18 +233,31 @@ final class MLXKokoroSpeechEngine: NSObject, ReadrVoiceEngine, SpeechPrefetching
     /// of a long list is never hashed.
     private var keys: [UUID: ReadrVoiceAudioCache.Key] = [:]
     private var pump: Task<Void, Never>?
+    /// Exclusive end of the bounded prefix and the next index never attempted.
+    private var windowEnd = 0
+    private var synthesizedFrontier = 0
+    private var protectedWindowKeys: Set<ReadrVoiceAudioCache.Key> = []
     /// The background refill's hysteresis: on below one threshold, off at
     /// the other.
     private var refilling = false
     /// The synthesis the actor is on (or about to be), so a `speak` of that
     /// very sentence awaits it rather than queueing a second one.
-    private var inFlight: (key: ReadrVoiceAudioCache.Key, task: Task<Synthesis, Error>)?
+    private var inFlight: (
+        key: ReadrVoiceAudioCache.Key,
+        purpose: SynthesisPurpose,
+        task: Task<Synthesis, Error>
+    )?
+    /// Kept separately because a playback task can supersede `inFlight`
+    /// while this prefetch is still queued at the actor.
+    private var prefetchTask: Task<Synthesis, Error>?
     /// Sentences waiting to be spoken NOW — while any, the pump does not
     /// start another prefetch.
     private var speakWaiting = 0
     /// Sentences this session could not synthesize; the pump skips them
     /// rather than retrying every pass.
     private var unsynthesizable: Set<ReadrVoiceAudioCache.Key> = []
+    private var hasStartedPlayback = false
+    private var cpuWarmUpTask: Task<Void, Never>?
 
     // MARK: - Measurement
 
@@ -242,13 +269,18 @@ final class MLXKokoroSpeechEngine: NSObject, ReadrVoiceEngine, SpeechPrefetching
     private var sentenceCount = 0
     private var lastDevice: DeviceType?
 
-    override init() {
+    override convenience init() {
+        self.init(prefetchDevicePolicy: .configured())
+    }
+
+    init(prefetchDevicePolicy: PrefetchDevicePolicy) {
         // Main-thread-confined, like every engine; the model that builds the
         // router is @MainActor, which is what makes this assumption safe.
         let backgrounded = MainActor.assumeIsolated {
             UIApplication.shared.applicationState == .background
         }
         foreground = ForegroundGate(backgrounded: backgrounded)
+        self.prefetchDevicePolicy = prefetchDevicePolicy
         super.init()
         audio.onFinish = { [weak self] id in
             guard let self else { return }
@@ -263,6 +295,10 @@ final class MLXKokoroSpeechEngine: NSObject, ReadrVoiceEngine, SpeechPrefetching
         }
         audio.onStart = { [weak self] id in
             guard let self else { return }
+            MainActor.assumeIsolated {
+                self.hasStartedPlayback = true
+                self.scheduleCPUWarmUpIfPossible()
+            }
             self.delegate?.speechEngine(self, didBeginSpeaking: id)
         }
         let center = NotificationCenter.default
@@ -292,6 +328,7 @@ final class MLXKokoroSpeechEngine: NSObject, ReadrVoiceEngine, SpeechPrefetching
         }
         resignGrace?.cancel()
         pump?.cancel()
+        cpuWarmUpTask?.cancel()
         // A download still in flight for an engine nobody owns must not go
         // on to load the weights onto the GPU: cancel it, and wake any wait
         // for the foreground with a cancellation so the task ends there.
@@ -303,6 +340,14 @@ final class MLXKokoroSpeechEngine: NSObject, ReadrVoiceEngine, SpeechPrefetching
         resignGrace?.cancel()
         resignGrace = nil
         foreground.update(backgrounded: true, resigning: false)
+        if let elapsed = gpuWork.elapsedIfInFlight {
+            DiagnosticsLog.shared.record(
+                .warning,
+                .reader,
+                "Readr Voice (MLX) GPU synthesis was in flight at background entry: "
+                    + "\(Int(elapsed * 1000))ms elapsed"
+            )
+        }
         // The refill decision changes with the device.
         kickPump()
     }
@@ -358,7 +403,8 @@ final class MLXKokoroSpeechEngine: NSObject, ReadrVoiceEngine, SpeechPrefetching
             DiagnosticsLog.shared.record(
                 .info, .reader,
                 "Readr Voice (MLX) holding for the foreground: nothing buffered for the next "
-                    + "sentence, cpu rtf \(cpuRealtimeFactor.map { String(format: "%.2f", $0) } ?? "n/a")"
+                    + "sentence, cpu rtf "
+                    + (cpuRealtimeFactor.map { String(format: "%.2f", $0) } ?? "n/a")
             )
             delegate?.speechEngine(self, didSuspend: request.id, reason: .needsForeground)
             return
@@ -392,6 +438,21 @@ final class MLXKokoroSpeechEngine: NSObject, ReadrVoiceEngine, SpeechPrefetching
 
     func stop() {
         audio.stop()
+        pump?.cancel()
+        pump = nil
+        lookahead = []
+        keys = [:]
+        protectedWindowKeys = []
+        synthesizedFrontier = 0
+        windowEnd = 0
+        refilling = false
+        if inFlight?.purpose == .prefetch {
+            inFlight?.task.cancel()
+        }
+        prefetchTask?.cancel()
+        prefetchTask = nil
+        cpuWarmUpTask?.cancel()
+        cpuWarmUpTask = nil
     }
 
     /// Start the download and (in the foreground) the GPU load without
@@ -415,6 +476,7 @@ final class MLXKokoroSpeechEngine: NSObject, ReadrVoiceEngine, SpeechPrefetching
     // MARK: - SpeechPrefetching
 
     func prefetch(_ requests: [SpeechRequest]) {
+        let completed = completedKeyCounts()
         lookahead = requests
         let listed = Set(requests.map(\.id))
         keys = keys.filter { listed.contains($0.key) }
@@ -422,7 +484,11 @@ final class MLXKokoroSpeechEngine: NSObject, ReadrVoiceEngine, SpeechPrefetching
             pump?.cancel()
             pump = nil
             refilling = false
+            protectedWindowKeys = []
+            synthesizedFrontier = 0
+            windowEnd = 0
         } else {
+            configureWindow(retaining: completed)
             kickPump()
         }
     }
@@ -431,9 +497,61 @@ final class MLXKokoroSpeechEngine: NSObject, ReadrVoiceEngine, SpeechPrefetching
         var total: TimeInterval = 0
         for request in requests {
             guard let entry = cache.entry(for: key(for: request)) else { break }
-            total += entry.seconds
+            total += SpeechPrefetchWindow.playbackSeconds(
+                audioSeconds: entry.seconds,
+                rate: request.rate
+            )
         }
         return total
+    }
+
+    private func completedKeyCounts() -> [ReadrVoiceAudioCache.Key: Int] {
+        var counts: [ReadrVoiceAudioCache.Key: Int] = [:]
+        for request in lookahead.prefix(synthesizedFrontier) {
+            counts[key(for: request), default: 0] += 1
+        }
+        return counts
+    }
+
+    private func configureWindow(retaining completed: [ReadrVoiceAudioCache.Key: Int]) {
+        var remaining = completed
+        synthesizedFrontier = 0
+        for request in lookahead {
+            let cacheKey = key(for: request)
+            guard remaining[cacheKey, default: 0] > 0 else { break }
+            remaining[cacheKey, default: 0] -= 1
+            synthesizedFrontier += 1
+        }
+
+        let estimated = lookahead.map {
+            Double($0.text.count) / NarrationController.charactersPerSecond
+        }
+        let provisionalEnd = SpeechPrefetchWindow.endIndex(
+            forAudioSeconds: estimated,
+            capacitySeconds: ReadrVoiceAudioCache.capacitySeconds
+        )
+        let provisionalKeys = Set(lookahead.prefix(provisionalEnd).map { key(for: $0) })
+        let firstSentence = estimated.first ?? 0
+        cache.trimToCapacity(
+            protecting: provisionalKeys,
+            reserving: firstSentence
+        )
+        let secondsBehind = cache.secondsOutside(provisionalKeys)
+        windowEnd = SpeechPrefetchWindow.endIndex(
+            forAudioSeconds: estimated,
+            capacitySeconds: ReadrVoiceAudioCache.capacitySeconds,
+            secondsBehindCursor: secondsBehind
+        )
+        protectedWindowKeys = Set(lookahead.prefix(windowEnd).map { key(for: $0) })
+        advanceFrontierPastCachedEntries()
+    }
+
+    private func advanceFrontierPastCachedEntries() {
+        while synthesizedFrontier < windowEnd {
+            let request = lookahead[synthesizedFrontier]
+            guard cache.entry(for: key(for: request)) != nil else { return }
+            synthesizedFrontier += 1
+        }
     }
 
     private func key(for request: SpeechRequest) -> ReadrVoiceAudioCache.Key {
@@ -443,7 +561,10 @@ final class MLXKokoroSpeechEngine: NSObject, ReadrVoiceEngine, SpeechPrefetching
         return key
     }
 
-    private static func playable(_ entry: ReadrVoiceAudioCache.Entry, rate: Double) -> PlayableAudio {
+    private static func playable(
+        _ entry: ReadrVoiceAudioCache.Entry,
+        rate: Double
+    ) -> PlayableAudio {
         entry.seconds > 0 ? .file(entry.url, rate: Float(rate)) : .nothing
     }
 
@@ -491,11 +612,13 @@ final class MLXKokoroSpeechEngine: NSObject, ReadrVoiceEngine, SpeechPrefetching
             else { continue }
             _ = next
             do {
-                _ = try await synthesizeAndStore(ready)
+                _ = try await synthesizeAndStore(ready, purpose: .prefetch)
+                advanceFrontier(after: ready)
             } catch is CancellationError {
                 return
             } catch {
                 unsynthesizable.insert(key(for: ready))
+                advanceFrontier(after: ready)
                 DiagnosticsLog.shared.record(
                     .warning, .reader, "Readr Voice (MLX) could not synthesize ahead", error: error
                 )
@@ -507,28 +630,37 @@ final class MLXKokoroSpeechEngine: NSObject, ReadrVoiceEngine, SpeechPrefetching
     private func shouldRefill() -> Bool {
         guard !lookahead.isEmpty else { return false }
         let ahead = secondsBuffered(ahead: lookahead)
-        // Past the cache's capacity, more audio ahead only evicts the head.
-        guard ahead < ReadrVoiceAudioCache.capacitySeconds else { return false }
-        guard !isForeground else { return true }
-        if refilling {
-            if ahead >= Self.backgroundRefillStopsAt {
-                refilling = false
-                return false
-            }
-            return true
-        }
-        if ahead < Self.backgroundRefillStartsBelow {
-            refilling = true
-            return true
-        }
-        return false
+        let refill = SpeechPrefetchWindow.shouldRefill(
+            frontier: synthesizedFrontier,
+            windowEnd: windowEnd,
+            bufferedSeconds: ahead,
+            isForeground: isForeground,
+            wasRefilling: refilling,
+            startsBelow: Self.backgroundRefillStartsBelow,
+            stopsAt: Self.backgroundRefillStopsAt
+        )
+        refilling = refill && !isForeground
+        return refill
     }
 
     private func nextToSynthesize() -> SpeechRequest? {
-        lookahead.first { request in
-            let cacheKey = key(for: request)
-            return cache.entry(for: cacheKey) == nil && !unsynthesizable.contains(cacheKey)
+        advanceFrontierPastCachedEntries()
+        while synthesizedFrontier < windowEnd {
+            let request = lookahead[synthesizedFrontier]
+            if !unsynthesizable.contains(key(for: request)) {
+                return request
+            }
+            synthesizedFrontier += 1
         }
+        return nil
+    }
+
+    private func advanceFrontier(after request: SpeechRequest) {
+        guard synthesizedFrontier < windowEnd,
+              key(for: lookahead[synthesizedFrontier]) == key(for: request)
+        else { return }
+        synthesizedFrontier += 1
+        advanceFrontierPastCachedEntries()
     }
 
     // MARK: - Synthesis
@@ -555,51 +687,57 @@ final class MLXKokoroSpeechEngine: NSObject, ReadrVoiceEngine, SpeechPrefetching
         if let inFlight, inFlight.key == key {
             return try await inFlight.task.value
         }
-        return try await synthesizeAndStore(request)
+        return try await synthesizeAndStore(request, purpose: .playback)
     }
 
-    /// One synthesis on the actor, against a deadline, filed into the
-    /// buffer, measured. The device is the actor's choice at the moment it
-    /// starts; the deadline is this thread's guess at it.
+    enum SynthesisPurpose: Sendable, Equatable {
+        case playback
+        case prefetch
+    }
+
+    /// One synthesis admitted by the actor, filed into the buffer and measured.
+    /// The actor chooses the device and matching deadline only after higher-
+    /// priority playback requests have reached its queue.
     @MainActor
-    private func synthesizeAndStore(_ request: SpeechRequest) async throws -> Synthesis {
+    private func synthesizeAndStore(
+        _ request: SpeechRequest,
+        purpose: SynthesisPurpose
+    ) async throws -> Synthesis {
         let cacheKey = key(for: request)
         let synthesizer = self.synthesizer
         let cache = self.cache
         let foreground = self.foreground
+        let gpuWork = self.gpuWork
+        let policy = prefetchDevicePolicy
+        let protectedKeys = protectedWindowKeys
         let voice = KokoroSpeechEngine.kokoroVoice(from: request.voiceID)
         let text = request.text
         let task = Task<Synthesis, Error> {
             try await synthesizer.synthesize(
                 text: text, voice: voice, key: cacheKey, into: cache,
-                isForeground: { foreground.isForeground }
+                protecting: protectedKeys,
+                purpose: purpose,
+                prefetchDevicePolicy: policy,
+                isForeground: { foreground.isForeground },
+                gpuWork: gpuWork
             )
         }
-        inFlight = (cacheKey, task)
+        inFlight = (cacheKey, purpose, task)
+        if purpose == .prefetch {
+            prefetchTask = task
+        }
         defer {
             if inFlight?.key == cacheKey { inFlight = nil }
+            if prefetchTask == task { prefetchTask = nil }
         }
-        let timeout = foreground.isForeground ? Self.gpuSynthesisTimeout : Self.cpuSynthesisTimeout
         do {
-            // The first of the synthesis or the deadline wins; a synthesis
-            // that runs past the deadline keeps running (MLX has no mid-graph
-            // cancellation) but nobody is waiting for it any more, and its
-            // late result is dropped inside the helper.
-            let synthesis = try await raceAgainstDeadline(seconds: timeout) {
-                try await task.value
-            }
+            let synthesis = try await task.value
             record(synthesis)
             return synthesis
-        } catch let deadline as DeadlineExceeded {
-            // The actor is wedged behind a call that will not return, or not
-            // soon. Mark the engine sick: `.failed` takes it out of the
-            // router's choice, so no following sentence queues behind the
-            // wedged call. The bar's Retry is the way back — it runs
-            // `startInitializing` afresh, which returns at once if the
-            // model is already loaded.
+        } catch MLXKokoroError.timedOut(let seconds) {
             readiness = .failed
             initializeTask = nil
-            throw MLXKokoroError.timedOut(deadline.seconds)
+            throw MLXKokoroError.timedOut(seconds)
         }
     }
 
@@ -674,20 +812,17 @@ final class MLXKokoroSpeechEngine: NSObject, ReadrVoiceEngine, SpeechPrefetching
             // "Preparing Readr Voice" is still true of what the reader will
             // see, and narration starts the moment the load lands.
             try await foreground.waitUntilForeground()
-            try await synthesizer.load(
-                isForeground: { foreground.isForeground }, warmUpVoice: voice
-            )
+            try await synthesizer.load(isForeground: { foreground.isForeground })
         }
         initializeTask = task
         Task { @MainActor [weak self] in
             do {
                 try await task.value
                 guard let self else { return }
+                // Weight evaluation is complete. No throwaway inference holds
+                // readiness hostage; the first real sentence warms the GPU.
                 self.readiness = .ready
-                // The CPU's kernels and lexicons, compiled now rather than
-                // on the first locked-screen sentence. Queued on the actor
-                // behind whatever the reader is waiting to hear.
-                Task { await synthesizer.warmUpCPU(voice: voice) }
+                self.scheduleCPUWarmUpIfPossible()
                 self.kickPump()
             } catch {
                 guard let self, self.initializeTask == task else { return }
@@ -705,6 +840,25 @@ final class MLXKokoroSpeechEngine: NSObject, ReadrVoiceEngine, SpeechPrefetching
         return task
     }
 
+    /// CPU compilation is best-effort and begins only after real audio has
+    /// started. Actor admission keeps a waiting playback request ahead of it.
+    @MainActor
+    private func scheduleCPUWarmUpIfPossible() {
+        guard hasStartedPlayback, readiness == .ready, cpuWarmUpTask == nil else { return }
+        let synthesizer = self.synthesizer
+        let gpuWork = self.gpuWork
+        let voice = KokoroSpeechEngine.kokoroVoice(from: nil)
+        let task = Task {
+            await synthesizer.warmUpCPU(voice: voice, gpuWork: gpuWork)
+        }
+        cpuWarmUpTask = task
+        Task { @MainActor [weak self] in
+            await task.value
+            guard let self, self.cpuWarmUpTask == task else { return }
+            self.cpuWarmUpTask = nil
+        }
+    }
+
     /// One synthesis, as the actor reports it.
     struct Synthesis: Sendable {
         let entry: ReadrVoiceAudioCache.Entry
@@ -720,9 +874,12 @@ final class MLXKokoroSpeechEngine: NSObject, ReadrVoiceEngine, SpeechPrefetching
     /// Owns the MLX model. An actor so the download, the load and every
     /// synthesis run off the main thread and one at a time.
     private actor Synthesizer {
-        private let textProcessor = MisakiTextProcessor()
+        private let textProcessor = PreparingOnceTextProcessor()
         private var modelDirectory: URL?
         private var model: KokoroModel?
+        private var graphIsRunning = false
+        private var playbackWaiters: [CheckedContinuation<Void, Never>] = []
+        private var backgroundWaiters: [CheckedContinuation<Void, Never>] = []
 
         /// Weights, voice packs and G2P assets onto disk. No MLX involved.
         ///
@@ -753,7 +910,34 @@ final class MLXKokoroSpeechEngine: NSObject, ReadrVoiceEngine, SpeechPrefetching
                 }
             }
             modelDirectory = directory
-            try await textProcessor.prepare()
+            // `fromModelDirectory` must call the processor's prepare hook to
+            // install its private resource URL. Avoid doing it once here and
+            // again there when all four files are already in the package's
+            // working cache. The idempotent wrapper also makes the second hook
+            // a no-op after a first-use download.
+            if !Self.g2pAssetsAreCached() {
+                try await textProcessor.prepare()
+            }
+        }
+
+        private static let g2pFiles = [
+            "us_bart.safetensors",
+            "us_bart_config.json",
+            "us_gold.json",
+            "us_silver.json",
+        ]
+
+        private static var g2pDirectory: URL {
+            HubCache.default.cacheDirectory
+                .appendingPathComponent("mlx-audio", isDirectory: true)
+                .appendingPathComponent("beshkenadze_kitten-tts-g2p", isDirectory: true)
+        }
+
+        private static func g2pAssetsAreCached() -> Bool {
+            g2pFiles.allSatisfy { name in
+                let url = g2pDirectory.appendingPathComponent(name)
+                return ((try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0) > 0
+            }
         }
 
         /// The package's resolve-or-download, with the hub client's
@@ -812,11 +996,9 @@ final class MLXKokoroSpeechEngine: NSObject, ReadrVoiceEngine, SpeechPrefetching
             try? FileManager.default.removeItem(at: hubDirectory)
         }
 
-        /// Weights onto the GPU, then one warm-up sentence. Foreground only —
-        /// see the type comment. `isForeground` is asked again here, on the
-        /// actor, immediately before the first Metal call, which narrows the
-        /// check-then-act window to the hop itself.
-        func load(isForeground: @Sendable () -> Bool, warmUpVoice: String) async throws {
+        /// Load and evaluate the weights. No throwaway inference runs here;
+        /// readiness follows this return and the first real sentence warms GPU.
+        func load(isForeground: @Sendable () -> Bool) async throws {
             guard model == nil else { return }
             guard let modelDirectory else { throw MLXKokoroError.notDownloaded }
             guard isForeground() else { throw MLXKokoroError.backgrounded }
@@ -826,24 +1008,24 @@ final class MLXKokoroSpeechEngine: NSObject, ReadrVoiceEngine, SpeechPrefetching
                 modelDirectory, textProcessor: textProcessor
             )
             model = loaded
-            // The warm-up is GPU work too. If the app went to the background
-            // during the load, skip it — the first real sentence pays the
-            // lexicon parse and kernel compile instead, which is only slower.
-            guard isForeground() else { return }
-            _ = try await samples(for: MLXKokoroSpeechEngine.warmUpText, voice: warmUpVoice, model: loaded)
         }
 
         /// The same warm-up on the CPU device, so the first locked-screen
         /// sentence is not a cold compile. Safe anywhere; failures are
         /// logged and otherwise ignored — the CPU path is best-effort.
-        func warmUpCPU(voice: String) async {
+        func warmUpCPU(voice: String, gpuWork: GPUWorkTracker) async {
             guard let model else { return }
             do {
-                let _: [Float] = try await Device.withDefaultDevice(Device.cpu) {
-                    try await self.samples(
-                        for: MLXKokoroSpeechEngine.warmUpText, voice: voice, model: model
-                    )
-                }
+                _ = try await performGraph(
+                    text: MLXKokoroSpeechEngine.warmUpText,
+                    voice: voice,
+                    model: model,
+                    purpose: .prefetch,
+                    fixedDevice: .cpu,
+                    prefetchDevicePolicy: .cpuAlways,
+                    isForeground: { false },
+                    gpuWork: gpuWork
+                )
             } catch {
                 DiagnosticsLog.shared.record(
                     .warning, .reader, "Readr Voice (MLX) CPU warm-up failed", error: error
@@ -857,19 +1039,136 @@ final class MLXKokoroSpeechEngine: NSObject, ReadrVoiceEngine, SpeechPrefetching
         /// player's business.
         func synthesize(
             text: String, voice: String, key: ReadrVoiceAudioCache.Key,
-            into cache: ReadrVoiceAudioCache, isForeground: @Sendable () -> Bool
+            into cache: ReadrVoiceAudioCache,
+            protecting protectedKeys: Set<ReadrVoiceAudioCache.Key>,
+            purpose: SynthesisPurpose,
+            prefetchDevicePolicy: PrefetchDevicePolicy,
+            isForeground: @Sendable () -> Bool,
+            gpuWork: GPUWorkTracker
         ) async throws -> Synthesis {
             guard let model else { throw MLXKokoroError.notLoaded }
             model.speed = 1
-            let device: DeviceType = isForeground() ? .gpu : .cpu
+            let result = try await performGraph(
+                text: text,
+                voice: voice,
+                model: model,
+                purpose: purpose,
+                fixedDevice: nil,
+                prefetchDevicePolicy: prefetchDevicePolicy,
+                isForeground: isForeground,
+                gpuWork: gpuWork
+            )
+            let entry = try cache.store(
+                samples: result.samples,
+                sampleRate: model.sampleRate,
+                for: key,
+                protecting: protectedKeys
+            )
+            return Synthesis(entry: entry, device: result.device, seconds: result.elapsed)
+        }
+
+        private struct GraphResult: Sendable {
+            let samples: [Float]
+            let device: DeviceType
+            let elapsed: TimeInterval
+        }
+
+        /// Admit one graph at a time. Playback waiters are resumed before any
+        /// queued prefetch or warm-up. Device selection and its matching clock
+        /// both happen only after this admission point.
+        private func performGraph(
+            text: String,
+            voice: String,
+            model: KokoroModel,
+            purpose: SynthesisPurpose,
+            fixedDevice: DeviceType?,
+            prefetchDevicePolicy: PrefetchDevicePolicy,
+            isForeground: @Sendable () -> Bool,
+            gpuWork: GPUWorkTracker
+        ) async throws -> GraphResult {
+            await acquireGraph(for: purpose)
+            if Task.isCancelled {
+                releaseGraph()
+                throw CancellationError()
+            }
+
+            let device: DeviceType
+            if let fixedDevice {
+                device = fixedDevice
+            } else if purpose == .prefetch, prefetchDevicePolicy == .cpuAlways {
+                device = .cpu
+            } else {
+                device = isForeground() ? .gpu : .cpu
+            }
+            let timeout = device == .gpu
+                ? MLXKokoroSpeechEngine.gpuSynthesisTimeout
+                : MLXKokoroSpeechEngine.cpuSynthesisTimeout
             let mlxDevice: Device = device == .cpu ? Device.cpu : Device.gpu
             let started = Date()
-            let produced: [Float] = try await Device.withDefaultDevice(mlxDevice) {
-                try await self.samples(for: text, voice: voice, model: model)
+            if device == .gpu {
+                gpuWork.begin(at: started)
             }
-            let elapsed = Date().timeIntervalSince(started)
-            let entry = try cache.store(samples: produced, sampleRate: model.sampleRate, for: key)
-            return Synthesis(entry: entry, device: device, seconds: elapsed)
+            let work = Task<[Float], Error> {
+                defer {
+                    if device == .gpu {
+                        gpuWork.end()
+                    }
+                }
+                return try await Device.withDefaultDevice(mlxDevice) {
+                    try await self.samples(for: text, voice: voice, model: model)
+                }
+            }
+
+            do {
+                let produced = try await raceAgainstDeadline(seconds: timeout) {
+                    try await work.value
+                }
+                let elapsed = Date().timeIntervalSince(started)
+                releaseGraph()
+                return GraphResult(samples: produced, device: device, elapsed: elapsed)
+            } catch let deadline as DeadlineExceeded {
+                // MLX cannot cancel a submitted graph. Keep the admission lock
+                // until its late result lands, while the caller fails on time.
+                Task {
+                    _ = try? await work.value
+                    self.releaseGraphAfterLateResult()
+                }
+                throw MLXKokoroError.timedOut(deadline.seconds)
+            } catch {
+                releaseGraph()
+                throw error
+            }
+        }
+
+        private func acquireGraph(for purpose: SynthesisPurpose) async {
+            if !graphIsRunning {
+                graphIsRunning = true
+                return
+            }
+            await withCheckedContinuation { continuation in
+                if purpose == .playback {
+                    playbackWaiters.append(continuation)
+                } else {
+                    backgroundWaiters.append(continuation)
+                }
+            }
+        }
+
+        private func releaseGraphAfterLateResult() {
+            releaseGraph()
+        }
+
+        private func releaseGraph() {
+            let next: CheckedContinuation<Void, Never>?
+            if !playbackWaiters.isEmpty {
+                next = playbackWaiters.removeFirst()
+            } else if !backgroundWaiters.isEmpty {
+                next = backgroundWaiters.removeFirst()
+            } else {
+                graphIsRunning = false
+                return
+            }
+            next?.resume()
         }
 
         /// The segmenter caps sentences at 320 characters, which keeps nearly
@@ -895,6 +1194,43 @@ final class MLXKokoroSpeechEngine: NSObject, ReadrVoiceEngine, SpeechPrefetching
                 return joined
             }
         }
+    }
+}
+
+/// The package invokes `prepare()` again from `fromModelDirectory`. Keep the
+/// required first invocation, but collapse every later hook in this process.
+private final class PreparingOnceTextProcessor: TextProcessor, @unchecked Sendable {
+    private let processor = MisakiTextProcessor()
+    private let lock = NSLock()
+    private var isPrepared = false
+
+    func prepare() async throws {
+        if lock.withLock({ isPrepared }) { return }
+        try await processor.prepare()
+        lock.withLock { isPrepared = true }
+    }
+
+    func process(text: String, language: String?) throws -> String {
+        try processor.process(text: text, language: language)
+    }
+}
+
+/// Thread-safe observation of the single submitted GPU graph. Lifecycle
+/// notifications read this without crossing the synthesizer actor.
+private final class GPUWorkTracker: @unchecked Sendable {
+    private let lock = NSLock()
+    private var startedAt: Date?
+
+    func begin(at date: Date) {
+        lock.withLock { startedAt = date }
+    }
+
+    func end() {
+        lock.withLock { startedAt = nil }
+    }
+
+    var elapsedIfInFlight: TimeInterval? {
+        lock.withLock { startedAt.map { Date().timeIntervalSince($0) } }
     }
 }
 

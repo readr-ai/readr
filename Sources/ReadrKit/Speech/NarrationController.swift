@@ -355,6 +355,8 @@ public final class NarrationController {
                 // back where it was so the skip is simply a no-op.
                 if wasSpeaking, let segment = currentSegment {
                     speak(segment, from: spokenOffset)
+                } else {
+                    issueLookahead()
                 }
             }
             return
@@ -373,6 +375,7 @@ public final class NarrationController {
                     characterOffset: segment.range.lowerBound
                 )
             )
+            issueLookahead()
         }
     }
 
@@ -560,10 +563,12 @@ public final class NarrationController {
             speak(segment, from: spokenOffset, reissuingLookahead: !speedOnly)
         case .paused:
             // Re-speaking now would start audio the reader paused; the new
-            // settings are picked up by `play()`.
+            // settings are picked up by `play()`. `stop()` invalidates the
+            // engine's old pump, so hand it a fresh list for the new settings.
             engine.stop()
             activeRequestID = nil
             mustRespeakToResume = true
+            issueLookahead()
         case .idle, .finished:
             break
         }
@@ -667,7 +672,7 @@ extension NarrationController: SpeechEngineDelegate {
         guard requestID == activeRequestID else { return }
         activeRequestID = nil
         mustRespeakToResume = true
-        setStatus(.paused)
         holdReason = reason
+        setStatus(.paused)
     }
 }

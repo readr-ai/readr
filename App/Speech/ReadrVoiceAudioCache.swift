@@ -44,6 +44,7 @@ final class ReadrVoiceAudioCache: @unchecked Sendable {
 
     enum CacheError: Error {
         case cannotEncode
+        case bookWasRemoved
     }
 
     /// How much audio is kept, across every book.
@@ -51,18 +52,31 @@ final class ReadrVoiceAudioCache: @unchecked Sendable {
     static let bitRate = 64_000
     /// A request with no book id — none in practice; kept so the key is
     /// total rather than optional.
-    private static let unfiledBookID = UUID(uuidString: "00000000-0000-0000-0000-000000000000")!
+    private static let unfiledBookID = UUID(
+        uuidString: "00000000-0000-0000-0000-000000000000"
+    )!
 
     private let root: URL
+    private let capacity: TimeInterval
+    private let beforeCommit: (@Sendable () -> Void)?
     private let lock = NSLock()
     private var entries: [Key: Entry] = [:]
     private var totalSecondsStored: TimeInterval = 0
     private var indexLoaded = false
+    /// Incremented before each book removal. A write keeps the value it began
+    /// under and may commit only if deletion has not advanced it meanwhile.
+    private var deletionGenerations: [UUID: UInt64] = [:]
 
-    init(root: URL? = nil) {
+    init(
+        root: URL? = nil,
+        capacity: TimeInterval = ReadrVoiceAudioCache.capacitySeconds,
+        beforeCommit: (@Sendable () -> Void)? = nil
+    ) {
         self.root = root ?? FileManager.default
             .urls(for: .cachesDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("ReadrVoiceAudio", isDirectory: true)
+        self.capacity = capacity
+        self.beforeCommit = beforeCommit
     }
 
     // MARK: - Keys
@@ -105,39 +119,115 @@ final class ReadrVoiceAudioCache: @unchecked Sendable {
     /// the index would mistake for audio. Evicts the oldest files beyond
     /// capacity, never the one just stored. Safe from any thread.
     @discardableResult
-    func store(samples: [Float], sampleRate: Int, for key: Key) throws -> Entry {
+    func store(
+        samples: [Float],
+        sampleRate: Int,
+        for key: Key,
+        protecting protectedKeys: Set<Key> = []
+    ) throws -> Entry {
+        let generation = lock.withLock {
+            loadIndexLocked()
+            return deletionGenerations[key.bookID, default: 0]
+        }
         let seconds = samples.isEmpty ? 0 : Double(samples.count) / Double(sampleRate)
         let directory = directory(for: key)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let name = "\(key.textHash)_\(Int((seconds * 1000).rounded())).m4a"
         let final = directory.appendingPathComponent(name)
-        let part = directory.appendingPathComponent(".\(name).part")
-        try? FileManager.default.removeItem(at: part)
-        if samples.isEmpty {
-            FileManager.default.createFile(atPath: part.path, contents: Data())
-        } else {
-            try Self.encode(samples: samples, sampleRate: sampleRate, to: part)
-        }
-        try? FileManager.default.removeItem(at: final)
-        try FileManager.default.moveItem(at: part, to: final)
-        let entry = Entry(key: key, url: final, seconds: seconds, storedAt: Date())
-        lock.withLock {
-            loadIndexLocked()
-            if let old = entries[key] {
-                totalSecondsStored -= old.seconds
+        // Keep `.m4a` as the last extension: AVAudioFile uses it while
+        // selecting the container, even when complete encoder settings exist.
+        let part = directory.appendingPathComponent(".part.\(UUID().uuidString).\(name)")
+        do {
+            if samples.isEmpty {
+                guard FileManager.default.createFile(atPath: part.path, contents: Data()) else {
+                    throw CacheError.cannotEncode
+                }
+            } else {
+                try Self.encode(samples: samples, sampleRate: sampleRate, to: part)
             }
-            entries[key] = entry
-            totalSecondsStored += seconds
-            evictLocked(toSeconds: Self.capacitySeconds, keeping: key)
+        } catch {
+            try? FileManager.default.removeItem(at: part)
+            throw error
+        }
+        beforeCommit?()
+        let entry = Entry(key: key, url: final, seconds: seconds, storedAt: Date())
+        do {
+            try lock.withLock {
+                guard deletionGenerations[key.bookID, default: 0] == generation else {
+                    throw CacheError.bookWasRemoved
+                }
+                if FileManager.default.fileExists(atPath: final.path) {
+                    _ = try FileManager.default.replaceItemAt(
+                        final,
+                        withItemAt: part,
+                        backupItemName: nil,
+                        options: [.usingNewMetadataOnly]
+                    )
+                } else {
+                    try FileManager.default.moveItem(at: part, to: final)
+                }
+                if let old = entries[key], old.url != final {
+                    try? FileManager.default.removeItem(at: old.url)
+                }
+                if let old = entries[key] {
+                    totalSecondsStored -= old.seconds
+                }
+                entries[key] = entry
+                totalSecondsStored += seconds
+                evictLocked(toSeconds: capacity, protecting: protectedKeys.union([key]))
+            }
+        } catch {
+            try? FileManager.default.removeItem(at: part)
+            removeEmptyDirectories(afterRejectedWriteFor: key)
+            throw error
         }
         return entry
+    }
+
+    private func removeEmptyDirectories(afterRejectedWriteFor key: Key) {
+        lock.withLock {
+            let voiceDirectory = directory(for: key)
+            let bookDirectory = voiceDirectory.deletingLastPathComponent()
+            for candidate in [voiceDirectory, bookDirectory] {
+                let contents = try? FileManager.default.contentsOfDirectory(atPath: candidate.path)
+                if contents?.isEmpty == true {
+                    try? FileManager.default.removeItem(at: candidate)
+                }
+            }
+        }
+    }
+
+    /// Removes old audio first while preserving the bounded window ahead.
+    func trimToCapacity(
+        protecting protectedKeys: Set<Key>,
+        reserving seconds: TimeInterval = 0
+    ) {
+        lock.withLock {
+            loadIndexLocked()
+            evictLocked(
+                toSeconds: max(0, capacity - max(0, seconds)),
+                protecting: protectedKeys
+            )
+        }
+    }
+
+    /// Audio outside `protectedKeys`, used to bound a new lookahead window.
+    func secondsOutside(_ protectedKeys: Set<Key>) -> TimeInterval {
+        lock.withLock {
+            loadIndexLocked()
+            return entries.values.reduce(0) { total, entry in
+                total + (protectedKeys.contains(entry.key) ? 0 : entry.seconds)
+            }
+        }
     }
 
     /// A deleted book takes its audio with it.
     func removeBook(id: UUID) {
         lock.withLock {
             loadIndexLocked()
-            for (key, entry) in entries where key.bookID == id {
+            deletionGenerations[id, default: 0] &+= 1
+            let removed = entries.filter { $0.key.bookID == id }
+            for (key, entry) in removed {
                 entries[key] = nil
                 totalSecondsStored -= entry.seconds
             }
@@ -183,10 +273,11 @@ final class ReadrVoiceAudioCache: @unchecked Sendable {
         }
     }
 
-    private func evictLocked(toSeconds capacity: TimeInterval, keeping kept: Key?) {
+    private func evictLocked(toSeconds capacity: TimeInterval, protecting protected: Set<Key>) {
         guard totalSecondsStored > capacity else { return }
         let oldestFirst = entries.values.sorted { $0.storedAt < $1.storedAt }
-        for entry in oldestFirst where totalSecondsStored > capacity && entry.key != kept {
+        for entry in oldestFirst
+            where totalSecondsStored > capacity && !protected.contains(entry.key) {
             try? FileManager.default.removeItem(at: entry.url)
             entries[entry.key] = nil
             totalSecondsStored -= entry.seconds

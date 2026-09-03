@@ -151,6 +151,9 @@ public protocol SpeechEngine: AnyObject {
     /// Hold the current utterance where it is, resumable by `resume()`.
     func pause()
     func resume()
-    /// Stop and discard the current utterance. No `didFinish` follows.
+    /// Stop and discard the current utterance. No `didFinish` follows. An
+    /// engine that also conforms to `SpeechPrefetching` must cancel its pump
+    /// and discard the last prefetch list; one unavoidable synthesis already
+    /// in flight may finish, but it must not schedule more work from that list.
     func stop()
 }

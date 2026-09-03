@@ -1082,12 +1082,50 @@ extension NarrationControllerTests {
         XCTAssertEqual(engine.lastPrefetchTexts, ["Beta one.", "Beta two."])
     }
 
+    func testPausedSkipCancelsAndReissuesLookaheadFromTheNewCursor() {
+        let (controller, engine) = makeController()
+        controller.start(atChapter: 0)
+        controller.pause()
+        let issuedBeforeSkip = engine.prefetches.count
+        let stopsBeforeSkip = engine.stopCount
+
+        controller.skipToNextSentence()
+
+        XCTAssertEqual(controller.status, .paused)
+        XCTAssertEqual(engine.stopCount, stopsBeforeSkip + 1)
+        XCTAssertGreaterThan(engine.prefetches.count, issuedBeforeSkip)
+        XCTAssertTrue(engine.prefetchIsActive)
+        XCTAssertEqual(
+            engine.lastPrefetchTexts,
+            ["Alpha three.", "Beta one.", "Beta two."]
+        )
+    }
+
     func testTheLookaheadIsReissuedWithANewVoice() {
         let (controller, engine) = makeController()
         controller.start(atChapter: 0)
         controller.settings.voiceID = "com.apple.voice.other"
         XCTAssertEqual(engine.prefetches.last?.first?.voiceID, "com.apple.voice.other")
         XCTAssertEqual(engine.lastPrefetchTexts, ["Alpha two.", "Alpha three.", "Beta one.", "Beta two."])
+    }
+
+    func testPausedVoiceChangeCancelsAndReissuesLookaheadWithTheNewVoice() {
+        let (controller, engine) = makeController()
+        controller.start(atChapter: 0)
+        controller.pause()
+        let issuedBeforeChange = engine.prefetches.count
+        let stopsBeforeChange = engine.stopCount
+
+        controller.settings.voiceID = "com.apple.voice.other"
+
+        XCTAssertEqual(engine.stopCount, stopsBeforeChange + 1)
+        XCTAssertGreaterThan(engine.prefetches.count, issuedBeforeChange)
+        XCTAssertTrue(engine.prefetchIsActive)
+        XCTAssertEqual(engine.prefetches.last?.first?.voiceID, "com.apple.voice.other")
+        XCTAssertEqual(
+            engine.lastPrefetchTexts,
+            ["Alpha two.", "Alpha three.", "Beta one.", "Beta two."]
+        )
     }
 
     func testTheHorizonBoundsTheLookahead() {
@@ -1222,6 +1260,21 @@ extension NarrationControllerTests {
         XCTAssertEqual(controller.currentSegment?.text, "Alpha one.", "Held on the sentence")
         XCTAssertEqual(statuses, [.speaking, .paused])
         XCTAssertEqual(engine.spoken.count, 1, "Nothing else is spoken")
+    }
+
+    func testSuspensionObserverSeesTheHoldReasonDuringThePausedCallback() {
+        let (controller, engine) = makeController()
+        var reasonSeenWhilePausing: NarrationHoldReason?
+        controller.onStatusChange = { status in
+            if status == .paused {
+                reasonSeenWhilePausing = controller.holdReason
+            }
+        }
+        controller.start(atChapter: 0)
+
+        engine.suspend(.needsForeground)
+
+        XCTAssertEqual(reasonSeenWhilePausing, .needsForeground)
     }
 
     func testPlayAfterAHoldReSpeaksTheSentenceAndClearsTheReason() {

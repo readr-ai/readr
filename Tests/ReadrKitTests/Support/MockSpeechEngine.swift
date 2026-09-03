@@ -25,6 +25,8 @@ final class MockSpeechEngine: SpeechEngine, SpeechPrefetching, SpeechRateAdjusti
 
     /// Every lookahead list handed over, in order.
     private(set) var prefetches: [[SpeechRequest]] = []
+    /// Whether the latest lookahead is still eligible for background work.
+    private(set) var prefetchIsActive = false
     /// Seconds of audio the engine claims to hold, by sentence text.
     var buffered: [String: TimeInterval] = [:]
     /// Whether `adjustRate` succeeds; the rates it was asked for.
@@ -56,10 +58,12 @@ final class MockSpeechEngine: SpeechEngine, SpeechPrefetching, SpeechRateAdjusti
         stopCount += 1
         active = nil
         state = .idle
+        prefetchIsActive = false
     }
 
     func prefetch(_ requests: [SpeechRequest]) {
         prefetches.append(requests)
+        prefetchIsActive = !requests.isEmpty
     }
 
     func secondsBuffered(ahead requests: [SpeechRequest]) -> TimeInterval {
