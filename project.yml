@@ -57,11 +57,13 @@ packages:
     revision: d20cbd660424c9f202363306ef4ff4595a199356
   # Declared explicitly so the MLX runtime is pinned too (mlx-audio-swift asks
   # for `from: 0.30.6`): ≥ 0.31.1 fixes an iOS ConvTransposed1d bug Kokoro's
-  # decoder hits (mlx-swift#344). MIT. Its Metal shaders only compile under
+  # decoder hits (mlx-swift#344); ≤ 0.31.4 because 0.31.5+ needs Swift tools
+  # 6.3 (Xcode 26.4), and the CI/TestFlight runners top out at Xcode 26.3.
+  # MIT. Its Metal shaders only compile under
   # xcodebuild, which is why none of this can live in the ReadrKit package.
   MLX:
     url: https://github.com/ml-explore/mlx-swift
-    exactVersion: "0.31.6"
+    exactVersion: "0.31.4"
   # mlx-audio-swift's Hub client (Apache-2.0). Declared because the MLX
   # engine names its `Repo.ID` type directly — the weights are fetched to
   # disk in one step and loaded onto the GPU in a separate, foreground-only
