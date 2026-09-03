@@ -87,7 +87,8 @@ Providers) via gear in the library toolbar + macOS Settings scene.
 ### Home
 - **Continue Reading**: horizontally scrolling large cards (cover, title,
   progress ring/bar, "N min left in chapter" when known). One click resumes at
-  the exact position. Sorted by `lastOpenedAt`.
+  the exact position. Sorted by `lastOpenedAt`. A "Chapter N of M" line under
+  the card carries the ✦ Recap action (see Recap below) for text books.
 - **Recently Added** row.
 - Empty state: warm illustration + "Add your first book" (Import button + the
   whole window is a drop target). Second card nudges AI provider setup.
@@ -161,6 +162,27 @@ Toolbar (unifiedCompact, auto-hides in full screen):
 - Now openable with no selection (whole-book questions). Shows selection quote
   when present, streams the answer, citations as clickable disclosure rows
   (future: jump-to-passage). Tier badge stays ("whole book" / "passages").
+
+### Recap
+- **Recap** is a toolbar button in the reader (next to Listen and Ask, ⇧⌘R)
+  and a ✦ Recap action under Home's Continue Reading cards. Either opens the
+  Ask panel with "Recap what I've read so far — no spoilers" already sent —
+  no chip to find, nothing to type — and a "where am I" line above the
+  transcript ("Chapter 7 of 24 · 31% · The Whale", `ReadingPositionSummary`
+  in ReadrKit) saying where the recap stops. The answer is built only from
+  the text before that point (`ReadingFrontier`).
+- Offered only where there is a reading position to recap up to: EPUBs,
+  plain text, and PDFs in the extracted-text view. Native PDF pages get no
+  button, and PDFs get no card action — a page is not a frontier, and a
+  recap without one would spoil.
+- No provider: the panel opens into its guided empty state and sends the
+  recap the moment a key is connected from there. It is sent once per open,
+  never on a re-render.
+- Iris stays reserved for AI moments: the card's Recap is the ✦ mark in
+  iris; the reader's is a plain toolbar item like Listen.
+- The card's Recap opens the book, then the recap: `AppModel.pendingRecapBookID`
+  carries the request to the reader, which consumes it on appearance (or on
+  change, when its macOS window is already open).
 
 ## Data model (ReadrKit)
 

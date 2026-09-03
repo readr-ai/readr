@@ -56,6 +56,11 @@ struct ReaderView: View {
     /// owner, so no mode can register a duplicate key equivalent.
     @State private var pdfAnnotationActions: PDFAnnotationActions?
     @State private var showAsk = false
+    /// Set by Recap: the question the Ask panel sends on its own the moment
+    /// it opens, and the "where am I" line it shows above the transcript.
+    /// Cleared when the sheet dismisses so a plain Ask never inherits them.
+    @State private var askInitialQuestion: String?
+    @State private var askPositionCaption: String?
     @State private var showNotes = false
     @State private var showTOC = false
     @State private var showSearch = false
@@ -207,10 +212,15 @@ struct ReaderView: View {
             #endif
             .background(hiddenFontShortcuts)
             .background(hiddenAnnotationShortcuts)
-            .sheet(isPresented: $showAsk) {
+            .sheet(isPresented: $showAsk, onDismiss: {
+                askInitialQuestion = nil
+                askPositionCaption = nil
+            }) {
                 AskPanelView(
                     app: model, book: book, selection: askSelection,
-                    frontier: askFrontier
+                    frontier: askFrontier,
+                    initialQuestion: askInitialQuestion,
+                    positionCaption: askPositionCaption
                 )
                 .environmentObject(model)
             }
@@ -308,6 +318,7 @@ struct ReaderView: View {
             }
             .onAppear {
                 restoreOnce()
+                consumePendingRecap()
                 updateMinutesCache()
                 // The page follows the voice: narration reports the sentence
                 // it moves to, and the reader turns to it.
@@ -387,6 +398,10 @@ struct ReaderView: View {
             // Build the retrieval index in the background when the book opens
             // so the first "ask" is fast. Safe to call repeatedly.
             .task(id: book.id) { await model.ensureIndexed(book) }
+            // The library asked for a recap while this reader was already
+            // open (macOS: `openWindow` fronts the existing window instead
+            // of making one, so `onAppear` never fires).
+            .onChange(of: model.pendingRecapBookID) { _, _ in consumePendingRecap() }
     }
 
     // MARK: - Reading surface
@@ -638,6 +653,9 @@ struct ReaderView: View {
                 }
                 appearanceButton
                 listenButton
+                if askFrontier != nil {
+                    recapButton
+                }
                 askButton
                 notesButton
             }
@@ -656,6 +674,9 @@ struct ReaderView: View {
                     Spacer()
                 }
                 listenButton
+                if askFrontier != nil {
+                    recapButton
+                }
                 askButton
             }
         }
@@ -676,6 +697,9 @@ struct ReaderView: View {
                 pdfDisplayMenu
             }
             listenButton
+            if askFrontier != nil {
+                recapButton
+            }
             askButton
             notesButton
         }
@@ -1178,6 +1202,41 @@ struct ReaderView: View {
             askSelection = nil // whole-book question
         }
         showAsk = true
+    }
+
+    /// Recap: Ask, with "recap what I've read so far" already sent. The
+    /// answer stops where the reader stopped (`askFrontier`), and the panel
+    /// says where that is. Only offered when there IS a frontier — a native
+    /// PDF page is not a reading position, so PDFs never get the button.
+    private var recapButton: some View {
+        Button(action: openRecap) {
+            Label("Recap", systemImage: "text.book.closed")
+        }
+        .keyboardShortcut("r", modifiers: [.command, .shift])
+        .accessibilityIdentifier("reader.recap")
+        .accessibilityLabel("Recap what you've read so far")
+        .help("Recap what you've read so far, spoiler-free (\u{21E7}\u{2318}R)")
+    }
+
+    private func openRecap() {
+        guard let frontier = askFrontier else { return }
+        askSelection = nil
+        askInitialQuestion = AskPanelView.recapQuestion
+        askPositionCaption = ReadingPositionSummary(book: book, frontier: frontier)?.caption
+        showAsk = true
+    }
+
+    /// The library's Continue Reading card asked for a recap of this book
+    /// (`AppModel.pendingRecapBookID`). Consumed once the position is
+    /// restored, and deferred a beat so the sheet isn't presented while the
+    /// reader itself is still being pushed or its window is still opening.
+    private func consumePendingRecap() {
+        guard model.pendingRecapBookID == book.id else { return }
+        model.pendingRecapBookID = nil
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 400_000_000)
+            openRecap()
+        }
     }
 
     private var notesButton: some View {

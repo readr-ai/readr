@@ -16,6 +16,11 @@ struct AskPanelView: View {
     /// Where the reader is, when the reader has a place to be — see
     /// `ReadingFrontier`. Decides whether a recap is offered.
     private let frontier: ReadingFrontier?
+    /// The "where am I" line shown above the transcript when the panel was
+    /// opened for a recap — see `ReadingPositionSummary`.
+    private let positionCaption: String?
+    /// The question to send on the panel's behalf — see `init`.
+    private let initialQuestion: String?
 
     @StateObject private var vm: AskViewModel
     @State private var question = ""
@@ -38,10 +43,30 @@ struct AskPanelView: View {
 
     /// - Parameter frontier: where the reader is in the book, so answers stay
     ///   spoiler-free. Nil when there is no meaningful position (PDF pages).
-    init(app: AppModel, book: Book, selection: Selection?, frontier: ReadingFrontier? = nil) {
+    /// - Parameter initialQuestion: sent on the panel's behalf as soon as it
+    ///   has a provider — the Recap button opens the panel with the recap
+    ///   already asked. With no provider the panel shows its guided empty
+    ///   state and sends the question when one is connected from there.
+    ///   Kept as a plain `let` and handed to the view model at send time,
+    ///   because nothing captured when this view's storage is created can be
+    ///   trusted: on the iPhone simulator the sheet's `@State(initialValue:)`
+    ///   AND the `@StateObject`'s init argument both came through nil while
+    ///   the `let`s carried the values the sheet was presented with. Only
+    ///   the once-guard lives in the view model, alongside the transcript.
+    /// - Parameter positionCaption: the "where am I" line for a recap.
+    init(
+        app: AppModel,
+        book: Book,
+        selection: Selection?,
+        frontier: ReadingFrontier? = nil,
+        initialQuestion: String? = nil,
+        positionCaption: String? = nil
+    ) {
         self.book = book
         self.selection = selection
         self.frontier = frontier
+        self.positionCaption = positionCaption
+        self.initialQuestion = initialQuestion
         _vm = StateObject(wrappedValue: AskViewModel(
             makeService: { app.makeAskService() },
             prepare: {
@@ -113,6 +138,13 @@ struct AskPanelView: View {
                 }
             }
         }
+        // Recap: the question arrives already sent. Sent once, the first
+        // time the panel has a provider to send it to — a panel opened into
+        // the empty state sends it when a key is connected there. `task(id:)`
+        // rather than `onAppear`: it also re-fires if the value only lands
+        // after the first render (see `init`).
+        .task(id: initialQuestion) { vm.sendInitialQuestionIfReady(initialQuestion) }
+        .onChange(of: vm.hasProvider) { vm.sendInitialQuestionIfReady(initialQuestion) }
     }
 
     private var askContent: some View {
@@ -177,6 +209,18 @@ struct AskPanelView: View {
                 .overlay(alignment: .leading) {
                     RoundedRectangle(cornerRadius: 1).fill(theme.iris).frame(width: 2)
                 }
+        } else if let positionCaption {
+            // Opened for a recap: say where the recap stops, so the reader
+            // can see the answer covers the right stretch of the book.
+            VStack(alignment: .leading, spacing: 4) {
+                Label("Recap up to where you are", systemImage: "book")
+                    .font(.footnote)
+                    .foregroundStyle(theme.muted)
+                Text(positionCaption)
+                    .font(.caption)
+                    .foregroundStyle(theme.faint)
+                    .accessibilityIdentifier("ask.position")
+            }
         } else {
             // No selection: the panel was opened for whole-book questions —
             // say so instead of showing an empty quote box.
@@ -225,6 +269,7 @@ struct AskPanelView: View {
         }
         .accessibilityElement(children: .combine)
         .accessibilityLabel("You asked: \(text)")
+        .accessibilityIdentifier("ask.sentQuestion")
     }
 
     // MARK: - Composer
@@ -481,7 +526,7 @@ struct AskPanelView: View {
             "Who are the main characters?",
         ]
         if frontier != nil {
-            starters.insert("Recap what I've read so far \u{2014} no spoilers", at: 0)
+            starters.insert(Self.recapQuestion, at: 0)
         }
         return starters
     }
@@ -500,6 +545,10 @@ struct AskPanelView: View {
     private func retry() {
         Task { await vm.retry() }
     }
+
+    /// The recap, word for word — the first suggestion chip and what the
+    /// Recap button (reader toolbar, Continue Reading card) sends.
+    static let recapQuestion = "Recap what I've read so far \u{2014} no spoilers"
 }
 
 /// The design's streaming indicator: three 5pt iris dots pulsing in a

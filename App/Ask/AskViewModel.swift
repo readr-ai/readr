@@ -65,6 +65,11 @@ final class AskViewModel: ObservableObject {
     /// How far the reader has got. Every answer is built only from what
     /// they've read, so "recap so far" can't spoil — see `ReadingFrontier`.
     private let frontier: ReadingFrontier?
+    /// Whether the question the panel was opened with has gone out — the
+    /// Recap button opens the panel with the recap already asked. Set the
+    /// moment it is sent, so no number of re-appearances or provider
+    /// refreshes sends it twice.
+    private var didSendInitialQuestion = false
     /// The last question submitted, kept so a Retry can re-run it after an
     /// error (A5) without the reader retyping.
     private(set) var lastQuestion: String?
@@ -98,6 +103,17 @@ final class AskViewModel: ObservableObject {
 
     func ask(_ question: String) async {
         await run(question, replacingLastExchange: false)
+    }
+
+    /// Send the question the panel was opened with, if there is one and a
+    /// provider to send it to. The panel calls this on appearance and
+    /// whenever the provider binding changes, passing the question each time
+    /// (see `AskPanelView.init` for why it is not captured here); flipping
+    /// the flag before the send is the once-guard.
+    func sendInitialQuestionIfReady(_ question: String?) {
+        guard let question, !didSendInitialQuestion, hasProvider, !isStreaming else { return }
+        didSendInitialQuestion = true
+        Task { await ask(question) }
     }
 
     /// Re-run the last question after an error (A5). No-op when nothing has

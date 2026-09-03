@@ -564,6 +564,71 @@ final class ReadrAppUITests: XCTestCase {
         )
     }
 
+    // MARK: - Recap
+
+    /// The reader's message in the Ask transcript, matched by its combined
+    /// accessibility label ("You asked: …") — the bubble is one element.
+    private func sentQuestion(_ app: XCUIApplication, startingWith text: String) -> XCUIElement {
+        app.descendants(matching: .any).matching(
+            NSPredicate(format: "label BEGINSWITH %@", "You asked: " + text)
+        ).firstMatch
+    }
+
+    // Recap — the reader's Recap button opens Ask with the recap already
+    // sent: no chip to find, no Send to press. The transcript shows the
+    // question as sent, the "where am I" line names the chapter, and the
+    // stub streams its canned answer. -uiTestStubLLM supplies the provider;
+    // without one the panel shows its empty state and holds the question
+    // until a key is connected. An EPUB has a reading position, so it gets
+    // the button (a native PDF page does not, and would not).
+    func testRecapButtonOpensAskWithTheRecapAlreadySent() {
+        let app = launchSeeded(stubLLM: true)
+
+        let bookCell = app.staticTexts["Sample Book"].firstMatch
+        XCTAssertTrue(bookCell.waitForExistence(timeout: 10))
+        bookCell.tap()
+        XCTAssertTrue(app.staticTexts["Chapter One"].waitForExistence(timeout: 10))
+
+        let recap = button(app, id: "reader.recap", label: "Recap what you've read so far")
+        XCTAssertTrue(recap.waitForExistence(timeout: 5), "an EPUB has a frontier, so it gets a Recap button")
+        recap.tap()
+        XCTAssertTrue(app.navigationBars["Ask the book"].waitForExistence(timeout: 5))
+
+        XCTAssertTrue(
+            sentQuestion(app, startingWith: "Recap what I've read so far").waitForExistence(timeout: 5),
+            "the recap question should be sent on open, not left in the field"
+        )
+
+        // The seeded position is halfway down chapter one.
+        let position = app.staticTexts["ask.position"].firstMatch
+        XCTAssertTrue(position.waitForExistence(timeout: 5), "the panel should say where the recap stops")
+        XCTAssertTrue(position.label.hasPrefix("Chapter 1 of "), "unexpected where-am-I line: \(position.label)")
+
+        // The stub answers the sent question.
+        XCTAssertTrue(
+            app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "tone of decay"))
+                .firstMatch.waitForExistence(timeout: 15),
+            "the stub's answer should stream in for the auto-sent recap"
+        )
+    }
+
+    // Library — the Continue Reading card's ✦ Recap opens the book and then
+    // the recap, with nothing else to tap in between.
+    func testContinueReadingRecapOpensTheBookIntoARecap() {
+        let app = launchSeeded(stubLLM: true)
+        XCTAssertTrue(app.staticTexts["Continue Reading"].waitForExistence(timeout: 10))
+
+        let recap = app.buttons["library.recap"].firstMatch
+        XCTAssertTrue(recap.waitForExistence(timeout: 5), "the mid-read seeded book should offer Recap on its card")
+        recap.tap()
+
+        XCTAssertTrue(app.navigationBars["Ask the book"].waitForExistence(timeout: 10))
+        XCTAssertTrue(
+            sentQuestion(app, startingWith: "Recap what I've read so far").waitForExistence(timeout: 5),
+            "the card's Recap should land in Ask with the recap already sent"
+        )
+    }
+
     // MARK: - Screenshots for CI
 
     /// Attaches a full-screen PNG to the test result bundle so CI can extract

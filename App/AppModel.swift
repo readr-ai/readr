@@ -17,6 +17,11 @@ final class AppModel: ObservableObject {
     /// that will be shown as extracted text). Same alert-binding pattern as
     /// `importError`, but the import itself succeeded.
     @Published var importNotice: String?
+    /// A book the library asked to open straight into a recap (the Continue
+    /// Reading card's Recap action). The reader for that book consumes it on
+    /// appearance — or on change, when its window is already open — and
+    /// presents Ask with the recap already sent. Nil the rest of the time.
+    @Published var pendingRecapBookID: UUID?
 
     private let store: any LibraryStore
     private let parsers: BookParserRegistry
