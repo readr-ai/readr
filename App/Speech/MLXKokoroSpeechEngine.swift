@@ -345,8 +345,16 @@ final class MLXKokoroSpeechEngine:
     /// `check_error` throwing in the completion handler, uncatchable), so
     /// no MLX work of any kind runs while the app is backgrounded. The key
     /// exists for measuring a future MLX that keeps the CPU path off Metal.
-    private(set) var cpuUnavailable: Bool =
-        !UserDefaults.standard.bool(forKey: "readrVoice.cpuContinuation")
+    var cpuUnavailable: Bool { !backgroundCPUAllowed || cpuFailed }
+    /// Policy, not observation: whether MLX may run on the CPU while the
+    /// app is backgrounded at all (`readrVoice.cpuContinuation`).
+    private let backgroundCPUAllowed: Bool =
+        UserDefaults.standard.bool(forKey: "readrVoice.cpuContinuation")
+    /// Observation, not policy: a CPU synthesis threw this session. Kept
+    /// apart from the policy so a foreground CPU failure under
+    /// `readrVoice.prefetchOnCPUOnly` is still recorded once and still
+    /// cancels the pump, instead of being masked by the policy default.
+    private(set) var cpuFailed = false
 
     // MARK: - Measurement
 
@@ -819,7 +827,10 @@ final class MLXKokoroSpeechEngine:
         let cache = self.cache
         let foreground = self.foreground
         let gpuWork = self.gpuWork
-        let policy = prefetchDevicePolicy
+        // A CPU that has already failed this session is not forced again,
+        // even under the measurement flag: fall back to the default split
+        // (GPU while active, nothing in the background).
+        let policy: PrefetchDevicePolicy = cpuFailed ? .gpuWhileActive : prefetchDevicePolicy
         let protectedKeys = protectedWindowKeys
         let voice = KokoroSpeechEngine.kokoroVoice(from: request.voiceID)
         let text = request.text
@@ -865,8 +876,8 @@ final class MLXKokoroSpeechEngine:
     /// that keeps failing. Never an Apple voice in its place.
     @MainActor
     private func markCPUUnavailable(_ error: Error) {
-        guard !cpuUnavailable else { return }
-        cpuUnavailable = true
+        guard !cpuFailed else { return }
+        cpuFailed = true
         DiagnosticsLog.shared.record(
             .warning, .reader,
             "Readr Voice (MLX) CPU synthesis failed with MLX compilation disabled; "
