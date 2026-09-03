@@ -102,7 +102,9 @@ final class DiagnosticsFileSinkTests: XCTestCase {
     }
 
     func testCreatesTheParentDirectoryIfMissing() {
-        let nested = directory.appendingPathComponent("Diagnostics").appendingPathComponent("readr.log")
+        let nested = directory
+            .appendingPathComponent("Diagnostics")
+            .appendingPathComponent("readr.log")
         let sink = DiagnosticsFileSink(fileURL: nested)
         sink.write(makeEvent())
 
@@ -121,10 +123,12 @@ final class DiagnosticsFileSinkTests: XCTestCase {
             FileManager.default.fileExists(atPath: rotatedURL.path),
             "a sink past its cap should have rotated to a .1 sibling"
         )
-        let currentSize = (try? FileManager.default.attributesOfItem(atPath: logURL.path)[.size] as? Int)
-            ?? nil
+        let attributes = try? FileManager.default.attributesOfItem(atPath: logURL.path)
+        let currentSize = attributes?[.size] as? Int
         XCTAssertNotNil(currentSize)
-        XCTAssertLessThanOrEqual(currentSize ?? .max, 100 + 200, "the live file should stay near the cap")
+        XCTAssertLessThanOrEqual(
+            currentSize ?? .max, 100 + 200, "the live file should stay near the cap"
+        )
     }
 
     func testTheNewestEventsSurviveRotationInTheCurrentFile() {
