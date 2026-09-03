@@ -5,21 +5,21 @@ adds from elsewhere.
 ASK THE BOOK
 Open an EPUB, PDF, plain-text or Markdown file you already own, select a
 sentence, and ask about it. Readr answers from the pages you've read, not
-the pages you haven't, so nothing ahead of your place can slip out. Flip
-the "Whole book" switch to ask about all of it. And it isn't limited to the
+the pages you haven't, so nothing ahead of your place can slip out. Choose
+"Whole book" to ask about all of it. And it isn't limited to the
 book: ask how the science has moved on, who directed the adaptation, or how
 an idea aged, and you get a useful answer that shows which part came from
 the book and which from outside it. Readr won't attribute an outside claim
 to the book you're reading.
 
-Back after a week away? Tap Recap and Readr tells you the story so far,
-from only the pages you've read — it can't spoil what comes next.
+Back after a week away? Tap Recap on your Continue Reading card and Readr
+tells you the story so far, from only the pages you've read — it can't
+spoil what comes next.
 
 Ask needs an AI account of your own: connect an Anthropic, OpenAI or
 OpenRouter key, or sign in with OpenRouter. You pay that company directly for
 what you use, and you can change or disconnect at any time. On an Apple
-silicon Mac you can point Readr at a local Ollama model instead and stay
-offline. Without one, Readr is still a complete reader — Ask simply stays off.
+silicon Mac you can use a local Ollama model instead and stay offline. Without one, Readr is still a complete reader — Ask simply stays off.
 
 LISTEN
 Press Listen and Readr reads the book aloud, starting from the page you're on
@@ -27,17 +27,19 @@ Press Listen and Readr reads the book aloud, starting from the page you're on
 the place it saves is where the voice left off, so switching between reading
 and listening never costs you your spot.
 
-On iPhone and iPad, narration uses Apple's built-in voices, which run on your
-device with nothing to download, so nothing about your book is sent away to
-be read aloud. On the Mac (macOS 26.6 and later), Readr Voice — our more
-natural on-device narrator for English books — reads by default, with
-Apple's voices a pick away.
+The narrator is Readr Voice, a neural voice that runs entirely on your
+device: no account, no subscription, and nothing about your book ever leaves
+the device to be read aloud. Its voice model downloads once, the first time
+you listen, and the Listen bar shows the wait. Readr Voice keeps reading with the screen locked: it reads ahead
+while the app is open and plays from that with the phone in your pocket.
+Prefer Apple's built-in voices? They're a tap away under "Other voices" in
+the voice menu, with nothing to download at all.
 
 Skip by sentence or by chapter, change the speed or the voice mid-sentence and
 it carries on from that word, and set a sleep timer that counts listening
 rather than clock time — pause for lunch and the countdown waits for you. It
 keeps playing with the screen locked, with lock-screen and headphone controls,
-and it works on PDFs as well as EPUBs.
+and reads PDFs as well as EPUBs.
 
 HIGHLIGHTS BECOME A DRAFT
 Highlight as you read, then turn those highlights into a first draft. Readr

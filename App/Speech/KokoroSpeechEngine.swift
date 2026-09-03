@@ -28,8 +28,15 @@ import ReadrKit
 /// degrades to the sentence start.
 ///
 /// Main-thread-confined like `AVSpeechEngine`; synthesis hops to the
-/// `KokoroAneManager` actor and back.
-final class KokoroSpeechEngine: NSObject, SpeechEngine {
+/// `KokoroAneManager` actor and back, and playback is `SentenceAudioPlayer`,
+/// the one `AVAudioPlayer` contract both Kokoro engines share.
+///
+/// macOS only: `RoutingSpeechEngine` builds this engine on macOS alone. On
+/// iPhone and iPad Readr Voice is MLX or nothing (`MLXKokoroSpeechEngine`;
+/// CoreML crashes inside Apple's BNNS on iOS 26.4+), so the CoreML path is
+/// never prepared or entered there — not even on the iOS 18–26.3 builds
+/// that pass the BNNS gate.
+final class KokoroSpeechEngine: NSObject, ReadrVoiceEngine {
     weak var delegate: (any SpeechEngineDelegate)?
 
     // MARK: - The picker's view of this engine
@@ -91,8 +98,9 @@ final class KokoroSpeechEngine: NSObject, SpeechEngine {
         return SpeechVoice.primaryLanguageCode(of: language) == "en"
     }
 
-    /// Kokoro voice-pack name from a sentinel id ("af_heart").
-    private static func kokoroVoice(from id: String?) -> String {
+    /// Kokoro voice-pack name from a sentinel id ("af_heart"). Shared with the
+    /// MLX engine: the sentinel ids are the same whichever runtime speaks.
+    static func kokoroVoice(from id: String?) -> String {
         guard let id, isKokoroVoiceID(id) else { return "af_heart" }
         return String(id.dropFirst(voiceIDPrefix.count))
     }
@@ -103,16 +111,10 @@ final class KokoroSpeechEngine: NSObject, SpeechEngine {
     /// ~104MB first-use download, and the Listen bar shows this so the wait
     /// is never silent. While it isn't `.ready`, `RoutingSpeechEngine` narrates
     /// through the platform voice and switches over at a sentence boundary.
-    enum Readiness: Equatable {
-        /// This OS build crashes the process inside Apple's BNNS during
-        /// Kokoro inference (FluidAudio#817/#844); the engine refuses every
-        /// request. See `NeuralVoiceAvailability`.
-        case unsupported
-        case notReady
-        case downloading
-        case ready
-        case failed
-    }
+    /// `.unsupported` here means this OS build crashes the process inside
+    /// Apple's BNNS during Kokoro inference (FluidAudio#817/#844); the engine
+    /// refuses every request. See `NeuralVoiceAvailability`.
+    typealias Readiness = ReadrVoiceReadiness
 
     private(set) var readiness: Readiness = KokoroSpeechEngine.isSupportedOnThisOS
         ? .notReady : .unsupported {
@@ -125,37 +127,37 @@ final class KokoroSpeechEngine: NSObject, SpeechEngine {
     /// paths); the model publishes it to the Listen bar.
     var onReadinessChange: ((Readiness) -> Void)?
     var isReady: Bool { readiness == .ready }
+    /// FluidAudio's download reports no progress; the bar shows the wait as
+    /// indeterminate with the size.
+    let downloadProgress: Double? = nil
+    var onDownloadProgressChange: ((Double?) -> Void)?
 
     // MARK: - State
 
     private let manager = KokoroAneManager()
     private var initializeTask: Task<Void, Error>?
-    private var player: AVAudioPlayer?
-    /// The request being synthesized or played. Non-nil is what makes `state`
-    /// report `.speaking` through the synthesis gap.
-    private var activeRequest: SpeechRequest?
-    private var synthesisTask: Task<Void, Never>?
-    /// The controller paused while we were still synthesizing — hold the
-    /// finished audio instead of starting it.
-    private var pausedByCaller = false
+    /// Playback, shared with the MLX engine: `SentenceAudioPlayer` owns the
+    /// `AVAudioPlayer`, the active request and the pause flag, and reports
+    /// through the two hooks wired in `init`.
+    private let audio = SentenceAudioPlayer()
 
-    var state: SpeechEngineState {
-        guard activeRequest != nil else { return .idle }
-        if pausedByCaller { return .paused }
-        if let player {
-            // The player's own state, not ours: an audio interruption (phone
-            // call, Siri) pauses an AVAudioPlayer silently — no delegate
-            // callback, no auto-resume. Self-reported state would say
-            // `.speaking` forever and blind the controller's silent-engine
-            // watchdog; reading the player lets the watchdog hold narration
-            // as paused, exactly as it does for the platform synthesizer.
-            return player.isPlaying ? .speaking : .paused
+    override init() {
+        super.init()
+        audio.onFinish = { [weak self] id in
+            guard let self else { return }
+            self.delegate?.speechEngine(self, didFinish: id)
         }
-        // Synthesizing (or, on first use, downloading the model). Reported as
-        // speaking so the watchdog doesn't mistake the wait for a finished
-        // utterance; a failed download/synthesis ends it via `didFail`.
-        return .speaking
+        audio.onFail = { [weak self] id, error in
+            guard let self else { return }
+            self.delegate?.speechEngine(self, didFail: id, error: error)
+        }
+        audio.onStart = { [weak self] id in
+            guard let self else { return }
+            self.delegate?.speechEngine(self, didBeginSpeaking: id)
+        }
     }
+
+    var state: SpeechEngineState { audio.state }
 
     // MARK: - SpeechEngine
 
@@ -166,64 +168,18 @@ final class KokoroSpeechEngine: NSObject, SpeechEngine {
             )
             return
         }
-        cancelInFlight()
-        activeRequest = request
-        pausedByCaller = false
-        synthesisTask = Task { @MainActor [weak self] in
-            await self?.synthesizeThenPlay(request)
+        // Not in yet: the sentence waits for the download (started below if
+        // it hasn't been), and the bar shows the wait rather than an Apple
+        // voice reading meanwhile.
+        if readiness != .ready {
+            delegate?.speechEngine(self, isPreparing: request.id)
         }
-    }
-
-    func pause() {
-        pausedByCaller = true
-        player?.pause()
-    }
-
-    func resume() {
-        pausedByCaller = false
-        // With no player yet (paused mid-synthesis), synthesizeThenPlay
-        // starts playback itself once the audio lands.
-        guard let player else { return }
-        if !player.play(), let request = activeRequest {
-            // Same contract as the speak path: a refused start is a failure,
-            // not a silent no-op the watchdog has to discover two ticks later.
-            self.player = nil
-            activeRequest = nil
-            delegate?.speechEngine(
-                self, didFail: request.id, error: SpeechEngineError.audioUnavailable
-            )
-        }
-    }
-
-    func stop() {
-        cancelInFlight()
-        activeRequest = nil
-        pausedByCaller = false
-        // The audio session stays up between sentences for the same reason
-        // AVSpeechEngine's does; `RoutingSpeechEngine.endAudioSession()` ends
-        // it for real.
-    }
-
-    /// Start the model download/load without speaking — called when the
-    /// reader picks this voice, so the first sentence doesn't carry the whole
-    /// ~104MB wait.
-    func prepare() {
-        guard readiness != .unsupported else { return }
-        Task { @MainActor [weak self] in
-            try? await self?.ensureInitialized()
-        }
-    }
-
-
-    // MARK: - Synthesis
-
-    @MainActor
-    private func synthesizeThenPlay(_ request: SpeechRequest) async {
-        do {
-            try await ensureInitialized()
+        audio.speak(request) { [weak self] request in
+            guard let self else { throw CancellationError() }
+            try await self.ensureInitialized()
             // A skip/stop may have replaced this request during the wait.
-            guard activeRequest?.id == request.id else { return }
-            let wav = try await manager.synthesize(
+            guard self.audio.isCurrent(request) else { throw CancellationError() }
+            return .data(try await self.manager.synthesize(
                 text: request.text,
                 voice: Self.kokoroVoice(from: request.voiceID),
                 // Kokoro takes the reader's multiplier directly — no
@@ -231,100 +187,68 @@ final class KokoroSpeechEngine: NSObject, SpeechEngine {
                 // SpeechSettings is the single clamping authority (init,
                 // didSet, and decode), and every request is built from it.
                 speed: Float(request.rate)
-            )
-            guard activeRequest?.id == request.id else { return }
-            // Claimed only once audio is ready to play: activating on
-            // `speak()` interrupted whatever the reader was listening to for
-            // the whole first-use model download, for nothing.
-            NarrationAudioSession.activate()
-            let player = try AVAudioPlayer(data: wav)
-            player.volume = Float(request.volume)
-            player.delegate = self
-            self.player = player
-            if pausedByCaller {
-                player.prepareToPlay()
-            } else if !player.play() {
-                // The session refused to start audio; pretending to speak
-                // would wedge narration on a silent "playing".
-                self.player = nil
-                activeRequest = nil
-                delegate?.speechEngine(
-                    self, didFail: request.id, error: SpeechEngineError.audioUnavailable
-                )
-            }
-        } catch is CancellationError {
-            // A skip/stop cancelled us; the controller already moved on.
-        } catch {
-            guard activeRequest?.id == request.id else { return }
-            activeRequest = nil
-            player = nil
-            delegate?.speechEngine(self, didFail: request.id, error: error)
+            ))
         }
     }
+
+    func pause() {
+        audio.pause()
+    }
+
+    func resume() {
+        audio.resume()
+        // Resumed into the same wait: say so again, since the pause took
+        // the controller out of its preparing state.
+        if readiness != .ready, let request = audio.activeRequest {
+            delegate?.speechEngine(self, isPreparing: request.id)
+        }
+    }
+
+    func stop() {
+        audio.stop()
+    }
+
+    /// Start the model download/load without speaking — the explicit pick,
+    /// and the Retry after a failure. Main-thread-confined like the rest of
+    /// the engine; `readiness` leaves `.failed` before this returns.
+    func prepare() {
+        guard readiness != .unsupported else { return }
+        MainActor.assumeIsolated {
+            _ = startInitializing()
+        }
+    }
+
+    // MARK: - Initialization
 
     @MainActor
     private func ensureInitialized() async throws {
         guard readiness != .unsupported else {
             throw SpeechEngineError.audioUnavailable
         }
-        if let initializeTask {
-            return try await initializeTask.value
-        }
+        try await startInitializing().value
+    }
+
+    /// The download, started at most once at a time. Readiness moves to
+    /// `.downloading` synchronously so a request routed in the same turn as
+    /// a Retry sees an engine that is trying; the outcome is bookkept on
+    /// the main actor when the task ends.
+    @MainActor
+    private func startInitializing() -> Task<Void, Error> {
+        if let initializeTask { return initializeTask }
         readiness = .downloading
         let task = Task { try await manager.initialize() }
         initializeTask = task
-        do {
-            try await task.value
-            readiness = .ready
-        } catch {
-            // A failed download must not poison every later attempt.
-            initializeTask = nil
-            readiness = .failed
-            throw error
-        }
-    }
-
-    private func cancelInFlight() {
-        synthesisTask?.cancel()
-        synthesisTask = nil
-        player?.stop()
-        player = nil
-    }
-
-}
-
-// MARK: - AVAudioPlayerDelegate
-
-extension KokoroSpeechEngine: AVAudioPlayerDelegate {
-    func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
-        onNarrationMain { [weak self] in
-            guard let self, player === self.player,
-                  let request = self.activeRequest else { return }
-            self.player = nil
-            self.activeRequest = nil
-            if flag {
-                self.delegate?.speechEngine(self, didFinish: request.id)
-            } else {
-                // Playback died partway (route/decoder failure). Reporting a
-                // finish would advance past text the listener never heard;
-                // a failure holds narration in place instead.
-                self.delegate?.speechEngine(
-                    self, didFail: request.id, error: SpeechEngineError.audioUnavailable
-                )
+        Task { @MainActor [weak self] in
+            do {
+                try await task.value
+                self?.readiness = .ready
+            } catch {
+                // A failed download must not poison every later attempt.
+                guard let self, self.initializeTask == task else { return }
+                self.initializeTask = nil
+                self.readiness = .failed
             }
         }
-    }
-
-    func audioPlayerDecodeErrorDidOccur(_ player: AVAudioPlayer, error: Error?) {
-        onNarrationMain { [weak self] in
-            guard let self, player === self.player,
-                  let request = self.activeRequest else { return }
-            self.player = nil
-            self.activeRequest = nil
-            self.delegate?.speechEngine(
-                self, didFail: request.id,
-                error: error ?? SpeechEngineError.audioUnavailable
-            )
-        }
+        return task
     }
 }

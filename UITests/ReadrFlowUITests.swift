@@ -165,9 +165,7 @@ final class ReadrFlowUITests: XCTestCase {
         // the seeded position is halfway through chapter one, so no whole
         // chapter is behind the reader yet. Widen it to the whole book: the
         // chips follow, and the retrieval tier can cite chapter one's chunks.
-        let scope = app.switches["ask.scope"].firstMatch
-        XCTAssertTrue(scope.waitForExistence(timeout: 5), "a text book offers the whole-book switch")
-        scope.tap()
+        selectWholeBook(app)
 
         // Suggestion chips insert text without needing the keyboard.
         let suggestion = app.buttons["Summarize this book"].firstMatch

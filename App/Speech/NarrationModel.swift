@@ -5,6 +5,7 @@ import ReadrKit
 #if os(iOS)
 import MediaPlayer
 import UIKit
+import UserNotifications
 #endif
 
 /// The reader's view of narration: a thin `ObservableObject` over
@@ -27,13 +28,57 @@ final class NarrationModel: ObservableObject {
     @Published private(set) var voiceID: String?
     /// Voices offered for the open book, best match first.
     @Published private(set) var voices: [SpeechVoice] = []
-    /// Where the Readr Voice model stands (first use is a ~104MB download).
-    /// The Listen bar's voice menu narrates this state; until `.ready`, the
-    /// platform voice reads and the switch happens at a sentence boundary.
-    @Published private(set) var readrVoiceReadiness: KokoroSpeechEngine.Readiness = .notReady
-    /// True when this reader would otherwise use Readr Voice, but the current
-    /// OS has the uncatchable Apple BNNS crash and must use a platform voice.
+    /// Where the Readr Voice model stands (first use is a download: ~104MB of
+    /// CoreML weights on a Mac; ~330MB of MLX weights, ~60MB of voice packs
+    /// and ~20MB of pronunciation assets on an iPhone or iPad). While it is
+    /// on its way narration sits in `.preparing` — the bar shows the wait,
+    /// with `readrVoiceDownloadProgress` when the download reports it — and
+    /// starts the moment it is in; nothing else reads meanwhile.
+    @Published private(set) var readrVoiceReadiness: ReadrVoiceReadiness = .notReady
+    /// Fraction of the model download done, when the download library
+    /// reports it; nil for an indeterminate wait.
+    @Published private(set) var readrVoiceDownloadProgress: Double?
+    /// True when this reader would otherwise use Readr Voice, but neither
+    /// Kokoro runtime can serve here (macOS builds with the uncatchable Apple
+    /// BNNS crash; an iOS device with no Metal GPU, or the simulator) and a
+    /// platform voice must read.
     @Published private(set) var readrVoiceUnavailable = false
+    /// Readr Voice is in the voice menu for this book: an English book on a
+    /// platform where a Kokoro runtime can serve. The menu then shows Readr
+    /// Voice alone with the Apple voices under "Other voices".
+    @Published private(set) var readrVoiceOffered = false
+    /// The runtime behind Readr Voice here, for copy that depends on it (the
+    /// download size). Taken from the router rather than the static, so the
+    /// UI-test stub (no router) never probes for a Metal device.
+    private let readrVoiceRuntime: NarrationEnginePolicy.KokoroRuntime?
+    /// On iPhone and iPad Readr Voice plays from its buffer with the screen
+    /// locked and refills it on the CPU: the voice menu says "Keeps reading
+    /// with the screen locked". True only with the MLX engine.
+    let readrVoiceKeepsReadingWhenLocked: Bool
+    /// Seconds of Readr Voice audio already synthesized for what follows the
+    /// sentence being read — the Listen bar's "48 min ready". Zero for an
+    /// Apple voice, and until the engine has anything.
+    @Published private(set) var secondsAhead: TimeInterval = 0
+    /// Why narration paused on its own, when it did (nil for the reader's
+    /// pause): the bar and the lock screen show it.
+    @Published private(set) var holdReason: NarrationHoldReason?
+
+    /// The hold, as the bar, the lock screen and the notification say it.
+    /// "Paused" leads because a listener who glances at the bar mid-hold sees
+    /// a stopped state before they read why — the same shape as `failedLine`.
+    var holdText: String? {
+        switch holdReason {
+        case .needsForeground: return "Paused \u{2014} unlock Readr to keep listening"
+        case nil: return nil
+        }
+    }
+
+    private static let holdNotificationID = "readr.narration.hold"
+    private static let notificationsRequestedKey = "narrationNotificationsRequested"
+    private var lifecycleObservers: [NSObjectProtocol] = []
+    /// Whether the current hold has been announced, so one hold posts one
+    /// notification.
+    private var announcedHold = false
 
     /// Where the voice is — the reader follows this to keep the page under it.
     var onPosition: ((NarrationPosition) -> Void)?
@@ -64,6 +109,25 @@ final class NarrationModel: ObservableObject {
 
     var isActive: Bool { status != .idle }
     var isSpeaking: Bool { status == .speaking }
+    /// Waiting for the Readr Voice model before the first sentence can be
+    /// heard — the bar's "Preparing Readr Voice" state.
+    var isPreparing: Bool { status == .preparing }
+    /// Speaking or preparing: what the play/pause control shows as Pause.
+    var isUnderway: Bool { status == .speaking || status == .preparing }
+    /// The selected narrator is Readr Voice.
+    var usesReadrVoice: Bool { KokoroSpeechEngine.isKokoroVoiceID(voiceID) }
+    /// Readr Voice is selected and its model could not be fetched (or a
+    /// synthesis hung): narration is paused on the sentence and the bar
+    /// offers Retry. No Apple voice reads in its place.
+    var readrVoiceFailed: Bool { usesReadrVoice && readrVoiceReadiness == .failed }
+    /// The Apple voices, for the "Other voices" disclosure.
+    var platformVoices: [SpeechVoice] {
+        voices.filter { !KokoroSpeechEngine.isKokoroVoiceID($0.id) }
+    }
+    /// What the first Listen fetches, for the preparing state's copy.
+    var readrVoiceDownloadSize: String {
+        readrVoiceRuntime == .mlx ? "410MB" : "104MB"
+    }
     /// Where the voice is right now — for the reader to re-sync its page after
     /// an overlay kept `onPosition` unwired (events fired meanwhile are gone).
     var position: NarrationPosition? { narration?.position }
@@ -86,6 +150,8 @@ final class NarrationModel: ObservableObject {
             self.engine = router
             self.router = router
         }
+        readrVoiceRuntime = router?.readrVoiceRuntime
+        readrVoiceKeepsReadingWhenLocked = router?.readrVoiceRuntime == .mlx
         // Speed and voice are the reader's, not the book's — carried across
         // books the way the reading theme is.
         self.rate = defaults.object(forKey: Self.rateKey) as? Double ?? 1
@@ -96,9 +162,34 @@ final class NarrationModel: ObservableObject {
         router?.onReadrVoiceReadinessChange = { [weak self] readiness in
             Task { @MainActor in self?.readrVoiceReadiness = readiness }
         }
+        router?.onReadrVoiceDownloadProgressChange = { [weak self] progress in
+            Task { @MainActor in self?.readrVoiceDownloadProgress = progress }
+        }
+        #if os(iOS)
+        // Two things the lookahead and the hold need from the device: whether
+        // it is charging (the horizon becomes the rest of the book) and when
+        // the app comes back (a hold for the foreground resumes itself).
+        UIDevice.current.isBatteryMonitoringEnabled = true
+        let center = NotificationCenter.default
+        lifecycleObservers = [
+            center.addObserver(
+                forName: UIDevice.batteryStateDidChangeNotification, object: nil, queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor in self?.applyLookaheadHorizon() }
+            },
+            center.addObserver(
+                forName: UIApplication.willEnterForegroundNotification, object: nil, queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor in self?.didReturnToForeground() }
+            },
+        ]
+        #endif
     }
 
     deinit {
+        for observer in lifecycleObservers {
+            NotificationCenter.default.removeObserver(observer)
+        }
         // The backstop for narration outliving its reader. `ReaderView`'s
         // onDisappear deliberately skips `stop()` while something is presented
         // over the reader (asking about a passage must not cut the voice off)
@@ -153,6 +244,7 @@ final class NarrationModel: ObservableObject {
         startTicking()
         refresh()
         updateNowPlaying()
+        requestHoldNotificationsIfNeeded()
     }
 
     /// Tear narration down: closing the Listen bar, or leaving the reader.
@@ -191,7 +283,9 @@ final class NarrationModel: ObservableObject {
         // such a device and every lookup falls through to a language-wide one.
         let language = book.metadata.language ?? Locale.current.identifier(.bcp47)
         let supportsReadrVoice = KokoroSpeechEngine.supports(language: language)
-        let readrVoiceAvailable = supportsReadrVoice && KokoroSpeechEngine.isSupportedOnThisOS
+        // Offered when either Kokoro runtime can serve: MLX on an iOS device,
+        // CoreML on a Mac outside the BNNS crash gate.
+        let readrVoiceAvailable = supportsReadrVoice && RoutingSpeechEngine.isReadrVoiceAvailable
         // What the platform would pick for this language, which is a better
         // judge of "the sensible voice" than any ranking of ours: macOS ships
         // novelty voices that tie on quality and win on name.
@@ -209,13 +303,14 @@ final class NarrationModel: ObservableObject {
             matching: language, in: installed, systemDefault: systemDefault
         )
         // "Readr Voice" — the bundled Kokoro neural narrator, the DEFAULT for
-        // English books (its ~104MB model downloads on first Listen; the
-        // router reads through the platform voice until it's in — see
-        // RoutingSpeechEngine.speak).
+        // English books (its model — ~104MB on a Mac, ~410MB on an iPhone or
+        // iPad — downloads on first Listen; the router reads through the
+        // platform voice until it's in — see RoutingSpeechEngine.speak).
         if readrVoiceAvailable {
             offered.insert(KokoroSpeechEngine.pickerVoice, at: 0)
         }
         voices = offered
+        readrVoiceOffered = readrVoiceAvailable
         // Resolve from the PERSISTED preference ONLY — never the session's
         // last resolution. `voiceID` is per-book (a French book resolves to a
         // French voice), and any fallback to it lets one book in another
@@ -224,7 +319,7 @@ final class NarrationModel: ObservableObject {
         // explicit pick, so they are the whole story.
         let preferred = defaults.string(forKey: Self.voiceKey)
         readrVoiceUnavailable = supportsReadrVoice
-            && !KokoroSpeechEngine.isSupportedOnThisOS
+            && !RoutingSpeechEngine.isReadrVoiceAvailable
             && (preferred == nil || KokoroSpeechEngine.isKokoroVoiceID(preferred))
         if readrVoiceAvailable,
            preferred == nil || KokoroSpeechEngine.isKokoroVoiceID(preferred) {
@@ -232,7 +327,7 @@ final class NarrationModel: ObservableObject {
             // reader with no stored choice gets it, and a stored Readr Voice
             // pick keeps it. Only an explicit platform-voice choice (below)
             // overrides. The download starts with the first spoken sentence
-            // (the router's not-ready path); no separate prepare needed here.
+            // (the engine waits for it); no separate prepare needed here.
             voiceID = KokoroSpeechEngine.isKokoroVoiceID(preferred)
                 ? preferred : KokoroSpeechEngine.defaultVoiceID
         } else {
@@ -240,7 +335,8 @@ final class NarrationModel: ObservableObject {
             // downloadable), and a book in another language needs one that
             // can read it.
             // A Readr Voice id is not an installed platform voice. UserDefaults
-            // is deliberately not rewritten, so the choice returns on a safe OS.
+            // is deliberately not rewritten, so the choice returns wherever a
+            // Kokoro runtime can serve again.
             let platformPreferred = KokoroSpeechEngine.isKokoroVoiceID(preferred) ? nil : preferred
             voiceID = selector.voice(
                 for: language, in: installed, preferring: platformPreferred,
@@ -262,6 +358,7 @@ final class NarrationModel: ObservableObject {
             engine: engine,
             settings: SpeechSettings(rate: rate, voiceID: voiceID)
         )
+        controller.lookaheadHorizon = lookaheadHorizon()
         controller.onStatusChange = { [weak self] _ in
             self?.refresh()
             self?.updateNowPlaying()
@@ -278,13 +375,33 @@ final class NarrationModel: ObservableObject {
     // MARK: - Controls
 
     func togglePlayPause() {
-        narration?.togglePlayPause()
-        refresh()
+        if narration?.isUnderway == true {
+            pause()
+        } else {
+            play()
+        }
     }
 
     func play() {
+        retryReadrVoiceIfFailed()
         narration?.play()
         refresh()
+    }
+
+    /// The bar's Retry after a failed Readr Voice download: fetch again and
+    /// pick narration back up on the same sentence.
+    func retryReadrVoice() {
+        play()
+    }
+
+    /// A Readr Voice request must never reach an engine that has given up —
+    /// the policy's backstop would hand it to an Apple voice. So every play
+    /// that would speak Readr Voice re-prepares a failed engine first; the
+    /// engine leaves `.failed` synchronously, and the sentence routes to it
+    /// and waits. Nothing to do when the engine is fine.
+    private func retryReadrVoiceIfFailed() {
+        guard usesReadrVoice, router?.readrVoiceReadiness == .failed else { return }
+        router?.prepareKokoro()
     }
 
     func pause() {
@@ -329,13 +446,13 @@ final class NarrationModel: ObservableObject {
 
     func setVoice(_ id: String?) {
         voiceID = id
-        narration?.settings.voiceID = id
-        // Picking the Readr Voice starts the model download immediately, so
-        // as little as possible of the ~104MB wait lands on the next sentence
-        // (the settings change above already re-speaks it via the router).
+        // Picking Readr Voice after a failure is the other Retry: re-prepare
+        // BEFORE the settings change re-speaks the sentence, so the
+        // re-spoken request finds an engine that is trying, not the backstop.
         if KokoroSpeechEngine.isKokoroVoiceID(id) {
             router?.prepareKokoro()
         }
+        narration?.settings.voiceID = id
         if let id {
             defaults.set(id, forKey: Self.voiceKey)
         } else {
@@ -358,9 +475,21 @@ final class NarrationModel: ObservableObject {
             chapterProgress = 0
             sleepMode = .off
             sleepRemaining = nil
+            secondsAhead = 0
+            holdReason = nil
+            announcedHold = false
             return
         }
         status = narration.status
+        holdReason = narration.holdReason
+        if holdReason == nil {
+            announcedHold = false
+        } else if !announcedHold {
+            announcedHold = true
+            announceHold()
+        }
+        secondsAhead = usesReadrVoice
+            ? (router?.secondsBuffered(ahead: narration.lookahead) ?? 0) : 0
         // Muted footnote markers leave runs of spaces in segment text
         // (length-preserving by design); collapse them for display only.
         // The contains-check matters: refresh runs on a once-a-second tick,
@@ -385,6 +514,84 @@ final class NarrationModel: ObservableObject {
                 self.refresh()
             }
         }
+    }
+
+    // MARK: - Lookahead horizon
+
+    /// An hour of listening, or the rest of the book while the device is
+    /// charging — synthesis ahead costs battery, and a phone on a charger
+    /// has none to save.
+    private func lookaheadHorizon() -> NarrationController.LookaheadHorizon {
+        #if os(iOS)
+        switch UIDevice.current.batteryState {
+        case .charging, .full:
+            return .restOfBook
+        case .unplugged, .unknown:
+            return .seconds(NarrationController.defaultLookaheadSeconds)
+        @unknown default:
+            return .seconds(NarrationController.defaultLookaheadSeconds)
+        }
+        #else
+        return .seconds(NarrationController.defaultLookaheadSeconds)
+        #endif
+    }
+
+    private func applyLookaheadHorizon() {
+        narration?.lookaheadHorizon = lookaheadHorizon()
+    }
+
+    // MARK: - Holding for the foreground
+
+    /// The app is back: a hold for the foreground resumes itself, and its
+    /// notification, if one was posted, has served its purpose.
+    private func didReturnToForeground() {
+        #if os(iOS)
+        UNUserNotificationCenter.current().removeDeliveredNotifications(
+            withIdentifiers: [Self.holdNotificationID]
+        )
+        #endif
+        guard narration?.holdReason == .needsForeground else { return }
+        play()
+    }
+
+    /// Permission to say "Unlock Readr to keep listening" from the lock
+    /// screen, asked once, the first time Listen is used with Readr Voice on
+    /// a device where the hold can happen. Declined means the hold is
+    /// silent: narration simply pauses.
+    private func requestHoldNotificationsIfNeeded() {
+        #if os(iOS)
+        guard readrVoiceKeepsReadingWhenLocked, usesReadrVoice,
+              !defaults.bool(forKey: Self.notificationsRequestedKey) else { return }
+        defaults.set(true, forKey: Self.notificationsRequestedKey)
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) {
+            granted, error in
+            // A decline (or an OS-level failure) means the hold goes on
+            // exactly as before — narration still pauses, just silently, off
+            // the lock screen. Logged so a reader who reports "it just
+            // stopped" is diagnosable without guessing at Settings state.
+            guard !granted else { return }
+            DiagnosticsLog.shared.record(
+                .warning, .app, "hold notification permission not granted", error: error
+            )
+        }
+        #endif
+    }
+
+    /// Narration held on its own. With the app backgrounded the bar cannot
+    /// be seen, so the reason is posted where it can — and the lock screen's
+    /// Now Playing carries it too.
+    private func announceHold() {
+        #if os(iOS)
+        guard let holdText, UIApplication.shared.applicationState != .active else { return }
+        let content = UNMutableNotificationContent()
+        content.title = holdText
+        content.body = "Readr Voice ran out of prepared audio while the screen was locked."
+        content.sound = .default
+        let request = UNNotificationRequest(
+            identifier: Self.holdNotificationID, content: content, trigger: nil
+        )
+        UNUserNotificationCenter.current().add(request)
+        #endif
     }
 
     // MARK: - Lock screen & headphone controls
@@ -431,8 +638,15 @@ final class NarrationModel: ObservableObject {
             return
         }
         var info: [String: Any] = [
-            MPMediaItemPropertyTitle: book.metadata.title,
-            MPNowPlayingInfoPropertyPlaybackRate: isSpeaking ? rate : 0,
+            // A hold takes the title line: it's the first thing the lock
+            // screen shows, and the lock screen is exactly where the reader
+            // is when a hold happens. The book's own title returns once
+            // `play()` (foreground return, or the reader's own tap) clears it.
+            MPMediaItemPropertyTitle: holdText ?? book.metadata.title,
+            // Preparing counts as playing here, so the lock screen shows a
+            // pause control for the wait rather than a play control that
+            // would do nothing.
+            MPNowPlayingInfoPropertyPlaybackRate: isUnderway ? rate : 0,
         ]
         if !book.metadata.authors.isEmpty {
             info[MPMediaItemPropertyArtist] = book.metadata.authors.joined(separator: ", ")

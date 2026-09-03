@@ -25,8 +25,9 @@ struct ListenBar: View {
             progressTrack
             HStack(spacing: 12) {
                 transportControls
-                sentenceLine
+                statusLine
                 Spacer(minLength: 8)
+                aheadFigure
                 speedMenu
                 voiceMenu
                 sleepMenu
@@ -53,8 +54,10 @@ struct ListenBar: View {
                 "backward", id: "listen.previous", label: "Previous sentence",
                 help: "Previous sentence"
             ) { narration.skipBackward() }
+            // Preparing shows Pause too: the voice is on its way and the
+            // control pauses the wait, the way it pauses speech.
             Button { narration.togglePlayPause() } label: {
-                Image(systemName: narration.isSpeaking ? "pause.fill" : "play.fill")
+                Image(systemName: narration.isUnderway ? "pause.fill" : "play.fill")
                     .font(.system(size: 17))
                     .foregroundStyle(theme.inkColor)
                     .frame(width: 34, height: 30)
@@ -62,8 +65,8 @@ struct ListenBar: View {
             }
             .buttonStyle(.plain)
             .accessibilityIdentifier("listen.playPause")
-            .accessibilityLabel(narration.isSpeaking ? "Pause" : "Play")
-            .help(narration.isSpeaking ? "Pause narration" : "Play narration")
+            .accessibilityLabel(narration.isUnderway ? "Pause" : "Play")
+            .help(narration.isUnderway ? "Pause narration" : "Play narration")
             control(
                 "forward", id: "listen.next", label: "Next sentence",
                 help: "Next sentence"
@@ -92,7 +95,125 @@ struct ListenBar: View {
         .help(help)
     }
 
-    // MARK: - Read-along line
+    // MARK: - Status line
+
+    /// What the middle of the bar says: the wait for the Readr Voice model,
+    /// a failed download with its Retry, or — nearly always — the sentence
+    /// being read.
+    @ViewBuilder
+    private var statusLine: some View {
+        if narration.isPreparing {
+            preparingLine
+        } else if narration.readrVoiceFailed, !narration.isUnderway {
+            failedLine
+        } else if let holdText = narration.holdText {
+            holdLine(holdText)
+        } else {
+            sentenceLine
+        }
+    }
+
+    /// Narration paused on its own — with the screen locked, nothing was
+    /// ready for the next sentence. Unlocking resumes it; this is for the
+    /// reader who has just done that and wants to know why it stopped.
+    private func holdLine(_ text: String) -> some View {
+        Text(text)
+            .font(.system(size: 12))
+            .foregroundStyle(theme.muted)
+            .lineLimit(1)
+            .truncationMode(.tail)
+            .frame(maxWidth: 420, alignment: .leading)
+            .accessibilityIdentifier("listen.hold")
+            .accessibilityLabel(text)
+    }
+
+    /// How much Readr Voice audio is already made for what follows — the
+    /// quiet reassurance that a locked screen has something to play from.
+    /// Shown from a minute up; nothing worth saying below that.
+    @ViewBuilder
+    private var aheadFigure: some View {
+        if narration.usesReadrVoice, let label = Self.aheadLabel(seconds: narration.secondsAhead) {
+            Text(label)
+                .font(.system(size: 11))
+                .foregroundStyle(theme.muted)
+                .monospacedDigit()
+                .lineLimit(1)
+                .fixedSize()
+                .accessibilityIdentifier("listen.ahead")
+                .accessibilityLabel("\(label) in Readr Voice")
+                .help("Readr Voice audio already prepared for what follows")
+        }
+    }
+
+    /// "48 min ready", "1 h 12 min ready"; nil under a minute.
+    static func aheadLabel(seconds: TimeInterval) -> String? {
+        let minutes = Int(seconds / 60)
+        guard minutes >= 1 else { return nil }
+        if minutes >= 60 {
+            let hours = minutes / 60
+            let rest = minutes % 60
+            return rest == 0 ? "\(hours) h ready" : "\(hours) h \(rest) min ready"
+        }
+        return "\(minutes) min ready"
+    }
+
+    /// The first Listen's one-time download, with the download library's
+    /// progress while it reports one and an indeterminate spinner for the
+    /// rest (the pronunciation assets and weight load). No Apple voice reads
+    /// meanwhile; narration starts the moment the weights are in.
+    private var preparingLine: some View {
+        HStack(spacing: 8) {
+            if let progress = narration.readrVoiceDownloadProgress {
+                ProgressView(value: progress)
+                    .progressViewStyle(.linear)
+                    .tint(theme.iris)
+                    .frame(width: 64)
+            } else {
+                ProgressView()
+                    .controlSize(.small)
+                    .tint(theme.muted)
+            }
+            Text(preparingText)
+                .font(.system(size: 12))
+                .foregroundStyle(theme.muted)
+                .lineLimit(1)
+                .truncationMode(.tail)
+        }
+        .frame(maxWidth: 420, alignment: .leading)
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("listen.preparing")
+        .accessibilityLabel(preparingText)
+    }
+
+    private var preparingText: String {
+        if let progress = narration.readrVoiceDownloadProgress {
+            return "Preparing Readr Voice\u{2026} \(Int((progress * 100).rounded()))% "
+                + "of \(narration.readrVoiceDownloadSize), once"
+        }
+        return "Preparing Readr Voice\u{2026} \(narration.readrVoiceDownloadSize), once"
+    }
+
+    /// The download failed (or a synthesis hung). Narration is paused on
+    /// the sentence; Retry fetches again and picks it back up. An Apple
+    /// voice is a pick away under "Other voices", never automatic.
+    private var failedLine: some View {
+        HStack(spacing: 8) {
+            Text("Readr Voice couldn\u{2019}t download.")
+                .font(.system(size: 12))
+                .foregroundStyle(theme.muted)
+                .lineLimit(1)
+                .truncationMode(.tail)
+            Button("Retry") { narration.retryReadrVoice() }
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(theme.iris)
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("listen.retry")
+                .accessibilityLabel("Retry the Readr Voice download")
+                .help("Download Readr Voice again and keep listening")
+        }
+        .frame(maxWidth: 420, alignment: .leading)
+        .accessibilityIdentifier("listen.failed")
+    }
 
     /// The sentence being spoken. The page follows the voice on its own, so
     /// this is a confirmation of *where* rather than the only way to tell.
@@ -158,44 +279,62 @@ struct ListenBar: View {
 
     private var voiceMenu: some View {
         Menu {
-            // Above the list, not below it: the voice list is as long as the
-            // reader has voices installed, and anything under it is off the
-            // bottom of the menu — unreachable, and never even rendered.
+            // Notes go above the list, not below it: the voice list is as
+            // long as the reader has voices installed, and anything under it
+            // is off the bottom of the menu — unreachable, and never even
+            // rendered.
             menuNote("More voices: Settings \u{203A} Accessibility \u{203A} Spoken Content")
-            // The Readr Voice model is a one-time ~104MB download; narration
-            // reads through the platform voice meanwhile and switches at a
-            // sentence boundary. Said here so the wait is never a mystery —
-            // but only while Readr Voice is actually the selected narrator:
-            // a reader who picked a platform voice mid-download must not be
-            // promised a switch the router will never perform.
-            if KokoroSpeechEngine.isKokoroVoiceID(narration.voiceID) {
-                switch narration.readrVoiceReadiness {
-                case .downloading:
-                    menuNote(
-                        "Readr Voice is downloading \u{2014} "
-                            + "switching automatically when ready"
-                    )
-                case .failed:
-                    menuNote("Readr Voice couldn't download \u{2014} pick it again to retry")
-                case .unsupported, .notReady, .ready:
-                    EmptyView()
-                }
+            // The failure note stays while Readr Voice is the selected
+            // narrator: the bar carries the Retry, this says where it is.
+            // (The old "downloading — switching automatically" note is gone:
+            // the wait is the bar's preparing state now, and nothing
+            // switches — Readr Voice reads from the first sentence.)
+            if narration.readrVoiceFailed {
+                menuNote(
+                    "Readr Voice couldn\u{2019}t download or stopped responding \u{2014} "
+                        + "Retry is on the Listen bar"
+                )
+            }
+            // iPhone/iPad: the buffer plays with the screen locked and the
+            // CPU refills it. Said once, up front, because 3.3.0 said the
+            // opposite here and a reader who remembers that deserves the
+            // correction where they read it.
+            if narration.readrVoiceKeepsReadingWhenLocked, narration.usesReadrVoice {
+                menuNote("Keeps reading with the screen locked")
             }
             // This is scoped to readers who would otherwise have Readr Voice:
             // an English book with no stored choice, or a stored Readr Voice.
             // An explicitly chosen Apple voice needs no warning about a voice
             // the reader did not ask for.
             if narration.readrVoiceUnavailable {
-                menuNote(
-                    """
-                    Readr Voice isn't available on this version of \(osName) — an Apple bug \
-                    crashes it. The Apple voice reads instead.
-                    """
-                )
+                menuNote(readrVoiceUnavailableNote)
             }
             Divider()
             if narration.voices.isEmpty {
                 menuNote("No voices installed")
+            } else if narration.readrVoiceOffered {
+                // An English book where Readr Voice can run: Readr Voice is
+                // the menu, checked, and the Apple voices sit behind a
+                // disclosure. They are kept — an accessibility reader who
+                // set one up keeps it, and a stored pick still shows checked
+                // in there — but they are no longer a wall of rows between
+                // the reader and the one voice this menu is about.
+                Picker("Voice", selection: voiceBinding) {
+                    ForEach(narration.voices.filter { KokoroSpeechEngine.isKokoroVoiceID($0.id) }) {
+                        voice in
+                        Text(voice.name).tag(Optional(voice.id))
+                    }
+                }
+                .pickerStyle(.inline)
+                Menu("Other voices\u{2026}") {
+                    Picker("Other voices", selection: voiceBinding) {
+                        ForEach(narration.platformVoices) { voice in
+                            Text("\(voice.name) (\(voice.language))").tag(Optional(voice.id))
+                        }
+                    }
+                    .pickerStyle(.inline)
+                }
+                .accessibilityIdentifier("listen.otherVoices")
             } else {
                 Picker("Voice", selection: voiceBinding) {
                     ForEach(narration.voices) { voice in
@@ -213,6 +352,20 @@ struct ListenBar: View {
         .accessibilityIdentifier("listen.voice")
         .accessibilityLabel("Voice")
         .help(narration.voiceName.map { "Voice — \($0)" } ?? "Voice")
+    }
+
+    /// Why Readr Voice is missing from the list. On a Mac it is the OS gate
+    /// around Apple's BNNS crash; on an iPhone or iPad the MLX runtime needs
+    /// a Metal GPU (never missing on a device, always on the simulator).
+    private var readrVoiceUnavailableNote: String {
+        #if os(iOS)
+        return "Readr Voice isn't available on this device. The Apple voice reads instead."
+        #else
+        return """
+        Readr Voice isn't available on this version of \(osName) — an Apple bug \
+        crashes it. The Apple voice reads instead.
+        """
+        #endif
     }
 
     private var voiceBinding: Binding<String?> {

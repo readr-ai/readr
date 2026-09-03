@@ -3,6 +3,12 @@ import Foundation
 public enum NarrationStatus: Hashable, Sendable {
     /// Not narrating; the Listen bar is closed.
     case idle
+    /// The engine has the sentence but its voice is not ready to say it —
+    /// Readr Voice's first-use model download. Narration starts the moment
+    /// it is: nothing else reads meanwhile. Counts as active (the bar stays
+    /// up) and as playing (the pause control pauses the wait), but not as
+    /// listening (the sleep timer waits with it).
+    case preparing
     case speaking
     /// Held — by the reader, by the sleep timer, or at a chapter end when
     /// auto-advance is off. `play()` picks up where it stopped.
@@ -37,6 +43,41 @@ public final class NarrationController {
     public private(set) var status: NarrationStatus = .idle
     public private(set) var currentSegment: SpeechSegment?
     public private(set) var sleepTimer = SleepTimerState()
+    /// Why narration is `.paused` when the reader did not pause it — the
+    /// engine set the sentence down and needs something from outside. Nil
+    /// for a reader's pause, and cleared by anything the reader does.
+    public private(set) var holdReason: NarrationHoldReason?
+
+    /// How far ahead of the voice an engine that synthesizes ahead
+    /// (`SpeechPrefetching`) is asked to work, in estimated seconds of
+    /// audio — or the rest of the book, which the app asks for while the
+    /// device is charging.
+    public enum LookaheadHorizon: Hashable, Sendable {
+        case seconds(TimeInterval)
+        case restOfBook
+    }
+
+    /// An hour of listening by default. Changing it re-issues the lookahead
+    /// at once if narration is underway.
+    public var lookaheadHorizon: LookaheadHorizon = .seconds(NarrationController.defaultLookaheadSeconds) {
+        didSet {
+            guard lookaheadHorizon != oldValue, isUnderway else { return }
+            issueLookahead()
+        }
+    }
+    public static let defaultLookaheadSeconds: TimeInterval = 60 * 60
+    /// The estimate behind the horizon: prose read aloud at 1× runs at
+    /// about fifteen characters a second. Rough on purpose — the horizon is
+    /// a budget for synthesis, not a promise to the reader.
+    public static let charactersPerSecond: Double = 15
+
+    /// The sentences after the current one that the engine was last handed,
+    /// in playback order (empty for an engine that does not synthesize
+    /// ahead). The app asks the engine how much of this is already audio.
+    public private(set) var lookahead: [SpeechRequest] = []
+    /// The book being narrated; stamped on every request so an engine that
+    /// keeps audio can key it to the book.
+    public let bookID: UUID
 
     /// Fires on every status transition.
     public var onStatusChange: ((NarrationStatus) -> Void)?
@@ -79,6 +120,7 @@ public final class NarrationController {
         self.engine = engine
         self.settings = settings
         self.language = book.metadata.language
+        self.bookID = book.id
         self.now = now
         engine.delegate = self
     }
@@ -86,6 +128,10 @@ public final class NarrationController {
     // MARK: - Reading
 
     public var isSpeaking: Bool { status == .speaking }
+    public var isPreparing: Bool { status == .preparing }
+    /// Speaking, or about to as soon as the voice is ready — the states the
+    /// play/pause control shows as Pause.
+    public var isUnderway: Bool { status == .speaking || status == .preparing }
     /// True whenever the Listen bar should be on screen.
     public var isActive: Bool { status != .idle }
     /// Progress through the chapter being narrated, 0...1.
@@ -125,7 +171,7 @@ public final class NarrationController {
 
     public func play() {
         switch status {
-        case .speaking:
+        case .speaking, .preparing:
             return
         case .paused:
             sleepTimer.resume(at: now())
@@ -150,13 +196,14 @@ public final class NarrationController {
     }
 
     public func pause() {
-        guard status == .speaking else { return }
+        guard isUnderway else { return }
         engine.pause()
+        holdReason = nil
         setStatus(.paused)
     }
 
     public func togglePlayPause() {
-        if status == .speaking {
+        if isUnderway {
             pause()
         } else {
             play()
@@ -172,6 +219,8 @@ public final class NarrationController {
         activeRequestOrigin = 0
         currentSegmentLength = 0
         mustRespeakToResume = false
+        holdReason = nil
+        clearLookahead()
         sleepTimer.disarm()
         setStatus(.idle)
     }
@@ -241,7 +290,7 @@ public final class NarrationController {
     /// consecutive ticks rather than one, because an engine may report idle for
     /// an instant between `speak()` and the audio actually starting.
     private func checkForSilentEngine() {
-        guard status == .speaking, activeRequestID != nil, engine.state != .speaking else {
+        guard isUnderway, activeRequestID != nil, engine.state != .speaking else {
             silentTicks = 0
             return
         }
@@ -254,6 +303,14 @@ public final class NarrationController {
         // sentence as spoken and machine-gunned through pages nobody heard —
         // hold instead, and `play()` resumes the same utterance.
         if engine.state == .paused {
+            setStatus(.paused)
+            return
+        }
+        // Dropped while still preparing: the sentence was never heard, so
+        // it is not spoken. Hold on it; `play()` re-speaks it.
+        if status == .preparing {
+            activeRequestID = nil
+            mustRespeakToResume = true
             setStatus(.paused)
             return
         }
@@ -279,8 +336,10 @@ public final class NarrationController {
         guard status != .idle else { return }
         engine.stop()
         activeRequestID = nil
+        // The reader took over: whatever held narration no longer applies.
+        holdReason = nil
         // Skipping back from the end of the book puts narration in hand again.
-        let wasSpeaking = status == .speaking
+        let wasSpeaking = isUnderway
         if status == .finished { setStatus(.paused) }
 
         guard let segment = step(&playlist) else {
@@ -296,6 +355,8 @@ public final class NarrationController {
                 // back where it was so the skip is simply a no-op.
                 if wasSpeaking, let segment = currentSegment {
                     speak(segment, from: spokenOffset)
+                } else {
+                    issueLookahead()
                 }
             }
             return
@@ -314,12 +375,16 @@ public final class NarrationController {
                     characterOffset: segment.range.lowerBound
                 )
             )
+            issueLookahead()
         }
     }
 
     /// Speak `segment` from `offset` characters in — non-zero when the
-    /// remainder of an interrupted sentence is picked back up.
-    private func speak(_ segment: SpeechSegment, from offset: Int) {
+    /// remainder of an interrupted sentence is picked back up. The engine
+    /// is handed the sentences that follow at the same time (unless
+    /// `reissuingLookahead` is off: a speed change re-speaks without
+    /// touching a lookahead that speed does not invalidate).
+    private func speak(_ segment: SpeechSegment, from offset: Int, reissuingLookahead: Bool = true) {
         let characters = Array(segment.text)
         currentSegment = segment
         currentSegmentLength = characters.count
@@ -334,14 +399,8 @@ public final class NarrationController {
         spokenOffset = start
         activeRequestOrigin = start
         mustRespeakToResume = false
-        let request = SpeechRequest(
-            text: body,
-            voiceID: settings.voiceID,
-            language: language,
-            rate: settings.rate,
-            pitch: settings.pitch,
-            volume: settings.volume
-        )
+        let request = makeRequest(for: body)
+        appliedSettings = settings
         activeRequestID = request.id
         setStatus(.speaking)
         onPositionChange?(
@@ -352,6 +411,76 @@ public final class NarrationController {
             )
         )
         engine.speak(request)
+        if reissuingLookahead {
+            issueLookahead()
+        }
+    }
+
+    private func makeRequest(for text: String) -> SpeechRequest {
+        SpeechRequest(
+            text: text,
+            voiceID: settings.voiceID,
+            language: language,
+            rate: settings.rate,
+            pitch: settings.pitch,
+            volume: settings.volume,
+            bookID: bookID
+        )
+    }
+
+    // MARK: - Lookahead
+
+    /// Hand an engine that synthesizes ahead the sentences after the
+    /// current one, up to the horizon. Nothing for any other engine — the
+    /// list is not even built.
+    private func issueLookahead() {
+        guard let prefetching = engine as? SpeechPrefetching else { return }
+        let ahead = Self.segments(
+            playlist.upcomingSegments(limit: Self.lookaheadSegmentCap),
+            within: lookaheadHorizon, rate: settings.rate
+        )
+        lookahead = ahead.map { makeRequest(for: $0.text) }
+        prefetching.prefetch(lookahead)
+    }
+
+    private func clearLookahead() {
+        guard let prefetching = engine as? SpeechPrefetching else { return }
+        guard !lookahead.isEmpty else { return }
+        lookahead = []
+        prefetching.prefetch([])
+    }
+
+    /// How many sentences the playlist is walked for at most — the rest of
+    /// a long book is tens of thousands, which is fine to build once a
+    /// sentence, but a bound keeps a pathological book from being
+    /// unbounded work.
+    static let lookaheadSegmentCap = 50_000
+
+    /// Estimated seconds of audio for a sentence at `rate` — characters
+    /// over `charactersPerSecond`, scaled by the speed.
+    public static func estimatedSeconds(of segment: SpeechSegment, rate: Double) -> TimeInterval {
+        Double(segment.text.count) / (charactersPerSecond * max(rate, 0.01))
+    }
+
+    /// The front of `segments` whose estimated audio reaches `horizon`:
+    /// sentences are taken while the total so far is short of it, so the
+    /// one that crosses the line is included and a horizon of zero takes
+    /// nothing. `.restOfBook` takes them all.
+    public static func segments(
+        _ segments: [SpeechSegment], within horizon: LookaheadHorizon, rate: Double
+    ) -> [SpeechSegment] {
+        switch horizon {
+        case .restOfBook:
+            return segments
+        case .seconds(let budget):
+            var taken: [SpeechSegment] = []
+            var total: TimeInterval = 0
+            for segment in segments where total < budget {
+                taken.append(segment)
+                total += estimatedSeconds(of: segment, rate: rate)
+            }
+            return taken
+        }
     }
 
     /// The current sentence was spoken through. Decide what happens next: stop
@@ -368,6 +497,7 @@ public final class NarrationController {
             engine.stop()
             spokenOffset = currentSegmentLength
             mustRespeakToResume = true
+            clearLookahead()
             setStatus(.finished)
             return
         }
@@ -413,27 +543,55 @@ public final class NarrationController {
 
     /// A live speed/voice/volume change. The current sentence is re-spoken
     /// from the last word boundary the engine reported, so the change is heard
-    /// immediately without repeating what was already read.
+    /// immediately without repeating what was already read — unless only the
+    /// speed changed and the engine can apply that to the audio in flight,
+    /// in which case nothing is re-spoken and the lookahead, which speed
+    /// does not invalidate, is left alone.
     private func applySettingsChange() {
         guard let segment = currentSegment else { return }
         switch status {
-        case .speaking:
+        case .speaking, .preparing:
+            if onlyRateChanged(from: appliedSettings),
+               let adjusting = engine as? SpeechRateAdjusting,
+               adjusting.adjustRate(settings.rate) {
+                appliedSettings = settings
+                return
+            }
+            let speedOnly = onlyRateChanged(from: appliedSettings)
             engine.stop()
             activeRequestID = nil
-            speak(segment, from: spokenOffset)
+            speak(segment, from: spokenOffset, reissuingLookahead: !speedOnly)
         case .paused:
             // Re-speaking now would start audio the reader paused; the new
-            // settings are picked up by `play()`.
+            // settings are picked up by `play()`. `stop()` invalidates the
+            // engine's old pump, so hand it a fresh list for the new settings.
             engine.stop()
             activeRequestID = nil
             mustRespeakToResume = true
+            issueLookahead()
         case .idle, .finished:
             break
         }
     }
 
+    /// The settings the engine was last given, for telling a speed-only
+    /// change from any other.
+    private lazy var appliedSettings: SpeechSettings = settings
+
+    private func onlyRateChanged(from previous: SpeechSettings) -> Bool {
+        var same = settings
+        same.rate = previous.rate
+        return same == previous && settings.rate != previous.rate
+    }
+
     private func setStatus(_ new: NarrationStatus) {
         guard status != new else { return }
+        if new != .paused { holdReason = nil }
+        // The wait for the voice is over: the countdown that paused with
+        // `.preparing` picks up here (a reader's pause is resumed by `play()`).
+        if new == .speaking, status == .preparing {
+            sleepTimer.resume(at: now())
+        }
         status = new
         // The countdown only runs while narration does, whatever the reason it
         // stopped — the reader pausing, a chapter wall with auto-advance off,
@@ -470,10 +628,25 @@ extension NarrationController: SpeechEngineDelegate {
         handleFinishedSegment()
     }
 
+    public func speechEngine(_ engine: any SpeechEngine, isPreparing requestID: UUID) {
+        // Only an utterance we asked for and are waiting on: a report for a
+        // cancelled one is stale, and one arriving while paused must not
+        // un-pause the reader.
+        guard requestID == activeRequestID, status == .speaking else { return }
+        setStatus(.preparing)
+    }
+
+    public func speechEngine(_ engine: any SpeechEngine, didBeginSpeaking requestID: UUID) {
+        guard requestID == activeRequestID, status == .preparing else { return }
+        setStatus(.speaking)
+    }
+
     public func speechEngine(
         _ engine: any SpeechEngine, willSpeak range: Range<Int>, of requestID: UUID
     ) {
         guard requestID == activeRequestID, let segment = currentSegment else { return }
+        // A word boundary is audio, whatever else the engine forgot to say.
+        if status == .preparing { setStatus(.speaking) }
         let localLower = min(activeRequestOrigin + range.lowerBound, currentSegmentLength)
         let localUpper = min(activeRequestOrigin + range.upperBound, currentSegmentLength)
         spokenOffset = localLower
@@ -490,6 +663,16 @@ extension NarrationController: SpeechEngineDelegate {
         guard requestID == activeRequestID else { return }
         activeRequestID = nil
         mustRespeakToResume = true
+        setStatus(.paused)
+    }
+
+    public func speechEngine(
+        _ engine: any SpeechEngine, didSuspend requestID: UUID, reason: NarrationHoldReason
+    ) {
+        guard requestID == activeRequestID else { return }
+        activeRequestID = nil
+        mustRespeakToResume = true
+        holdReason = reason
         setStatus(.paused)
     }
 }

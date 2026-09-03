@@ -70,6 +70,15 @@ jobs:
           sudo xcode-select -s "$XCODE"
       - name: Show Xcode version
         run: xcodebuild -version
+      # Xcode 26 ships the Metal compiler as a separate download, and
+      # mlx-swift (Readr Voice on iOS) compiles its GPU kernels with it —
+      # without this the iOS device and simulator builds below fail inside
+      # mlx-swift_Cmlx with "cannot execute tool 'metal' due to missing Metal
+      # Toolchain". The macOS build no longer needs it (project.yml gives the
+      # MLX products `platformFilter: iOS`, so the Mac app doesn't build
+      # them), but this job builds every platform, so the step stays.
+      - name: Install Metal toolchain
+        run: xcodebuild -downloadComponent MetalToolchain
       - name: Install XcodeGen
         run: brew install xcodegen
       - name: Generate Xcode project

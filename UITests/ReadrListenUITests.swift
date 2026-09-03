@@ -23,9 +23,9 @@ final class ReadrListenUITests: XCTestCase {
 
     // MARK: - Helpers (mirroring ReadrFlowUITests)
 
-    private func launchSeeded() -> XCUIApplication {
+    private func launchSeeded(extraArguments: [String] = []) -> XCUIApplication {
         let app = XCUIApplication()
-        app.launchArguments += ["-uiTestSeed", "-uiTestSilentNarration"]
+        app.launchArguments += ["-uiTestSeed", "-uiTestSilentNarration"] + extraArguments
         #if !canImport(UIKit)
         // Keep the macOS run off the real Keychain (see ReadrFlowUITests).
         app.launchArguments += ["-uiTestInMemoryCredentials"]
@@ -154,6 +154,44 @@ final class ReadrListenUITests: XCTestCase {
         XCTAssertTrue(
             sentence.label.contains("Now reading:"),
             "The read-along line should say what is being read (got: \(sentence.label))"
+        )
+    }
+
+    // MARK: - Visible narration states (#82 follow-up)
+
+    /// `-uiTestNarrationPreparing` makes the stub report every utterance as
+    /// preparing and never speaking — the deterministic stand-in for the
+    /// real Readr Voice first-use download, which a UI test can't drive.
+    func testPreparingStateShowsOnTheBar() {
+        let app = launchSeeded(extraArguments: ["-uiTestNarrationPreparing"])
+        startListening(app)
+
+        let preparing = element(app, "listen.preparing")
+        XCTAssertTrue(preparing.waitForExistence(timeout: 5))
+        XCTAssertTrue(
+            preparing.label.contains("Preparing Readr Voice"),
+            "The bar should say Readr Voice is preparing (got: \(preparing.label))"
+        )
+        XCTAssertEqual(
+            element(app, "listen.playPause").label, "Pause",
+            "Preparing still shows Pause — it pauses the wait, the way it pauses speech"
+        )
+    }
+
+    /// `-uiTestNarrationHold` makes the stub immediately suspend every
+    /// utterance for `.needsForeground` — the deterministic stand-in for the
+    /// buffer running out with the screen locked, which a UI test can't
+    /// force a real engine into.
+    func testHoldStateShowsThePausedCopy() {
+        let app = launchSeeded(extraArguments: ["-uiTestNarrationHold"])
+        startListening(app)
+
+        let hold = element(app, "listen.hold")
+        XCTAssertTrue(hold.waitForExistence(timeout: 5))
+        XCTAssertEqual(hold.label, "Paused \u{2014} unlock Readr to keep listening")
+        XCTAssertEqual(
+            element(app, "listen.playPause").label, "Play",
+            "A hold is not underway — the control offers Play, not Pause"
         )
     }
 

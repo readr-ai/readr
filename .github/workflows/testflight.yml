@@ -90,6 +90,11 @@ jobs:
           fi
           sudo xcode-select -s "$XCODE"
           xcodebuild -version
+      # Xcode 26 ships the Metal compiler separately; mlx-swift (Readr Voice
+      # on iOS) needs it to build its GPU kernels — see ci.yml.
+      - name: Install Metal toolchain
+        if: env.HAS_ASC_KEY == 'true'
+        run: xcodebuild -downloadComponent MetalToolchain
       - name: Install XcodeGen
         if: env.HAS_ASC_KEY == 'true'
         run: brew install xcodegen
@@ -102,17 +107,27 @@ jobs:
           APP_STORE_CONNECT_API_KEY_P8: ${{ secrets.APP_STORE_CONNECT_API_KEY_P8 }}
         run: |
           echo "$APP_STORE_CONNECT_API_KEY_P8" | base64 --decode > "$RUNNER_TEMP/AuthKey.p8"
-      # The archive is deliberately UNSIGNED (CODE_SIGNING_ALLOWED=NO): with
-      # automatic signing, archive-time signing wants a DEVELOPMENT profile,
-      # which requires a registered device on the team ("Your team has no
-      # devices…" on a fresh account/CI); and overriding CODE_SIGN_IDENTITY
-      # trips "conflicting provisioning settings". The App Store export step
-      # below re-signs the app with the Distribution identity anyway — cloud
-      # signing mints the cert + App Store profile there, no devices needed.
-      - name: Archive (iOS, unsigned)
+      # The archive is SIGNED, with the same cloud-managed signing the export
+      # uses (-allowProvisioningUpdates + the App Store Connect API key). It
+      # used to be unsigned (CODE_SIGNING_ALLOWED=NO) because archive-time
+      # automatic signing wants a Development profile, which a team with no
+      # registered device cannot mint ("Your team has no devices…"), and the
+      # export re-signs with the Distribution identity anyway. But an
+      # unsigned archive carries NO entitlements, and the export re-sign
+      # takes its entitlements from the archived app's signature — so
+      # com.apple.developer.kernel.increased-memory-limit (App/Readr.entitlements,
+      # which Readr Voice on iOS needs to hold ~330MB of MLX weights on 4–6GB
+      # phones) was most likely absent from every IPA that shipped this way.
+      # Signing the archive embeds it; the assertion below proves it. If this
+      # step ever fails with the no-devices error, register one device on the
+      # team (Certificates, Identifiers & Profiles › Devices) — that is the
+      # only prerequisite the Development profile has.
+      - name: Archive (iOS, cloud-signed)
         if: env.HAS_ASC_KEY == 'true'
         env:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APP_STORE_CONNECT_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+          APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
         run: >
           set -o pipefail &&
           xcodebuild archive
@@ -121,10 +136,26 @@ jobs:
           -destination 'generic/platform=iOS'
           -archivePath build/Readr.xcarchive
           -skipPackagePluginValidation
-          CODE_SIGNING_ALLOWED=NO
+          -allowProvisioningUpdates
+          -authenticationKeyPath "$RUNNER_TEMP/AuthKey.p8"
+          -authenticationKeyID "$APP_STORE_CONNECT_KEY_ID"
+          -authenticationKeyIssuerID "$APP_STORE_CONNECT_ISSUER_ID"
           DEVELOPMENT_TEAM="$APPLE_TEAM_ID"
           MARKETING_VERSION="${VERSION#v}"
           CURRENT_PROJECT_VERSION="$GITHUB_RUN_NUMBER"
+      # Before the upload, not after it: the export re-signs from the
+      # archive's entitlements, so a missing entitlement here means a broken
+      # build, and failing now keeps it off TestFlight.
+      - name: Assert the Increased Memory Limit entitlement survived the archive
+        if: env.HAS_ASC_KEY == 'true'
+        run: |
+          set -o pipefail
+          APP=build/Readr.xcarchive/Products/Applications/Readr.app
+          codesign -d --entitlements :- "$APP" | tee archive-entitlements.plist
+          grep -q increased-memory-limit archive-entitlements.plist || {
+            echo "::error::com.apple.developer.kernel.increased-memory-limit is missing from the archived Readr.app — Readr Voice on iOS would be jetsammed loading its weights. Check CODE_SIGN_ENTITLEMENTS[sdk=iphoneos*] in project.yml and that the archive was signed."
+            exit 1
+          }
       - name: Upload to TestFlight
         if: env.HAS_ASC_KEY == 'true'
         env:
@@ -155,6 +186,23 @@ jobs:
             -authenticationKeyPath "$RUNNER_TEMP/AuthKey.p8" \
             -authenticationKeyID "$APP_STORE_CONNECT_KEY_ID" \
             -authenticationKeyIssuerID "$APP_STORE_CONNECT_ISSUER_ID"
+      # destination:upload hands the build to App Store Connect without
+      # writing an IPA locally, so this is best-effort: if the export did
+      # leave an .ipa, check the entitlement in the exact bytes uploaded too.
+      - name: Assert the entitlement in the exported IPA (if one was written)
+        if: env.HAS_ASC_KEY == 'true'
+        run: |
+          set -o pipefail
+          IPA=$(ls build/export/*.ipa 2>/dev/null | head -1 || true)
+          if [ -z "$IPA" ]; then
+            echo "No IPA written locally (destination=upload); the archive assertion above is the check that ran."
+            exit 0
+          fi
+          rm -rf build/ipa && mkdir -p build/ipa && unzip -q "$IPA" -d build/ipa
+          codesign -d --entitlements :- build/ipa/Payload/Readr.app | grep -q increased-memory-limit || {
+            echo "::error::com.apple.developer.kernel.increased-memory-limit is missing from the exported IPA."
+            exit 1
+          }
       - name: Clean up API key
         if: always() && env.HAS_ASC_KEY == 'true'
         run: rm -f "$RUNNER_TEMP/AuthKey.p8"

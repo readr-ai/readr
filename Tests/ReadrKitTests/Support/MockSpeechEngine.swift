@@ -4,7 +4,13 @@ import Foundation
 /// A speech engine that records what it was asked to do and only makes
 /// progress when a test says so — so every playback rule is exercised
 /// deterministically, with no audio hardware and no waiting.
-final class MockSpeechEngine: SpeechEngine {
+///
+/// It also stands in for an engine that synthesizes ahead
+/// (`SpeechPrefetching`) and one that can change speed in place
+/// (`SpeechRateAdjusting`); the latter only when a test switches
+/// `adoptsRateChanges` on, so the default engine re-speaks the way the
+/// platform synthesizer does.
+final class MockSpeechEngine: SpeechEngine, SpeechPrefetching, SpeechRateAdjusting {
     weak var delegate: (any SpeechEngineDelegate)?
     private(set) var state: SpeechEngineState = .idle
 
@@ -17,8 +23,20 @@ final class MockSpeechEngine: SpeechEngine {
     /// The request the engine is currently on (nil once stopped/finished).
     private(set) var active: SpeechRequest?
 
+    /// Every lookahead list handed over, in order.
+    private(set) var prefetches: [[SpeechRequest]] = []
+    /// Whether the latest lookahead is still eligible for background work.
+    private(set) var prefetchIsActive = false
+    /// Seconds of audio the engine claims to hold, by sentence text.
+    var buffered: [String: TimeInterval] = [:]
+    /// Whether `adjustRate` succeeds; the rates it was asked for.
+    var adoptsRateChanges = false
+    private(set) var adjustedRates: [Double] = []
+
     /// Texts of every request, for readable assertions.
     var spokenTexts: [String] { spoken.map(\.text) }
+    /// Texts of the most recent lookahead list.
+    var lastPrefetchTexts: [String]? { prefetches.last?.map(\.text) }
 
     func speak(_ request: SpeechRequest) {
         spoken.append(request)
@@ -40,6 +58,27 @@ final class MockSpeechEngine: SpeechEngine {
         stopCount += 1
         active = nil
         state = .idle
+        prefetchIsActive = false
+    }
+
+    func prefetch(_ requests: [SpeechRequest]) {
+        prefetches.append(requests)
+        prefetchIsActive = !requests.isEmpty
+    }
+
+    func secondsBuffered(ahead requests: [SpeechRequest]) -> TimeInterval {
+        var total: TimeInterval = 0
+        for request in requests {
+            guard let seconds = buffered[request.text] else { break }
+            total += seconds
+        }
+        return total
+    }
+
+    func adjustRate(_ rate: Double) -> Bool {
+        guard adoptsRateChanges else { return false }
+        adjustedRates.append(rate)
+        return true
     }
 
     // MARK: - Driving the engine from a test
@@ -84,4 +123,53 @@ final class MockSpeechEngine: SpeechEngine {
         state = .idle
         delegate?.speechEngine(self, didFail: request.id, error: error)
     }
+
+    /// The engine has taken the utterance but cannot voice it yet — its
+    /// model is still downloading (Readr Voice on first use).
+    func reportPreparing() {
+        guard let request = active else { return }
+        delegate?.speechEngine(self, isPreparing: request.id)
+    }
+
+    /// Audio for the current utterance has started.
+    func reportBeganSpeaking() {
+        guard let request = active else { return }
+        delegate?.speechEngine(self, didBeginSpeaking: request.id)
+    }
+
+    /// A "preparing" report from an utterance already cancelled.
+    func reportPreparing(stale requestID: UUID) {
+        delegate?.speechEngine(self, isPreparing: requestID)
+    }
+
+    /// The engine sets the current utterance down unspoken: nothing
+    /// buffered for it and no way to make it where the app is.
+    func suspend(_ reason: NarrationHoldReason = .needsForeground) {
+        guard let request = active else { return }
+        active = nil
+        state = .idle
+        delegate?.speechEngine(self, didSuspend: request.id, reason: reason)
+    }
+
+    /// A suspension reported for an utterance already cancelled.
+    func suspend(stale requestID: UUID) {
+        delegate?.speechEngine(self, didSuspend: requestID, reason: .needsForeground)
+    }
+}
+
+/// An engine with none of the optional capabilities — what the platform
+/// synthesizer looks like to the controller.
+final class PlainMockSpeechEngine: SpeechEngine {
+    weak var delegate: (any SpeechEngineDelegate)?
+    private(set) var state: SpeechEngineState = .idle
+    private(set) var spoken: [SpeechRequest] = []
+
+    func speak(_ request: SpeechRequest) {
+        spoken.append(request)
+        state = .speaking
+    }
+
+    func pause() { state = .paused }
+    func resume() { state = .speaking }
+    func stop() { state = .idle }
 }

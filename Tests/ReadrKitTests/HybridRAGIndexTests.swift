@@ -59,7 +59,11 @@ final class HybridRAGIndexTests: XCTestCase {
     func testChapterCeilingFiltersCandidatesBeforeTheLimit() async throws {
         let index = HybridRAGIndex()
         let book = makeDogsAndSpaceBook()
-        try await index.build(for: book, embeddings: DeterministicEmbeddingProvider())
+        // 256 buckets, not the mock's default 16: with 16 the hashed
+        // bag-of-words collides enough that the dog chapter can out-score
+        // the space chapter on a space question, and the precondition
+        // below is meaningless.
+        try await index.build(for: book, embeddings: DeterministicEmbeddingProvider(dimensions: 256))
 
         let unscoped = try await index.retrieve(query: "planets orbiting the sun", bookID: book.id, limit: 1)
         XCTAssertEqual(unscoped.first?.chapterIndex, 1, "unscoped, the space chapter wins")

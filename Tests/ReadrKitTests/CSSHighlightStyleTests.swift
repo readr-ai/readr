@@ -354,3 +354,53 @@ final class HighlightedRunExtractionTests: XCTestCase {
         XCTAssertEqual(highlights(result).count, 1)
     }
 }
+
+/// A book's own background is toned down when it would flip the reader's
+/// page from dark to light or back — the white pull-quote blocks the owner
+/// saw on the Dark theme in "The Book of Elon" — and left alone otherwise.
+final class CSSBackgroundAdaptationTests: XCTestCase {
+    private let night = CSSColor(red: 0.078, green: 0.078, blue: 0.059)   // #14140F
+    private let paper = CSSColor(red: 0.957, green: 0.945, blue: 0.918)   // #F4F1EA
+    private let white = CSSColor(red: 1, green: 1, blue: 1)
+    private let black = CSSColor(red: 0, green: 0, blue: 0)
+
+    func testOpaqueWhiteOnTheDarkPageBecomesAWash() {
+        let adapted = white.adapted(toPage: night)
+        XCTAssertEqual(adapted.alpha, CSSColor.washAlpha, accuracy: 0.001)
+        XCTAssertEqual(adapted.red, 1)
+        XCTAssertEqual(adapted.green, 1)
+        XCTAssertEqual(adapted.blue, 1)
+    }
+
+    func testOpaqueBlackOnThePaperPageBecomesAWash() {
+        XCTAssertEqual(black.adapted(toPage: paper).alpha, CSSColor.washAlpha, accuracy: 0.001)
+    }
+
+    func testYellowOnThePaperPageIsHonouredAsDeclared() {
+        let yellow = CSSColor(red: 1, green: 1, blue: 0)
+        XCTAssertEqual(yellow.adapted(toPage: paper), yellow)
+    }
+
+    func testAFaintGreyWashOnAWhitePageIsHonouredAsDeclared() {
+        let wash = CSSColor(red: 0, green: 0, blue: 0, alpha: 0.05)
+        XCTAssertEqual(wash.adapted(toPage: white), wash)
+    }
+
+    func testAFaintWhiteWashOnTheDarkPageIsHonouredAsDeclared() {
+        let wash = CSSColor(red: 1, green: 1, blue: 1, alpha: 0.1)
+        XCTAssertEqual(wash.adapted(toPage: night), wash)
+    }
+
+    func testAnAlreadyWashedBackgroundIsNotWashedFurther() {
+        let wash = CSSColor(red: 1, green: 1, blue: 1, alpha: 0.2)
+        XCTAssertEqual(wash.adapted(toPage: night), wash)
+    }
+
+    func testTheWashStillReadsAsEmphasisOnTheDarkPage() {
+        // The point of the wash: lighter than the page, but nowhere near
+        // a white block.
+        let painted = white.adapted(toPage: night).composited(over: night)
+        XCTAssertGreaterThan(painted.luminance, night.luminance * 3)
+        XCTAssertLessThan(painted.luminance, CSSColor.midLuminance)
+    }
+}

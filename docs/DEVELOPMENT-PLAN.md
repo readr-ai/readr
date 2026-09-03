@@ -197,6 +197,11 @@ voice; all M9 tests green; manual J8 walked on device with the screen locked.
 - **OAuth ToS** for consumer subscriptions — mitigate by defaulting to BYOK and
   labeling OAuth as opt-in (see AUTH.md). Endpoints/client-ids may change →
   covered by integration tests against a mock + a manual smoke test.
+- **Scanned / image-only PDFs** — no text layer to extract. They import
+  (one empty chapter per page, `BookMetadata.isImageOnly`) and open as
+  original pages; Ask, Listen, search, highlights, and the Reading view are
+  disabled with a reason. OCR on import (Vision) is the follow-up that would
+  unlock them.
 - **PDF text extraction quality** — worse than EPUB; fixture tests catch
   regressions, retrieval anchors reduce impact.
 - **Large-book indexing cost/time** — background + cache; measure in M5.

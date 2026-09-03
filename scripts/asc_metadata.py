@@ -823,25 +823,64 @@ def manual_steps() -> None:
     )
 
 
+def withdraw(bearer: str, app_id: str, version: str) -> None:
+    """Cancel the review submission that carries `version`.
+
+    A version sitting in WAITING_FOR_REVIEW / IN_REVIEW blocks every other
+    version on the record; cancelling its submission returns it to
+    PREPARE_FOR_SUBMISSION, where the next `submit` can rename it (see
+    find_or_create_version) and attach the newer build.
+    """
+    submissions = call(
+        "GET",
+        f"/apps/{app_id}/reviewSubmissions"
+        "?filter[state]=WAITING_FOR_REVIEW,IN_REVIEW,UNRESOLVED_ISSUES"
+        f"&filter[platform]={PLATFORM}&include=items",
+        bearer=bearer,
+    )
+    found = False
+    for submission in submissions.get("data", []):
+        state = submission["attributes"].get("state")
+        print(f"  review submission {submission['id']}: state={state}")
+        call(
+            "PATCH", f"/reviewSubmissions/{submission['id']}",
+            {"data": {"type": "reviewSubmissions", "id": submission["id"],
+                      "attributes": {"canceled": True}}},
+            bearer=bearer,
+        )
+        found = True
+        print(f"  WITHDRAWN — review submission {submission['id']} cancelled")
+    if not found:
+        print(f"  nothing in review to withdraw (looking for {version})")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--mode", choices=["plan", "push", "submit"], default="plan")
+    parser.add_argument("--mode", choices=["plan", "push", "submit", "withdraw"], default="plan")
     parser.add_argument("--version", required=True, help="e.g. 2.15.0")
     parser.add_argument("--root", default="appstore", type=Path)
     args = parser.parse_args()
 
     write = args.mode in ("push", "submit")
-    fields = read_metadata(args.root)
     print(f"mode={args.mode} version={args.version}")
-    for field, limit in LIMITS.items():
-        if fields.get(field):
-            print(f"  {field}: {len(fields[field])}/{limit}")
 
     bearer = token()
     app = find_app(bearer)
     print(f"app: {app['attributes']['name']} ({app['id']})")
 
     report_app_state(bearer, app["id"])
+    if args.mode == "withdraw":
+        # Withdrawing touches no listing copy, so it must not be blocked by
+        # the copy's length checks (a too-long draft description stopped the
+        # 3.2.2 withdrawal).
+        withdraw(bearer, app["id"], args.version)
+        report_app_state(bearer, app["id"])
+        return
+
+    fields = read_metadata(args.root)
+    for field, limit in LIMITS.items():
+        if fields.get(field):
+            print(f"  {field}: {len(fields[field])}/{limit}")
     version = find_or_create_version(bearer, app["id"], args.version, write)
     if not version:
         print("\nplan only — nothing further to inspect without creating the version")

@@ -1,10 +1,15 @@
-Readr 3.2.2: a recap when you need one, and a book to start on.
+Readr 3.3.1: Readr Voice is the only voice you hear.
 
-• Tap Recap — in the reader, or on a Continue Reading card — and Readr tells
-  you what's happened so far, from only the pages you've read. Nothing ahead
-  of your place is used, so it can't spoil what comes next
-• A first book in your library: Alice's Adventures in Wonderland is there on
-  first launch, so you can try reading, listening and asking right away
-• Fixed: Readr could quit a few minutes into listening on iOS 26.4 and
-  later. Readr Voice is paused on iPhone and iPad until Apple's fix ships;
-  Apple's voices read meanwhile, and your voice choice is kept
+• The first time you listen, Readr waits for Readr Voice instead of
+  reading in an Apple voice meanwhile — the Listen bar shows the one-time
+  download's progress, and the book starts the moment the voice is ready
+• Readr Voice keeps reading with the screen locked. It reads ahead while
+  the app is open (an hour, or the rest of the book while charging) and
+  plays from that with the phone in your pocket; if it ever runs out, it
+  pauses and asks you to unlock rather than switching voices
+• Speed changes no longer restart the sentence
+• The voice menu is Readr Voice, with Apple's voices a tap away under
+  "Other voices" for anyone who prefers them; books in other languages
+  keep Apple's voices as before
+• If the download can't finish, the bar says so with a Retry — no
+  surprise voice

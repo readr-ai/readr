@@ -30,11 +30,11 @@ on:
         required: true
         type: string
       mode:
-        description: "plan (read-only) | push (write listing) | submit (write + submit for review)"
+        description: "plan (read-only) | push (write listing) | submit (write + submit for review) | withdraw (cancel the active review submission)"
         required: true
         default: plan
         type: choice
-        options: [plan, push, submit]
+        options: [plan, push, submit, withdraw]
 
 permissions:
   contents: read

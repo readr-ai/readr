@@ -41,6 +41,10 @@ final class AppModel: ObservableObject {
     /// M3, by "ask the book").
     let credentialStore: any CredentialStore
     let providerManager: ProviderManager
+    /// OpenRouter's live catalogue (disk-cached, curated fallback). One per
+    /// app so the settings sheet and the launch-time budget registration
+    /// share a cache.
+    let openRouterModelStore = OpenRouterModelStore()
 
     /// - Parameter seedsSampleBook: whether a never-used library gets the
     ///   bundled sample on this launch. The app entry point decides from the
@@ -50,6 +54,18 @@ final class AppModel: ObservableObject {
         parsers: BookParserRegistry? = nil,
         seedsSampleBook: Bool
     ) {
+        // Diagnostics-to-file, in ALL builds (not gated on any UI-test
+        // launch argument): `DiagnosticsLog` is in-memory only by design —
+        // see its doc comment — and on a device the in-app bug report is the
+        // only way to read it. This sink appends every event to
+        // Library/Caches/Diagnostics/readr.log, where `xcrun devicectl` can
+        // pull it off between sessions or after a crash — the exact commands
+        // are in docs/DEVICE-SMOKE-TEST.md. Installed first, so nothing
+        // recorded during the rest of this initializer (sample-book seeding,
+        // state restore) is missed.
+        Self.installDiagnosticsFileSink()
+        DiagnosticsLog.shared.record(.info, .app, "launched Readr \(Self.appVersionAndBuild)")
+
         // `-uiTestEmptyLibrary`: a throwaway EMPTY store, so the empty-library
         // guidance can be asserted without inheriting whatever books happen to
         // sit in this device's on-disk library. Without it the test read the
@@ -102,6 +118,16 @@ final class AppModel: ObservableObject {
             }
         }
 
+        // A live-picked OpenRouter model persists by id alone. Its context
+        // budget is already durable — `ProviderCatalog` mirrors registered
+        // windows to UserDefaults and seeds itself from them synchronously,
+        // so resolve() is right from the first call. This pass registers the
+        // catalogue's disk copy on top (the full list, which may be newer)
+        // — no network, see `cachedModels()`. Under the UI-test flags the
+        // store returns nothing.
+        let openRouterStore = openRouterModelStore
+        Task.detached(priority: .utility) { _ = await openRouterStore.cachedModels() }
+
         // `-uiTestOpenURL <path>`: deterministic stand-in for the Files-app /
         // Finder open-in flow. XCUITest can't drive the system Files UI, so a
         // UI test passes a fixture path and we import it through the exact same
@@ -125,7 +151,8 @@ final class AppModel: ObservableObject {
             UserDefaults.standard.removeObject(forKey: "readerLayout")
         }
 
-        // `-uiTestSeedProviderKeys`: mark both remote providers as configured
+        // `-uiTestSeedProviderKeys`: mark the remote key providers (Anthropic,
+        // OpenAI, OpenRouter) as configured
         // (with obvious non-secret placeholder values — NOT real or realistic
         // API keys) and make Anthropic the active selection, so provider-
         // switching UI tests need no keyboard input (typing into a second
@@ -138,6 +165,7 @@ final class AppModel: ObservableObject {
            ProcessInfo.processInfo.arguments.contains("-uiTestInMemoryCredentials") {
             try? credentials.save(.apiKey("uitest-placeholder-not-a-secret"), for: .anthropic)
             try? credentials.save(.apiKey("uitest-placeholder-not-a-secret"), for: .openAI)
+            try? credentials.save(.apiKey("uitest-placeholder-not-a-secret"), for: .openRouter)
             providerManager.setActive(kind: .anthropic)
         }
 
@@ -196,6 +224,30 @@ final class AppModel: ObservableObject {
     }
 
     private static let sampleBookSeededKey = "hasSeededSampleBook"
+
+    // MARK: Diagnostics
+
+    /// Installs the file sink once per process. Idempotent (re-running it —
+    /// a second `AppModel`, an Xcode preview — just replaces the closure
+    /// with an equivalent one pointed at the same file), so it's safe to
+    /// call unconditionally from `init`.
+    private static func installDiagnosticsFileSink() {
+        guard let cachesDirectory = FileManager.default.urls(
+            for: .cachesDirectory, in: .userDomainMask
+        ).first else { return }
+        let logURL = cachesDirectory
+            .appendingPathComponent("Diagnostics", isDirectory: true)
+            .appendingPathComponent("readr.log")
+        let fileSink = DiagnosticsFileSink(fileURL: logURL)
+        DiagnosticsLog.shared.sink = { event in fileSink.write(event) }
+    }
+
+    private static var appVersionAndBuild: String {
+        let info = Bundle.main.infoDictionary
+        let version = info?["CFBundleShortVersionString"] as? String ?? "unknown"
+        let build = info?["CFBundleVersion"] as? String ?? "unknown"
+        return "\(version) (\(build))"
+    }
 
     private static func makeCredentialStore() -> any CredentialStore {
         // `-uiTestInMemoryCredentials`: keep the Ask refresh-on-connect UI test
@@ -512,6 +564,9 @@ final class AppModel: ObservableObject {
                 as extracted text for now — fixed-layout rendering is on the \
                 roadmap.
                 """
+            } else if book.metadata.isImageOnly == true {
+                // The reader repeats the short form as a banner each open.
+                importNotice = ScannedPDFCopy.importNotice(title: book.metadata.title)
             }
         } catch {
             // `readerFacingMessage` carries the recovery suggestion too — the
@@ -695,6 +750,8 @@ final class AppModel: ObservableObject {
     /// annotations), the retained source file, and the cover file.
     func removeBook(_ book: Book) {
         try? store.removeBook(id: book.id)
+        // Its Readr Voice audio goes with it.
+        ReadrVoiceAudioCache.shared.removeBook(id: book.id)
         if let source = sourceURL(for: book) {
             try? FileManager.default.removeItem(at: source)
         }
@@ -782,9 +839,11 @@ final class AppModel: ObservableObject {
         }
     }
 
-    /// True when the book's retained source is a PDF (native PDF reading).
+    /// True when the book is a PDF. The image-only parser verdict remains
+    /// authoritative if retaining the source copy failed and left no filename.
     func isPDF(_ book: Book) -> Bool {
-        book.sourceFilename?.lowercased().hasSuffix(".pdf") == true
+        book.metadata.isImageOnly == true
+            || book.sourceFilename?.lowercased().hasSuffix(".pdf") == true
     }
 
     // MARK: Bookmarks

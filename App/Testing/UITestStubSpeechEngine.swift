@@ -22,8 +22,37 @@ final class UITestStubSpeechEngine: SpeechEngine {
         ProcessInfo.processInfo.arguments.contains("-uiTestSilentNarration")
     }
 
+    /// `-uiTestNarrationPreparing`: every utterance reports `isPreparing` and
+    /// never follows it with `didBeginSpeaking`, so the Listen bar's
+    /// "Preparing Readr Voice…" state (ListenBar.preparingLine) can be
+    /// asserted deterministically. A real first-use model download can't be
+    /// driven from a UI test — this is the smallest hook that stands in for
+    /// it, using the same `SpeechEngineDelegate.isPreparing` callback a real
+    /// engine sends.
+    static var preparingEnabled: Bool {
+        ProcessInfo.processInfo.arguments.contains("-uiTestNarrationPreparing")
+    }
+
+    /// `-uiTestNarrationHold`: every utterance is immediately suspended for
+    /// `.needsForeground`, so the hold state (ListenBar.holdLine, the
+    /// Now Playing title) can be asserted without backgrounding the app for
+    /// real — XCUITest cannot reliably drive a device background/foreground
+    /// cycle against the buffer running out. Same `didSuspend` callback a
+    /// real engine sends when it has nothing prepared.
+    static var holdEnabled: Bool {
+        ProcessInfo.processInfo.arguments.contains("-uiTestNarrationHold")
+    }
+
     func speak(_ request: SpeechRequest) {
+        if Self.holdEnabled {
+            state = .paused
+            delegate?.speechEngine(self, didSuspend: request.id, reason: .needsForeground)
+            return
+        }
         state = .speaking
+        if Self.preparingEnabled {
+            delegate?.speechEngine(self, isPreparing: request.id)
+        }
     }
 
     func pause() {

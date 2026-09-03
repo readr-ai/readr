@@ -36,13 +36,27 @@ Only when you explicitly connect a cloud AI provider and ask it something:
   Ollama server on your machine. Readr's test suite asserts this path makes
   zero network calls.
 - If no AI provider is connected, Readr makes **one kind** of network request:
-  a one-time download of the Readr Voice narration model (~104MB of Kokoro-82M
-  CoreML weights) from a fixed content host, the first time an English book is
-  read aloud. The request carries **nothing about you or your book** — it only
-  fetches model files, and the voice then runs entirely on the device. Choose
-  an Apple voice in the Listen bar and Readr makes no network requests at all.
-  On iOS 26.4 and later, where Readr Voice is disabled (see
-  `docs/releases/v3.2.2.md`), this download never happens.
+  a one-time download of the Readr Voice narration model from
+  huggingface.co, the first time an English book is read aloud. On a Mac
+  that is ~104MB of Kokoro-82M CoreML weights
+  (`FluidInference/kokoro-82m-coreml`). On an iPhone or iPad it is ~330MB of
+  Kokoro-82M MLX weights and ~60MB of voice packs
+  (`mlx-community/Kokoro-82M-bf16`) plus ~20MB of pronunciation assets
+  (`beshkenadze/kitten-tts-g2p`) — about 410MB in all. The download library
+  keeps a hub cache of the fetched files *and* a working copy, so on-disk
+  use on an iPhone or iPad can approach twice that (~800MB) until iOS purges
+  the cache; both live in the app's Caches folder and are recreated by the
+  next Listen if the system clears them. These requests carry **nothing
+  about you or your book** — they only fetch model files, and the voice then
+  runs entirely on the device. Choose an Apple voice in the Listen bar and
+  Readr makes no network requests at all.
+- On iPhone and iPad, sentences Readr Voice has read or prepared ahead are
+  kept as compressed audio in the app's Caches folder (up to two hours,
+  oldest first, removed with the book) so they play again — and with the
+  screen locked — without being synthesized twice. They never leave the
+  device. Readr asks for notification permission the first time you listen
+  with Readr Voice, only to tell you from the lock screen if it runs out of
+  prepared audio; the notification is local and carries no book text.
 
 ## Your choices
 

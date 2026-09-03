@@ -162,12 +162,20 @@ Toolbar (unifiedCompact, auto-hides in full screen):
 - Now openable with no selection (whole-book questions). Shows selection quote
   when present, streams the answer, citations as clickable disclosure rows
   (future: jump-to-passage). Tier badge stays ("whole book" / "passages").
+- Scope is a labelled two-way choice, not a switch: an "Answers from"
+  segmented control — "Up to where I am" / "Whole book" — with a one-line
+  note under it saying what the chosen scope means ("Answers stop where you
+  stopped reading — no spoilers." / "Answers may use the whole book,
+  including what you haven't read."). Shown only when there is a reading
+  position to scope to.
 
 ### Recap
-- **Recap** is a toolbar button in the reader (next to Listen and Ask, ⇧⌘R)
-  and a ✦ Recap action under Home's Continue Reading cards. Either opens the
-  Ask panel with "Recap what I've read so far — no spoilers" already sent —
-  no chip to find, nothing to type — and a "where am I" line above the
+- **Recap** is the ✦ Recap action under Home's Continue Reading cards and
+  the first starter row in the reader's Ask panel — not a second toolbar
+  button beside Ask (it opened the same panel; two doors into one room,
+  dropped in 3.3.1). The card opens the Ask panel with "Recap what I've
+  read so far — no spoilers" already sent — nothing to type — and a
+  "where am I" line above the
   transcript ("Chapter 7 of 24 · 31% · The Whale", `ReadingPositionSummary`
   in ReadrKit) saying where the recap stops. The answer is built only from
   the text before that point (`ReadingFrontier`).

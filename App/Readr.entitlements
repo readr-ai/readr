@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- iOS device builds only (see project.yml CODE_SIGN_ENTITLEMENTS):
+	     Readr Voice on iPhone/iPad loads ~327MB of Kokoro weights into MLX,
+	     which sits above the default jetsam limit on 4–6GB devices. -->
+	<key>com.apple.developer.kernel.increased-memory-limit</key>
+	<true/>
+</dict>
+</plist>

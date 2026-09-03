@@ -29,9 +29,10 @@ struct AskRequest: Identifiable {
 /// sent, and follow-ups carry the earlier turns with them.
 ///
 /// Opened from a text book it is spoiler-scoped: answers see only what the
-/// reader has read. A small "Whole book" switch in the header lifts that for
-/// the questions that follow; it is not offered when there is no reading
-/// position to scope to (a native PDF page).
+/// reader has read. An "Answers from" choice in the header — "Up to where I
+/// am" or "Whole book", a two-way segmented control rather than an on/off
+/// switch — lifts that for the questions that follow; it is not offered when
+/// there is no reading position to scope to (a native PDF page).
 struct AskPanelView: View {
     let book: Book
     let selection: Selection?
@@ -214,8 +215,8 @@ struct AskPanelView: View {
     }
 
     /// What the question is anchored to — the selected sentence, or a note
-    /// saying how much of the book is in scope — with the scope switch
-    /// beside it whenever there is a reading position to scope to.
+    /// saying how much of the book is in scope — with the scope choice
+    /// beneath it whenever there is a reading position to scope to.
     private var contextHeader: some View {
         VStack(alignment: .leading, spacing: 8) {
             if let selection, !selection.quotedText.isEmpty {
@@ -246,7 +247,7 @@ struct AskPanelView: View {
                 }
             }
             if frontier != nil {
-                scopeToggle
+                scopePicker
             }
         }
     }
@@ -260,28 +261,40 @@ struct AskPanelView: View {
         return isScoped ? "Ask about what you've read so far" : "Ask anything about this book"
     }
 
-    /// "Whole book" on, "Up to where I am" off. Flipping it changes the scope
-    /// of every question sent after — the answers already on screen keep
-    /// the scope they were asked under.
-    private var scopeToggle: some View {
-        Toggle(isOn: $wholeBook) {
-            Text(wholeBook ? "Whole book" : "Up to where I am")
-                .font(.caption)
-                .foregroundStyle(theme.muted)
+    /// "Up to where I am" or "Whole book": a two-way choice, labelled, with a
+    /// line under it saying what the chosen scope means. It was a switch
+    /// captioned "Whole book", which read as a feature to turn on rather
+    /// than one of two scopes to pick — and off, it gave no hint that the
+    /// other scope existed. Changing it changes the scope of every question
+    /// sent after; the answers already on screen keep the scope they were
+    /// asked under.
+    private var scopePicker: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("ANSWERS FROM")
+                .font(.caption2.weight(.semibold))
+                .tracking(1.2)
+                .foregroundStyle(theme.faint)
+            Picker("Answers from", selection: $wholeBook) {
+                Text("Up to where I am").tag(false)
+                Text("Whole book").tag(true)
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            #if os(macOS)
+            .controlSize(.small)
+            #endif
+            .tint(theme.iris)
+            .accessibilityIdentifier("ask.scope")
+            Text(
+                wholeBook
+                    ? "Answers may use the whole book, including what you haven\u{2019}t read."
+                    : "Answers stop where you stopped reading — no spoilers."
+            )
+            .font(.caption)
+            .foregroundStyle(theme.faint)
+            .fixedSize(horizontal: false, vertical: true)
+            .accessibilityIdentifier("ask.scopeNote")
         }
-        .toggleStyle(.switch)
-        #if os(macOS)
-        .controlSize(.mini)
-        #endif
-        .tint(theme.iris)
-        .accessibilityIdentifier("ask.scope")
-        .accessibilityLabel("Whole book")
-        .accessibilityHint(
-            wholeBook
-                ? "Answers may draw on the whole book, including what you haven't read"
-                : "Answers stop where you stopped reading"
-        )
-        .help(wholeBook ? "Answers may use the whole book" : "Answers stop where you stopped reading")
     }
 
     private func exchangeView(_ exchange: AskViewModel.Exchange) -> some View {

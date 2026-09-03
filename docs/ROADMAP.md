@@ -107,13 +107,10 @@ Goal: the best reader app for the Mac — nobody goes back to Apple Books.
 - kosync (KOReader) progress-sync interop; Calibre/OPDS import
 - List view + metadata editing; user collections; parallel read (two books)
 
-## M6–M8 — iPhone & iPad: on the App Store (v3.2.1, live 2026-09-02)
+## M6–M8 — iPhone & iPad: TestFlight beta (shipped; device walks pending)
 
 The iOS UI already exists (multiplatform target, iPhone-simulator UITests in
-CI); these milestones made it shippable on real devices. Readr is now a free
-App Store download for iPhone and iPad (iOS 17+):
-[apps.apple.com/app/id6789784856](https://apps.apple.com/app/id6789784856).
-TestFlight carries pre-release builds only. Spec:
+CI); these milestones make it shippable on real devices. Spec:
 docs/DEVELOPMENT-PLAN.md §M6–M8.
 
 ### M6 — Signed builds + TestFlight pipeline
@@ -130,19 +127,6 @@ docs/DEVELOPMENT-PLAN.md §M6–M8.
 - [x] Exit gate: TestFlight install verified on a physical iPhone and iPad
   (import, read, highlight, BYOK ask) — walked 2026-08-08 against the v2.15.0
   TestFlight build and passed. Walkthrough: `docs/DEVICE-SMOKE-TEST.md`
-
-### App Store release
-- [x] `.github/workflows/app-store-metadata.yml` — pushes the listing copy
-  and reviewer notes, attaches the build, and submits for review through the
-  App Store Connect API (manual dispatch; `plan` / `push` / `submit` modes,
-  never on a tag). Privacy and age-rating questionnaires and screenshots
-  stay manual in the ASC web UI.
-- [x] `.github/workflows/release-radar.yml` — polls the review state every
-  30 minutes, presses Release on approval (release type is MANUAL), and
-  mirrors every state change onto a `launch-radar` issue.
-- [x] Live: v3.2.1 on the App Store since 2026-09-02, iPhone and iPad.
-- [ ] Retire `release-radar.yml` now that the launch window has closed (the
-  workflow header says to delete it once the target reports live).
 
 ### M7 — iOS platform correctness
 - [x] Files-app handler: `CFBundleDocumentTypes` + open-in-place +
@@ -275,16 +259,36 @@ wiring does not close them):
 
 - [x] **Legal read on the G2P model** — closed 2026-08-20 by the project owner:
   determined no legal issue with shipping the espeak-trained G2P.
-- [ ] **The iOS BNNS crash** (FluidAudio#817/#844) — FluidAudio#844 was closed
-  upstream as completed on 2026-08-11, but late comments still report crashes.
-  No FluidAudio tag newer than 0.15.6 exists; bump the pin when one lands.
-  Readr Voice remains the English default on ungated builds, with the platform
-  voice as fallback. It is hard-gated off on iOS/iPadOS 26.4+ (fail-closed
-  through iOS 27+ until each line passes a device check) and macOS 26.4–26.5:
-  Kokoro inference can crash inside Apple's `libBNNS`, so the platform voice
-  reads and the model is not downloaded. iOS/iPadOS 26.6 still reproduces the
-  crash; macOS 26.6+ is outside the gate. Re-enable any iOS line only after
-  FluidAudio#844's crash signature no longer reproduces on a device build.
+- [x] **The iOS BNNS crash** (FluidAudio#817/#844) — sidestepped rather than
+  fixed. FluidAudio#844 was closed upstream as completed on 2026-08-11, but
+  late comments still report crashes. The CoreML engine stays hard-gated off
+  on macOS 26.4–26.5, where Kokoro inference can crash inside Apple's
+  `libBNNS`, and is never built on iOS at all. *v3.3.0: on iPhone and iPad
+  Readr Voice runs on **MLX** instead — the same Kokoro-82M on the Metal GPU
+  (`MLXKokoroSpeechEngine`, Blaizzy/mlx-audio-swift pinned to `d20cbd6`,
+  mlx-swift 0.31.6, weights `mlx-community/Kokoro-82M-bf16`), which never
+  enters BNNS; iOS is MLX-or-platform. CoreML remains the macOS runtime.
+  `NarrationEnginePolicy` (ReadrKit, table-tested) picks the engine per
+  sentence. Decision memo: `docs/research/MLX-KOKORO-IOS.md`.*
+- [ ] **FluidAudio pin.** No FluidAudio tag newer than 0.15.6 exists; bump the
+  pin when one lands.
+- [ ] **A CoreML line on iOS again?** Re-enable a CoreML line only after
+  FluidAudio#844's crash signature no longer reproduces on a device build —
+  and only if MLX turns out to need it; today iOS has one runtime on purpose.
+- [ ] **Next: the MLX background limitation.** Metal refuses GPU work from a
+  backgrounded app, and MLX surfaces the refusal as a C++ exception in
+  Metal's completion handler — an uncatchable abort (mlx-swift#274/#407). So
+  the MLX engine never starts GPU work while the app is backgrounded (from
+  `didEnterBackground` to `willEnterForeground`, plus a 1.5s head start on
+  `willResignActive` for the lock; Control Center, banners and an iPad Split
+  View neighbour do not count): with the screen locked an Apple voice reads,
+  and Readr Voice returns at the next sentence when the reader comes back
+  (the voice menu says so). A synthesis already in flight at the moment of
+  the lock is the residual risk — well under a second per sentence, but not
+  zero. Closing this means synthesizing ahead in the foreground and
+  buffering a few sentences of audio, or iOS 26's background-GPU
+  continued-processing task (a separate entitlement); either way, measure on
+  a device first — the phone numbers below are still open.
 - [ ] **Phone-device numbers** (latency/memory/battery) — still unmeasured.
 - [ ] **Word timings** — `predictedDurations` gives exact token timestamps;
   mapping tokens back to character ranges (for read-along highlighting and

@@ -43,6 +43,24 @@ jobs:
       HAS_SIGNING: ${{ secrets.MACOS_CERT_P12 != '' && 'true' || 'false' }}
     steps:
       - uses: actions/checkout@v4
+      # The runner's default Xcode is too old for the app's package graph:
+      # mlx-audio-swift (Readr Voice on iOS; linked on macOS too, used only
+      # behind `#if os(iOS)`) declares swift-tools-version 6.2. Same selection
+      # as ci.yml / testflight.yml — fail loudly if the image has no 26.x.
+      - name: Select Xcode 26
+        run: |
+          ls -d /Applications/Xcode*.app || true
+          XCODE=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -1)
+          if [ -z "$XCODE" ]; then
+            echo "::error::No Xcode 26.x on this runner image (see listing above) — move this job to a newer macos image."
+            exit 1
+          fi
+          sudo xcode-select -s "$XCODE"
+          xcodebuild -version
+      # No Metal toolchain here: the MLX packages carry `platformFilter: iOS`
+      # in project.yml, so the macOS build neither links MLX nor compiles
+      # mlx-swift's Metal shaders (the iOS lanes in ci.yml and testflight.yml
+      # still install it).
       - name: Install XcodeGen
         run: brew install xcodegen
       - name: Generate Xcode project

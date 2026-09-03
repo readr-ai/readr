@@ -89,6 +89,28 @@ public struct CSSColor: Hashable, Sendable, Codable {
     /// "below 0.5 → white" rule hands it white at 3.9:1 when black would give
     /// 5.3:1. Comparing the two ratios always clears AA — the worst case, at
     /// luminance 0.179, scores 4.58:1 either way.
+    /// A book-declared background as it should be painted on the reader's
+    /// page. Honoured as declared when it sits on the same side of mid-grey
+    /// as the page — a cream panel on Paper, a faint grey wash anywhere.
+    /// When it would flip the page's polarity — an opaque near-white
+    /// pull-quote panel on the dark theme, which rendered as a white block
+    /// with black ink — it is toned down to a wash of itself, the same
+    /// treatment the theme gives its own markers on a dark page, so the
+    /// emphasis survives without the block.
+    public func adapted(toPage page: CSSColor) -> CSSColor {
+        let painted = composited(over: page)
+        let pageIsDark = page.luminance < Self.midLuminance
+        let paintedIsDark = painted.luminance < Self.midLuminance
+        guard pageIsDark != paintedIsDark else { return self }
+        return CSSColor(red: red, green: green, blue: blue, alpha: min(alpha, Self.washAlpha))
+    }
+
+    /// WCAG luminance of a perceptual mid-grey (#808080 ≈ 0.216); the line
+    /// between a "light" and a "dark" surface for `adapted(toPage:)`.
+    public static let midLuminance = 0.18
+    /// The alpha a polarity-flipping background is toned down to.
+    public static let washAlpha = 0.3
+
     public var legibleInk: CSSColor {
         contrastRatio(against: .black) >= contrastRatio(against: .white)
             ? .black

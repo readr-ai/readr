@@ -165,6 +165,166 @@ these four shipped on unit tests and the simulator alone.
 - [ ] A headphone/AirPods pinch pauses and resumes
 - [ ] Leave the app: playback continues in the background
 
+## 9. Readr Voice on MLX — iPhone and iPad `[blocker for 3.3]`
+
+Readr Voice on iOS runs Kokoro on the Metal GPU through MLX
+(`App/Speech/MLXKokoroSpeechEngine.swift`). **None of it can run on the
+simulator** — MLX aborts there (mlx#2605) — and CI proves only that it
+compiles and links. Every line below is unverified until a device has done
+it; two of them (the lock and the memory ceiling) are exactly where the
+known failure modes live. Use an iPhone on iOS 26.4 or later, on Wi-Fi, with
+Xcode attached for the memory gauge. Record the device model and iOS version
+with the results.
+
+- [ ] **First Listen waits for Readr Voice.** Fresh install (or delete the
+      app first). Open Alice, press Listen: no voice starts. The bar's
+      middle reads "Preparing Readr Voice… N% of 410MB, once" with a
+      progress line while the weights download, then a small spinner for
+      the pronunciation assets and the load; the play/pause control shows
+      Pause. Open the voice menu: Readr Voice is the only row, checked, with
+      an "Other voices…" submenu holding the Apple voices; no downloading
+      note, no locked-screen note. When the model is in (one to two minutes
+      on Wi-Fi) the first sentence is Readr Voice — **no Apple voice at any
+      point**, no sentence repeated, none skipped — and the bar shows the
+      sentence. Note how long it took from pressing Listen. Press pause
+      during the wait: the bar flips to Play and the download carries on;
+      press play: "Preparing" is back. Turn Wi-Fi off before pressing
+      Listen: the bar reads "Readr Voice couldn't download." with a Retry;
+      turn Wi-Fi on, press Retry: preparing, then Readr Voice.
+- [ ] **The buffer fills.** In the foreground, watch the right of the bar:
+      "1 min ready" within a minute, climbing to about an hour and stopping
+      there. Plug the phone in: it climbs on, to the end of the book or two
+      hours. Unplug: it stops adding, keeps what it has. Skip back a
+      sentence: instant. Change speed to 1.5×: the sentence continues from
+      where it is, no restart, and the figure does not drop. **Record** how
+      long it took to reach 10 minutes ready.
+- [ ] **Thirty minutes continuous, foreground.** Leave it reading. No quit,
+      no stall, no sentence heard twice, no Apple voice at any point. Watch
+      the read-along line keep pace with the audio.
+- [ ] **Mandatory lock-race test — 20 times.** Prefetch now defaults to
+      `.gpuWhileActive` — GPU while the app is foreground, same as
+      playback, CPU only once backgrounded — so with the app foreground and
+      reading normally, prefetch is a GPU sentence like any other. Read
+      ahead so a sentence is regularly being synthesized right as you lock
+      (skip forward past the buffer, or read as fast as the GPU/CPU
+      refill), and lock the phone right as the "ready" figure is
+      momentarily thin, unlock it, and repeat for 20 total locks. MLX cannot
+      cancel the one Metal graph already submitted, so diagnostics
+      warning-log each lock that catches one with its elapsed milliseconds
+      (every GPU use is also logged at `.info` with its duration, so the
+      diagnostics file shows exactly how much exposure there was). Record
+      the warning count and elapsed values. **Any crash is still a
+      release blocker**; file it with the full diagnostics log.
+      `readrVoice.prefetchOnCPUOnly` (default off) forces prefetch onto the
+      CPU even in the foreground, for the more conservative pre-fix
+      behaviour while investigating; `readrVoice.prefetchOnGPU` is a no-op
+      now that GPU-while-active is the default.
+- [ ] **Memory.** In Xcode's Debug navigator, the Memory gauge during that
+      half hour: note the peak. It must stay **under 1GB** and must not climb
+      sentence over sentence (a rising line is the MLX cache leak the 64MB
+      cap is meant to stop). The on-disk buffer is not memory; check it
+      separately under Settings › General › iPhone Storage › Readr (about
+      30MB an hour of audio).
+- [ ] **Thirty minutes locked.** With "20 min ready" or more, lock the
+      phone. Readr Voice keeps reading from the lock screen — the same
+      voice, no gap. Leave it locked for thirty minutes with Xcode attached:
+      no quit, no stall; lock-screen pause/play and the headphone pinch
+      work. Unlock: still Readr Voice, no sentence twice. Then **measure**,
+      from the diagnostics log (Settings › Report a bug attaches it; Xcode's
+      console shows it live): the one-time `Readr Voice (MLX) CPU
+      synthesis starting with MLX compilation disabled` line (should appear
+      once, at the first CPU sentence — the background warm-up, if playback
+      had already started before background), then the `Readr Voice (MLX)
+      sentence N: cpu …` lines — every sentence now, not one in ten. Write
+      down every `cpu rtf over last 5` value, the `ms for … ms of audio`
+      pairs, the "s ahead" figure at lock and at unlock, and the peak
+      memory during the locked half hour. An rtf under 0.8 means the CPU
+      refill cannot keep up with playback on this phone and the buffer is
+      what carries the locked screen.
+- [ ] **CPU synthesis failure (`readrVoice.prefetchOnCPUOnly=1` on a device
+      known to hit `[Compiled::eval_cpu] CPU compilation not supported on
+      the platform`, or any device where the CPU throws even with
+      compilation disabled).** Lock the phone with the buffer thin. A CPU
+      synthesis failure logs `Readr Voice (MLX) CPU synthesis failed with
+      MLX compilation disabled; CPU unavailable for the rest of this
+      session` at `.warning` with the underlying error, once. **The app
+      must not crash.** From then on: no further CPU attempts (no more
+      `sentence N: cpu` lines), the buffer plays out normally, and once it
+      runs dry the bar shows "Paused — unlock Readr to keep listening" (the
+      existing hold) rather than silence or an Apple voice. Unlocking
+      resumes on the GPU.
+- [ ] **Lock with nothing ready.** Fresh install; press Listen and lock
+      the phone as soon as the first sentence is heard. The next sentence
+      either arrives in Readr Voice after a CPU synthesis or narration
+      pauses at the boundary with "Paused — unlock Readr to keep listening"
+      on the bar, the lock screen's title, and as a notification (the first
+      Listen asked for permission — decline it and the diagnostics file
+      should carry a "hold notification permission not granted" line). No
+      Apple voice. Unlock and open Readr: it resumes on the same sentence by
+      itself; the notification is gone.
+- [ ] **Lock during the first download.** Fresh install again. Press
+      Listen, then lock the phone immediately and leave it locked past the
+      point the download would have finished (five minutes on Wi-Fi). The
+      bar was on "Preparing"; nothing speaks and the app does not quit —
+      the GPU load waits for the foreground. Unlock: preparing finishes and
+      Readr Voice reads.
+- [ ] **Relaunch from the buffer.** Force-quit, reopen, press Listen at the
+      same place: the sentence starts at once in Readr Voice before the
+      model has loaded, and "N min ready" shows what survived.
+- [ ] **Delete a book.** Delete Alice: Settings › General › iPhone Storage ›
+      Readr shrinks by its audio.
+- [ ] **Pause and resume.** Pause mid-sentence from the bar, wait ten
+      seconds, play: it resumes rather than restarting the sentence. Same
+      from the lock screen and with a headphone pinch.
+- [ ] **Skips and a chapter crossing.** Skip forward and back a sentence in
+      Readr Voice; skip to the next chapter; let a chapter end on its own
+      and roll into the next. Every one continues in Readr Voice.
+- [ ] **Speed.** Change speed mid-sentence: the player applies the
+      multiplier to the buffered audio (pitch preserved), so 1.5× should be
+      audibly faster, still intelligible, and continue from where it was.
+- [ ] **No crash logs.** After all of the above: Settings › Privacy &
+      Security › Analytics & Improvements › Analytics Data. There must be no
+      new `Readr-…` entry. Any that appears goes in the bug with the full
+      text — the BNNS signature is `BNNSGraphContextExecute`; the MLX one
+      is `[METAL] Command buffer execution failed` from
+      `com.Metal.CompletionQueueDispatch`.
+- [ ] **A long sentence.** Find or paste a sentence of 300+ characters (the
+      segmenter's cap is 320). It is read in full, in Readr Voice, possibly
+      with a small pause at a comma where it was split.
+
+## 10. Pulling the diagnostics file off a device
+
+`DiagnosticsLog` is an in-memory ring buffer — see its doc comment — so a
+crash or a session that never got to Settings › Report a bug takes it with
+it. In every build, `AppModel` also appends each event to
+`Library/Caches/Diagnostics/readr.log` inside the app's own container
+(`DiagnosticsFileSink`, ~1MB cap with a single rotation to a `.1` sibling).
+Two `devicectl` commands get it off a connected device without touching the
+app:
+
+```sh
+# List what's there (find <device-id> with `xcrun devicectl list devices`):
+xcrun devicectl device info files \
+  --device <device-id> \
+  --domain-type appDataContainer \
+  --domain-identifier com.readrai.app \
+  --subdirectory Library/Caches/Diagnostics
+
+# Copy it to the current directory:
+xcrun devicectl device copy from \
+  --device <device-id> \
+  --domain-type appDataContainer \
+  --domain-identifier com.readrai.app \
+  --source Library/Caches/Diagnostics/readr.log \
+  --destination .
+```
+
+- [ ] After using the app for a minute or two, both commands succeed and
+      `readr.log` has lines with a timestamp, level, category and message —
+      no book text, no secrets
+- [ ] The first line of a fresh app container reads `launched Readr
+      <version> (<build>)`
+
 ## Not on this list, on purpose
 
 **ChatGPT subscription sign-in.** `.chatGPT` is filtered out of the iOS build
