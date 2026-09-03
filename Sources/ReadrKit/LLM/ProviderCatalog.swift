@@ -183,34 +183,80 @@ public enum ProviderCatalog {
     /// persisted live pick before the catalogue has loaded this launch.
     static let openRouterFallbackBudget = 128_000
 
-    /// Context budgets for live-catalogue OpenRouter models, keyed by id.
+    /// Context windows for live-catalogue OpenRouter models, keyed by id.
     /// Filled by `OpenRouterModelStore` whenever a list arrives; read by
     /// `resolve`. Lock-protected: the store is an actor, the resolve
     /// happens on whatever thread `ProviderManager` is called from.
+    ///
+    /// Durable as well as in-memory: the map is mirrored to `UserDefaults`
+    /// (`openRouterContextLengthsKey`) and the registry seeds itself from
+    /// that mirror, synchronously, the first time it is touched. A persisted
+    /// live pick therefore resolves with its real budget from the very
+    /// first call after a relaunch — before any catalogue load, and without
+    /// depending on the Caches JSON, which the system may purge and which
+    /// `AppModel` restores only in an unawaited task.
     private static let openRouterBudgets = OpenRouterBudgetRegistry()
+
+    /// The `UserDefaults.standard` key under which registered OpenRouter
+    /// context windows persist, as a compact `[modelID: contextLength]`.
+    public static let openRouterContextLengthsKey = "openRouter.contextLengths"
 
     private final class OpenRouterBudgetRegistry: @unchecked Sendable {
         private let lock = NSLock()
-        private var budgets: [String: Int] = [:]
+        private var contextLengths: [String: Int] = [:]
+        private var seeded = false
+
+        private var defaults: UserDefaults { .standard }
+
+        /// Read the persisted mirror once, lazily, under the lock.
+        private func seedIfNeeded() {
+            guard !seeded else { return }
+            seeded = true
+            if let stored = defaults.dictionary(forKey: openRouterContextLengthsKey) as? [String: Int] {
+                contextLengths = stored
+            }
+        }
 
         func register(_ models: [OpenRouterModel]) {
             lock.lock(); defer { lock.unlock() }
-            for model in models {
-                budgets[model.id] = openRouterBudget(forContext: model.contextLength)
+            seedIfNeeded()
+            guard !models.isEmpty else { return }
+            for model in models where model.contextLength > 0 {
+                contextLengths[model.id] = model.contextLength
             }
+            defaults.set(contextLengths, forKey: openRouterContextLengthsKey)
         }
 
         func budget(for id: String) -> Int? {
             lock.lock(); defer { lock.unlock() }
-            return budgets[id]
+            seedIfNeeded()
+            return contextLengths[id].map(openRouterBudget(forContext:))
+        }
+
+        /// Forget the in-memory map (what a relaunch does), and optionally
+        /// the persisted mirror too.
+        func reset(clearingPersisted: Bool) {
+            lock.lock(); defer { lock.unlock() }
+            contextLengths = [:]
+            seeded = false
+            if clearingPersisted {
+                defaults.removeObject(forKey: openRouterContextLengthsKey)
+            }
         }
     }
 
     /// Remember the context windows of a live OpenRouter list so a model
-    /// picked from it resolves with a real budget. Idempotent; later lists
+    /// picked from it resolves with a real budget — now and after a relaunch
+    /// (the map is mirrored to `UserDefaults`). Idempotent; later lists
     /// overwrite earlier rows.
     public static func registerOpenRouterModels(_ models: [OpenRouterModel]) {
         openRouterBudgets.register(models)
+    }
+
+    /// Test hook: drop the in-memory registry so the next access re-seeds
+    /// from the persisted mirror, or wipe the mirror as well.
+    public static func resetOpenRouterBudgetsForTesting(clearingPersisted: Bool) {
+        openRouterBudgets.reset(clearingPersisted: clearingPersisted)
     }
 
     /// On-device models — enable the zero-egress privacy mode.

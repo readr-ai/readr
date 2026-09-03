@@ -29,7 +29,10 @@ public struct OpenRouterModel: Codable, Hashable, Sendable, Identifiable {
         self.completionUSDPerMillion = completionUSDPerMillion
     }
 
-    /// Costs nothing either way — OpenRouter's `:free` tier.
+    /// Costs nothing either way — OpenRouter's `:free` tier. Exactly zero
+    /// both ways; `parse` never produces a negative price (OpenRouter's "-1"
+    /// sentinel for dynamically priced routers is dropped there), and a
+    /// hand-built row with one is not free either.
     public var isFree: Bool {
         promptUSDPerMillion == 0 && completionUSDPerMillion == 0
     }
@@ -104,9 +107,12 @@ public enum OpenRouterModelCatalog {
     }
 
     /// Text-output models only, minus the `:batch` variants (a different
-    /// billing path Ask can't use) and the `~` router aliases (not a model),
-    /// sorted by name. Pricing strings are USD per token; the result is USD
-    /// per million.
+    /// billing path Ask can't use), the `~` router aliases (not a model),
+    /// and any row whose price OpenRouter can't state — "-1" is its sentinel
+    /// for routers priced per upstream model (openrouter/fusion), and a
+    /// missing or unparseable price is no better; either would otherwise
+    /// masquerade as $0 and land in the Free section. Sorted by name.
+    /// Pricing strings are USD per token; the result is USD per million.
     public static func parse(_ data: Data) throws -> [OpenRouterModel] {
         let decoder = JSONDecoder()
         decoder.keyDecodingStrategy = .convertFromSnakeCase
@@ -118,13 +124,15 @@ public enum OpenRouterModelCatalog {
             let id = entry.id
             guard !id.hasSuffix(":batch"), !id.hasPrefix("~") else { continue }
             guard entry.architecture?.outputModalities?.contains("text") == true else { continue }
+            guard let prompt = perMillion(entry.pricing?.prompt),
+                  let completion = perMillion(entry.pricing?.completion) else { continue }
             guard seen.insert(id).inserted else { continue }
             models.append(OpenRouterModel(
                 id: id,
                 name: entry.name?.isEmpty == false ? entry.name! : id,
                 contextLength: entry.contextLength ?? 0,
-                promptUSDPerMillion: perMillion(entry.pricing?.prompt),
-                completionUSDPerMillion: perMillion(entry.pricing?.completion)
+                promptUSDPerMillion: prompt,
+                completionUSDPerMillion: completion
             ))
         }
         return models.sorted {
@@ -133,8 +141,9 @@ public enum OpenRouterModelCatalog {
         }
     }
 
-    private static func perMillion(_ perToken: String?) -> Double {
-        guard let perToken, let value = Double(perToken), value > 0 else { return 0 }
+    /// Nil for a price that isn't one: missing, unparseable, or negative.
+    private static func perMillion(_ perToken: String?) -> Double? {
+        guard let perToken, let value = Double(perToken), value.isFinite, value >= 0 else { return nil }
         return value * 1_000_000
     }
 }
@@ -228,7 +237,7 @@ public actor OpenRouterModelStore {
             return Loaded(models: ProviderCatalog.openRouterCurated, source: .curated)
         }
         let cached = memory ?? readCache()
-        if let cached, now().timeIntervalSince(cached.fetchedAt) < timeToLive {
+        if let cached, isFresh(cached) {
             memory = cached
             ProviderCatalog.registerOpenRouterModels(cached.models)
             return Loaded(models: cached.models, source: .cache)
@@ -255,6 +264,14 @@ public actor OpenRouterModelStore {
     /// `load().models` — the list, from wherever it came.
     public func models() async -> [OpenRouterModel] {
         await load().models
+    }
+
+    /// Within the TTL — and not from the future: a clock corrected backwards
+    /// leaves a stamp ahead of now, and a negative age would otherwise pass
+    /// as "younger than the TTL" for as long as the clock stayed behind it.
+    private func isFresh(_ cached: CacheFile) -> Bool {
+        let age = now().timeIntervalSince(cached.fetchedAt)
+        return age >= 0 && age <= timeToLive
     }
 
     private func readCache() -> CacheFile? {

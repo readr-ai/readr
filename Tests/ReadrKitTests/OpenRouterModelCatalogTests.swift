@@ -82,6 +82,47 @@ final class OpenRouterModelCatalogTests: XCTestCase {
         XCTAssertTrue(free.isFree)
     }
 
+    /// OpenRouter reports "-1" for routers priced per upstream model
+    /// (openrouter/fusion); a price it can't state is not a price of zero,
+    /// and such a row must never land in the Free section.
+    func testParseDropsDynamicallyPricedAndUnparseablePriceRows() throws {
+        let data = Data("""
+        {"data":[
+          {"id":"openrouter/fusion","name":"OpenRouter: Fusion","context_length":128000,
+           "pricing":{"prompt":"-1","completion":"-1"},
+           "architecture":{"output_modalities":["text"]}},
+          {"id":"acme/half-priced","name":"Acme: Half Priced","context_length":128000,
+           "pricing":{"prompt":"0.000001","completion":"-1"},
+           "architecture":{"output_modalities":["text"]}},
+          {"id":"acme/garbled","name":"Acme: Garbled","context_length":128000,
+           "pricing":{"prompt":"n/a","completion":"0.000001"},
+           "architecture":{"output_modalities":["text"]}},
+          {"id":"acme/unpriced","name":"Acme: Unpriced","context_length":128000,
+           "pricing":{},
+           "architecture":{"output_modalities":["text"]}},
+          {"id":"acme/free","name":"Acme: Free","context_length":128000,
+           "pricing":{"prompt":"0","completion":"0"},
+           "architecture":{"output_modalities":["text"]}}
+        ]}
+        """.utf8)
+        let models = try OpenRouterModelCatalog.parse(data)
+        XCTAssertEqual(models.map(\.id), ["acme/free"], "only a stated $0/$0 row survives as free")
+        XCTAssertTrue(models[0].isFree)
+    }
+
+    func testIsFreeOnlyWhenBothPricesAreExactlyZero() {
+        func model(_ prompt: Double, _ completion: Double) -> OpenRouterModel {
+            OpenRouterModel(
+                id: "x/y", name: "X", contextLength: 1,
+                promptUSDPerMillion: prompt, completionUSDPerMillion: completion
+            )
+        }
+        XCTAssertTrue(model(0, 0).isFree)
+        XCTAssertFalse(model(0, 0.1).isFree)
+        XCTAssertFalse(model(0.1, 0).isFree)
+        XCTAssertFalse(model(-1, -1).isFree, "a sentinel is not a price")
+    }
+
     func testParseRejectsMalformedJSON() {
         XCTAssertThrowsError(try OpenRouterModelCatalog.parse(Data("not json".utf8)))
     }
@@ -174,6 +215,27 @@ final class OpenRouterModelCatalogTests: XCTestCase {
         XCTAssertEqual(cached, loaded.models)
     }
 
+    /// A clock corrected backwards leaves a cache stamped in the future; an
+    /// age below zero is not "fresh", it is unknowable, and must refetch.
+    func testStoreTreatsAFutureDatedCacheAsStale() async {
+        let cacheURL = temporaryCacheURL()
+        let later = Date(timeIntervalSinceNow: 6 * 60 * 60)
+        let first = OpenRouterModelStore(
+            cacheURL: cacheURL, arguments: [], now: { later },
+            fetch: { _ in Self.fixture }
+        )
+        _ = await first.load()
+
+        let counter = CallCounter()
+        let second = OpenRouterModelStore(
+            cacheURL: cacheURL, arguments: [], now: { Date() },
+            fetch: { _ in counter.bump(); return Self.fixture }
+        )
+        let loaded = await second.load()
+        XCTAssertEqual(loaded.source, .live)
+        XCTAssertEqual(counter.value, 1, "a cache from the future is refetched, not trusted")
+    }
+
     func testStoreFallsBackToTheCuratedListWhenNothingIsCachedAndTheFetchFails() async {
         let store = OpenRouterModelStore(
             cacheURL: temporaryCacheURL(), arguments: [],
@@ -253,6 +315,35 @@ final class OpenRouterModelCatalogTests: XCTestCase {
         XCTAssertEqual(info.contextBudget, 64_000)
         XCTAssertFalse(info.supportsPromptCaching)
         XCTAssertFalse(info.isLocal)
+    }
+
+    /// The registry's only durable copy used to be the purgeable Caches JSON,
+    /// restored by an unawaited task at launch — so the first resolve after a
+    /// relaunch could hand a persisted live pick the 128K fallback. Budgets
+    /// now also persist to UserDefaults and seed the registry synchronously
+    /// on first access.
+    func testRegisteredBudgetsSurviveARegistryReset() {
+        let id = "acme/persisted-\(UUID().uuidString)"
+        ProviderCatalog.registerOpenRouterModels([
+            OpenRouterModel(
+                id: id, name: "Acme Persisted", contextLength: 96_000,
+                promptUSDPerMillion: 0.1, completionUSDPerMillion: 0.2
+            ),
+        ])
+        // Drop the in-memory map only — what a relaunch does.
+        ProviderCatalog.resetOpenRouterBudgetsForTesting(clearingPersisted: false)
+        let info = ProviderCatalog.resolve(modelID: id, for: .openRouter)
+        XCTAssertEqual(info.contextBudget, 96_000, "the persisted map seeds the registry on first access")
+
+        // And the persisted map is what a relaunch reads.
+        let persisted = UserDefaults.standard.dictionary(forKey: ProviderCatalog.openRouterContextLengthsKey) as? [String: Int]
+        XCTAssertEqual(persisted?[id], 96_000)
+
+        ProviderCatalog.resetOpenRouterBudgetsForTesting(clearingPersisted: true)
+        XCTAssertEqual(
+            ProviderCatalog.resolve(modelID: id, for: .openRouter).contextBudget, 128_000,
+            "with nothing persisted the fallback applies again"
+        )
     }
 
     func testResolveCapsARegisteredBudgetAtTheRouterCeiling() {

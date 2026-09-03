@@ -118,11 +118,13 @@ final class AppModel: ObservableObject {
             }
         }
 
-        // A live-picked OpenRouter model persists by id alone; its context
-        // budget lives in the catalogue's disk cache. Register that copy now
-        // — no network, see `cachedModels()` — so the router budget is right
-        // from the first question after a relaunch, before Settings has been
-        // opened. Under the UI-test flags the store returns nothing.
+        // A live-picked OpenRouter model persists by id alone. Its context
+        // budget is already durable — `ProviderCatalog` mirrors registered
+        // windows to UserDefaults and seeds itself from them synchronously,
+        // so resolve() is right from the first call. This pass registers the
+        // catalogue's disk copy on top (the full list, which may be newer)
+        // — no network, see `cachedModels()`. Under the UI-test flags the
+        // store returns nothing.
         let openRouterStore = openRouterModelStore
         Task.detached(priority: .utility) { _ = await openRouterStore.cachedModels() }
 
