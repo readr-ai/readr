@@ -35,21 +35,24 @@ public enum ProviderCatalog {
             modelID: "claude-opus-5",
             contextBudget: 200_000,
             supportsPromptCaching: true,
-            isLocal: false
+            isLocal: false,
+            displayName: "Claude Opus 5"
         ),
         ProviderInfo(
             kind: .anthropic,
             modelID: "claude-sonnet-5",
             contextBudget: 200_000,
             supportsPromptCaching: true,
-            isLocal: false
+            isLocal: false,
+            displayName: "Claude Sonnet 5"
         ),
         ProviderInfo(
             kind: .anthropic,
             modelID: "claude-haiku-4-5",
             contextBudget: 200_000,
             supportsPromptCaching: true,
-            isLocal: false
+            isLocal: false,
+            displayName: "Claude Haiku 4.5"
         ),
     ]
 
@@ -61,21 +64,24 @@ public enum ProviderCatalog {
             modelID: "gpt-5.6-sol",
             contextBudget: 200_000,
             supportsPromptCaching: false,
-            isLocal: false
+            isLocal: false,
+            displayName: "GPT-5.6 Sol"
         ),
         ProviderInfo(
             kind: .openAI,
             modelID: "gpt-5.6-terra",
             contextBudget: 200_000,
             supportsPromptCaching: false,
-            isLocal: false
+            isLocal: false,
+            displayName: "GPT-5.6 Terra"
         ),
         ProviderInfo(
             kind: .openAI,
             modelID: "gpt-5.6-luna",
             contextBudget: 200_000,
             supportsPromptCaching: false,
-            isLocal: false
+            isLocal: false,
+            displayName: "GPT-5.6 Luna"
         ),
     ]
 
@@ -91,14 +97,16 @@ public enum ProviderCatalog {
             modelID: "gpt-5.4-mini",
             contextBudget: 128_000,
             supportsPromptCaching: false,
-            isLocal: false
+            isLocal: false,
+            displayName: "GPT-5.4 mini"
         ),
         ProviderInfo(
             kind: .chatGPT,
             modelID: "gpt-5.4",
             contextBudget: 128_000,
             supportsPromptCaching: false,
-            isLocal: false
+            isLocal: false,
+            displayName: "GPT-5.4"
         ),
     ]
 
@@ -168,7 +176,8 @@ public enum ProviderCatalog {
             modelID: model.id,
             contextBudget: Self.openRouterBudget(forContext: model.contextLength),
             supportsPromptCaching: false,
-            isLocal: false
+            isLocal: false,
+            displayName: model.name
         )
     }
 
@@ -266,14 +275,16 @@ public enum ProviderCatalog {
             modelID: "llama3",
             contextBudget: 8_192,
             supportsPromptCaching: false,
-            isLocal: true
+            isLocal: true,
+            displayName: "Llama 3"
         ),
         ProviderInfo(
             kind: .local,
             modelID: "qwen2.5",
             contextBudget: 32_768,
             supportsPromptCaching: false,
-            isLocal: true
+            isLocal: true,
+            displayName: "Qwen 2.5"
         ),
     ]
 
@@ -288,7 +299,8 @@ public enum ProviderCatalog {
             modelID: "apple-on-device",
             contextBudget: 2_200,
             supportsPromptCaching: false,
-            isLocal: true
+            isLocal: true,
+            displayName: "Apple Intelligence"
         ),
     ]
 

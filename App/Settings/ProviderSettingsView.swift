@@ -46,6 +46,15 @@ struct ProviderSettingsView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 10) {
                     sectionLabel("MODEL")
+                    // Which model Ask is actually using, in one line — with
+                    // four cards and a runtime default, the cards alone
+                    // leave the reader to work it out (F11).
+                    Text(askUsesLine)
+                        .font(.footnote)
+                        .foregroundStyle(theme.muted)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.bottom, 4)
+                        .accessibilityIdentifier("settings.askUses")
                     // One card per company, not per connection method: the
                     // ChatGPT subscription and an OpenAI API key are two doors
                     // into the same account and used to sit here as two
@@ -422,6 +431,25 @@ struct ProviderSettingsView: View {
     /// Name and price for the row — the live list first, the curated table
     /// offline, nil for an id the app has no data on (the row then shows the
     /// bare id).
+    /// "Ask uses Claude Opus 5 · Claude (Anthropic)": the active selection
+    /// by its name and its card. A cloud selection with no credential is
+    /// named too, with the state that stops it.
+    private var askUsesLine: String {
+        guard let selection = model.activeSelection else {
+            return "Ask uses no model yet — connect one below."
+        }
+        let kind = selection.kind
+        let name: String
+        if kind == .openRouter, let live = model.openRouterModel(id: selection.modelID) {
+            name = live.name
+        } else {
+            name = ProviderCatalog.resolve(modelID: selection.modelID, for: kind).name
+        }
+        let card = ProviderVendor.vendor(for: kind)?.title ?? kind.rawValue
+        let connected = kind.isOnDevice || (model.hasCredential[kind] ?? false)
+        return "Ask uses \(name) · \(card)" + (connected ? "" : " — not connected")
+    }
+
     private var currentOpenRouterModel: OpenRouterModel? {
         model.openRouterModel(id: currentOpenRouterModelID)
     }
@@ -807,15 +835,25 @@ private struct ModelPicker: View {
     }
 
     var body: some View {
-        Picker("Model", selection: Binding(
-            get: { currentModelID },
-            set: { onSelect($0) }
-        )) {
-            ForEach(models, id: \.modelID) { info in
-                Text(info.modelID).tag(info.modelID)
+        VStack(alignment: .leading, spacing: 3) {
+            Picker("Model", selection: Binding(
+                get: { currentModelID },
+                set: { onSelect($0) }
+            )) {
+                // Names, not wire ids: "Claude Opus 5", not claude-opus-5.
+                ForEach(models, id: \.modelID) { info in
+                    Text(info.name).tag(info.modelID)
+                }
             }
+            .font(.callout)
+            .disabled(!enabled)
+            .accessibilityIdentifier("settings.model.\(kind.rawValue)")
+            // The id stays, as a caption, for whoever needs to match it to
+            // a vendor console or a bill.
+            Text(currentModelID)
+                .font(.caption2.monospaced())
+                .foregroundStyle(.secondary)
+                .accessibilityIdentifier("settings.modelID.\(kind.rawValue)")
         }
-        .font(.callout)
-        .disabled(!enabled)
     }
 }

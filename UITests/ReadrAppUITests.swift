@@ -352,6 +352,13 @@ final class ReadrAppUITests: XCTestCase {
             app.staticTexts["settings.activeBadge.anthropic"].firstMatch.waitForExistence(timeout: 5),
             "the seeded Anthropic key is connected and active"
         )
+        // One line says what Ask uses — by name, not wire id (F11).
+        let askUses = app.staticTexts["settings.askUses"].firstMatch
+        XCTAssertTrue(askUses.waitForExistence(timeout: 5), "Settings should say which model Ask uses")
+        XCTAssertTrue(
+            askUses.label.contains("Ask uses Claude ") && !askUses.label.contains("claude-"),
+            "The line names the model, not its id (got: \(askUses.label))"
+        )
 
         XCTAssertFalse(
             app.secureTextFields["settings.apiKey.anthropic"].firstMatch.exists,
