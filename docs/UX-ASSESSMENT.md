@@ -173,7 +173,7 @@ state.
 
 Effort: half a day. No conflict except the #94 sequencing note.
 
-### F3. The macOS reader toolbar carries up to 17 controls  `high`
+### F3. The macOS reader toolbar carries up to 17 controls  `high` — shipped in the reader-chrome PR
 
 Trailing group: Find, three layout segments, two font-size steppers, a
 Text menu, three theme dots, a PDF display menu, Listen, ✦ Ask, Notes.
@@ -195,7 +195,7 @@ Effort: 1 day, mostly deleting `layoutSegmentControl`, `fontStepperControl`,
 `themeDotsControl`, `typographyMenu`, `pdfDisplayMenu`. Snapshot baselines
 change.
 
-### F4. Sheet headers: six surfaces, six grammars  `medium`
+### F4. Sheet headers: six surfaces, six grammars  `medium` — shipped in the reader-chrome PR
 
 Already on the roadmap's deferred list; confirming the inventory so it can
 be done in one pass:
@@ -283,7 +283,7 @@ swipe is already there).
 
 Effort: hours.
 
-### F9. Bookmarks are a menu of submenus  `low`
+### F9. Bookmarks are a menu of submenus  `low` — shipped in the reader-chrome PR (Option A)
 
 Each bookmark is a nested `Menu` with "Go to Bookmark" and "Remove". Two
 clicks to jump, and on iPhone a menu inside a bottom-bar menu. Chapter

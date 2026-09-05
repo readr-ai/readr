@@ -151,16 +151,13 @@ docs/DEVELOPMENT-PLAN.md §M6–M8.
 - [ ] Deferred: multi-window / Stage Manager (macOS per-book WindowGroup is
   the template); iCloud sync (seam: `LibraryStore` behind
   `AppModel.makeDefaultStore()`)
-- [ ] Deferred: macOS UI for the reader typography controls (font /
-  line-spacing / justification live in the iOS Appearance popover; macOS
-  renders the shared defaults but its inline toolbar has no pickers yet)
-- [ ] Deferred (UX review, Jul 2026): unify sheet-header grammar (Ask /
-  Article Studio / Notes / Settings each style their title+Done
-  differently — one shared header component; touches UITest hooks so it
-  needs its own pass); one typeface for AI output (ask answers are sans,
-  composed articles serif); dedupe/label ask source chips; note-indicator
-  underline parity across themes; PDF chrome parity with the EPUB reader
-  toolbar
+- [x] macOS reader typography controls — the macOS bar now carries the
+  same Aa popover as iOS (September 2026 UX review, F3)
+- [x] Sheet-header grammar unified (Ask / Article ✦ caps, Done on the
+  right, one note editor — F4). Still deferred from the Jul 2026 review:
+  one typeface for AI output (ask answers are sans, composed articles
+  serif); dedupe/label ask source chips; note-indicator underline parity
+  across themes; PDF chrome parity with the EPUB reader toolbar
 
 ## M9 — Listen (text-to-speech)
 - [x] `ReadrKit.Speech`: sentence segmentation, playlist across chapters,

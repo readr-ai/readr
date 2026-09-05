@@ -58,8 +58,10 @@ struct OpenRouterModelPickerView: View {
             .background(theme.background)
             .navigationTitle("OpenRouter model")
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
+                // A pick applies on tap, so the way out is Done, on the
+                // right, like every other sheet.
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
                 }
             }
         }

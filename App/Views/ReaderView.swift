@@ -668,46 +668,21 @@ struct ReaderView: View {
         }
         #endif
         ToolbarItemGroup(placement: .navigation) {
-            // Chapter chevrons are a macOS-only affordance. On iOS they read
-            // as mystery buttons pinned over the page (nothing like Apple
-            // Books) — touch navigation is swiping/edge-tapping through pages
-            // (paged mode flows across chapter walls), the horizontal flick
-            // in scroll mode, and the Contents list.
+            // Contents and the bookmark ribbon. No chapter chevrons: the
+            // page edges turn pages (and flow across chapter walls), and
+            // Contents jumps anywhere — a second pair of arrows in the bar
+            // was two more controls for nothing new. iPad regular width
+            // carries these up top, macOS-style; compact keeps them in the
+            // bottom bar below.
             #if os(macOS)
-            Button {
-                if let previous = linearIndex(before: chapterIndex) {
-                    jump(toChapter: previous)
-                }
-            } label: {
-                Image(systemName: "chevron.left")
-            }
-            .accessibilityIdentifier("prevChapter")
-            .accessibilityLabel("Previous chapter")
-            .help("Previous chapter")
-            .disabled(linearIndex(before: chapterIndex) == nil || isPDFOriginal)
-
-            Button {
-                if let next = linearIndex(after: chapterIndex) {
-                    jump(toChapter: next)
-                }
-            } label: {
-                Image(systemName: "chevron.right")
-            }
-            .accessibilityIdentifier("nextChapter")
-            .accessibilityLabel("Next chapter")
-            .help("Next chapter")
-            .disabled(linearIndex(after: chapterIndex) == nil || isPDFOriginal)
-
             if !isPDFOriginal {
                 tocButton
-                bookmarksMenu
+                bookmarkToggle
             }
             #else
-            // iPad regular width: contents/bookmarks ride up top, macOS-style;
-            // compact keeps them in the bottom bar below.
             if isRegularWidth, !isPDFOriginal {
                 tocButton
-                bookmarksMenu
+                bookmarkToggle
             }
             #endif
         }
@@ -739,7 +714,7 @@ struct ReaderView: View {
             ToolbarItemGroup(placement: .bottomBar) {
                 if !isPDFOriginal {
                     tocButton
-                    bookmarksMenu
+                    bookmarkToggle
                     Spacer()
                     searchButton
                 } else {
@@ -750,21 +725,16 @@ struct ReaderView: View {
             }
         }
         #else
-        // macOS trailing area, Marginalia style: the appearance popover is
-        // replaced by inline design controls — layout segments, an A / A font
-        // stepper, and three theme dots (the `reader.appearance` id rides on
-        // the layout segment container for compatibility).
+        // macOS trailing area: Find · Aa · Listen · ✦ Ask · Highlights. The
+        // appearance controls used to sit inline here — layout segments, a
+        // font stepper, a Text menu, three theme dots, a PDF display menu:
+        // seventeen controls across the bar. They live behind the same Aa
+        // popover iOS has (September 2026 UX review, F3).
         ToolbarItemGroup(placement: .primaryAction) {
             if !isPDFOriginal {
                 searchButton
             }
-            layoutSegmentControl
-            fontStepperControl
-            typographyMenu
-            themeDotsControl
-            if model.isPDF(book), !isImageOnlyPDF {
-                pdfDisplayMenu
-            }
+            appearanceButton
             listenButton
             askButton
             notesButton
@@ -996,52 +966,62 @@ struct ReaderView: View {
             // Marginalia-themed contents: serif rows on the elevated surface
             // (the default white List clashed with the reading page — seen in
             // the CI gallery), sized to a half sheet on iPhone instead of a
-            // full screen for a handful of rows.
+            // full screen for a handful of rows. Bookmarks list first, so
+            // the one popover is the whole of "where can I go" — there is no
+            // bookmarks menu (September 2026 UX review, F9).
             let toc = book.flattenedTOC
-            VStack(alignment: .leading, spacing: 0) {
-                Text("CONTENTS")
-                    .font(.system(size: 10.5, weight: .semibold))
-                    .kerning(1.5)
-                    .foregroundStyle(style.theme.faint)
-                    .padding(.horizontal, 20)
-                    .padding(.top, 18)
-                    .padding(.bottom, 6)
-                if toc.isEmpty {
-                    // No parsed TOC (plain text, PDFs): fall back to the
-                    // spine, one row per chapter.
-                    List(0..<book.chapters.count, id: \.self) { index in
-                        tocRow(
-                            title: book.chapterDisplayTitle(index),
-                            depth: 0,
-                            isCurrent: index == chapterIndex
-                        ) {
-                            jump(toChapter: index)
+            let bookmarks = textBookmarks
+            let bookmarkedChapters = Set(bookmarks.map(\.chapterIndex))
+            List {
+                if !bookmarks.isEmpty {
+                    Section {
+                        ForEach(bookmarks) { bookmark in
+                            bookmarkRow(bookmark)
+                        }
+                    } header: {
+                        contentsHeader("BOOKMARKS")
+                    }
+                }
+                Section {
+                    if toc.isEmpty {
+                        // No parsed TOC (plain text, PDFs): fall back to the
+                        // spine, one row per chapter.
+                        ForEach(0..<book.chapters.count, id: \.self) { index in
+                            tocRow(
+                                title: book.chapterDisplayTitle(index),
+                                depth: 0,
+                                isCurrent: index == chapterIndex,
+                                hasBookmark: bookmarkedChapters.contains(index)
+                            ) {
+                                jump(toChapter: index)
+                            }
+                        }
+                    } else {
+                        // The book's REAL table of contents — the spine list
+                        // mislabeled front matter and multi-entry documents as
+                        // "Chapter N". Current row: the last entry at/before the
+                        // reading position's chapter.
+                        let currentID = toc.last(
+                            where: { $0.entry.chapterIndex <= chapterIndex }
+                        )?.id
+                        ForEach(toc) { row in
+                            tocRow(
+                                title: row.entry.title,
+                                depth: row.depth,
+                                isCurrent: row.id == currentID,
+                                hasBookmark: bookmarkedChapters.contains(row.entry.chapterIndex)
+                            ) {
+                                jump(toTOCEntry: row.entry)
+                            }
                         }
                     }
-                    .listStyle(.plain)
-                    .scrollContentBackground(.hidden)
-                } else {
-                    // The book's REAL table of contents — the spine list
-                    // mislabeled front matter and multi-entry documents as
-                    // "Chapter N". Current row: the last entry at/before the
-                    // reading position's chapter.
-                    let currentID = toc.last(
-                        where: { $0.entry.chapterIndex <= chapterIndex }
-                    )?.id
-                    List(toc) { row in
-                        tocRow(
-                            title: row.entry.title,
-                            depth: row.depth,
-                            isCurrent: row.id == currentID
-                        ) {
-                            jump(toTOCEntry: row.entry)
-                        }
-                    }
-                    .listStyle(.plain)
-                    .scrollContentBackground(.hidden)
+                } header: {
+                    contentsHeader("CONTENTS")
                 }
             }
-            // Height hugs the row count (header + ~34pt rows) instead of a
+            .listStyle(.plain)
+            .scrollContentBackground(.hidden)
+            // Height hugs the row count (headers + ~34pt rows) instead of a
             // fixed ideal — a two-chapter book in an iPad popover was ~60%
             // dead cream below the rows. Long books cap where scrolling
             // takes over; iPhone's sheet detents below override this anyway.
@@ -1049,7 +1029,8 @@ struct ReaderView: View {
                 minWidth: 260, idealWidth: 300,
                 idealHeight: min(
                     420,
-                    64 + CGFloat(toc.isEmpty ? book.chapters.count : toc.count) * 34
+                    40 + CGFloat(toc.isEmpty ? book.chapters.count : toc.count) * 34
+                        + (bookmarks.isEmpty ? 0 : 40 + CGFloat(bookmarks.count) * 44)
                 )
             )
             .background(style.theme.elevated)
@@ -1061,27 +1042,104 @@ struct ReaderView: View {
         }
     }
 
+    /// The caps section label inside the Contents popover.
+    private func contentsHeader(_ title: String) -> some View {
+        Text(title)
+            .font(.system(size: 10.5, weight: .semibold))
+            .kerning(1.5)
+            .foregroundStyle(style.theme.faint)
+            .padding(.top, 6)
+            .textCase(nil)
+    }
+
     /// One Contents row, shared by the real-TOC and fallback lists. Nested
-    /// TOC entries indent by depth.
+    /// TOC entries indent by depth; a chapter holding a bookmark shows a
+    /// faint ribbon.
     private func tocRow(
-        title: String, depth: Int, isCurrent: Bool, action: @escaping () -> Void
+        title: String, depth: Int, isCurrent: Bool, hasBookmark: Bool = false,
+        action: @escaping () -> Void
     ) -> some View {
         Button {
             showTOC = false
             action()
         } label: {
-            Text(title)
-                .font(.system(size: 14.5, design: .serif))
-                .fontWeight(isCurrent ? .bold : .regular)
-                .foregroundStyle(style.theme.inkColor)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.leading, CGFloat(depth) * 14)
-                .padding(.vertical, 3)
-                .contentShape(Rectangle())
+            HStack(spacing: 8) {
+                Text(title)
+                    .font(.system(size: 14.5, design: .serif))
+                    .fontWeight(isCurrent ? .bold : .regular)
+                    .foregroundStyle(style.theme.inkColor)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                if hasBookmark {
+                    Image(systemName: "bookmark")
+                        .font(.system(size: 11))
+                        .foregroundStyle(style.theme.faint)
+                        .accessibilityLabel("Has a bookmark")
+                }
+            }
+            .padding(.leading, CGFloat(depth) * 14)
+            .padding(.vertical, 3)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .listRowBackground(Color.clear)
         .listRowSeparatorTint(style.theme.line)
+    }
+
+    /// One bookmark in the Contents popover: the chapter in caps, the
+    /// snippet in serif, and ✕ to remove. Tap to jump.
+    private func bookmarkRow(_ bookmark: Bookmark) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            Button {
+                showTOC = false
+                jump(toChapter: bookmark.chapterIndex, offset: bookmark.characterOffset)
+            } label: {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(book.chapterDisplayTitle(bookmark.chapterIndex).uppercased())
+                        .font(.system(size: 10, weight: .semibold))
+                        .kerning(1.2)
+                        .foregroundStyle(style.theme.muted)
+                        .lineLimit(1)
+                    if !bookmark.snippet.isEmpty {
+                        Text("\u{201C}\(bookmark.snippet)\u{201D}")
+                            .font(.system(size: 13, design: .serif))
+                            .foregroundStyle(style.theme.inkColor)
+                            .lineLimit(2)
+                            .multilineTextAlignment(.leading)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(bookmarkLabel(for: bookmark))
+            .accessibilityIdentifier("contents.bookmark")
+            Button {
+                model.removeBookmark(bookmark)
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(style.theme.faint)
+                    .frame(width: 24, height: 24)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("Remove bookmark")
+            .accessibilityLabel("Remove bookmark")
+            .accessibilityIdentifier("contents.removeBookmark")
+        }
+        .padding(.vertical, 4)
+        .listRowBackground(Color.clear)
+        .listRowSeparatorTint(style.theme.line)
+    }
+
+    /// Text-mode bookmarks in reading order (native PDF page bookmarks are
+    /// the PDF surface's own).
+    private var textBookmarks: [Bookmark] {
+        model.bookmarks(for: book)
+            .filter { $0.pdfPageIndex == nil }
+            .sorted {
+                ($0.chapterIndex, $0.characterOffset) < ($1.chapterIndex, $1.characterOffset)
+            }
     }
 
     /// TOC jump: the entry's chapter, at its fragment anchor when it carries
@@ -1094,42 +1152,21 @@ struct ReaderView: View {
         jump(toChapter: entry.chapterIndex, offset: offset)
     }
 
-    private var bookmarksMenu: some View {
-        Menu {
-            Button(
-                currentBookmark == nil ? "Add Bookmark" : "Remove Bookmark",
-                action: toggleBookmark
-            )
-            .keyboardShortcut("d", modifiers: .command)
-
-            let bookmarks = model.bookmarks(for: book)
-            if !bookmarks.isEmpty {
-                Divider()
-                ForEach(bookmarks) { bookmark in
-                    Menu {
-                        Button("Go to Bookmark") {
-                            jump(
-                                toChapter: bookmark.chapterIndex,
-                                offset: bookmark.characterOffset
-                            )
-                        }
-                        Button("Remove", role: .destructive) {
-                            model.removeBookmark(bookmark)
-                        }
-                    } label: {
-                        Text(bookmarkLabel(for: bookmark))
-                    }
-                }
-            }
-        } label: {
+    /// The ribbon: filled on a bookmarked page, and a single tap (⌘D) adds
+    /// or removes the bookmark. The list of bookmarks lives in Contents —
+    /// a menu of submenus here was two clicks to jump anywhere.
+    private var bookmarkToggle: some View {
+        Button(action: toggleBookmark) {
             Label(
-                "Bookmarks",
+                currentBookmark == nil ? "Bookmark" : "Bookmarked",
                 systemImage: currentBookmark == nil ? "bookmark" : "bookmark.fill"
             )
         }
+        .keyboardShortcut("d", modifiers: .command)
         .accessibilityIdentifier("reader.bookmarks")
-        .accessibilityLabel("Bookmarks")
-        .help("Bookmarks — ⌘D adds or removes one here")
+        .accessibilityLabel(currentBookmark == nil ? "Bookmark this page" : "Remove bookmark")
+        .accessibilityAddTraits(currentBookmark == nil ? [] : [.isSelected])
+        .help(currentBookmark == nil ? "Bookmark this page (⌘D)" : "Remove this bookmark (⌘D)")
     }
 
     private var searchButton: some View {
@@ -1153,9 +1190,8 @@ struct ReaderView: View {
         }
     }
 
-    #if os(iOS)
-    /// iOS keeps the Aa popover (the nav bar has no room for inline
-    /// controls); the popover itself is restyled to the Marginalia tokens.
+    /// The Aa popover — text size, theme, font, spacing, layout, and the
+    /// PDF pages/text switch — on both platforms.
     private var appearanceButton: some View {
         Button { showAppearance = true } label: {
             Label("Appearance", systemImage: "textformat.size")
@@ -1177,170 +1213,6 @@ struct ReaderView: View {
             )
         }
     }
-    #endif
-
-    #if os(macOS)
-    /// Inline layout segments: quiet text buttons; the selected one gets a
-    /// paper pill. Carries the `reader.appearance` compatibility identifier.
-    private var layoutSegmentControl: some View {
-        HStack(spacing: 2) {
-            layoutSegment("Scroll", .scroll)
-            layoutSegment("Page", .singlePage)
-            layoutSegment("Spread", .doublePage)
-        }
-        .padding(2)
-        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(style.theme.line, lineWidth: 1))
-        .help("Reading layout")
-        .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("reader.appearance")
-        .accessibilityLabel("Appearance")
-    }
-
-    private func layoutSegment(_ label: String, _ value: PageLayout) -> some View {
-        let selected = layout == value
-        return Button { layoutRaw = value.rawValue } label: {
-            Text(label)
-                .font(.system(size: 11.5, weight: .medium))
-                .foregroundStyle(selected ? style.theme.inkColor : style.theme.muted)
-                .padding(.horizontal, 9)
-                .padding(.vertical, 4)
-                .background(
-                    RoundedRectangle(cornerRadius: 6)
-                        .fill(selected ? style.theme.paper : .clear)
-                )
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .help("\(label) layout")
-        .accessibilityLabel(label)
-        .accessibilityAddTraits(selected ? .isSelected : [])
-    }
-
-    /// Inline A / A font stepper: serif glyphs, hairline divider and border.
-    private var fontStepperControl: some View {
-        HStack(spacing: 0) {
-            Button { adjustFontSize(-1) } label: {
-                Text("A")
-                    .font(.system(size: 11, design: .serif))
-                    .foregroundStyle(style.theme.inkColor)
-                    .padding(.horizontal, 10)
-                    .frame(height: 25)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .disabled(fontSize <= Double(ReaderStyle.fontSizeRange.lowerBound))
-            .help("Smaller text (⌘−)")
-            .accessibilityLabel("Smaller text")
-            .accessibilityIdentifier("appearance.textSmaller")
-
-            Rectangle().fill(style.theme.line).frame(width: 1, height: 25)
-
-            Button { adjustFontSize(+1) } label: {
-                Text("A")
-                    .font(.system(size: 15, design: .serif))
-                    .foregroundStyle(style.theme.inkColor)
-                    .padding(.horizontal, 10)
-                    .frame(height: 25)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .disabled(fontSize >= Double(ReaderStyle.fontSizeRange.upperBound))
-            .help("Larger text (⌘+)")
-            .accessibilityLabel("Larger text")
-            .accessibilityIdentifier("appearance.textLarger")
-        }
-        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(style.theme.line, lineWidth: 1))
-    }
-
-    /// Inline theme dots: 18pt paper swatches with a hairline border; the
-    /// selected one gets an ink ring.
-    private var themeDotsControl: some View {
-        HStack(spacing: 7) {
-            ForEach(ReadingTheme.allCases) { option in
-                themeDot(option)
-            }
-        }
-        .padding(.horizontal, 4)
-    }
-
-    private func themeDot(_ option: ReadingTheme) -> some View {
-        let selected = option == style.theme
-        return Button { themeRaw = option.rawValue } label: {
-            ZStack {
-                Circle()
-                    .fill(option.paper)
-                    .overlay(Circle().strokeBorder(style.theme.line, lineWidth: 1))
-                    .frame(width: 18, height: 18)
-                if selected {
-                    Circle()
-                        .strokeBorder(style.theme.inkColor, lineWidth: 1.5)
-                        .frame(width: 24, height: 24)
-                }
-            }
-            .frame(width: 24, height: 24)
-            .contentShape(Circle())
-        }
-        .buttonStyle(.plain)
-        .help("\(option.displayName) theme")
-        .accessibilityLabel(option.displayName)
-        .accessibilityIdentifier("appearance.theme.\(option.rawValue)")
-        .accessibilityAddTraits(selected ? .isSelected : [])
-    }
-
-    /// Typeface, line spacing and justification. iOS reaches these through the
-    /// Aa popover; the macOS toolbar has no room for three more inline
-    /// controls, so they live behind one `textformat` menu next to the stepper.
-    /// Identifiers match the popover's so the same assertions work on either
-    /// platform.
-    private var typographyMenu: some View {
-        Menu {
-            Picker("Font", selection: $fontRaw) {
-                ForEach(ReaderFont.allCases) { option in
-                    Text(option.displayName).tag(option.rawValue)
-                }
-            }
-            .pickerStyle(.inline)
-            .accessibilityIdentifier("appearance.font")
-
-            Picker("Line spacing", selection: $lineSpacingRaw) {
-                ForEach(ReaderLineSpacing.allCases) { option in
-                    Text(option.displayName)
-                        .tag(option.rawValue)
-                        .accessibilityIdentifier("appearance.spacing.\(option.rawValue)")
-                }
-            }
-            .pickerStyle(.inline)
-
-            Divider()
-
-            Toggle("Justify text", isOn: $isJustified)
-                .accessibilityIdentifier("appearance.justify")
-        } label: {
-            Label("Text", systemImage: "textformat")
-        }
-        .help("Typeface, line spacing and justification")
-        .accessibilityLabel("Text options")
-        .accessibilityIdentifier("reader.typography")
-    }
-
-    /// PDFs keep their display switch in the appearance area: original pages
-    /// (native PDFKit) or the extracted reading view.
-    private var pdfDisplayMenu: some View {
-        Menu {
-            Picker("PDF display", selection: $pdfShowsOriginal) {
-                Text("Original pages").tag(true)
-                Text("Reading view").tag(false)
-            }
-            .pickerStyle(.inline)
-            .labelsHidden()
-        } label: {
-            Label("PDF display", systemImage: "doc.richtext")
-        }
-        .help("Show the PDF's original pages, or its extracted text with highlights")
-        .accessibilityLabel("PDF display")
-        .accessibilityIdentifier("reader.pdfDisplay")
-    }
-    #endif
 
     private var askButton: some View {
         let button = Button(action: askTheBook) {
