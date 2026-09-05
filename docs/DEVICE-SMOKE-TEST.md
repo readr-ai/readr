@@ -230,8 +230,8 @@ with the results.
       voice, no gap. Leave it locked for thirty minutes with Xcode attached:
       no quit, no stall; lock-screen pause/play and the headphone pinch
       work. Unlock: still Readr Voice, no sentence twice. Then **measure**,
-      from the diagnostics log (Settings › Report a bug attaches it; Xcode's
-      console shows it live): the one-time `Readr Voice (MLX) CPU
+      from the diagnostics log (Settings › Report a bug includes it — this and
+      earlier sessions — and offers the raw file; Xcode's console shows it live): the one-time `Readr Voice (MLX) CPU
       synthesis starting with MLX compilation disabled` line (should appear
       once, at the first CPU sentence — the background warm-up, if playback
       had already started before background), then the `Readr Voice (MLX)

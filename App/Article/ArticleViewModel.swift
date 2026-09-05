@@ -82,6 +82,9 @@ final class ArticleViewModel: ObservableObject {
         } catch {
             markdown = ""
             errorMessage = error.readerFacingMessage
+            DiagnosticsLog.shared.recordArticleFailure(
+                provider: provider.info.kind.rawValue, error: error
+            )
         }
     }
 }

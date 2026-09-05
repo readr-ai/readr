@@ -203,23 +203,8 @@ extension HTTPError: LocalizedError, DiagnosticallyDescribable {
     /// Blanks anything key-shaped. Providers echo the rejected credential back
     /// in their message, and this text ends up in logs and bug reports.
     static func redactingSecrets(in text: String) -> String {
-        let patterns = [
-            // Vendor-prefixed keys: sk-…, sk-ant-api03-…, and friends.
-            "\\b(sk|rk|pk|key)-[A-Za-z0-9_-]{8,}",
-            // Bearer tokens.
-            "\\bBearer\\s+[A-Za-z0-9._-]{16,}",
-            // Long opaque runs — key material by shape. Deliberately narrower
-            // than "40+ word characters": including `-` in that class made it
-            // eat ordinary hyphenated prose, and this runs over the reader's
-            // own free text in a bug report, so
-            // "state-of-the-art-transformer-language-model" came back as
-            // `[redacted]`. Real key material is an unbroken alphanumeric run
-            // mixing both cases or digits, so require that instead.
-            "\\b(?=[A-Za-z0-9]*[0-9])(?=[A-Za-z0-9]*[A-Za-z])[A-Za-z0-9]{32,}\\b",
-        ]
         var redacted = text
-        for pattern in patterns {
-            guard let regex = try? NSRegularExpression(pattern: pattern) else { continue }
+        for regex in secretPatterns {
             redacted = regex.stringByReplacingMatches(
                 in: redacted,
                 range: NSRange(redacted.startIndex..., in: redacted),
@@ -228,6 +213,23 @@ extension HTTPError: LocalizedError, DiagnosticallyDescribable {
         }
         return redacted
     }
+
+    /// Compiled once: this runs on every diagnostics line as it is recorded
+    /// and again over the whole report each time one is composed.
+    private static let secretPatterns: [NSRegularExpression] = [
+        // Vendor-prefixed keys: sk-…, sk-ant-api03-…, and friends.
+        "\\b(sk|rk|pk|key)-[A-Za-z0-9_-]{8,}",
+        // Bearer tokens.
+        "\\bBearer\\s+[A-Za-z0-9._-]{16,}",
+        // Long opaque runs — key material by shape. Deliberately narrower
+        // than "40+ word characters": including `-` in that class made it
+        // eat ordinary hyphenated prose, and this runs over the reader's
+        // own free text in a bug report, so
+        // "state-of-the-art-transformer-language-model" came back as
+        // `[redacted]`. Real key material is an unbroken alphanumeric run
+        // mixing both cases or digits, so require that instead.
+        "\\b(?=[A-Za-z0-9]*[0-9])(?=[A-Za-z0-9]*[A-Za-z])[A-Za-z0-9]{32,}\\b",
+    ].compactMap { try? NSRegularExpression(pattern: $0) }
 
     /// A concrete next step for the reader, shown beneath `errorDescription`.
     public var recoverySuggestion: String? {

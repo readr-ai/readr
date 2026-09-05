@@ -42,6 +42,89 @@ final class DiagnosticsFileSinkTests: XCTestCase {
         return contents.split(separator: "\n", omittingEmptySubsequences: true).map(String.init)
     }
 
+    // MARK: - Reading back
+
+    /// The bug report used to be composed from the in-memory ring buffer
+    /// alone, so a report filed after a crash-and-relaunch carried only the
+    /// new session's "launched" line — the evidence sat in this file, unread.
+    func testEventsReadBackRoundTripWhatWasWritten() {
+        let sink = DiagnosticsFileSink(fileURL: logURL)
+        // Live timestamps carry fractions; the file keeps whole seconds, and
+        // the read-back says so by flooring — never by drifting.
+        let written = [
+            makeEvent(message: "opened epub book: 12 chapters", level: .info, category: .reader,
+                      timestamp: Date(timeIntervalSince1970: 1_735_000_000.61)),
+            makeEvent(message: "ask failed via anthropic (cloud tier)", level: .error,
+                      category: .provider, detail: "HTTP 529: overloaded — try again",
+                      timestamp: Date(timeIntervalSince1970: 1_735_000_007.2)),
+            makeEvent(message: "narration: 「日本語」 — em-dash in the message", level: .warning,
+                      category: .app, detail: "line one\nline two",
+                      timestamp: Date(timeIntervalSince1970: 1_735_000_009)),
+        ]
+        written.forEach(sink.write)
+
+        let expected = written.map { event in
+            var floored = event
+            floored.timestamp = Date(timeIntervalSince1970: event.timestamp.timeIntervalSince1970.rounded(.down))
+            floored.detail = event.detail?.replacingOccurrences(of: "\n", with: " ")
+            return floored
+        }
+        XCTAssertEqual(sink.readBack(), expected)
+    }
+
+    /// Files written before the tab separator used ` — `; they still read.
+    func testReadBackParsesLinesWrittenWithTheOldSeparator() throws {
+        try "[2024-12-24T00:26:40Z] ERROR provider: ask failed \u{2014} HTTP 401: nope\n"
+            .write(to: logURL, atomically: true, encoding: .utf8)
+        let events = DiagnosticsFileSink(fileURL: logURL).readBack()
+        XCTAssertEqual(events.map(\.message), ["ask failed"])
+        XCTAssertEqual(events.first?.detail, "HTTP 401: nope")
+    }
+
+    /// The share sheet gets a copy of both generations, oldest first — the
+    /// same span the report reads — never the live file.
+    func testSnapshotForSharingJoinsBothGenerationsIntoACopy() throws {
+        let sink = DiagnosticsFileSink(fileURL: logURL, maxBytes: 100)
+        (1...3).forEach { sink.write(makeEvent(message: "event \($0)")) }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: rotatedURL.path), "precondition: rotated")
+
+        let snapshot = try XCTUnwrap(sink.snapshotForSharing(to: directory, filename: "share.log"))
+        XCTAssertNotEqual(snapshot, logURL)
+        XCTAssertNotEqual(snapshot, rotatedURL)
+        let lines = readLines(at: snapshot)
+        XCTAssertEqual(lines.count, 3)
+        XCTAssertTrue(lines[0].contains("event 1") && lines[2].contains("event 3"), "\(lines)")
+        XCTAssertNil(DiagnosticsFileSink(fileURL: directory.appendingPathComponent("empty.log")).snapshotForSharing(to: directory))
+    }
+
+    func testReadBackReturnsTheRotatedGenerationFirst() {
+        // Two ~44-byte lines fit; the third write rotates the first two out.
+        let sink = DiagnosticsFileSink(fileURL: logURL, maxBytes: 100)
+        let events = (1...3).map { index in
+            makeEvent(message: "event \(index)", timestamp: Date(timeIntervalSince1970: 1_735_000_000 + Double(index)))
+        }
+        events.forEach(sink.write)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: rotatedURL.path), "precondition: rotated")
+
+        XCTAssertEqual(sink.readBack().map(\.message), ["event 1", "event 2", "event 3"])
+    }
+
+    func testReadBackSkipsLinesItCannotParse() throws {
+        let sink = DiagnosticsFileSink(fileURL: logURL)
+        sink.write(makeEvent(message: "good line"))
+        let handle = try FileHandle(forWritingTo: logURL)
+        try handle.seekToEnd()
+        try handle.write(contentsOf: Data("not a diagnostics line at all\n\n[garbage] nope\n".utf8))
+        try handle.close()
+        sink.write(makeEvent(message: "another good line"))
+
+        XCTAssertEqual(sink.readBack().map(\.message), ["good line", "another good line"])
+    }
+
+    func testReadBackWithNoFileIsEmpty() {
+        XCTAssertEqual(DiagnosticsFileSink(fileURL: logURL).readBack(), [])
+    }
+
     // MARK: - Writing
 
     func testWritesOneLinePerEvent() {
