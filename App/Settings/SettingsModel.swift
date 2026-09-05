@@ -253,6 +253,11 @@ final class SettingsModel: ObservableObject {
             // The error says what failed and what to do — a prefix here just
             // repeats it ("Couldn't save the key. …nothing was saved.").
             errorMessage = error.readerFacingMessage
+            // The kind, never the key: the log is redacted, but a Keychain
+            // failure's description doesn't carry the secret to begin with.
+            DiagnosticsLog.shared.record(
+                .error, .provider, "saving the \(kind.rawValue) API key failed", error: error
+            )
         }
     }
 
@@ -293,6 +298,9 @@ final class SettingsModel: ObservableObject {
             // user backed out — no error to show
         } catch {
             errorMessage = error.readerFacingMessage
+            DiagnosticsLog.shared.record(
+                .error, .provider, "sign-in to \(kind.rawValue) failed", error: error
+            )
         }
     }
 

@@ -20,6 +20,10 @@ source under the MIT license — you can verify this in the code at
   device, in the app's own storage. Deleting the app deletes them.
 - **API keys** you paste in are stored only in the system **Keychain** on your
   device — never in preference files, logs, or any server.
+- **A diagnostics log** (app version, device, and what failed — never book
+  text, highlights, questions, or keys) is kept on your device in the app's
+  own caches, capped at about a megabyte. It leaves the device only if you
+  share it yourself from Settings › Report a bug, where you can read it first.
 
 ## When data leaves your device
 

@@ -38,12 +38,12 @@ public struct DiagnosticEvent: Sendable, Equatable {
 
 /// A bounded, in-memory record of recent events, attached to bug reports.
 ///
-/// **In memory only, for the session.** Nothing is written to disk. Readers
-/// file reports about books they own and questions they asked, and a log on
-/// disk is a file that outlives the reason it existed — so the rotation here
-/// is a ring buffer that dies with the process. The cost is that a crash takes
-/// the log with it; a reader who relaunches and reports still sends something
-/// useful because the failure usually reproduces.
+/// **In memory, for the session** — a ring buffer that dies with the process.
+/// The app installs a `DiagnosticsFileSink` as `sink` so a device build's
+/// evidence also lands in a capped, rotated file under the app's own Caches
+/// (shape only, never text — the same rules apply on disk), which the bug
+/// report reads back for earlier sessions and for anything this buffer has
+/// already dropped.
 ///
 /// Two invariants, both tested in `DiagnosticsTests`:
 ///
@@ -74,6 +74,10 @@ public final class DiagnosticsLog: @unchecked Sendable {
         get { lock.lock(); defer { lock.unlock() }; return _sink }
         set { lock.lock(); _sink = newValue; lock.unlock() }
     }
+
+    /// When this session's log began — `BugReportComposer.evidence`'s
+    /// fallback boundary when the buffer is empty.
+    public let sessionStart = Date()
 
     public init(capacity: Int = 200) {
         self.capacity = max(1, capacity)
@@ -151,6 +155,24 @@ public final class DiagnosticsLog: @unchecked Sendable {
     /// provider and routing tier are recorded.
     public func recordAskFailure(provider: String, tier: String, error: Error) {
         record(.error, .provider, "ask failed via \(provider) (\(tier) tier)", error: error)
+    }
+
+    /// An article couldn't be composed. Same rule as Ask: the provider, never
+    /// the highlights.
+    public func recordArticleFailure(provider: String, error: Error) {
+        record(.error, .provider, "article composition failed via \(provider)", error: error)
+    }
+
+    /// Readr Voice's weights didn't download or load. "Stuck on Preparing"
+    /// was undiagnosable from a report until this was written down; the
+    /// runtime names which engine (CoreML on a Mac, MLX on iPhone) and
+    /// `inForeground` says whether the app was even allowed the GPU.
+    public func recordVoiceLoadFailure(runtime: String, inForeground: Bool, error: Error) {
+        record(
+            .error, .reader,
+            "Readr Voice (\(runtime)) download or load failed (foreground: \(inForeground))",
+            error: error
+        )
     }
 
     private static func sanitize(_ text: String) -> String {

@@ -73,31 +73,91 @@ enum ReadrShare {
 }
 
 // MARK: - Reporting a bug
-
 /// Compose a report, see exactly what it contains, then send it.
 ///
 /// The diagnostics are shown in full rather than summarised: a reader is about
 /// to publish this to a public issue tracker, and "attaches a redacted
 /// diagnostic log" is a claim they should be able to check for themselves.
+///
+/// Nothing here transmits anything. The report leaves the device only by the
+/// reader's own hand — a prefilled tracker link, the clipboard, or the share
+/// sheet — and each of those used to lose it in its own way (a GitHub login
+/// wall, the GitHub app ignoring prefilled text, a URL too long to open, the
+/// newest events cut off the end). So: the link is fitted to what a browser
+/// will open, the tracker button copies the report first and says so in its
+/// label, and the log can be shared as a file — a snapshot of both
+/// generations, so it never says less than the report does.
 struct ReportBugView: View {
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.openURL) private var openURL
     @AppStorage("readingTheme") private var themeRaw = ReadingTheme.paper.rawValue
     private var theme: ReadingTheme { ReadingTheme(rawValue: themeRaw) ?? .paper }
 
     let log: DiagnosticsLog
+    /// Where earlier sessions' evidence comes from. Nil means the sink the
+    /// app installed (resolved on the main actor when the sheet appears);
+    /// previews and tests that want this session only pass an empty sink.
+    var fileSink: DiagnosticsFileSink?
 
     @State private var whatHappened = ""
     @State private var includeDiagnostics = true
     @State private var showingDiagnostics = false
+    /// Read once, off the main actor, when the sheet appears: the file is up
+    /// to two megabytes and the parse is thousands of date conversions.
+    @State private var evidence: [DiagnosticEvent] = []
+    @State private var evidenceLoaded = false
+    /// A copy of the log file for the share sheet, taken when the sheet
+    /// appears so a rotation mid-share can't pull it away.
+    @State private var logSnapshot: URL?
+    /// The composed report, refreshed when its inputs change — not on every
+    /// body pass, which happens per keystroke.
+    @State private var report = ""
+    @State private var copied = false
 
     private var environment: BugReportEnvironment { .current }
 
-    private var report: String {
-        BugReportComposer.compose(
-            environment: environment,
-            events: includeDiagnostics ? log.entries : [],
-            userDescription: whatHappened
+    private var events: [DiagnosticEvent] { includeDiagnostics ? evidence : [] }
+
+    private func refreshReport() {
+        report = BugReportComposer.compose(
+            environment: environment, events: events, userDescription: whatHappened
         )
+        // Whatever was copied is no longer what the screen shows.
+        copied = false
+    }
+
+    private func loadEvidence() async {
+        guard !evidenceLoaded else { return }
+        evidenceLoaded = true
+        let sink = fileSink ?? AppModel.diagnosticsFileSink
+        let session = log.entries
+        let start = log.sessionStart
+        let (fromFile, snapshot) = await Task.detached(priority: .userInitiated) {
+            (sink?.readBack() ?? [], sink?.snapshotForSharing())
+        }.value
+        evidence = BugReportComposer.evidence(fromFile: fromFile, session: session, sessionStart: start)
+        logSnapshot = snapshot
+        refreshReport()
+    }
+
+    private func copyReport() {
+        Pasteboard.copy(report)
+        copied = true
+    }
+
+    /// Copy, then open the tracker: GitHub's sign-in redirect and its iOS
+    /// app both drop the prefilled text, and a reader who pastes still gets
+    /// it there. The label says both things, so the clipboard is never
+    /// overwritten by surprise.
+    private func copyAndOpenIssue() {
+        copyReport()
+        // Fitted to the URL budget on tap — composing to bytes is the
+        // expensive path, and only this button needs it.
+        if let url = BugReportComposer.issueURL(
+            environment: environment, events: events, userDescription: whatHappened
+        ) {
+            openURL(url)
+        }
     }
 
     var body: some View {
@@ -128,7 +188,7 @@ struct ReportBugView: View {
                             Text("Include diagnostics")
                                 .font(.subheadline)
                                 .foregroundStyle(theme.inkColor)
-                            Text("App version, device, and recent errors. Never your books, highlights, questions, or keys.")
+                            Text("App version, device, and recent errors from this and earlier sessions. Never your books, highlights, questions, or keys.")
                                 .font(.caption)
                                 .foregroundStyle(theme.muted)
                                 .fixedSize(horizontal: false, vertical: true)
@@ -167,15 +227,25 @@ struct ReportBugView: View {
 
                     Divider().overlay(theme.line)
 
-                    // Two ways out: file it where it gets triaged, or send it
-                    // however the reader prefers.
-                    if let url = BugReportComposer.issueURL(body: report) {
-                        Link(destination: url) {
-                            Label("Open a GitHub issue", systemImage: "arrow.up.right.square")
-                                .font(.subheadline.weight(.semibold))
-                        }
-                        .accessibilityIdentifier("feedback.github")
+                    // Ways out: file it where it gets triaged, keep a copy,
+                    // or send it however the reader prefers.
+                    Button(action: copyAndOpenIssue) {
+                        Label("Copy report and open a GitHub issue", systemImage: "arrow.up.right.square")
+                            .font(.subheadline.weight(.semibold))
                     }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(theme.iris)
+                    .accessibilityAddTraits(.isLink)
+                    .accessibilityHint("Copies the report, then opens GitHub in your browser")
+                    .accessibilityIdentifier("feedback.github")
+
+                    Button(action: copyReport) {
+                        Label(copied ? "Copied" : "Copy report", systemImage: copied ? "checkmark" : "doc.on.doc")
+                            .font(.subheadline)
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(theme.inkColor)
+                    .accessibilityIdentifier("feedback.copy")
 
                     ShareLink(item: report) {
                         Label("Send another way", systemImage: "square.and.arrow.up")
@@ -183,7 +253,19 @@ struct ReportBugView: View {
                     }
                     .accessibilityIdentifier("feedback.share")
 
-                    Text("Readr has no support inbox — reports go to the public issue tracker, so please don't include anything private.")
+                    if includeDiagnostics, let logSnapshot {
+                        ShareLink(item: logSnapshot) {
+                            Label("Share the full log file", systemImage: "doc.text")
+                                .font(.subheadline)
+                        }
+                        .accessibilityIdentifier("feedback.shareLog")
+                        Text("The whole diagnostics log, including events too old for the report above — same rules: shape only, never your text.")
+                            .font(.caption2)
+                            .foregroundStyle(theme.faint)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+
+                    Text("Readr has no support inbox — reports go to the public issue tracker, so please don't include anything private. If GitHub opens without your report (it asks you to sign in first, and its app ignores prefilled text), paste it: the report is on your clipboard.")
                         .font(.caption2)
                         .foregroundStyle(theme.faint)
                         .fixedSize(horizontal: false, vertical: true)
@@ -193,6 +275,10 @@ struct ReportBugView: View {
                 .frame(maxWidth: .infinity)
             }
             .background(theme.background)
+            .task { await loadEvidence() }
+            .onAppear(perform: refreshReport)
+            .onChange(of: whatHappened) { _, _ in refreshReport() }
+            .onChange(of: includeDiagnostics) { _, _ in refreshReport() }
             .navigationTitle("Report a bug")
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {

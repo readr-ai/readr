@@ -240,7 +240,13 @@ final class AppModel: ObservableObject {
             .appendingPathComponent("readr.log")
         let fileSink = DiagnosticsFileSink(fileURL: logURL)
         DiagnosticsLog.shared.sink = { event in fileSink.write(event) }
+        diagnosticsFileSink = fileSink
     }
+
+    /// The installed file sink, so Settings › Report a bug can read earlier
+    /// sessions back into the report (`BugReportComposer.evidence`) and offer
+    /// the raw file for sharing. Nil only before `init` has run.
+    private(set) static var diagnosticsFileSink: DiagnosticsFileSink?
 
     private static var appVersionAndBuild: String {
         let info = Bundle.main.infoDictionary
