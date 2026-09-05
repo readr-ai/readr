@@ -65,14 +65,14 @@ truth for every token; this section mirrors it.
 ```
 NavigationSplitView
 ├── Sidebar                       (translucent source list)
-│   ├── Home                      (Continue Reading + Recently Added)
+│   ├── Home                      (Continue Reading + Not started yet)
 │   ├── LIBRARY
 │   │   ├── All Books
-│   │   ├── Books                 (EPUB/text)
+│   │   ├── Ebooks                (EPUB/text)
 │   │   ├── PDFs
 │   │   └── Finished
-│   └── NOTES
-│       └── Highlights & Notes    (review + export + article studio)
+│   └── HIGHLIGHTS
+│       └── Highlights            (review + export + article studio)
 └── Detail                        (grid / home / notes review)
 
 Reader: opens in its OWN WINDOW on macOS (WindowGroup(for: Book.ID.self),
@@ -86,21 +86,29 @@ Providers) via gear in the library toolbar + macOS Settings scene.
 
 ### Home
 - **Continue Reading**: horizontally scrolling large cards (cover, title,
-  progress ring/bar, "N min left in chapter" when known). One click resumes at
-  the exact position. Sorted by `lastOpenedAt`. A "Chapter N of M" line under
-  the card carries the ✦ Recap action (see Recap below) for text books.
-- **Recently Added** row.
+  author, hairline progress, the Continue pill, "Chapter N of M"). One click
+  resumes at the exact position. Sorted by `lastOpenedAt`. Nothing on the
+  card is an AI moment (Recap greets the reader inside the book — see Recap).
+- **Connect an AI model** card between the shelves while no model is
+  connected; gone the moment one is. (It used to live only in the empty
+  state, which a first run never shows now that a sample book is seeded.)
+- **Not started yet** row: books never opened, newest import first. Not
+  "Recently Added" — in a small library that repeated the shelf above.
 - Empty state: warm illustration + "Add your first book" (Import button + the
   whole window is a drop target). Second card nudges AI provider setup.
 
 ### Library grid
 - Adaptive grid 150–200pt, hover effects, progress bar under in-progress
   covers, badges: "PDF" tag on PDFs, "Finished" checkmark.
-- Sort menu: Recent / Title / Author. (List view: post-v2.)
+- Sort menu, labelled with the current order: Recent / Title / Author.
+  (List view: post-v2.)
+- Progress caption only where there is progress ("31% · ~9 min left",
+  "Finished"); an unopened book gets the bare hairline, not "Not started".
 - Context menu per book: Open, Open in New Window (macOS), Mark as
-  Finished / Mark as Still Reading, Highlights & Notes, Create Article…,
+  Finished / Mark as Still Reading, Highlights, Create Article…,
   Delete Book… (confirmation; removes retained source + cover).
-- Drag & drop import everywhere + Import button + File > Import (⌘I).
+- Drag & drop import everywhere + Import button (many files at once) +
+  File > Import (⌘I).
 
 ### Reader window
 Toolbar (unifiedCompact, auto-hides in full screen):
@@ -170,27 +178,32 @@ Toolbar (unifiedCompact, auto-hides in full screen):
   position to scope to.
 
 ### Recap
-- **Recap** is the ✦ Recap action under Home's Continue Reading cards and
-  the first starter row in the reader's Ask panel — not a second toolbar
-  button beside Ask (it opened the same panel; two doors into one room,
-  dropped in 3.3.1). The card opens the Ask panel with "Recap what I've
-  read so far — no spoilers" already sent — nothing to type — and a
-  "where am I" line above the
-  transcript ("Chapter 7 of 24 · 31% · The Whale", `ReadingPositionSummary`
-  in ReadrKit) saying where the recap stops. The answer is built only from
-  the text before that point (`ReadingFrontier`).
+- **Recap** is the reader's welcome-back line and the first starter row in
+  the Ask panel — not a toolbar button beside Ask (dropped in 3.3.1: two
+  doors into one room) and not an action on the Home card (dropped after the
+  September 2026 UX review: a bookshelf card is not a control panel, and
+  every pill treatment tried there read as clutter).
+- **The welcome-back line** (`WelcomeBack` in ReadrKit): when a book is
+  opened a day or more after it was last opened, and it has a saved
+  position, a one-line card sits above the page — "✦ Welcome back — it’s
+  been 6 days · Chapter 1 of 12 · 31% · Down the Rabbit-Hole · Recap ›" with
+  a ✕. Recap opens the Ask panel with "Recap what I've read so far — no
+  spoilers" already sent and a "where am I" line above the transcript
+  (`ReadingPositionSummary`); the answer is built only from the text before
+  that point (`ReadingFrontier`). The line goes after three page turns, or
+  on ✕ or Recap, and is never persisted, so it can only return after another
+  absence.
+- How it knows: `BookState.lastOpenedAt` is already stamped on every open;
+  `AppModel.markOpened` keeps the stamp it replaced and the reader takes it
+  once on restore (`takeLastOpenedBeforeOpen`). Nothing new is stored.
 - Offered only where there is a reading position to recap up to: EPUBs,
   plain text, and PDFs in the extracted-text view. Native PDF pages get no
-  button, and PDFs get no card action — a page is not a frontier, and a
-  recap without one would spoil.
+  line — a page is not a frontier, and a recap without one would spoil.
 - No provider: the panel opens into its guided empty state and sends the
   recap the moment a key is connected from there. It is sent once per open,
   never on a re-render.
-- Iris stays reserved for AI moments: the card's Recap is the ✦ mark in
-  iris; the reader's is a plain toolbar item like Listen.
-- The card's Recap opens the book, then the recap: `AppModel.pendingRecapBookID`
-  carries the request to the reader, which consumes it on appearance (or on
-  change, when its macOS window is already open).
+- Iris stays reserved for AI moments: the ✦ mark on the line, and nothing
+  on the Home shelf.
 
 ## Data model (ReadrKit)
 

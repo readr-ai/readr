@@ -45,11 +45,11 @@ struct NotesPanel: View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .top) {
                 VStack(alignment: .leading, spacing: 3) {
-                    Text("Notes")
+                    Text("Highlights")
                         .font(.system(size: 20, weight: .semibold, design: .serif))
                         .foregroundStyle(theme.inkColor)
                     if annotationCount > 0 {
-                        Text(annotationCount == 1 ? "1 annotation" : "\(annotationCount) annotations")
+                        Text(annotationCount == 1 ? "1 highlight" : "\(annotationCount) highlights")
                             .font(.system(size: 12).monospacedDigit())
                             .foregroundStyle(theme.muted)
                     }

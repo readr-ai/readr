@@ -365,14 +365,17 @@ struct AskPanelView: View {
                 errorCard(error)
             }
 
-            // Suggested questions get first-time users past the blank field;
-            // tapping inserts the text (still editable) rather than submitting.
+            // Suggested questions get first-time users past the blank field.
+            // Each chip is a complete question, so a tap SENDS it — putting
+            // the text in the field and asking for a second tap was a step
+            // with nothing in it.
             if vm.exchanges.isEmpty && !vm.isStreaming {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 6) {
                         ForEach(suggestedQuestions, id: \.self) { suggestion in
                             Button {
                                 question = suggestion
+                                submit()
                             } label: {
                                 Text(suggestion)
                                     .font(.caption)

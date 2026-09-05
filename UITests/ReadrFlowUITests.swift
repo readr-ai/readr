@@ -232,8 +232,8 @@ final class ReadrFlowUITests: XCTestCase {
         )
         // Post-compose toolbar is the second signal composing completed.
         XCTAssertTrue(
-            app.buttons["Regenerate"].firstMatch.waitForExistence(timeout: 5),
-            "The editor toolbar should offer Regenerate once a draft exists"
+            app.buttons["Compose again"].firstMatch.waitForExistence(timeout: 5),
+            "The editor toolbar should offer Compose again once a draft exists"
         )
     }
 
@@ -246,9 +246,9 @@ final class ReadrFlowUITests: XCTestCase {
     func testFieldNotesPDFShowsPageIndicator() {
         let app = launchSeeded()
 
-        // "Field Notes" has the freshest addedAt, so it leads Home's
-        // Recently Added row. The card is a button labeled by title, but its
-        // title text also surfaces as a static text (the walk taps that).
+        // "Field Notes" was never opened, so it sits on Home's "Not started
+        // yet" row. The card is a button labeled by title, but its title
+        // text also surfaces as a static text (the walk taps that).
         let pdfButton = app.buttons["Field Notes"].firstMatch
         let pdfCard = pdfButton.waitForExistence(timeout: 10)
             ? pdfButton
@@ -751,7 +751,7 @@ final class ReadrFlowUITests: XCTestCase {
         // seeded span (→ recolor, no new highlight) or the synthesized
         // selection doesn't commit, so the count stays at 3 — an
         // XCUITest-selection limitation, not a product bug — so skip there.
-        let created = app.staticTexts["4 annotations"].firstMatch.waitForExistence(timeout: 5)
+        let created = app.staticTexts["4 highlights"].firstMatch.waitForExistence(timeout: 5)
         if isPad {
             try XCTSkipUnless(
                 created,
@@ -1177,10 +1177,10 @@ final class ReadrFlowUITests: XCTestCase {
         XCTAssertTrue(cell.waitForExistence(timeout: 5), "Field Notes should be on the PDF shelf")
         cell.press(forDuration: 1.0)
 
-        let notesItem = labeled(app.buttons, contains: "Highlights & Notes")
+        let notesItem = labeled(app.buttons, contains: "Highlights")
         XCTAssertTrue(
             notesItem.waitForExistence(timeout: 5),
-            "The per-book context menu should offer Highlights & Notes"
+            "The per-book context menu should offer Highlights"
         )
         notesItem.tap()
 
@@ -1235,7 +1235,7 @@ final class ReadrFlowUITests: XCTestCase {
         let app = launchSeeded()
 
         // "A Voyage North" is seeded with NO highlights. Open it from Home's
-        // Recently Added row (it leads that row as the fresh import). The card
+        // Continue Reading row (it was last opened six days ago). The card
         // is a button labeled by title, whose title also surfaces as static
         // text — tap whichever the runner exposes.
         let voyageButton = app.buttons["A Voyage North"].firstMatch
@@ -1244,7 +1244,8 @@ final class ReadrFlowUITests: XCTestCase {
             : app.staticTexts["A Voyage North"].firstMatch
         XCTAssertTrue(voyage.waitForExistence(timeout: 10), "The un-highlighted seeded book should be on Home")
         voyage.tap()
-        XCTAssertTrue(app.staticTexts["Departure"].waitForExistence(timeout: 10), "The book should open in the reader")
+        // It restores to its saved place: the second chapter.
+        XCTAssertTrue(app.staticTexts["Open Water"].waitForExistence(timeout: 10), "The book should open in the reader")
 
         let notes = button(app, id: "reader.notes", label: "Highlights")
         XCTAssertTrue(notes.waitForExistence(timeout: 5))

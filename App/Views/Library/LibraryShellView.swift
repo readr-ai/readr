@@ -54,11 +54,7 @@ struct LibraryShellView: View {
         // once at the split-view root so a single handler covers both columns
         // (no per-screen duplication / double-handling).
         .dropDestination(for: DroppedBookFile.self) { files, _ in
-            Task {
-                for file in files {
-                    await model.importBook(at: file.url)
-                }
-            }
+            Task { await model.importBooks(at: files.map(\.url)) }
             return true
         }
         // R6/D1: generic chrome (back chevron, split-view controls) reads the
@@ -67,10 +63,10 @@ struct LibraryShellView: View {
         .fileImporter(
             isPresented: $isImporting,
             allowedContentTypes: LibraryImport.types,
-            allowsMultipleSelection: false
+            allowsMultipleSelection: true
         ) { result in
-            if case let .success(urls) = result, let url = urls.first {
-                Task { await model.importBook(at: url) }
+            if case let .success(urls) = result {
+                Task { await model.importBooks(at: urls) }
             }
         }
         .sheet(isPresented: $showSettings) {
@@ -135,11 +131,11 @@ struct LibraryShellView: View {
                 navRow("Home", item: .home, id: "sidebar.home")
                 sectionLabel("Library")
                 navRow("All Books", item: .allBooks, count: model.books.count, id: "sidebar.allBooks")
-                navRow("Books", item: .books, count: epubCount, id: "sidebar.books")
+                navRow("Ebooks", item: .books, count: epubCount, id: "sidebar.books")
                 navRow("PDFs", item: .pdfs, count: pdfCount, id: "sidebar.pdfs")
                 navRow("Finished", item: .finished, count: finishedCount, id: "sidebar.finished")
-                sectionLabel("Notes")
-                navRow("Highlights & Notes", item: .notes, count: annotationCount, id: "sidebar.notes")
+                sectionLabel("Highlights")
+                navRow("Highlights", item: .notes, count: annotationCount, id: "sidebar.notes")
             }
             .padding(.horizontal, 12)
             .padding(.top, 14)
@@ -209,7 +205,7 @@ struct LibraryShellView: View {
                     .badge(model.books.count)
                     .tag(LibrarySidebarItem.allBooks)
                     .accessibilityIdentifier("sidebar.allBooks")
-                Label("Books", systemImage: "book")
+                Label("Ebooks", systemImage: "book")
                     .badge(epubCount)
                     .tag(LibrarySidebarItem.books)
                     .accessibilityIdentifier("sidebar.books")
@@ -222,8 +218,8 @@ struct LibraryShellView: View {
                     .tag(LibrarySidebarItem.finished)
                     .accessibilityIdentifier("sidebar.finished")
             }
-            Section("Notes") {
-                Label("Highlights & Notes", systemImage: "highlighter")
+            Section("Highlights") {
+                Label("Highlights", systemImage: "highlighter")
                     .badge(annotationCount)
                     .tag(LibrarySidebarItem.notes)
                     .accessibilityIdentifier("sidebar.notes")
@@ -236,35 +232,53 @@ struct LibraryShellView: View {
     }
     #endif
 
-    /// The pinned sidebar footer: active model on the first line, the privacy
-    /// promise faint below, over a top hairline (the design's provider pill).
+    /// The pinned sidebar footer: the active model on the first line, the
+    /// privacy promise (or, with nothing connected, "Set up in Settings")
+    /// faint below, over a top hairline. It is a button into Settings — a
+    /// line saying "No model connected" that could not be tapped left the
+    /// reader with a problem and no door.
     private var sidebarFooter: some View {
-        VStack(alignment: .leading, spacing: 3) {
-            Text(providerLine)
-                .foregroundStyle(theme.muted)
-            Text("No telemetry · keys in Keychain")
-                .foregroundStyle(theme.faint)
+        Button {
+            showSettings = true
+        } label: {
+            HStack(spacing: 8) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(providerLine)
+                        .foregroundStyle(hasProvider ? theme.muted : theme.inkColor)
+                        .fontWeight(hasProvider ? .regular : .semibold)
+                    Text(hasProvider ? "No telemetry · keys in Keychain" : "Set up in Settings")
+                        .foregroundStyle(theme.faint)
+                }
+                Spacer(minLength: 0)
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(theme.faint)
+            }
+            .font(.system(size: 11))
+            .frame(maxWidth: .infinity, alignment: .leading)
+            // 22 = the sidebar rows' section inset + text padding — 10 alone
+            // hugged the window edge and clipped the first character.
+            .padding(.horizontal, 22)
+            .padding(.top, 12)
+            .padding(.bottom, 10)
+            .contentShape(Rectangle())
         }
-        .font(.system(size: 11))
-        .frame(maxWidth: .infinity, alignment: .leading)
-        // 22 = the sidebar rows' section inset + text padding — 10 alone
-        // hugged the window edge and clipped the first character.
-        .padding(.horizontal, 22)
-        .padding(.top, 12)
-        .padding(.bottom, 10)
+        .buttonStyle(.plain)
+        .accessibilityLabel(hasProvider ? "AI model: \(providerLine)" : "No model connected — set up in Settings")
+        .accessibilityIdentifier("sidebar.provider")
         .overlay(alignment: .top) {
             theme.line.frame(height: 1)
         }
         .background(theme.background)
     }
 
+    private var hasProvider: Bool { model.hasConnectedProvider }
+
     /// "Local model" / the provider's name when one is connected and usable,
     /// otherwise the quiet nudge.
     private var providerLine: String {
-        guard model.activeProvider() != nil,
-              let kind = model.providerManager.selection?.kind else {
-            return "No model connected"
-        }
+        guard hasProvider else { return "No model connected" }
+        guard let kind = model.providerManager.selection?.kind else { return "Model connected" }
         switch kind {
         case .local: return "Local model"
         case .appleIntelligence: return "On-device model"
@@ -331,7 +345,7 @@ struct LibraryShellView: View {
             case .allBooks:
                 grid(title: "All Books", books: model.books)
             case .books:
-                grid(title: "Books", books: model.books.filter { !model.isPDF($0) })
+                grid(title: "Ebooks", books: model.books.filter { !model.isPDF($0) })
             case .pdfs:
                 grid(title: "PDFs", books: model.books.filter { model.isPDF($0) })
             case .finished:
@@ -390,12 +404,8 @@ struct LibraryShellView: View {
     /// reader also records it — double-recording is harmless).
     private func open(_ book: Book) {
         // A book that has left the library (deleted from another window, or
-        // a card that outlived its book) cannot be opened — and a recap the
-        // card asked for must not stay pending for a reader that never comes.
-        guard model.books.contains(where: { $0.id == book.id }) else {
-            if model.pendingRecapBookID == book.id { model.pendingRecapBookID = nil }
-            return
-        }
+        // a card that outlived its book) cannot be opened.
+        guard model.books.contains(where: { $0.id == book.id }) else { return }
         model.markOpened(book)
         #if os(macOS)
         openWindow(value: book.id)

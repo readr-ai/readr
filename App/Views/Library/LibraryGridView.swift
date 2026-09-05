@@ -154,17 +154,24 @@ struct LibraryGridView: View {
                 }
             }
         } label: {
-            Image(systemName: "arrow.up.arrow.down")
-                .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(theme.muted)
-                .padding(6)
-                .contentShape(Rectangle())
+            // Names the current order: a bare arrows icon said only that a
+            // sort existed, not which one was on.
+            HStack(spacing: 4) {
+                Text(currentSort.label)
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 9, weight: .semibold))
+            }
+            .font(.system(size: 12, weight: .medium))
+            .foregroundStyle(theme.muted)
+            .padding(6)
+            .contentShape(Rectangle())
         }
         .menuStyle(.button)
         .buttonStyle(.plain)
         .fixedSize()
         .help("Sort the library")
         .accessibilityLabel("Sort")
+        .accessibilityValue(currentSort.label)
         .accessibilityIdentifier("library.sort")
     }
 
@@ -183,11 +190,13 @@ struct LibraryGridView: View {
         }
     }
 
+    private var currentSort: LibrarySort { LibrarySort(rawValue: sortRaw) ?? .recent }
+
     /// `books` in the user's chosen order. Recent reuses the model's
     /// recently-added ordering (import time) rather than re-deriving it here,
     /// so Home's row and the grid can never disagree about "recent".
     private var sortedBooks: [Book] {
-        switch LibrarySort(rawValue: sortRaw) ?? .recent {
+        switch currentSort {
         case .recent:
             let visible = Set(books.map(\.id))
             return model.recentlyAdded.filter { visible.contains($0.id) }
@@ -248,6 +257,7 @@ struct LibraryGridView: View {
     // MARK: Cells
 
     private func cell(for book: Book) -> some View {
+        let position = model.position(for: book)
         let base = Button {
             openBook(book)
         } label: {
@@ -257,10 +267,11 @@ struct LibraryGridView: View {
                 // on the same line, whatever the titles do (see CardCaption).
                 CardCaption(book: book, theme: theme, spacing: 3, showsAllAuthors: true)
                 LibraryProgressHairline(
-                    fraction: LibraryProgress.fraction(
-                        for: book, position: model.position(for: book)
-                    ),
+                    fraction: LibraryProgress.fraction(for: book, position: position),
                     isFinished: model.bookState(for: book)?.isFinished == true,
+                    minutesLeft: LibraryProgress.minutesLeft(
+                        in: book, position: position, lengths: model.readingLengths(for: book)
+                    ),
                     theme: theme
                 )
             }
@@ -364,7 +375,7 @@ struct LibraryGridView: View {
         Button {
             showNotes(book)
         } label: {
-            Label("Highlights & Notes", systemImage: "highlighter")
+            Label("Highlights", systemImage: "highlighter")
         }
         Button {
             articleBook = book
