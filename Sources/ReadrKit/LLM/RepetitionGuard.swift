@@ -54,10 +54,34 @@ public struct RepetitionGuard: Sendable {
             }
             previous = key
         }
+        if let start = Self.blockLoopStart(in: sentences) {
+            return .looping(keep: String(text[..<start]).trimmingCharacters(in: .whitespacesAndNewlines))
+        }
         if let start = Self.phraseLoopStart(in: text) {
             return .looping(keep: String(text[..<start]).trimmingCharacters(in: .whitespacesAndNewlines))
         }
         return .fine
+    }
+
+    /// Where a run of two or more sentences comes round again in the same
+    /// order — "A. B. C. A. B. C." — or nil. One sentence restated later can
+    /// be emphasis; a whole passage restated is the model going round, and
+    /// the real thing (three quoted lines, then the same three) got past the
+    /// per-sentence count because each sentence had only appeared twice.
+    static func blockLoopStart(in sentences: [Sentence]) -> String.Index? {
+        let keys = sentences.map { normalized($0.text) }
+        guard keys.count >= 4 else { return nil }
+        for end in 4...keys.count {
+            for size in 2...(end / 2) {
+                let second = keys[(end - size)..<end]
+                let first = keys[(end - 2 * size)..<(end - size)]
+                guard first.elementsEqual(second),
+                      second.reduce(0) { $0 + $1.count } >= Self.minimumSentenceLength
+                else { continue }
+                return sentences[end - size].range.lowerBound
+            }
+        }
+        return nil
     }
 
     /// The shortest phrase treated as a loop when it repeats back to back.
@@ -130,27 +154,42 @@ public struct RepetitionGuard: Sendable {
         var index = text.startIndex
         while index < text.endIndex {
             let character = text[index]
-            let next = text.index(after: index)
-            let ends: Bool
+            var next = text.index(after: index)
+            // Where this sentence ends, if it does here. A terminator counts
+            // only once whitespace follows it: mid-stream, "3." may still
+            // become "3.5", and a trailing fragment is judged by `finish`.
+            var end: String.Index?
             if character == "\n" {
-                ends = true
+                end = next
             } else if ".!?".contains(character) {
-                ends = next == text.endIndex ? false : text[next].isWhitespace
-            } else {
-                ends = false
+                // A closing quote or bracket belongs to the sentence it ends
+                // — `says, "Off with their heads!" Alice then…` is two
+                // sentences, and an answer made of quoted speech looped
+                // unseen when the quote hid every boundary.
+                var after = next
+                while after < text.endIndex, closers.contains(text[after]) {
+                    after = text.index(after: after)
+                }
+                if after < text.endIndex, text[after].isWhitespace {
+                    end = after
+                    next = after
+                }
             }
-            if ends {
-                let range = start..<next
+            if let end {
+                let range = start..<end
                 let slice = text[range]
                 if slice.contains(where: { !$0.isWhitespace }) {
                     sentences.append(Sentence(text: slice, range: range))
                 }
-                start = next
+                start = end
             }
             index = next
         }
         return sentences
     }
+
+    /// Characters that may close a sentence after its terminator.
+    private static let closers: Set<Character> = ["\"", "'", "\u{201D}", "\u{2019}", ")", "]", "\u{00BB}"]
 
     static func normalized(_ sentence: Substring) -> String {
         String(sentence.lowercased().unicodeScalars.filter { CharacterSet.alphanumerics.contains($0) || $0 == " " })

@@ -215,9 +215,24 @@ final class FoundationModelsProvider: LLMProvider, OnDeviceReadinessReporting, @
     /// for attention. Unsure or failing → treated as about the book, the
     /// path with citations.
     static func isAboutTheBook(_ question: String, model: SystemLanguageModel) async -> Bool? {
+        // Examples, because a 3B model sorts by keyword: "can I be a rabbit?"
+        // went BOOK on the strength of "rabbit" in Alice. The reader talking
+        // about themself is the tell the examples teach.
         let session = LanguageModelSession(
             model: model,
-            instructions: "You sort a reader's questions. Reply with exactly one word: BOOK if the question asks about the story, characters, events, themes, or text of the book they are reading; GENERAL if it is about the reader themself, the real world, or anything the book would not answer."
+            instructions: """
+                You sort a reader's questions. Reply with exactly one word.
+                BOOK: the question asks what the book says — its story, characters, events, places, themes, or wording.
+                GENERAL: the question is about the reader themself (I, me, my, can I, should I), the real world, advice, or anything the book would not answer — even if it mentions something from the book.
+                Examples:
+                "Why does Alice follow the White Rabbit?" → BOOK
+                "Who shouts off with their heads?" → BOOK
+                "Can I be a rabbit?" → GENERAL
+                "Can I shrink if I drink from a bottle?" → GENERAL
+                "What should I read next?" → GENERAL
+                "Is the Cheshire Cat real?" → GENERAL
+                "What does the Cheshire Cat say about which way to go?" → BOOK
+                """
         )
         do {
             let reply = try await session.respond(
