@@ -169,6 +169,19 @@ final class FoundationModelsProvider: LLMProvider, OnDeviceReadinessReporting, @
     /// Below this the answer would be cut off mid-thought; better to say the
     /// question was too long.
     static let minimumAnswerTokens = 150
+    /// A question's answer: a paragraph or two. Articles are not capped here.
+    static let maxQuestionTokens = 350
+
+    /// Appended to the shared system prompt for questions. The shared prompt
+    /// is written for models that can hold a book; this one needs the rules
+    /// spelled out.
+    static let questionStyle = """
+        Answer style: reply in your own words in two to five sentences. Do not \
+        copy the passages out — refer to what happens in them, and quote at \
+        most a short phrase. If the question isn't about the book, say so in \
+        one sentence and offer what the book does say that is closest to it. \
+        Never repeat a sentence you have already written.
+        """
 
     init(info: ProviderInfo) {
         self.info = info
@@ -191,7 +204,14 @@ final class FoundationModelsProvider: LLMProvider, OnDeviceReadinessReporting, @
         AsyncThrowingStream { continuation in
             let task = Task { [model] in
                 do {
-                    let (instructions, rawPrompt) = Self.split(request)
+                    var (instructions, rawPrompt) = Self.split(request)
+                    let isQuestion = rawPrompt.contains(AdaptiveContextStrategy.passagesHeader)
+                    if isQuestion {
+                        // A 3B model given eight passages will copy them out at
+                        // length unless told plainly not to; a reader asked
+                        // "can I be a rabbit?" and got two pages of dialogue.
+                        instructions += "\n\n" + Self.questionStyle
+                    }
                     // `contextSize` is back-deployed to 26.0 (4,096 there).
                     let window = model.contextSize
                     let fixed = Self.tokens(instructions) + Self.windowMargin
@@ -204,24 +224,48 @@ final class FoundationModelsProvider: LLMProvider, OnDeviceReadinessReporting, @
                     let room = window - fixed - Self.tokens(prompt)
                     guard room >= Self.minimumAnswerTokens else { throw OnDeviceModelError.tooLong }
                     // An article gets the whole remaining window; a question
-                    // rarely needs more than the strategy asked for.
-                    let answer = min(request.maxOutputTokens, room)
+                    // is answered in a few sentences, and a small model left
+                    // to run on will fill the rest with the passages.
+                    let answer = min(request.maxOutputTokens, room, isQuestion ? Self.maxQuestionTokens : .max)
                     let session = LanguageModelSession(model: model, instructions: instructions)
-                    let options = GenerationOptions(temperature: 0.3, maximumResponseTokens: answer)
+                    // Nucleus sampling with some warmth: greedy-ish decoding is
+                    // what sends a small model round the same sentence.
+                    let options = GenerationOptions(
+                        sampling: .random(probabilityThreshold: 0.9),
+                        temperature: 0.5,
+                        maximumResponseTokens: answer
+                    )
 
                     // Snapshots are cumulative; the kit's chunks are deltas.
-                    // Tracking a count (not the string) keeps each step O(new
-                    // text). A snapshot shorter than what was shown (a rare
-                    // revision) waits until the text grows past it again.
+                    // Text is released a completed sentence at a time, held
+                    // back just long enough for the repetition guard to judge
+                    // it — so a loop ends before its first repeat is shown,
+                    // and the reader never sees the same sentence six times.
                     var deliveredCount = 0
-                    for try await snapshot in session.streamResponse(to: prompt, options: options) {
+                    var content = ""
+                    let repetition = RepetitionGuard()
+                    streaming: for try await snapshot in session.streamResponse(to: prompt, options: options) {
                         try Task.checkCancellation()
-                        let content = snapshot.content
-                        let count = content.count
-                        guard count > deliveredCount else { continue }
-                        continuation.yield(ChatChunk(textDelta: String(content.suffix(count - deliveredCount))))
-                        deliveredCount = count
+                        content = snapshot.content
+                        switch repetition.verdict(for: content) {
+                        case let .looping(keep):
+                            content = keep
+                            Self.yield(content, after: &deliveredCount, into: continuation)
+                            DiagnosticsLog.shared.record(
+                                .warning, .provider, "on-device answer cut short: the model began repeating itself"
+                            )
+                            break streaming
+                        case .fine:
+                            // Up to the last sentence boundary only; the
+                            // fragment after it may still turn into a repeat.
+                            Self.yield(
+                                RepetitionGuard.settledPrefix(of: content),
+                                after: &deliveredCount, into: continuation
+                            )
+                        }
                     }
+                    // The final fragment, if the stream ended cleanly.
+                    Self.yield(content, after: &deliveredCount, into: continuation)
                     continuation.finish()
                 } catch {
                     continuation.finish(throwing: Self.mapped(error))
@@ -229,6 +273,20 @@ final class FoundationModelsProvider: LLMProvider, OnDeviceReadinessReporting, @
             }
             continuation.onTermination = { _ in task.cancel() }
         }
+    }
+
+    /// Yield whatever of `text` lies past the `delivered` count. Tracking a
+    /// count (not the string) keeps each step O(new text); a text shorter
+    /// than what was shown (a rare revision) yields nothing until it grows
+    /// past it again.
+    private static func yield(
+        _ text: String, after delivered: inout Int,
+        into continuation: AsyncThrowingStream<ChatChunk, Error>.Continuation
+    ) {
+        let count = text.count
+        guard count > delivered else { return }
+        continuation.yield(ChatChunk(textDelta: String(text.suffix(count - delivered))))
+        delivered = count
     }
 
     // MARK: Errors
