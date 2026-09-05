@@ -51,6 +51,8 @@ public final class ProviderManager: @unchecked Sendable {
                     return "The local model isn't available. Make sure Ollama is running on this device."
                 case .appleIntelligence:
                     return "The on-device model isn't available here. Turn on Apple Intelligence in Settings, or connect another provider in Settings → AI Providers."
+                case .downloadedModel:
+                    return "The downloaded model isn't ready. Download it in Settings → AI Providers, or connect another provider."
                 }
             case .localMismatch:
                 return "The local model is misconfigured. Re-select a model in Settings → AI Providers."

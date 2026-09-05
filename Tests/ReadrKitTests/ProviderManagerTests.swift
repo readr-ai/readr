@@ -195,7 +195,7 @@ final class ProviderManagerTests: XCTestCase {
         XCTAssertEqual(Set(ProviderInfo.Kind.allCases).count, ProviderInfo.Kind.allCases.count)
         XCTAssertEqual(
             Set(ProviderInfo.Kind.allCases),
-            Set([.anthropic, .openAI, .chatGPT, .openRouter, .local, .appleIntelligence])
+            Set([.anthropic, .openAI, .chatGPT, .openRouter, .local, .appleIntelligence, .downloadedModel])
         )
         let manager = makeManager(store: FakeCredentialStore(), factory: CapturingFactory())
         XCTAssertTrue(
@@ -243,15 +243,15 @@ final class ProviderManagerTests: XCTestCase {
         let manager = makeManager(store: store, factory: factory)
 
         // The on-device kinds are always available even with an empty store.
-        XCTAssertEqual(manager.availableKinds(), [.local, .appleIntelligence])
+        XCTAssertEqual(manager.availableKinds(), [.local, .appleIntelligence, .downloadedModel])
 
         try store.save(.apiKey("sk-anthropic"), for: .anthropic)
-        XCTAssertEqual(Set(manager.availableKinds()), Set([.anthropic, .local, .appleIntelligence]))
+        XCTAssertEqual(Set(manager.availableKinds()), Set([.anthropic, .local, .appleIntelligence, .downloadedModel]))
 
         try store.save(.apiKey("sk-openai"), for: .openAI)
         XCTAssertEqual(
             Set(manager.availableKinds()),
-            Set([.anthropic, .openAI, .local, .appleIntelligence])
+            Set([.anthropic, .openAI, .local, .appleIntelligence, .downloadedModel])
         )
 
         // The sign-in kinds surface once their credentials exist: OpenRouter
@@ -262,7 +262,7 @@ final class ProviderManagerTests: XCTestCase {
         )
         XCTAssertEqual(
             Set(manager.availableKinds()),
-            Set([.anthropic, .openAI, .openRouter, .chatGPT, .local, .appleIntelligence])
+            Set([.anthropic, .openAI, .openRouter, .chatGPT, .local, .appleIntelligence, .downloadedModel])
         )
     }
 
@@ -491,6 +491,7 @@ final class ProviderManagerTests: XCTestCase {
             + ProviderCatalog.openRouterModels.count
             + ProviderCatalog.localModels.count
             + ProviderCatalog.appleIntelligenceModels.count
+            + ProviderCatalog.downloadedModels.count
         XCTAssertEqual(ProviderCatalog.all.count, expected)
     }
 

@@ -45,7 +45,7 @@ final class SettingsModel: ObservableObject {
     /// sign-in paths lead (lowest-friction first-run), then the key-only
     /// cloud providers, then Local.
     static let allKinds: [ProviderInfo.Kind] = [
-        .appleIntelligence, .chatGPT, .openRouter, .anthropic, .openAI, .local,
+        .appleIntelligence, .downloadedModel, .chatGPT, .openRouter, .anthropic, .openAI, .local,
     ]
 
     let kinds: [ProviderInfo.Kind] = SettingsModel.allKinds
@@ -76,6 +76,13 @@ final class SettingsModel: ObservableObject {
         // it (iOS/macOS 26 on Apple Intelligence hardware); a switched-off
         // Apple Intelligence shows as the card's status, not as absence.
         if !OnDeviceModel.isEligibleDevice { hidden.insert(.appleIntelligence) }
+        // Downloaded models run on MLX, which only the iOS app links, and
+        // need a Metal GPU and 6 GB or more of memory.
+        #if os(iOS)
+        if !MLXLLMProvider.isSupportedDevice { hidden.insert(.downloadedModel) }
+        #else
+        hidden.insert(.downloadedModel)
+        #endif
         return allKinds.filter { !hidden.contains($0) }
     }
 
@@ -116,6 +123,9 @@ final class SettingsModel: ObservableObject {
         var paths = ["Add an API key"]
         if displayed.contains(.appleIntelligence) {
             paths.append("use the model built into this device")
+        }
+        if displayed.contains(.downloadedModel) {
+            paths.append("download a model")
         }
         if displayed.contains(where: { oauthConfig(for: $0) != nil }) {
             paths.append("sign in")

@@ -10,6 +10,13 @@ enum AppProviderFactory {
     static func factory(http: HTTPClient = URLSessionHTTPClient()) -> ProviderManager.ProviderFactory {
         let base = DefaultProviderFactory.factory(http: http)
         return { info, credentials in
+            if info.kind == .downloadedModel {
+                #if os(iOS)
+                return MLXLLMProvider(info: info)
+                #else
+                throw ProviderManager.ProviderError.notConfigured(.downloadedModel)
+                #endif
+            }
             guard info.kind == .appleIntelligence else {
                 return try base(info, credentials)
             }

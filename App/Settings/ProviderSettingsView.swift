@@ -329,7 +329,14 @@ struct ProviderSettingsView: View {
                 }
             }
 
-            if kind.isOnDevice {
+            if kind == .downloadedModel {
+                #if os(iOS)
+                DownloadedModelControls(
+                    modelID: currentDownloadedModelID, theme: theme,
+                    onChange: { Task { await model.validate(kind) } }
+                )
+                #endif
+            } else if kind.isOnDevice {
                 // A manual re-check for when the reader has just started
                 // Ollama or pulled the model, or switched Apple Intelligence
                 // on (mirrors the mockup's "Check again"). Re-probes and
@@ -409,6 +416,17 @@ struct ProviderSettingsView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
+    /// The downloadable model the card's controls act on: the active
+    /// selection when it is one, else the best model this device can hold.
+    private var currentDownloadedModelID: String {
+        if let selection = model.activeSelection, selection.kind == .downloadedModel {
+            return selection.modelID
+        }
+        return DownloadedModelCatalog
+            .recommendedModel(forPhysicalMemory: Int64(ProcessInfo.processInfo.physicalMemory))?.repository
+            ?? ProviderCatalog.defaultModel(for: .downloadedModel).modelID
+    }
+
     /// The OpenRouter id the picker row names: the active selection when it
     /// is an OpenRouter one, else the catalog default (what Make Active
     /// would choose).
@@ -433,7 +451,7 @@ struct ProviderSettingsView: View {
         case .chatGPT: return "SUBSCRIPTION"
         case .openRouter: return "SIGN IN OR KEY"
         case .anthropic, .openAI: return "API KEY"
-        case .local, .appleIntelligence: return "ON-DEVICE"
+        case .local, .appleIntelligence, .downloadedModel: return "ON-DEVICE"
         }
     }
 
@@ -455,9 +473,14 @@ struct ProviderSettingsView: View {
         case (false, true):
             return "Paste an API key to connect."
         case (false, false):
-            return vendor.methods == [.appleIntelligence]
-                ? "Apple's on-device model. Nothing to set up, nothing leaves your device."
-                : nil
+            switch vendor.methods {
+            case [.appleIntelligence]:
+                return "Apple's on-device model. Nothing to set up, nothing leaves your device."
+            case [.downloadedModel]:
+                return "A stronger model that runs on this iPhone after a one-time download. Private and free; slower than the cloud."
+            default:
+                return nil
+            }
         }
     }
 
@@ -549,7 +572,7 @@ struct ProviderSettingsView: View {
         switch kind {
         case .chatGPT: return "Sign in with ChatGPT"
         case .openRouter: return "Sign in with OpenRouter"
-        case .anthropic, .openAI, .local, .appleIntelligence: return "Sign in with subscription"
+        case .anthropic, .openAI, .local, .appleIntelligence, .downloadedModel: return "Sign in with subscription"
         }
     }
 
@@ -575,7 +598,7 @@ struct ProviderSettingsView: View {
             return (URL(string: "https://platform.openai.com/api-keys")!, "openai")
         case .openRouter:
             return (URL(string: "https://openrouter.ai/keys")!, "openrouter")
-        case .chatGPT, .local, .appleIntelligence:
+        case .chatGPT, .local, .appleIntelligence, .downloadedModel:
             // ChatGPT connects by subscription sign-in only; the on-device
             // kinds need no key.
             return nil
@@ -611,7 +634,7 @@ struct ProviderSettingsView: View {
             return CardStatus(
                 kindRawValue: kind.rawValue,
                 text: kind == .local ? "Checking Ollama…"
-                    : kind == .appleIntelligence ? "Checking this device…" : "Validating…",
+                    : kind.isOnDevice ? "Checking this device…" : "Validating…",
                 textColor: theme.muted,
                 dotColor: theme.faint.opacity(0.55),
                 showsSpinner: true,
@@ -812,10 +835,86 @@ private struct ModelPicker: View {
             set: { onSelect($0) }
         )) {
             ForEach(models, id: \.modelID) { info in
-                Text(info.modelID).tag(info.modelID)
+                Text(DownloadedModelCatalog.spec(for: info.modelID)?.displayName ?? info.modelID).tag(info.modelID)
             }
         }
         .font(.callout)
         .disabled(!enabled)
     }
 }
+
+
+#if os(iOS)
+/// The downloaded-model card's own controls: what a Download costs before it
+/// starts (App Review 4.2.3(ii)), its progress, and Delete afterwards.
+private struct DownloadedModelControls: View {
+    let modelID: String
+    let theme: ReadingTheme
+    /// Fired when the model's state settles (downloaded, deleted, failed) so
+    /// the card re-validates.
+    let onChange: () -> Void
+
+    @ObservedObject private var store = MLXModelStore.shared
+
+    private var spec: DownloadedModelSpec? { DownloadedModelCatalog.spec(for: modelID) }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            switch store.state(for: modelID) {
+            case .notDownloaded:
+                Button {
+                    store.download(modelID)
+                } label: {
+                    CardActionLabel(
+                        title: "Download \(spec?.displayName ?? "model") · \(spec?.downloadSizeDescription ?? "")",
+                        systemImage: "arrow.down.circle", theme: theme, prominent: true
+                    )
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("settings.download.model")
+                Text("A one-time download of about \(spec?.downloadSizeDescription ?? "a few GB") — best on Wi-Fi. It stays on this device until you delete it here.")
+                    .font(.caption2)
+                    .foregroundStyle(theme.faint)
+                    .fixedSize(horizontal: false, vertical: true)
+            case .downloading(let fraction):
+                ProgressView(value: fraction) {
+                    Text("Downloading \(spec?.displayName ?? "model")… \(Int(fraction * 100))%")
+                        .font(.caption)
+                        .foregroundStyle(theme.muted)
+                }
+                .tint(theme.iris)
+                .accessibilityIdentifier("settings.download.progress")
+            case .downloaded:
+                HStack(spacing: 12) {
+                    Text("Downloaded · \(spec?.downloadSizeDescription ?? "")")
+                        .font(.caption)
+                        .foregroundStyle(theme.muted)
+                    Button("Delete", role: .destructive) {
+                        store.delete(modelID)
+                        onChange()
+                    }
+                    .buttonStyle(.plain)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .accessibilityIdentifier("settings.download.delete")
+                }
+            case .failed(let message):
+                Text(message)
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+                Button {
+                    store.delete(modelID)
+                    store.download(modelID)
+                } label: {
+                    CardActionLabel(title: "Try again", systemImage: "arrow.clockwise", theme: theme)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .onChange(of: store.state(for: modelID)) { _, state in
+            if case .downloaded = state { onChange() }
+        }
+    }
+}
+#endif

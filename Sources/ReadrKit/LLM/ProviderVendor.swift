@@ -70,6 +70,7 @@ public extension ProviderVendor {
     static let all: [ProviderVendor] = [
         // Zero setup leads: nothing to get, nothing to sign in to.
         ProviderVendor(id: "apple", title: "On this device", methods: [.appleIntelligence]),
+        ProviderVendor(id: "downloaded", title: "Downloaded model", methods: [.downloadedModel]),
         ProviderVendor(id: "openai", title: "OpenAI", methods: [.chatGPT, .openAI]),
         ProviderVendor(id: "openrouter", title: "OpenRouter", methods: [.openRouter]),
         ProviderVendor(id: "anthropic", title: "Claude (Anthropic)", methods: [.anthropic]),

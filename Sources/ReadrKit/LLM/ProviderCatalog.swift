@@ -292,6 +292,18 @@ public enum ProviderCatalog {
         ),
     ]
 
+    /// Models Readr downloads and runs itself on MLX — mirrors
+    /// `DownloadedModelCatalog`, which owns sizes and memory floors.
+    public static let downloadedModels: [ProviderInfo] = DownloadedModelCatalog.all.map { spec in
+        ProviderInfo(
+            kind: .downloadedModel,
+            modelID: spec.repository,
+            contextBudget: spec.contextBudget,
+            supportsPromptCaching: false,
+            isLocal: true
+        )
+    }
+
     /// Every selectable model, across all kinds — built from the kinds, so a
     /// new kind can't be left out of the list.
     public static var all: [ProviderInfo] { ProviderInfo.Kind.allCases.flatMap(models(for:)) }
@@ -305,6 +317,7 @@ public enum ProviderCatalog {
         case .openRouter: return openRouterModels
         case .local: return localModels
         case .appleIntelligence: return appleIntelligenceModels
+        case .downloadedModel: return downloadedModels
         }
     }
 

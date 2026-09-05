@@ -60,14 +60,16 @@ public struct ProviderInfo: Sendable, Hashable {
     /// kinds because their credentials, catalogs, and endpoints all differ.
     /// `appleIntelligence` is the system's on-device model (Apple's
     /// FoundationModels framework, iOS/macOS 26+): no key, no account, no
-    /// server. `local` is a loopback Ollama server the reader runs
-    /// themselves. Both are `isLocal`; see `isOnDevice`.
+    /// server. `downloadedModel` is a model Readr downloads and runs itself
+    /// on the MLX runtime (`DownloadedModelCatalog`). `local` is a loopback
+    /// Ollama server the reader runs themselves. All three are `isLocal`;
+    /// see `isOnDevice`.
     public enum Kind: String, Sendable, Hashable, Codable, CaseIterable {
-        case anthropic, openAI, chatGPT, openRouter, local, appleIntelligence
+        case anthropic, openAI, chatGPT, openRouter, local, appleIntelligence, downloadedModel
 
         /// Runs without credentials: nothing to store, validate, or revoke.
         public var isOnDevice: Bool {
-            self == .local || self == .appleIntelligence
+            self == .local || self == .appleIntelligence || self == .downloadedModel
         }
     }
     public var kind: Kind

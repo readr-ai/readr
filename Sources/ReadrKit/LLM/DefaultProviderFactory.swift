@@ -44,11 +44,12 @@ public enum DefaultProviderFactory {
             return LocalLLMProvider(
                 model: info.modelID, http: http, contextBudget: info.contextBudget
             )
-        case .appleIntelligence:
-            // The runtime is an Apple framework, so the app's factory wraps
-            // this one and builds it (`AppProviderFactory`). Reaching here
-            // means the app didn't — refuse rather than pretend.
-            throw ProviderManager.ProviderError.notConfigured(.appleIntelligence)
+        case .appleIntelligence, .downloadedModel:
+            // These runtimes are Apple frameworks (FoundationModels, MLX), so
+            // the app's factory wraps this one and builds them
+            // (`AppProviderFactory`). Reaching here means the app didn't —
+            // refuse rather than pretend.
+            throw ProviderManager.ProviderError.notConfigured(info.kind)
         }
     }
 

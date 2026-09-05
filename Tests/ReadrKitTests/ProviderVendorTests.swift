@@ -79,7 +79,7 @@ final class ProviderVendorTests: XCTestCase {
         XCTAssertEqual(Set(listed).count, listed.count, "a kind is listed twice")
         XCTAssertEqual(
             Set(listed),
-            Set([.chatGPT, .openAI, .anthropic, .openRouter, .local, .appleIntelligence]
+            Set([.chatGPT, .openAI, .anthropic, .openRouter, .local, .appleIntelligence, .downloadedModel]
                 as [ProviderInfo.Kind])
         )
     }
@@ -88,7 +88,7 @@ final class ProviderVendorTests: XCTestCase {
     /// the sign-in vendors, then the paste-a-key ones.
     func testZeroSetupThenSignInVendorsComeFirst() {
         XCTAssertEqual(
-            ProviderVendor.all.map(\.id), ["apple", "openai", "openrouter", "anthropic", "local"]
+            ProviderVendor.all.map(\.id), ["apple", "downloaded", "openai", "openrouter", "anthropic", "local"]
         )
     }
 
