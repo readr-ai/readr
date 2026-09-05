@@ -55,7 +55,11 @@ struct ArticleStudioView: View {
         NavigationStack {
             content
                 .background(theme.background)
-                .navigationTitle(article.markdown.isEmpty ? "Article Studio" : article.title)
+                // One title, the AI-surface grammar Ask uses: ✦ + caps in
+                // the principal slot, Done on the right. (It used to carry a
+                // nav title AND a principal "New article", with Done on the
+                // left.)
+                .navigationTitle("Article")
                 #if os(iOS)
                 .navigationBarTitleDisplayMode(.inline)
                 #endif
@@ -128,18 +132,21 @@ struct ArticleStudioView: View {
 
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
-        ToolbarItem(placement: .cancellationAction) {
-            Button("Done") { dismiss() }
-        }
         ToolbarItem(placement: .principal) {
-            HStack(spacing: 6) {
+            HStack(spacing: 8) {
                 Text(AppTheme.aiGlyph)
+                    .font(.subheadline)
                     .foregroundStyle(theme.iris)
-                Text("New article")
-                    .foregroundStyle(theme.inkColor)
+                Text("ARTICLE")
+                    .font(.caption2.weight(.semibold))
+                    .tracking(1.5)
+                    .foregroundStyle(theme.muted)
             }
-            .font(.callout.weight(.semibold))
             .accessibilityAddTraits(.isHeader)
+            .accessibilityLabel("Article")
+        }
+        ToolbarItem(placement: .confirmationAction) {
+            Button("Done") { dismiss() }
         }
         if !article.isComposing && !article.markdown.isEmpty {
             ToolbarItemGroup(placement: .primaryAction) {

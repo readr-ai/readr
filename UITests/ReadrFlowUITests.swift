@@ -900,12 +900,48 @@ final class ReadrFlowUITests: XCTestCase {
         selectLayout(app, "Scroll")
     }
 
+    // MARK: - Bookmarks: a ribbon in the bar, the list in Contents
+
+    // The bookmark is a toggle (filled on a bookmarked page); the list of
+    // bookmarks sits at the top of Contents, where a tap jumps and ✕ removes.
+    // There is no bookmarks menu.
+    func testBookmarkRibbonListsInContents() {
+        let app = launchSeeded()
+        openSampleBook(app)
+
+        let ribbon = button(app, id: "reader.bookmarks", label: "Bookmark this page")
+        XCTAssertTrue(ribbon.waitForExistence(timeout: 5), "the bar should carry the bookmark ribbon")
+        ribbon.tap()
+
+        let toc = button(app, id: "reader.toc", label: "Table of contents")
+        XCTAssertTrue(toc.waitForExistence(timeout: 5))
+        toc.tap()
+
+        let row = app.buttons["contents.bookmark"].firstMatch
+        XCTAssertTrue(row.waitForExistence(timeout: 5), "the new bookmark should list at the top of Contents")
+        XCTAssertTrue(app.staticTexts["BOOKMARKS"].firstMatch.exists, "the bookmarks section should be labelled")
+
+        let remove = app.buttons["contents.removeBookmark"].firstMatch
+        XCTAssertTrue(remove.exists)
+        remove.tap()
+        XCTAssertTrue(
+            waitForDisappearance(row, timeout: 5),
+            "✕ on a bookmark row should remove it"
+        )
+    }
+
+    private func waitForDisappearance(_ element: XCUIElement, timeout: TimeInterval) -> Bool {
+        let gone = NSPredicate(format: "exists == false")
+        let expectation = XCTNSPredicateExpectation(predicate: gone, object: element)
+        return XCTWaiter().wait(for: [expectation], timeout: timeout) == .completed
+    }
+
     // MARK: - Typography controls (Apple Books parity)
 
     // The Books-style text controls — typeface, line spacing, justification —
-    // must be reachable on BOTH platforms. iOS gathers them in the Aa popover;
-    // the macOS toolbar has no room for three more inline controls, so they
-    // live behind a `textformat` menu. Same identifiers, different container.
+    // must be reachable on BOTH platforms, and since the September 2026 UX
+    // review they live in the same Aa popover on both: the macOS toolbar's
+    // inline segments, stepper, Text menu and theme dots are gone.
     //
     // This test asserted only the iOS shape for a long time while CI ran the
     // suite on simulators alone, which is exactly how macOS shipped with no
@@ -914,20 +950,10 @@ final class ReadrFlowUITests: XCTestCase {
         let app = launchSeeded()
         openSampleBook(app)
 
-        #if canImport(UIKit)
         let opener = button(app, id: "reader.appearance", label: "Appearance")
-        #else
-        // A SwiftUI `Menu` is a pop-up button on macOS, not a plain button, so
-        // match on identifier across element types.
-        let opener = app.descendants(matching: .any)
-            .matching(identifier: "reader.typography")
-            .firstMatch
-        #endif
         XCTAssertTrue(opener.waitForExistence(timeout: 5))
         opener.tap()
 
-        // The macOS controls live inside a pull-down menu, so they enter the
-        // hierarchy only once it is open; give it a moment either way.
         XCTAssertTrue(
             waitForText(app, "New York", timeout: 5) || waitForText(app, "Font", timeout: 5),
             "Appearance should offer the reading typeface menu"
