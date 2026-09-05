@@ -78,6 +78,11 @@ struct PagedChapterView: View {
     /// parent has an adjacent chapter). Keeps the arrows live at the edges.
     var canOverflowBackward = false
     var canOverflowForward = false
+    /// The character range of the spread in view, in chapter coordinates,
+    /// reported whenever it changes (a turn, a repagination). The host's
+    /// bookmark ribbon asks "is there a bookmark on THIS page", which only
+    /// the surface knows.
+    var onVisibleRange: ((Range<Int>?) -> Void)? = nil
     /// A turn ran past either end (−1 backward / +1 forward): the parent
     /// crosses into the adjacent chapter. Arrow keys, the floating buttons,
     /// and swipes all funnel through here, so paging flows through the whole
@@ -190,6 +195,9 @@ struct PagedChapterView: View {
                 pageLabel(start: start, pages: pages)
             }
             .contentShape(Rectangle())
+            .onChange(of: Self.range(of: visible), initial: true) { _, range in
+                onVisibleRange?(range)
+            }
             // Hardware-keyboard ←/→ page turns, shared by macOS and iPadOS
             // (`.onKeyPress` is iOS 17+/macOS 14+, the deployment floor).
             // One unconditional handler on purpose — this IS the reader's
@@ -368,6 +376,13 @@ struct PagedChapterView: View {
         // 0.85 safety factor (covers paragraph spacing, ~0.6 em per break)
         // so a page never overflows its frame.
         return max(30, Int(charsPerLine * lines * 0.85))
+    }
+
+    /// The characters a spread shows: from its first page's start to its
+    /// last page's end. Nil for no pages.
+    private static func range(of visible: [Page]) -> Range<Int>? {
+        guard let first = visible.first, let last = visible.last else { return nil }
+        return first.range.lowerBound..<max(first.range.lowerBound, last.range.upperBound)
     }
 
     /// First visible page index, derived from the character-offset anchor.

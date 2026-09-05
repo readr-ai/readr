@@ -5,8 +5,8 @@ import ReadrKit
 import UIKit
 #endif
 
-/// The Aa popover (iOS keeps it; macOS shows the same controls inline in the
-/// toolbar), Marginalia style: a serif A / A font stepper, three theme dots
+/// The Aa popover, on every platform (the macOS toolbar used to show the
+/// same controls inline), Marginalia style: a serif A / A font stepper, three theme dots
 /// (paper swatches, ink ring when selected), a hairline segmented layout
 /// picker, and — for PDFs — the original-pages ↔ reading-view switch.
 ///

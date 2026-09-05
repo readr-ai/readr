@@ -230,7 +230,14 @@ final class ReadrFlowUITests: XCTestCase {
             draft.waitForExistence(timeout: 20),
             "The composed draft should stream into the Markdown editor"
         )
-        // Post-compose toolbar is the second signal composing completed.
+        // Post-compose toolbar is the second signal composing completed. On
+        // iOS the draft's actions ride one menu (the bar collapses past two
+        // trailing items); on macOS they sit inline.
+        #if canImport(UIKit)
+        let actions = app.buttons["article.actions"].firstMatch
+        XCTAssertTrue(actions.waitForExistence(timeout: 5), "The editor toolbar should offer the actions menu once a draft exists")
+        actions.tap()
+        #endif
         XCTAssertTrue(
             app.buttons["Compose again"].firstMatch.waitForExistence(timeout: 5),
             "The editor toolbar should offer Compose again once a draft exists"
@@ -277,13 +284,13 @@ final class ReadrFlowUITests: XCTestCase {
     // items past two per group, so the PDF controls ride the bottom bar there
     // (merged with the host's Ask); on regular width (iPad) they stay up top.
     // Scoped to the plain-Button controls whose ids XCUITest reliably queries
-    // (Contents, Find) plus Ask — `pdf.thumbnails` (a Toggle) and
-    // `pdf.bookmark` (a Menu) are exercised by their own dedicated tests.
+    // (Contents, the bookmark ribbon, Find) plus Ask — `pdf.thumbnails` (a
+    // Toggle) is exercised by its own test.
     func testPDFToolbarControlsAreReachable() {
         let app = launchSeeded()
         openFieldNotesPDF(app) // asserts pdf.pageIndicator — surface is mounted
 
-        for id in ["pdf.toc", "pdf.search", "reader.ask"] {
+        for id in ["pdf.toc", "pdf.bookmark", "pdf.search", "reader.ask"] {
             XCTAssertTrue(
                 app.descendants(matching: .any)[id].firstMatch.waitForExistence(timeout: 5),
                 "PDF toolbar control '\(id)' should be reachable on this idiom"
@@ -925,15 +932,34 @@ final class ReadrFlowUITests: XCTestCase {
         XCTAssertTrue(remove.exists)
         remove.tap()
         XCTAssertTrue(
-            waitForDisappearance(row, timeout: 5),
+            row.waitForNonExistence(timeout: 5),
             "✕ on a bookmark row should remove it"
         )
     }
 
-    private func waitForDisappearance(_ element: XCUIElement, timeout: TimeInterval) -> Bool {
-        let gone = NSPredicate(format: "exists == false")
-        let expectation = XCTNSPredicateExpectation(predicate: gone, object: element)
-        return XCTWaiter().wait(for: [expectation], timeout: timeout) == .completed
+    // The same ribbon and the same Contents rows in the native PDF reader:
+    // a page bookmark lists at the top of the outline popover and ✕ removes
+    // it there.
+    func testPDFBookmarkRibbonListsInContents() {
+        let app = launchSeeded()
+        openFieldNotesPDF(app)
+
+        let ribbon = app.descendants(matching: .any)["pdf.bookmark"].firstMatch
+        XCTAssertTrue(ribbon.waitForExistence(timeout: 5), "the PDF bar should carry the bookmark ribbon")
+        ribbon.tap()
+
+        let toc = app.descendants(matching: .any)["pdf.toc"].firstMatch
+        XCTAssertTrue(toc.waitForExistence(timeout: 5))
+        toc.tap()
+
+        let row = app.buttons["contents.bookmark"].firstMatch
+        XCTAssertTrue(row.waitForExistence(timeout: 5), "the page bookmark should list at the top of the PDF Contents")
+        XCTAssertTrue(app.staticTexts["BOOKMARKS"].firstMatch.exists)
+
+        let remove = app.buttons["contents.removeBookmark"].firstMatch
+        XCTAssertTrue(remove.exists)
+        remove.tap()
+        XCTAssertTrue(row.waitForNonExistence(timeout: 5), "✕ on a PDF bookmark row should remove it")
     }
 
     // MARK: - Typography controls (Apple Books parity)

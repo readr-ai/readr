@@ -24,93 +24,51 @@ struct PDFOutlineList: View {
     @AppStorage("readingTheme") private var themeRaw = ReadingTheme.paper.rawValue
     private var theme: ReadingTheme { ReadingTheme(rawValue: themeRaw) ?? .paper }
 
-    private var bookmarkedPages: Set<Int> {
-        Set(bookmarks.compactMap { $0.pdfPageIndex.map { $0 + 1 } })
-    }
-
     var body: some View {
-        Group {
+        let bookmarkedPages = Set(bookmarks.compactMap { $0.pdfPageIndex.map { $0 + 1 } })
+        return Group {
             if items.isEmpty, bookmarks.isEmpty {
                 Text("No table of contents")
                     .foregroundStyle(theme.muted)
                     .frame(width: 260, height: 76)
+                    .background(theme.elevated)
+                    .presentationBackground(theme.elevated)
             } else {
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 0) {
-                        if !bookmarks.isEmpty {
-                            header("BOOKMARKS")
-                            ForEach(bookmarks) { bookmark in
-                                bookmarkRow(bookmark)
-                            }
-                        }
-                        if !items.isEmpty {
-                            header("CONTENTS")
-                            ForEach(items) { item in
-                                row(item)
-                            }
+                LazyVStack(alignment: .leading, spacing: 0) {
+                    if !bookmarks.isEmpty {
+                        ContentsSectionHeader(title: "BOOKMARKS", theme: theme)
+                        ForEach(bookmarks) { bookmark in
+                            let page = (bookmark.pdfPageIndex ?? 0) + 1
+                            ContentsBookmarkRow(
+                                kicker: "Page \(page)",
+                                // Bookmarks made before 3.4 stored "Page N"
+                                // as their snippet; that is the kicker now.
+                                snippet: bookmark.snippet == "Page \(page)" ? "" : bookmark.snippet,
+                                theme: theme,
+                                accessibilityLabel: "Bookmark on page \(page)",
+                                onJump: {
+                                    controller.goToPage(bookmark.pdfPageIndex ?? 0)
+                                    dismiss()
+                                },
+                                onRemove: { onRemoveBookmark?(bookmark) }
+                            )
                         }
                     }
-                    .padding(6)
+                    if !items.isEmpty {
+                        ContentsSectionHeader(title: "CONTENTS", theme: theme)
+                        ForEach(items) { item in
+                            row(item, bookmarked: bookmarkedPages.contains(item.pageNumber ?? -1))
+                        }
+                    }
                 }
-                .frame(width: 320, height: min(400, CGFloat(bookmarks.count * 44 + items.count * 32) + 80))
+                .padding(.top, 6)
+                .contentsPopoverFrame(theme: theme)
             }
         }
-        .background(theme.elevated)
-        .presentationBackground(theme.elevated)
         .onAppear { items = controller.outlineItems() }
     }
 
-    private func header(_ title: String) -> some View {
-        Text(title)
-            .font(.system(size: 10.5, weight: .semibold))
-            .kerning(1.5)
-            .foregroundStyle(theme.faint)
-            .padding(.horizontal, 8)
-            .padding(.top, 10)
-            .padding(.bottom, 4)
-    }
-
-    private func bookmarkRow(_ bookmark: Bookmark) -> some View {
-        HStack(spacing: 8) {
-            Button {
-                controller.goToPage(bookmark.pdfPageIndex ?? 0)
-                dismiss()
-            } label: {
-                HStack(spacing: 8) {
-                    Image(systemName: "bookmark.fill")
-                        .font(.system(size: 11))
-                        .foregroundStyle(theme.muted)
-                    Text(bookmark.snippet.isEmpty ? "Page \((bookmark.pdfPageIndex ?? 0) + 1)" : bookmark.snippet)
-                        .font(.system(size: 13.5, design: .serif))
-                        .foregroundStyle(theme.inkColor)
-                        .lineLimit(1)
-                    Spacer(minLength: 0)
-                }
-                .padding(.vertical, 5)
-                .padding(.horizontal, 8)
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .accessibilityIdentifier("contents.bookmark")
-            if let onRemoveBookmark {
-                Button {
-                    onRemoveBookmark(bookmark)
-                } label: {
-                    Image(systemName: "xmark")
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(theme.faint)
-                        .frame(width: 24, height: 24)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .help("Remove bookmark")
-                .accessibilityLabel("Remove bookmark")
-                .accessibilityIdentifier("contents.removeBookmark")
-            }
-        }
-    }
-
-    private func row(_ item: PDFReaderController.OutlineItem) -> some View {
+    private func row(_ item: PDFReaderController.OutlineItem, bookmarked: Bool) -> some View {
         Button {
             controller.jump(to: item)
             dismiss()
@@ -122,11 +80,9 @@ struct PDFOutlineList: View {
                     .lineLimit(1)
                     .truncationMode(.tail)
                 Spacer(minLength: 12)
-                if let page = item.pageNumber, bookmarkedPages.contains(page) {
-                    Image(systemName: "bookmark")
-                        .font(.system(size: 11))
-                        .foregroundStyle(theme.faint)
-                        .accessibilityLabel("Has a bookmark")
+                if bookmarked {
+                    ContentsBookmarkMarker(theme: theme)
+                        .accessibilityHidden(true)
                 }
                 if let page = item.pageNumber {
                     Text("\(page)")
@@ -136,11 +92,13 @@ struct PDFOutlineList: View {
                 }
             }
             .padding(.vertical, 5)
-            .padding(.horizontal, 8)
+            .padding(.horizontal, 12)
             .padding(.leading, CGFloat(item.depth) * 14)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .accessibilityLabel(item.title)
+        .accessibilityHint(bookmarked ? "Has a bookmark" : "")
         .disabled(item.destination == nil)
     }
 }

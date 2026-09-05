@@ -763,7 +763,7 @@ final class ReadrAppUITests: XCTestCase {
         XCTAssertTrue(line.exists, "two page turns are not yet 'reading on'")
         text.swipeLeft()
         XCTAssertTrue(
-            waitForDisappearance(line, timeout: 5),
+            line.waitForNonExistence(timeout: 5),
             "after three page turns the welcome-back line should go on its own"
         )
     }
@@ -779,12 +779,6 @@ final class ReadrAppUITests: XCTestCase {
             app.staticTexts["reader.welcomeBack"].firstMatch.waitForExistence(timeout: 2),
             "a book opened today must not be greeted as if the reader had been away"
         )
-    }
-
-    private func waitForDisappearance(_ element: XCUIElement, timeout: TimeInterval) -> Bool {
-        let gone = NSPredicate(format: "exists == false")
-        let expectation = XCTNSPredicateExpectation(predicate: gone, object: element)
-        return XCTWaiter().wait(for: [expectation], timeout: timeout) == .completed
     }
 
     // MARK: - Screenshots for CI

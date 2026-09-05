@@ -80,7 +80,14 @@ struct NoteEditor: View {
             }
         }
         .padding(14)
-        .frame(width: 300)
+        // A floor on the Mac (the list's sheet used to guarantee 380); the
+        // sheet's own width on iOS, where a fixed card floated in a wider
+        // sheet of the same colour.
+        #if os(macOS)
+        .frame(minWidth: 380, idealWidth: 400, minHeight: 200)
+        #else
+        .frame(maxWidth: .infinity, alignment: .leading)
+        #endif
         .background(theme.elevated)
         .presentationBackground(theme.elevated)
         #if os(iOS)
