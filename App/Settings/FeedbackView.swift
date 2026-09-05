@@ -94,15 +94,10 @@ struct ReportBugView: View {
     private var theme: ReadingTheme { ReadingTheme(rawValue: themeRaw) ?? .paper }
 
     let log: DiagnosticsLog
-    /// Where earlier sessions' evidence comes from. Defaults to the sink the
-    /// app installed; nil (previews, tests) means the report carries this
-    /// session only.
+    /// Where earlier sessions' evidence comes from. Nil means the sink the
+    /// app installed (resolved on the main actor when the sheet appears);
+    /// previews and tests that want this session only pass an empty sink.
     var fileSink: DiagnosticsFileSink?
-
-    init(log: DiagnosticsLog, fileSink: DiagnosticsFileSink? = AppModel.diagnosticsFileSink) {
-        self.log = log
-        self.fileSink = fileSink
-    }
 
     @State private var whatHappened = ""
     @State private var includeDiagnostics = true
@@ -134,7 +129,7 @@ struct ReportBugView: View {
     private func loadEvidence() async {
         guard !evidenceLoaded else { return }
         evidenceLoaded = true
-        let sink = fileSink
+        let sink = fileSink ?? AppModel.diagnosticsFileSink
         let session = log.entries
         let start = log.sessionStart
         let (fromFile, snapshot) = await Task.detached(priority: .userInitiated) {
