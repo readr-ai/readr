@@ -248,7 +248,7 @@ Article", sheet title "✦ ARTICLE", primary "Compose", re-run "Compose again".
 Effort: hours. Touches UI-test string lookups (`staticTexts`), so run the
 suites.
 
-### F6. The Listen bar has no compact layout  `medium` `[verify]`
+### F6. The Listen bar has no compact layout  `medium` — shipped in the Listen-card PR (Option B)
 
 `ListenBar` is one `HStack`: five transport buttons, the sentence line,
 "N min ready", speed, voice, sleep, close. On a 393pt iPhone that is roughly

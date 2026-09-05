@@ -132,6 +132,11 @@ appearance controls inline; September 2026 UX review, F3):
   ✦ + a caps title in the principal slot; reading surfaces carry their
   title; Done is always on the right. One note editor (`NoteEditor`)
   wherever a note is edited from (F4).
+- **Listen** (⌘⇧L): the now-reading card insets the page from the bottom —
+  chapter in caps, the sentence being read, a hairline of chapter progress,
+  speed · ◀ ● ▶ · Sleep, ✕ in the corner. The voice is chosen in the Aa
+  popover; chapter skips are in Contents. Ask opened while the voice reads
+  pauses it, is about the sentence being read, and resumes it on Done.
 - Footer (text modes): "Page x of y · ~N min left in chapter" (estimated from
   ~240 wpm until measured), page-turn arrows; ←/→ keys and trackpad swipe.
   Scroll layout on the Mac carries previous/next-chapter arrows in its

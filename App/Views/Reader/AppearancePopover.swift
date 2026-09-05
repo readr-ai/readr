@@ -22,6 +22,9 @@ struct AppearancePopover: View {
     @Binding var isJustified: Bool
     var isPDF: Bool = false
     @Binding var pdfShowsOriginal: Bool
+    /// The reader's narration, for the Voice section: the narrator is
+    /// chosen here, once, rather than on every Listen card.
+    var narration: NarrationModel? = nil
     @Environment(\.dismiss) private var dismiss
     /// The host's own way to close the popover, when it is not a SwiftUI
     /// presentation (`MacPopover` on macOS); `dismiss` otherwise.
@@ -74,6 +77,12 @@ struct AppearancePopover: View {
             }
 
             section("Layout") { layoutPicker }
+
+            if let narration {
+                section("Voice") {
+                    NarrationVoicePicker(narration: narration, theme: theme)
+                }
+            }
 
             if isPDF {
                 section("PDF") {

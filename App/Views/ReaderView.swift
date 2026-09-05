@@ -93,6 +93,11 @@ struct ReaderView: View {
     /// or where it already is, after an iPad narrowed with Ask open.
     @State private var showInspector = false
     @State private var inspectorTab: InspectorTab = .highlights
+    /// The voice was paused because Ask opened over it; it resumes when
+    /// Ask goes away (the sheet dismisses, or the inspector leaves the Ask
+    /// tab). A reader can't listen to page 5 while reading an answer
+    /// about page 4.
+    @State private var narrationPausedForAsk = false
     @State private var showTOC = false
     @State private var showSearch = false
     @State private var showAppearance = false
@@ -256,7 +261,7 @@ struct ReaderView: View {
             #endif
             .background(hiddenFontShortcuts)
             .background(hiddenAnnotationShortcuts)
-            .sheet(item: $askRequest) { _ in
+            .sheet(item: $askRequest, onDismiss: resumeNarrationAfterAsk) { _ in
                 AskPanelView(
                     book: book,
                     conversation: model.askConversation(for: book),
@@ -311,6 +316,12 @@ struct ReaderView: View {
             .inspector(isPresented: $showInspector) {
                 inspectorColumn
                 .inspectorColumnWidth(min: 280, ideal: 340, max: 480)
+            }
+            .onChange(of: showInspector) { _, shown in
+                if !shown { resumeNarrationAfterAsk() }
+            }
+            .onChange(of: inspectorTab) { _, tab in
+                if tab != .ask { resumeNarrationAfterAsk() }
             }
             .onAppear {
                 restoreOnce()
@@ -584,6 +595,7 @@ struct ReaderView: View {
     /// Either way over the book's one conversation, pointed at this
     /// request; a draft in the composer and the scope choice survive.
     private func presentAsk(_ request: AskRequest) {
+        pauseNarrationForAsk()
         model.askConversation(for: book).open(request)
         if usesAskInspector || (showInspector && inspectorTab == .ask) {
             inspectorTab = .ask
@@ -597,6 +609,37 @@ struct ReaderView: View {
     /// been read.
     private func bookRequest() -> AskRequest {
         AskRequest(selection: nil, scope: askScope(selection: nil), initialQuestion: nil)
+    }
+
+    /// Ask opened while the voice was reading: pause it. Listening to the
+    /// next page while reading an answer about this one is nobody's wish.
+    private func pauseNarrationForAsk() {
+        guard narration.isUnderway else { return }
+        narration.pause()
+        narrationPausedForAsk = true
+    }
+
+    /// Ask went away: the voice picks up the sentence it paused on, if it
+    /// was Ask that paused it (a reader who pressed pause themselves keeps
+    /// their pause).
+    private func resumeNarrationAfterAsk() {
+        guard narrationPausedForAsk else { return }
+        narrationPausedForAsk = false
+        if narration.isActive { narration.play() }
+    }
+
+    /// While the voice reads, Ask with no selection is about the sentence
+    /// being read — "what does this passage mean" means the one the reader
+    /// just heard. Nil when the voice isn't reading this chapter.
+    private func narratedSentenceSelection() -> (Selection, Range<Int>)? {
+        guard narration.isActive, let position = narration.position,
+              position.chapterIndex == chapterIndex, let chapter,
+              !narration.currentSentence.isEmpty else { return nil }
+        let start = max(0, min(position.sentenceStart, chapter.text.count))
+        let end = min(chapter.text.count, start + narration.currentSentence.count)
+        guard end > start else { return nil }
+        let range = start..<end
+        return (model.makeSelection(in: chapter, range: range), range)
     }
 
     /// Start over: a fresh conversation, open on the book at large.
@@ -664,7 +707,13 @@ struct ReaderView: View {
         // cover the sentence being read.
         .safeAreaInset(edge: .bottom, spacing: 0) {
             if narration.isActive {
-                ListenBar(narration: narration, style: style) {
+                ListenBar(
+                    narration: narration,
+                    style: style,
+                    chapterTitle: narration.position.map { book.chapterDisplayTitle($0.chapterIndex) }
+                        ?? book.chapterDisplayTitle(chapterIndex),
+                    surface: layout == .scroll ? style.theme.background : style.theme.paper
+                ) {
                     narration.stop()
                 }
             }
@@ -1414,7 +1463,8 @@ struct ReaderView: View {
             isJustified: $isJustified,
             // An image-only PDF has no Reading view to offer.
             isPDF: model.isPDF(book) && !isImageOnlyPDF,
-            pdfShowsOriginal: $pdfShowsOriginal
+            pdfShowsOriginal: $pdfShowsOriginal,
+            narration: narration
         )
     }
 
@@ -1478,6 +1528,11 @@ struct ReaderView: View {
                 selection: model.makeSelection(in: chapter, range: selected),
                 scope: askScope(selection: selected),
                 initialQuestion: nil
+            ))
+        } else if let (selection, range) = narratedSentenceSelection() {
+            // Listening: the question is about the sentence being read.
+            presentAsk(AskRequest(
+                selection: selection, scope: askScope(selection: range), initialQuestion: nil
             ))
         } else {
             // No selection: a question about the book — scoped to what has

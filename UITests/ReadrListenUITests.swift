@@ -187,15 +187,19 @@ final class ReadrListenUITests: XCTestCase {
         let app = launchSeeded()
         startListening(app)
 
+        // The card: ◀ ● ▶, speed, sleep, ✕. Chapter skips live in Contents
+        // and the voice in the Aa popover (September 2026 UX review, F6).
         for id in [
-            "listen.previousChapter", "listen.previous", "listen.playPause",
-            "listen.next", "listen.nextChapter",
-            "listen.speed", "listen.voice", "listen.sleep", "listen.close",
+            "listen.previous", "listen.playPause", "listen.next",
+            "listen.speed", "listen.sleep", "listen.close",
         ] {
             XCTAssertTrue(
                 element(app, id).waitForExistence(timeout: 5),
-                "Narration control '\(id)' should be on the Listen bar"
+                "Narration control '\(id)' should be on the Listen card"
             )
+        }
+        for id in ["listen.previousChapter", "listen.nextChapter", "listen.voice", "listen.ahead"] {
+            XCTAssertFalse(element(app, id).exists, "'\(id)' left the card")
         }
     }
 
@@ -279,7 +283,7 @@ final class ReadrListenUITests: XCTestCase {
         // Each skip cancels the utterance in flight and starts the next; the
         // bar must survive all four and still be speaking afterwards.
         for id in [
-            "listen.next", "listen.previous", "listen.nextChapter", "listen.previousChapter",
+            "listen.next", "listen.previous",
         ] {
             let skip = element(app, id)
             XCTAssertTrue(skip.waitForExistence(timeout: 5))
@@ -353,12 +357,16 @@ final class ReadrListenUITests: XCTestCase {
         )
     }
 
-    func testVoiceMenuOpens() {
+    // The narrator is chosen in the Aa popover, once — not on every card.
+    func testVoiceMenuOpensFromAppearance() {
         let app = launchSeeded()
         startListening(app)
 
-        let voice = element(app, "listen.voice")
-        XCTAssertTrue(voice.waitForExistence(timeout: 5))
+        let appearance = element(app, "reader.appearance")
+        XCTAssertTrue(appearance.waitForExistence(timeout: 5))
+        appearance.tap()
+        let voice = element(app, "appearance.voice")
+        XCTAssertTrue(voice.waitForExistence(timeout: 5), "the Aa popover should offer the voice")
         voice.tap()
         // Better voices are a system download, and the menu says so whether or
         // not this simulator has any installed beyond the default.
