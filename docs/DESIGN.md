@@ -134,6 +134,8 @@ appearance controls inline; September 2026 UX review, F3):
   wherever a note is edited from (F4).
 - Footer (text modes): "Page x of y · ~N min left in chapter" (estimated from
   ~240 wpm until measured), page-turn arrows; ←/→ keys and trackpad swipe.
+  Scroll layout on the Mac carries previous/next-chapter arrows in its
+  footer (⌥⌘← / ⌥⌘→ everywhere), since it has no page edges to turn.
 - Position restore: exact character offset (`ReadingPosition.characterOffset`),
   not just the chapter.
 

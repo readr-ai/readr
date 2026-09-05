@@ -284,7 +284,7 @@ struct PDFReaderView: View {
             .accessibilityIdentifier("pdf.thumbnails")
         }
         ToolbarItem(id: "pdf.bookmark", placement: navPlacement) {
-            bookmarkMenu
+            bookmarkToggle
         }
         ToolbarItem(id: "pdf.search", placement: searchPlacement) {
             searchButton
@@ -348,30 +348,27 @@ struct PDFReaderView: View {
     /// The ribbon: filled on a bookmarked page; a tap (⌘D) adds or removes
     /// the bookmark. The page bookmarks list in Contents, as in the text
     /// reader.
-    private var bookmarkMenu: some View {
-        Button(action: toggleBookmark) {
-            Label(
-                currentBookmark == nil ? "Bookmark" : "Bookmarked",
-                systemImage: currentBookmark == nil ? "bookmark" : "bookmark.fill"
-            )
-        }
-        .keyboardShortcut("d", modifiers: .command)
-        .help(currentBookmark == nil ? "Bookmark this page (⌘D)" : "Remove this bookmark (⌘D)")
-        .accessibilityLabel(currentBookmark == nil ? "Bookmark this page" : "Remove bookmark")
-        .accessibilityAddTraits(currentBookmark == nil ? [] : [.isSelected])
-        .accessibilityIdentifier("pdf.bookmark")
+    private var bookmarkToggle: some View {
+        BookmarkRibbonButton(
+            isBookmarked: currentBookmark != nil,
+            identifier: "pdf.bookmark",
+            action: toggleBookmark
+        )
     }
 
     private func toggleBookmark() {
         if let existing = currentBookmark {
             model.removeBookmark(existing)
         } else {
+            // No snippet: a page bookmark's label is its page number, which
+            // every row derives from `pdfPageIndex` (storing "Page N" was a
+            // string that could go stale against its own source).
             model.addBookmark(Bookmark(
                 bookID: book.id,
                 chapterIndex: 0,
                 characterOffset: 0,
                 pdfPageIndex: controller.currentPageIndex,
-                snippet: "Page \(controller.currentPageIndex + 1)",
+                snippet: "",
                 createdAt: Date()
             ))
         }

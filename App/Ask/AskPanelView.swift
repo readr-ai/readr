@@ -142,17 +142,7 @@ struct AskPanelView: View {
             #endif
             .toolbar {
                 ToolbarItem(placement: .principal) {
-                    HStack(spacing: 8) {
-                        Text(AppTheme.aiGlyph)
-                            .font(.subheadline)
-                            .foregroundStyle(theme.iris)
-                        Text("ASK THE BOOK")
-                            .font(.caption2.weight(.semibold))
-                            .tracking(1.5)
-                            .foregroundStyle(theme.muted)
-                    }
-                    .accessibilityAddTraits(.isHeader)
-                    .accessibilityLabel("Ask the book")
+                    AISheetHeader(title: "Ask the book", theme: theme)
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Done") { dismiss() }

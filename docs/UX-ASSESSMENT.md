@@ -175,6 +175,11 @@ Effort: half a day. No conflict except the #94 sequencing note.
 
 ### F3. The macOS reader toolbar carries up to 17 controls  `high` — shipped in the reader-chrome PR
 
+*Shipped:* the bar is Contents · ribbon | Find · Aa · Listen · ✦ Ask ·
+Highlights on every platform; the inline controls and the chapter chevrons
+are gone, scroll layout's footer carries chapter arrows on the Mac, and
+⌥⌘← / ⌥⌘→ step chapters everywhere. The inventory below is what it replaced.
+
 Trailing group: Find, three layout segments, two font-size steppers, a
 Text menu, three theme dots, a PDF display menu, Listen, ✦ Ask, Notes.
 Leading group: previous/next chapter, Contents, Bookmarks. In the default
@@ -196,6 +201,12 @@ Effort: 1 day, mostly deleting `layoutSegmentControl`, `fontStepperControl`,
 change.
 
 ### F4. Sheet headers: six surfaces, six grammars  `medium` — shipped in the reader-chrome PR
+
+*Shipped:* `AISheetHeader` (✦ + caps) in Ask and Article; Done on the right
+of every sheet, with Escape kept; one `NoteEditor` wherever a note is edited
+from. Settings, Report a bug, the model picker and the Highlights panel
+already carried a plain title with Done on the right and are unchanged. The
+inventory below is what it replaced.
 
 Already on the roadmap's deferred list; confirming the inventory so it can
 be done in one pass:
@@ -284,6 +295,11 @@ swipe is already there).
 Effort: hours.
 
 ### F9. Bookmarks are a menu of submenus  `low` — shipped in the reader-chrome PR (Option A)
+
+*Shipped:* the ribbon toggle in the bar, bookmarks (page bookmarks too) at
+the top of Contents with tap-to-jump and ✕, a ribbon on rows that hold one;
+the same `ContentsPopover` pieces in the text and PDF readers. The inventory
+below is what it replaced.
 
 Each bookmark is a nested `Menu` with "Go to Bookmark" and "Remove". Two
 clicks to jump, and on iPhone a menu inside a bottom-bar menu. Chapter

@@ -133,22 +133,32 @@ struct ArticleStudioView: View {
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
         ToolbarItem(placement: .principal) {
-            HStack(spacing: 8) {
-                Text(AppTheme.aiGlyph)
-                    .font(.subheadline)
-                    .foregroundStyle(theme.iris)
-                Text("ARTICLE")
-                    .font(.caption2.weight(.semibold))
-                    .tracking(1.5)
-                    .foregroundStyle(theme.muted)
-            }
-            .accessibilityAddTraits(.isHeader)
-            .accessibilityLabel("Article")
+            AISheetHeader(title: "Article", theme: theme)
         }
         ToolbarItem(placement: .confirmationAction) {
+            // Escape closes the sheet, as Cancel used to; Return is left to
+            // the direction field.
             Button("Done") { dismiss() }
+                .keyboardShortcut(.cancelAction)
         }
         if !article.isComposing && !article.markdown.isEmpty {
+            #if os(iOS)
+            // The iPhone bar collapses trailing items past two, and Done is
+            // one of them: the draft's actions ride one menu.
+            ToolbarItem(placement: .primaryAction) {
+                Menu {
+                    Button("Compose again", systemImage: "arrow.clockwise", action: startCompose)
+                    Button("Save as Markdown…", systemImage: "square.and.arrow.down") { showExporter = true }
+                    Button("Copy", systemImage: "doc.on.doc") { Pasteboard.copy(article.markdown) }
+                    ShareLink(item: article.markdown) {
+                        Label("Share…", systemImage: "square.and.arrow.up")
+                    }
+                } label: {
+                    Label("Article actions", systemImage: "ellipsis.circle")
+                }
+                .accessibilityIdentifier("article.actions")
+            }
+            #else
             ToolbarItemGroup(placement: .primaryAction) {
                 Button {
                     startCompose()
@@ -161,7 +171,7 @@ struct ArticleStudioView: View {
                 Button {
                     showExporter = true
                 } label: {
-                    quietAction("Markdown")
+                    quietAction("Save as Markdown…")
                 }
                 .buttonStyle(.plain)
                 .help("Save the article as a Markdown file")
@@ -177,6 +187,7 @@ struct ArticleStudioView: View {
                 }
                 .buttonStyle(.plain)
             }
+            #endif
         }
     }
 

@@ -62,6 +62,9 @@ struct OpenRouterModelPickerView: View {
                 // right, like every other sheet.
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Done") { dismiss() }
+                        // Escape still closes the sheet; Return stays with
+                        // the search field.
+                        .keyboardShortcut(.cancelAction)
                 }
             }
         }
