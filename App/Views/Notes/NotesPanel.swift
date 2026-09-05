@@ -29,9 +29,7 @@ struct NotesPanel: View {
     @AppStorage("readingTheme") private var themeRaw = ReadingTheme.paper.rawValue
     private var theme: ReadingTheme { ReadingTheme(rawValue: themeRaw) ?? .paper }
 
-    private var annotationCount: Int {
-        model.highlights(for: book).count + model.pdfHighlights(for: book).count
-    }
+    private var annotationCount: Int { model.annotationCount(for: book) }
 
     private var showsCloseButton: Bool {
         #if os(iOS)

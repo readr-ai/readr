@@ -82,24 +82,15 @@ struct ReaderView: View {
     /// voice reaches it (or moves on to another sentence).
     @State private var holdsPageForSelectionStart = false
     @State private var heldSentenceStart: Int?
-    /// The Ask sheet's request (iPhone) — selection, scope and any question
-    /// to send on open — and, by being non-nil, the fact that it is
-    /// presented. One value carries the whole presentation, so
-    /// `.sheet(item:)` gives every opening a fresh identity.
+    /// The Ask sheet's opening (iPhone): non-nil presents the sheet. The
+    /// conversation itself is the book's, on the app model, already pointed
+    /// at this request by `presentAsk`.
     @State private var askRequest: AskRequest?
-    /// The request the inspector's Ask column was last opened with (Mac,
-    /// iPad): its identity resets the column's scope choice per opening
-    /// while the conversation underneath carries on.
-    @State private var lastAskRequest: AskRequest?
-    /// The book's conversation for this session. Owned here, not by the
-    /// panel, so closing the sheet or switching the inspector to Highlights
-    /// and coming back resumes it — a reader can ask, read on, and follow
-    /// up. "New conversation" replaces it.
-    @State private var askConversation: AskViewModel?
     /// The inspector column: Highlights (⌘⇧N) or ✦ Ask (⌘⇧A) — one column,
     /// two tabs, the page readable beside either. On iPhone the inspector
     /// is a sheet and Ask stays its own full-height sheet (owner decision,
-    /// September 2026), so the tab strip only shows where Ask lives here.
+    /// September 2026), so the tab strip shows only where Ask lives here —
+    /// or where it already is, after an iPad narrowed with Ask open.
     @State private var showInspector = false
     @State private var inspectorTab: InspectorTab = .highlights
     @State private var showTOC = false
@@ -265,12 +256,12 @@ struct ReaderView: View {
             #endif
             .background(hiddenFontShortcuts)
             .background(hiddenAnnotationShortcuts)
-            .sheet(item: $askRequest) { request in
+            .sheet(item: $askRequest) { _ in
                 AskPanelView(
-                    app: model, book: book, request: request,
-                    conversation: askConversation
-                        ?? AskPanelView.makeConversation(app: model, book: book, request: request),
-                    presentation: .sheet
+                    book: book,
+                    conversation: model.askConversation(for: book),
+                    presentation: .sheet,
+                    onNewConversation: startNewConversation
                 )
                 .environmentObject(model)
             }
@@ -360,9 +351,12 @@ struct ReaderView: View {
                 // really leaving: a presented sheet can take this view off
                 // screen too (the same reason `restoreOnce` guards against a
                 // second `onAppear`), and asking the book about the passage it
-                // just read must not cut the narration off.
+                // just read must not cut the narration off. An answer still
+                // streaming stops too: the transcript keeps what arrived, and
+                // nothing streams for a book nobody is reading.
                 if !isPresentingOverlay {
                     narration.stop()
+                    model.askConversation(for: book).cancel()
                 }
             }
             .onChange(of: chapterIndex) { _, newValue in
@@ -430,21 +424,29 @@ struct ReaderView: View {
     enum InspectorTab { case highlights, ask }
 
     /// Where ✦ Ask lives: the inspector column on the Mac and on a regular
-    /// iPad, its own sheet on iPhone.
+    /// iPad, its own sheet on iPhone (an iPhone in landscape reports a
+    /// regular width; the idiom, not the width, is the decision).
     private var usesAskInspector: Bool {
         #if os(macOS)
         return true
         #else
-        return isRegularWidth
+        return UIDevice.current.userInterfaceIdiom != .phone && isRegularWidth
         #endif
+    }
+
+    /// The Ask tab is shown where Ask lives in the inspector — and stays
+    /// shown on an iPad that narrowed to compact with Ask open, so the
+    /// conversation never vanishes behind Highlights mid-answer.
+    private var inspectorShowsAskTab: Bool {
+        usesAskInspector || inspectorTab == .ask
     }
 
     private var inspectorColumn: some View {
         VStack(spacing: 0) {
-            if usesAskInspector {
+            if inspectorShowsAskTab {
                 inspectorTabs
             }
-            if usesAskInspector, inspectorTab == .ask {
+            if inspectorShowsAskTab, inspectorTab == .ask {
                 askColumn
             } else {
                 highlightsPanel
@@ -457,8 +459,16 @@ struct ReaderView: View {
     /// iris for the AI tab).
     private var inspectorTabs: some View {
         HStack(alignment: .bottom, spacing: 18) {
-            inspectorTabButton(.highlights, title: "Highlights", count: highlightCount, id: "inspector.tab.highlights")
-            inspectorTabButton(.ask, title: "\(AppTheme.aiGlyph) Ask", count: nil, id: "inspector.tab.ask")
+            inspectorTabButton(
+                .highlights, title: "Highlights", count: model.annotationCount(for: book),
+                id: "inspector.tab.highlights", help: "Highlights and notes (⇧⌘N)"
+            )
+            inspectorTabButton(
+                .ask, title: "\(AppTheme.aiGlyph) Ask", count: nil,
+                id: "inspector.tab.ask",
+                help: isImageOnlyPDF ? ScannedPDFCopy.needsText("Ask") : "Ask the book (⇧⌘A)"
+            )
+            .disabled(isImageOnlyPDF)
             Spacer(minLength: 0)
         }
         .padding(.horizontal, 14)
@@ -467,12 +477,12 @@ struct ReaderView: View {
     }
 
     private func inspectorTabButton(
-        _ tab: InspectorTab, title: String, count: Int?, id: String
+        _ tab: InspectorTab, title: String, count: Int?, id: String, help: String
     ) -> some View {
         let selected = inspectorTab == tab
         let tint = tab == .ask ? style.theme.iris : style.theme.inkColor
         return Button {
-            inspectorTab = tab
+            selectInspectorTab(tab)
         } label: {
             HStack(alignment: .firstTextBaseline, spacing: 5) {
                 Text(title)
@@ -493,50 +503,30 @@ struct ReaderView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .help(help)
         .accessibilityAddTraits(selected ? [.isSelected] : [])
         .accessibilityIdentifier(id)
     }
 
-    private var highlightCount: Int {
-        model.highlights(for: book).count + model.pdfHighlights(for: book).count
+    /// A tab tap. The Ask tab on a conversation nobody has opened yet
+    /// opens it on the book so far — a conversation has a frontier only
+    /// once it has been pointed somewhere.
+    private func selectInspectorTab(_ tab: InspectorTab) {
+        if tab == .ask, !model.askConversation(for: book).hasBeenOpened {
+            model.askConversation(for: book).open(bookRequest())
+        }
+        inspectorTab = tab
     }
 
-    /// The Ask column: the conversation, or an invitation before there is
-    /// one.
-    @ViewBuilder
+    /// The Ask column: the book's conversation, in the inspector.
     private var askColumn: some View {
-        if let conversation = askConversation, let request = lastAskRequest {
-            AskPanelView(
-                app: model, book: book, request: request,
-                conversation: conversation,
-                presentation: .inspector,
-                onNewConversation: startNewConversation
-            )
-            .environmentObject(model)
-            // A new opening resets the column's scope choice; the
-            // conversation underneath is the same object and carries on.
-            .id(request.id)
-        } else {
-            VStack(spacing: 12) {
-                Text(AppTheme.aiGlyph)
-                    .font(.system(size: 22))
-                    .foregroundStyle(style.theme.iris)
-                Text("Ask the book")
-                    .font(.system(size: 15, weight: .semibold, design: .serif))
-                    .foregroundStyle(style.theme.inkColor)
-                Text("Select a passage and tap \(AppTheme.aiGlyph) Ask, or ask about the book so far.")
-                    .font(.system(size: 12.5))
-                    .foregroundStyle(style.theme.muted)
-                    .multilineTextAlignment(.center)
-                Button("Ask about the book", action: askTheBook)
-                    .buttonStyle(.plain)
-                    .font(.system(size: 12.5, weight: .semibold))
-                    .foregroundStyle(style.theme.iris)
-                    .accessibilityIdentifier("ask.start")
-            }
-            .padding(24)
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-        }
+        AskPanelView(
+            book: book,
+            conversation: model.askConversation(for: book),
+            presentation: .inspector,
+            onNewConversation: startNewConversation
+        )
+        .environmentObject(model)
     }
 
     private var highlightsPanel: some View {
@@ -590,15 +580,12 @@ struct ReaderView: View {
     }
 
     /// Show the Ask panel for `request`: the inspector's Ask column where
-    /// that is where Ask lives, else the sheet. Either way over the book's
-    /// one conversation, pointed at this request.
+    /// that is where Ask lives — or where it already is — else the sheet.
+    /// Either way over the book's one conversation, pointed at this
+    /// request; a draft in the composer and the scope choice survive.
     private func presentAsk(_ request: AskRequest) {
-        let conversation = askConversation
-            ?? AskPanelView.makeConversation(app: model, book: book, request: request)
-        conversation.open(request)
-        askConversation = conversation
-        if usesAskInspector {
-            lastAskRequest = request
+        model.askConversation(for: book).open(request)
+        if usesAskInspector || (showInspector && inspectorTab == .ask) {
             inspectorTab = .ask
             showInspector = true
         } else {
@@ -606,19 +593,22 @@ struct ReaderView: View {
         }
     }
 
-    /// Replace the book's conversation with an empty one, open on the book
-    /// at large.
+    /// A question about the book so far: no passage, scoped to what has
+    /// been read.
+    private func bookRequest() -> AskRequest {
+        AskRequest(selection: nil, scope: askScope(selection: nil), initialQuestion: nil)
+    }
+
+    /// Start over: a fresh conversation, open on the book at large.
     private func startNewConversation() {
-        let request = AskRequest(selection: nil, scope: askScope(selection: nil), initialQuestion: nil)
-        askConversation = AskPanelView.makeConversation(app: model, book: book, request: request)
-        lastAskRequest = request
+        model.startNewAskConversation(for: book).open(bookRequest())
     }
 
     /// The Highlights button (⌘⇧N): opens the inspector on Highlights, or
     /// switches an inspector that is showing Ask to Highlights, or closes
     /// an inspector already showing Highlights.
     private func toggleHighlightsPanel() {
-        if showInspector, usesAskInspector, inspectorTab == .ask {
+        if showInspector, inspectorTab == .ask {
             inspectorTab = .highlights
         } else if showInspector {
             showInspector = false
@@ -1492,7 +1482,7 @@ struct ReaderView: View {
         } else {
             // No selection: a question about the book — scoped to what has
             // been read, with the panel's switch to widen it.
-            presentAsk(AskRequest(selection: nil, scope: askScope(selection: nil), initialQuestion: nil))
+            presentAsk(bookRequest())
         }
     }
 
@@ -1598,7 +1588,7 @@ struct ReaderView: View {
         .keyboardShortcut("n", modifiers: [.command, .shift])
         .accessibilityIdentifier("reader.notes")
         .accessibilityLabel("Highlights")
-        .help("Highlights & notes (⇧⌘N)")
+        .help("Highlights (⇧⌘N) — from the Ask tab, switches to Highlights")
     }
 
     /// Invisible buttons so ⌘+/⌘− resize text without opening the Appearance

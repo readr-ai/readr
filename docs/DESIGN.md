@@ -13,7 +13,7 @@ LiquidText, Yomu), and verified AppKit/PDFKit implementation patterns.
    PDFs natively, with the same annotation model as EPUBs.
 2. **Your highlights are alive, not trapped.** Apple Books has no annotation
    export at all (its own users' most-cited complaint). In Readr every
-   highlight/note streams into a Notes panel as you read, exports as clean
+   highlight/note streams into a Highlights panel as you read, exports as clean
    Markdown in one click, and can be composed into an article by the AI.
 3. **Ask the book, with receipts.** Select any passage → Ask. Answers are
    grounded in the book and cite the passages they came from.
@@ -155,7 +155,7 @@ appearance controls inline; September 2026 UX review, F3):
   per-line page-space rects + quoted text + color + note (PDF file is never
   mutated), and re-created as PDFKit annotation overlays on load. TOC from
   `PDFOutline`, search via `findString`, thumbnails sidebar, bookmark = page.
-- Every highlight (EPUB and PDF) appears in the Notes panel instantly.
+- Every highlight (EPUB and PDF) appears in the Highlights panel instantly.
 
 ### Highlights panel (inspector, ⌘⇧N)
 - Right-hand inspector column (min 280 / ideal 340), the Highlights tab
@@ -172,7 +172,7 @@ appearance controls inline; September 2026 UX review, F3):
   home — annotations are never trapped inside a book.
 
 ### Article studio
-- Entry: Notes panel CTA, sidebar section, book context menu.
+- Entry: Highlights panel CTA, sidebar section, book context menu.
 - Flow: pick highlights (all pre-checked, color filter) → optional guidance
   field ("what should the article emphasize?") → Compose (streams) → editable
   Markdown editor → Export `.md` (fileExporter) / Copy / Share.
@@ -278,8 +278,11 @@ All new fields optional/additive so existing `library.json` files decode.
 
 ## Keyboard shortcuts
 
-⌘I import · ⌘F find in book · ⌘D toggle bookmark · ⌘⇧N notes panel ·
-⌘⇧A ask (about the selection when text is selected, else the whole book) ·
+⌘I import · ⌘F find in book · ⌘D toggle bookmark · ⌘⇧N Highlights panel
+(opens the inspector on Highlights; from the Ask tab, switches to Highlights;
+from Highlights, closes it) · ⌘⇧A ask (about the selection when text is
+selected, else the book so far — in the inspector's Ask tab on the Mac and
+iPad, a sheet on iPhone) · ⌥⌘← / ⌥⌘→ previous / next chapter ·
 ⌘⇧H highlight the selection (last-used marker color) · ⌘⇧M highlight the
 selection and open its note editor · ←/→ page turn · ⌘+/⌘− text size.
 The annotation shortcuts work in both the text reader and the native PDF

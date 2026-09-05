@@ -844,6 +844,8 @@ final class AppModel: ObservableObject {
         statesByBook[book.id] = nil
         positionsByBook[book.id] = nil
         lastOpenedBeforeOpen[book.id] = nil
+        conversationsByBook[book.id]?.cancel()
+        conversationsByBook[book.id] = nil
         books = store.allBooks()
     }
 
@@ -1086,6 +1088,51 @@ final class AppModel: ObservableObject {
     /// The one answer to "is a model connected?" — Home's nudge and the
     /// sidebar footer both ask this, so they can never disagree.
     var hasConnectedProvider: Bool { activeProvider() != nil }
+
+    // MARK: Ask conversations
+
+    /// One Ask conversation per book for this session — never persisted.
+    /// Owned here, not by a reader view, so closing a book and reopening
+    /// it keeps the transcript (docs/DESIGN.md, "one conversation per
+    /// book, per session"); `removeBook` drops it with the book.
+    private var conversationsByBook: [UUID: AskViewModel] = [:]
+
+    /// The book's conversation, made on first use.
+    func askConversation(for book: Book) -> AskViewModel {
+        if let existing = conversationsByBook[book.id] { return existing }
+        let conversation = makeAskConversation(for: book)
+        conversationsByBook[book.id] = conversation
+        return conversation
+    }
+
+    /// A fresh conversation for the book, the old one cancelled.
+    func startNewAskConversation(for book: Book) -> AskViewModel {
+        conversationsByBook[book.id]?.cancel()
+        let conversation = makeAskConversation(for: book)
+        conversationsByBook[book.id] = conversation
+        return conversation
+    }
+
+    private func makeAskConversation(for book: Book) -> AskViewModel {
+        AskViewModel(
+            makeService: { [weak self] in self?.makeAskService() },
+            prepare: { [weak self] in
+                await self?.ensureIndexed(book)
+                await self?.refreshActiveProviderCredentialsIfNeeded()
+            },
+            book: book,
+            selection: nil,
+            initialQuestion: nil,
+            providerName: { [weak self] in self?.providerManager.selection?.kind.rawValue ?? "none" },
+            answersFromBookOnly: { [weak self] in self?.providerManager.selection?.kind == .appleIntelligence }
+        )
+    }
+
+    /// Highlights of both kinds, for the counts the shelf, the review and
+    /// the reader's Highlights tab show.
+    func annotationCount(for book: Book) -> Int {
+        highlights(for: book).count + pdfHighlights(for: book).count
+    }
 
     func activeProvider() -> LLMProvider? {
         if ProcessInfo.processInfo.arguments.contains("-uiTestStubLLM") {

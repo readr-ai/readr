@@ -968,7 +968,18 @@ final class ReadrAppUITests: XCTestCase {
             _ = waitForAskPanel(app, timeout: 3)
             snap(app, "10-ask")
             let done = app.buttons["Done"].firstMatch
-            if done.waitForExistence(timeout: 2) { done.tap() }
+            if done.waitForExistence(timeout: 2) {
+                done.tap()
+            } else {
+                // iPad: Ask is the inspector's tab. ⌘⇧N from the Ask tab
+                // switches to Highlights; again closes the inspector —
+                // so later captures don't carry the column.
+                let notes = button(app, id: "reader.notes", label: "Highlights")
+                if notes.waitForExistence(timeout: 2), notes.isHittable {
+                    notes.tap()
+                    notes.tap()
+                }
+            }
         }
 
         // i. Dark theme + single-page layout (then restore Paper + Scroll so
