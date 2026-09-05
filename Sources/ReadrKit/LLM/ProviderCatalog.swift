@@ -286,7 +286,7 @@ public enum ProviderCatalog {
         ProviderInfo(
             kind: .appleIntelligence,
             modelID: "apple-on-device",
-            contextBudget: 3_000,
+            contextBudget: 2_200,
             supportsPromptCaching: false,
             isLocal: true
         ),

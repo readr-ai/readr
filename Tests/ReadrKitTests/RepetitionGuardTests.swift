@@ -47,6 +47,35 @@ final class RepetitionGuardTests: XCTestCase {
         XCTAssertEqual(RepetitionGuard.settledPrefix(of: "Line one\nline two"), "Line one\n")
     }
 
+    /// The second loop a reader hit: a list that never ends, so no sentence
+    /// ever completes for the sentence rule to judge.
+    func testAPhraseRepeatingInsideOneSentenceIsALoop() {
+        let lead = "You cannot become a rabbit, though Alice wonders whether the cards are a king or a queen of hearts, "
+        let cycle = "or a queen of diamonds, or a queen of clubs, or a queen of spades, or a queen of hearts, "
+        let text = lead + cycle + cycle + cycle + "or a queen of dia"
+        guard case let .looping(keep) = guardian.verdict(for: text) else {
+            return XCTFail("three turns of the same phrase is a loop")
+        }
+        XCTAssertEqual(keep, lead.trimmingCharacters(in: .whitespaces))
+        XCTAssertEqual(guardian.verdict(for: lead + cycle + cycle), .fine, "twice could still be a list")
+    }
+
+    func testEmphasisAndOrdinaryProseAreNotPhraseLoops() {
+        XCTAssertEqual(guardian.verdict(for: "It was a very, very, very long fall, and Alice had time to look about her as she went down"), .fine)
+        XCTAssertEqual(guardian.verdict(for: "Down, down, down. Would the fall never come to an end? Down, down, down."), .fine)
+    }
+
+    func testASentenceLiftedFromThePassagesIsCopiedAShortQuoteIsNot() {
+        let passage = "\"Hush! Hush!\" said the Rabbit in a low, hurried tone. He looked anxiously over his shoulder as he spoke, and then raised himself upon tiptoe."
+        XCTAssertTrue(RepetitionGuard.isCopied(
+            " He looked anxiously over his shoulder as he spoke, and then raised himself upon tiptoe.", from: passage
+        ))
+        XCTAssertFalse(RepetitionGuard.isCopied("\"Hush! Hush!\" said the Rabbit.", from: passage), "short quotes are fine")
+        XCTAssertFalse(RepetitionGuard.isCopied(
+            "The Rabbit is nervous and keeps looking over his shoulder as he speaks to Alice here.", from: passage
+        ), "a paraphrase is the model's own")
+    }
+
     func testTheVerdictIsStableAsTheTextGrows() {
         let sentence = "The rabbit is late for a very important date. "
         let looping = sentence + sentence + sentence

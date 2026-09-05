@@ -178,10 +178,72 @@ final class FoundationModelsProvider: LLMProvider, OnDeviceReadinessReporting, @
     static let questionStyle = """
         Answer style: reply in your own words in two to five sentences. Do not \
         copy the passages out — refer to what happens in them, and quote at \
-        most a short phrase. If the question isn't about the book, say so in \
-        one sentence and offer what the book does say that is closest to it. \
-        Never repeat a sentence you have already written.
+        most a short phrase. Only state things the passages support; if they \
+        don't answer the question, say the book doesn't say, then mention what \
+        in the passages comes closest. Never repeat a sentence you have already \
+        written.
         """
+
+    /// Restated after the question, where a small model is actually looking.
+    static let answerCue = "\nAnswer, in your own words, using only the passages (say if they don't tell):"
+
+    // MARK: Routing off-topic questions
+
+    /// The reader's question, as the context strategy laid it out.
+    static func question(in prompt: String) -> String? {
+        guard let range = prompt.range(of: AdaptiveContextStrategy.questionPrefix, options: .backwards) else {
+            return nil
+        }
+        let question = prompt[range.upperBound...].trimmingCharacters(in: .whitespacesAndNewlines)
+        return question.isEmpty ? nil : question
+    }
+
+    /// The book's title line from the anchor — and only that. The anchor also
+    /// carries the selected passage and its surroundings, and a small model
+    /// answering a general question with book text in front of it went off
+    /// reciting the text (a card-suit list, round and round) instead.
+    static func anchor(in prompt: String) -> String {
+        guard let header = prompt.range(of: AdaptiveContextStrategy.passagesHeader) else { return "" }
+        return prompt[..<header.lowerBound]
+            .split(separator: "\n")
+            .first { $0.hasPrefix("Book: ") }
+            .map(String.init) ?? ""
+    }
+
+    /// One short, passage-free call: is this about the book? Small models are
+    /// good at this yes/no and bad at answering while eight passages compete
+    /// for attention. Unsure or failing → treated as about the book, the
+    /// path with citations.
+    static func isAboutTheBook(_ question: String, model: SystemLanguageModel) async -> Bool? {
+        let session = LanguageModelSession(
+            model: model,
+            instructions: "You sort a reader's questions. Reply with exactly one word: BOOK if the question asks about the story, characters, events, themes, or text of the book they are reading; GENERAL if it is about the reader themself, the real world, or anything the book would not answer."
+        )
+        do {
+            let reply = try await session.respond(
+                to: "The reader's question: \"\(question)\"\nOne word, BOOK or GENERAL:",
+                options: GenerationOptions(sampling: .greedy, maximumResponseTokens: 3)
+            ).content.uppercased()
+            if reply.contains("GENERAL") { return false }
+            if reply.contains("BOOK") { return true }
+            return nil
+        } catch {
+            return nil
+        }
+    }
+
+    static let generalInstructions = """
+        You are a reading companion inside an ebook app. The reader asked \
+        something that is not about the book. Answer it plainly and kindly in \
+        your own words in one to three sentences — if it is impossible or \
+        whimsical, say so with a light touch — then add one sentence about \
+        what in the book they are reading comes closest to it. Never copy text \
+        from the book. Never repeat a sentence.
+        """
+
+    static func generalPrompt(question: String, bookAnchor: String) -> String {
+        (bookAnchor.isEmpty ? "" : bookAnchor + "\n\n") + "The reader asks: " + question + "\nAnswer:"
+    }
 
     init(info: ProviderInfo) {
         self.info = info
@@ -205,12 +267,30 @@ final class FoundationModelsProvider: LLMProvider, OnDeviceReadinessReporting, @
             let task = Task { [model] in
                 do {
                     var (instructions, rawPrompt) = Self.split(request)
-                    let isQuestion = rawPrompt.contains(AdaptiveContextStrategy.passagesHeader)
+                    var isQuestion = rawPrompt.contains(AdaptiveContextStrategy.passagesHeader)
+                    if isQuestion, let question = Self.question(in: rawPrompt),
+                       await Self.isAboutTheBook(question, model: model) == false {
+                        // A small model handed eight passages answers from the
+                        // passages whatever was asked — "can I be a rabbit?"
+                        // came back "Yes, Alice can become a rabbit." Asked
+                        // first whether the question is about the book at
+                        // all, it can tell; if not, it answers plainly from
+                        // common sense, with one line tying back to the book.
+                        DiagnosticsLog.shared.record(
+                            .info, .provider, "on-device: question judged not about the book; answering without passages"
+                        )
+                        instructions = Self.generalInstructions
+                        rawPrompt = Self.generalPrompt(question: question, bookAnchor: Self.anchor(in: rawPrompt))
+                        isQuestion = false
+                    }
                     if isQuestion {
                         // A 3B model given eight passages will copy them out at
                         // length unless told plainly not to; a reader asked
                         // "can I be a rabbit?" and got two pages of dialogue.
                         instructions += "\n\n" + Self.questionStyle
+                        // Small models answer what they read last: restate the
+                        // task after the question, not only in the instructions.
+                        rawPrompt += Self.answerCue
                     }
                     // `contextSize` is back-deployed to 26.0 (4,096 there).
                     let window = model.contextSize
@@ -241,31 +321,30 @@ final class FoundationModelsProvider: LLMProvider, OnDeviceReadinessReporting, @
                     // back just long enough for the repetition guard to judge
                     // it — so a loop ends before its first repeat is shown,
                     // and the reader never sees the same sentence six times.
-                    var deliveredCount = 0
-                    var content = ""
+                    // What the reader sees is the model's text minus sentences
+                    // pasted from the passages (`isCopied`) — a whole copied
+                    // sentence answers nothing — released a completed sentence
+                    // at a time so both guards judge it first.
+                    var shown = ShownAnswer(source: isQuestion ? prompt : "")
                     let repetition = RepetitionGuard()
+                    var content = ""
                     streaming: for try await snapshot in session.streamResponse(to: prompt, options: options) {
                         try Task.checkCancellation()
                         content = snapshot.content
                         switch repetition.verdict(for: content) {
                         case let .looping(keep):
-                            content = keep
-                            Self.yield(content, after: &deliveredCount, into: continuation)
+                            shown.settle(RepetitionGuard.settledPrefix(of: keep), into: continuation)
                             DiagnosticsLog.shared.record(
                                 .warning, .provider, "on-device answer cut short: the model began repeating itself"
                             )
+                            content = ""
                             break streaming
                         case .fine:
-                            // Up to the last sentence boundary only; the
-                            // fragment after it may still turn into a repeat.
-                            Self.yield(
-                                RepetitionGuard.settledPrefix(of: content),
-                                after: &deliveredCount, into: continuation
-                            )
+                            shown.settle(RepetitionGuard.settledPrefix(of: content), into: continuation)
                         }
                     }
                     // The final fragment, if the stream ended cleanly.
-                    Self.yield(content, after: &deliveredCount, into: continuation)
+                    shown.finish(content, into: continuation)
                     continuation.finish()
                 } catch {
                     continuation.finish(throwing: Self.mapped(error))
@@ -275,18 +354,44 @@ final class FoundationModelsProvider: LLMProvider, OnDeviceReadinessReporting, @
         }
     }
 
-    /// Yield whatever of `text` lies past the `delivered` count. Tracking a
-    /// count (not the string) keeps each step O(new text); a text shorter
-    /// than what was shown (a rare revision) yields nothing until it grows
-    /// past it again.
-    private static func yield(
-        _ text: String, after delivered: inout Int,
-        into continuation: AsyncThrowingStream<ChatChunk, Error>.Continuation
-    ) {
-        let count = text.count
-        guard count > delivered else { return }
-        continuation.yield(ChatChunk(textDelta: String(text.suffix(count - delivered))))
-        delivered = count
+    /// The answer as shown: the model's settled sentences, minus any lifted
+    /// verbatim from `source`. Tracks how much of the model text has been
+    /// judged (by count — O(new text) per step) and yields only new sentences.
+    private struct ShownAnswer {
+        let source: String
+        private var judgedCount = 0
+
+        init(source: String) { self.source = source }
+
+        /// Judge the settled prefix of the model text past what was judged.
+        mutating func settle(_ settled: String, into continuation: AsyncThrowingStream<ChatChunk, Error>.Continuation) {
+            let count = settled.count
+            guard count > judgedCount else { return }
+            let fresh = String(settled.suffix(count - judgedCount))
+            judgedCount = count
+            var kept = ""
+            for sentence in RepetitionGuard.completedSentences(in: fresh) {
+                if !source.isEmpty, RepetitionGuard.isCopied(String(sentence.text), from: source) {
+                    DiagnosticsLog.shared.record(
+                        .info, .provider, "on-device answer: dropped a sentence copied from the passages"
+                    )
+                    continue
+                }
+                kept += sentence.text
+            }
+            if !kept.isEmpty { continuation.yield(ChatChunk(textDelta: kept)) }
+        }
+
+        /// The trailing fragment at the end of a clean stream.
+        mutating func finish(_ content: String, into continuation: AsyncThrowingStream<ChatChunk, Error>.Continuation) {
+            settle(RepetitionGuard.settledPrefix(of: content), into: continuation)
+            let count = content.count
+            guard count > judgedCount else { return }
+            let tail = String(content.suffix(count - judgedCount))
+            judgedCount = count
+            if !source.isEmpty, RepetitionGuard.isCopied(tail, from: source) { return }
+            continuation.yield(ChatChunk(textDelta: tail))
+        }
     }
 
     // MARK: Errors

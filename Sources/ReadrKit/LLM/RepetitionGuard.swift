@@ -34,8 +34,11 @@ public struct RepetitionGuard: Sendable {
         self.maximumOccurrences = max(2, maximumOccurrences)
     }
 
-    /// Only completed sentences are judged (the trailing fragment may still be
-    /// growing), so the verdict cannot flip once given.
+    /// Two kinds of loop are caught: a sentence coming round again (only
+    /// completed sentences are judged, so the verdict cannot flip once given),
+    /// and a phrase repeating inside one — "or a queen of clubs, or a queen
+    /// of spades, or a queen of clubs, …" never reaches a full stop, so it
+    /// is judged on the text's tail instead.
     public func verdict(for text: String) -> Verdict {
         let sentences = Self.completedSentences(in: text)
         var seen: [String: Int] = [:]
@@ -51,7 +54,62 @@ public struct RepetitionGuard: Sendable {
             }
             previous = key
         }
+        if let start = Self.phraseLoopStart(in: text) {
+            return .looping(keep: String(text[..<start]).trimmingCharacters(in: .whitespacesAndNewlines))
+        }
         return .fine
+    }
+
+    /// The shortest phrase treated as a loop when it repeats back to back.
+    /// "very, very, very" is emphasis; a dozen characters three times over is
+    /// a model going round.
+    public static let minimumPhraseLength = 12
+    static let phraseRepeats = 3
+    /// How much of the tail is examined — a loop shows up at the end.
+    static let phraseWindow = 300
+
+    /// Where a back-to-back phrase repeat begins in `text`'s tail, or nil.
+    static func phraseLoopStart(in text: String) -> String.Index? {
+        let tail = Array(text.suffix(phraseWindow))
+        guard tail.count >= minimumPhraseLength * phraseRepeats else { return nil }
+        for period in minimumPhraseLength...(tail.count / phraseRepeats) {
+            let block = tail[(tail.count - period)...]
+            var repeats = 1
+            var end = tail.count - period
+            while end - period >= 0, tail[(end - period)..<end].elementsEqual(block) {
+                repeats += 1
+                end -= period
+            }
+            if repeats >= phraseRepeats {
+                // `end` is where the run of repeats begins in the tail. The
+                // block was aligned to the text's end, so the run may start
+                // mid-phrase; back up to the clause boundary before it (within
+                // one period) so the kept text ends cleanly.
+                var start = text.index(text.endIndex, offsetBy: -(tail.count - end))
+                let floor = text.index(start, offsetBy: -period, limitedBy: text.startIndex) ?? text.startIndex
+                var cursor = start
+                while cursor > floor {
+                    let previous = text.index(before: cursor)
+                    if ",;.!?\n".contains(text[previous]) {
+                        start = cursor
+                        break
+                    }
+                    cursor = previous
+                }
+                return start
+            }
+        }
+        return nil
+    }
+
+    /// Whether a completed sentence of the answer is lifted verbatim from the
+    /// source text — a small model given eight passages will paste them out
+    /// instead of answering. Short sentences and phrases are allowed (a brief
+    /// quotation is fine); a whole copied sentence is not.
+    public static func isCopied(_ sentence: String, from source: String, minimumLength: Int = 60) -> Bool {
+        let trimmed = sentence.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.count >= minimumLength else { return false }
+        return source.contains(trimmed)
     }
 
     /// The text up to the end of its last completed sentence — what a
@@ -62,11 +120,11 @@ public struct RepetitionGuard: Sendable {
         return String(text[..<last.range.upperBound])
     }
 
-    struct Sentence { var text: Substring; var range: Range<String.Index> }
+    public struct Sentence: Sendable { public var text: Substring; public var range: Range<String.Index> }
 
     /// Sentences that have ended — a terminator followed by whitespace, or a
     /// line break. The trailing fragment is excluded.
-    static func completedSentences(in text: String) -> [Sentence] {
+    public static func completedSentences(in text: String) -> [Sentence] {
         var sentences: [Sentence] = []
         var start = text.startIndex
         var index = text.startIndex
