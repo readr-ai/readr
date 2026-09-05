@@ -62,7 +62,7 @@ public struct ProviderInfo: Sendable, Hashable {
     /// FoundationModels framework, iOS/macOS 26+): no key, no account, no
     /// server. `local` is a loopback Ollama server the reader runs
     /// themselves. Both are `isLocal`; see `isOnDevice`.
-    public enum Kind: String, Sendable, Hashable, Codable {
+    public enum Kind: String, Sendable, Hashable, Codable, CaseIterable {
         case anthropic, openAI, chatGPT, openRouter, local, appleIntelligence
 
         /// Runs without credentials: nothing to store, validate, or revoke.

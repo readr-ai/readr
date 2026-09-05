@@ -68,20 +68,28 @@ final class SettingsModel: ObservableObject {
     ///
     /// macOS shows everything.
     static var displayedKinds: [ProviderInfo.Kind] {
+        var hidden: Set<ProviderInfo.Kind> = []
+        #if os(iOS)
+        hidden = [.local, .chatGPT]
+        #endif
         // The on-device model's card appears only where this device can run
         // it (iOS/macOS 26 on Apple Intelligence hardware); a switched-off
         // Apple Intelligence shows as the card's status, not as absence.
-        let onDevice = OnDeviceModel.isEligibleDevice
-        #if os(iOS)
-        return allKinds.filter {
-            $0 != .local && $0 != .chatGPT && ($0 != .appleIntelligence || onDevice)
-        }
-        #else
-        return allKinds.filter { $0 != .appleIntelligence || onDevice }
-        #endif
+        if !OnDeviceModel.isEligibleDevice { hidden.insert(.appleIntelligence) }
+        return allKinds.filter { !hidden.contains($0) }
     }
 
-    var displayedKinds: [ProviderInfo.Kind] { Self.displayedKinds }
+    /// The static list, plus the on-device card when the reader explicitly
+    /// chose it on hardware that can no longer run it (a restore onto an
+    /// older device): hidden, it could never be validated, explained, or
+    /// swapped out.
+    var displayedKinds: [ProviderInfo.Kind] {
+        var kinds = Self.displayedKinds
+        if manager.explicitSelection?.kind == .appleIntelligence, !kinds.contains(.appleIntelligence) {
+            kinds.insert(.appleIntelligence, at: 0)
+        }
+        return kinds
+    }
 
     /// The cards the settings screen renders: one per company, each carrying
     /// only the connection methods this build exposes. `.chatGPT` and
@@ -92,7 +100,7 @@ final class SettingsModel: ObservableObject {
         ProviderVendor.displayed(forKinds: displayedKinds)
     }
 
-    var displayedVendors: [ProviderVendor] { Self.displayedVendors }
+    var displayedVendors: [ProviderVendor] { ProviderVendor.displayed(forKinds: displayedKinds) }
 
     // MARK: - First-run guidance (A6)
 
@@ -104,11 +112,11 @@ final class SettingsModel: ObservableObject {
     /// `displayedKinds`). "Add an API key" is always available.
     static var availableSetupPaths: [String] {
         let displayed = displayedKinds
-        var paths: [String] = []
+        // Capitalised: it leads the sentence `setupGuidance` builds.
+        var paths = ["Add an API key"]
         if displayed.contains(.appleIntelligence) {
-            paths.append("Use the model built into this device")
+            paths.append("use the model built into this device")
         }
-        paths.append(paths.isEmpty ? "Add an API key" : "add an API key")
         if displayed.contains(where: { oauthConfig(for: $0) != nil }) {
             paths.append("sign in")
         }

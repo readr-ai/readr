@@ -136,6 +136,73 @@ final class ProviderManagerTests: XCTestCase {
         }
     }
 
+    // MARK: - Default selection
+
+    /// The app can name a provider to use when the reader has chosen none —
+    /// the on-device model, where it is ready. A default is resolved at use,
+    /// never persisted: the moment the reason for it goes away (Apple
+    /// Intelligence switched off), the reader is back to "nothing chosen"
+    /// and the onboarding copy, not stranded on a pinned selection.
+    func testADefaultSelectionResolvesAProviderWhenNothingIsChosen() throws {
+        let manager = ProviderManager(
+            store: FakeCredentialStore(),
+            factory: { info, _ in OnDeviceProvider(info: info, report: .ready) },
+            defaultSelection: { ProviderSelection(kind: .appleIntelligence, modelID: "apple-on-device") }
+        )
+        XCTAssertNil(manager.explicitSelection, "nothing was chosen")
+        XCTAssertEqual(manager.selection?.kind, .appleIntelligence)
+        XCTAssertEqual(try manager.activeProvider()?.info.kind, .appleIntelligence)
+    }
+
+    func testADefaultThatReturnsNilLeavesNoProvider() throws {
+        let manager = ProviderManager(
+            store: FakeCredentialStore(),
+            factory: { info, _ in OnDeviceProvider(info: info, report: .ready) },
+            defaultSelection: { nil }
+        )
+        XCTAssertNil(manager.selection)
+        XCTAssertNil(try manager.activeProvider())
+    }
+
+    func testAnExplicitChoiceOverridesTheDefault() throws {
+        let store = FakeCredentialStore()
+        try store.save(.apiKey("sk-test"), for: .anthropic)
+        let manager = ProviderManager(
+            store: store,
+            factory: { info, _ in MockLLMProvider(info: info) },
+            defaultSelection: { ProviderSelection(kind: .appleIntelligence, modelID: "apple-on-device") }
+        )
+        manager.setActive(kind: .anthropic)
+        XCTAssertEqual(manager.selection?.kind, .anthropic)
+        XCTAssertEqual(manager.explicitSelection?.kind, .anthropic)
+    }
+
+    /// A default is not "something usable holding the slot": a key the reader
+    /// just saved takes over at once, as it would with no selection at all.
+    func testASavedKeyTakesOverFromADefaultImmediately() throws {
+        let store = FakeCredentialStore()
+        let manager = ProviderManager(
+            store: store,
+            factory: { info, _ in MockLLMProvider(info: info) },
+            defaultSelection: { ProviderSelection(kind: .appleIntelligence, modelID: "apple-on-device") }
+        )
+        try store.save(.apiKey("sk-test"), for: .anthropic)
+        XCTAssertTrue(manager.requestActivation(of: .anthropic))
+        XCTAssertEqual(manager.selection?.kind, .anthropic)
+    }
+
+    func testEveryKindIsListedOnce() {
+        XCTAssertEqual(Set(ProviderInfo.Kind.allCases).count, ProviderInfo.Kind.allCases.count)
+        XCTAssertEqual(
+            Set(ProviderInfo.Kind.allCases),
+            Set([.anthropic, .openAI, .chatGPT, .openRouter, .local, .appleIntelligence])
+        )
+        let manager = makeManager(store: FakeCredentialStore(), factory: CapturingFactory())
+        XCTAssertTrue(
+            Set(manager.availableKinds()).isSubset(of: Set(ProviderInfo.Kind.allCases))
+        )
+    }
+
     // MARK: - Remote selection
 
     func testAnthropicSelectionPassesCredentialsToFactory() throws {

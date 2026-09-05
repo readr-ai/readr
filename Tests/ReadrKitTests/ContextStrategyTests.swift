@@ -45,6 +45,51 @@ final class ContextStrategyTests: XCTestCase {
         XCTAssertEqual(result.tier, .retrieval)
     }
 
+    /// A small-window model (the on-device one: 4,096 tokens including the
+    /// answer) gets as many passages as its budget holds — decided here, where
+    /// the passages are still a list, so the citations shown to the reader
+    /// are exactly the passages the model was sent. Nothing downstream has
+    /// to parse the prompt to shorten it.
+    func testRetrievalTierTrimsPassagesToTheProviderBudgetAndCitesOnlyThose() async throws {
+        let passages = (1...8).map { index in
+            RetrievedPassage(
+                text: String(repeating: "passage \(index) words and words. ", count: 40),
+                locator: "Ch. \(index)", score: 1.0 - Double(index) / 10
+            )
+        }
+        let strategy = AdaptiveContextStrategy(index: StubRAGIndex(passages: passages))
+        let result = try await strategy.assembleContext(
+            for: "What happens?",
+            in: makeBook(tokenCount: 5_000_000),
+            selection: nil,
+            scope: .wholeBook,
+            provider: provider(budget: 1_200, isLocal: true)
+        )
+        XCTAssertEqual(result.tier, .retrieval)
+        XCTAssertLessThan(result.citations.count, 8, "eight passages cannot fit 1,200 tokens")
+        XCTAssertGreaterThan(result.citations.count, 0, "the best passage always rides along")
+        // The strongest matches are the ones kept, in order.
+        XCTAssertEqual(result.citations.map(\.locator), (1...result.citations.count).map { "Ch. \($0)" })
+        let prompt = result.request.messages.last?.content ?? ""
+        XCTAssertTrue(prompt.contains("[Ch. 1]"))
+        XCTAssertFalse(prompt.contains("[Ch. 8]"), "a dropped passage is not in the prompt either")
+        XCTAssertLessThanOrEqual(
+            TokenCounter.estimate(result.request.messages.map(\.content).joined()), 1_200
+        )
+    }
+
+    func testAGenerousBudgetKeepsEveryPassage() async throws {
+        let passages = (1...8).map {
+            RetrievedPassage(text: "passage \($0).", locator: "Ch. \($0)", score: 0.5)
+        }
+        let strategy = AdaptiveContextStrategy(index: StubRAGIndex(passages: passages))
+        let result = try await strategy.assembleContext(
+            for: "What happens?", in: makeBook(tokenCount: 5_000_000), selection: nil,
+            scope: .wholeBook, provider: provider(budget: 200_000, isLocal: false)
+        )
+        XCTAssertEqual(result.citations.count, 8)
+    }
+
     func testRetrievalTierPopulatesCitationsFromPassages() async throws {
         let index = StubRAGIndex(passages: [
             RetrievedPassage(text: "First relevant passage.", locator: "Ch. 2 ¶3", score: 0.9),

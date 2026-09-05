@@ -125,8 +125,24 @@ public final class ProviderManager: @unchecked Sendable {
     /// UserDefaults key under which the active selection is persisted.
     static let selectionDefaultsKey = "readr.activeProviderSelection"
 
-    /// The active selection, or nil if nothing has been chosen yet.
+    /// A provider to use while the reader has chosen none — the app names the
+    /// on-device model here, where the device can run it. Resolved on each
+    /// read and never persisted: the moment the reason for it goes away
+    /// (Apple Intelligence switched off, a restore onto older hardware) the
+    /// reader is back to "nothing chosen" and the onboarding copy, rather
+    /// than pinned to a selection that fails every question.
+    public typealias DefaultSelection = @Sendable () -> ProviderSelection?
+    private let defaultSelection: DefaultSelection?
+
+    /// The active selection: what the reader chose, else the default the app
+    /// supplies, else nil.
     public var selection: ProviderSelection? {
+        lock.lock(); defer { lock.unlock() }
+        return _selection ?? defaultSelection?()
+    }
+
+    /// What the reader chose, ignoring any default — nil until they pick.
+    public var explicitSelection: ProviderSelection? {
         lock.lock(); defer { lock.unlock() }
         return _selection
     }
@@ -142,13 +158,15 @@ public final class ProviderManager: @unchecked Sendable {
         selection: ProviderSelection? = nil,
         persistingIn defaults: UserDefaults? = nil,
         tokenRefresher: TokenRefresher? = nil,
-        now: @escaping @Sendable () -> Date = { Date() }
+        now: @escaping @Sendable () -> Date = { Date() },
+        defaultSelection: DefaultSelection? = nil
     ) {
         self.store = store
         self.factory = factory
         self.defaults = defaults
         self.tokenRefresher = tokenRefresher
         self.now = now
+        self.defaultSelection = defaultSelection
         self._selection = selection ?? Self.loadSelection(from: defaults)
     }
 
@@ -181,16 +199,18 @@ public final class ProviderManager: @unchecked Sendable {
     /// validation clears the key (`validateAndActivate(_:)`).
     ///
     /// Immediate takeover is allowed only when nothing usable holds the
-    /// slot — no selection yet, the selected kind has lost its credential,
-    /// or `kind` is already selected (a no-op that keeps the model choice).
-    /// Otherwise the caller must follow up with `validateAndActivate(_:)`,
-    /// so an unproven key can't displace a working provider and then strand
-    /// the user on a rejected credential (issue #44).
+    /// slot — no selection yet (a default doesn't count: the reader chose
+    /// nothing, and has now chosen this), the selected kind has lost its
+    /// credential, or `kind` is already selected (a no-op that keeps the
+    /// model choice). Otherwise the caller must follow up with
+    /// `validateAndActivate(_:)`, so an unproven key can't displace a
+    /// working provider and then strand the user on a rejected credential
+    /// (issue #44).
     ///
     /// Returns `true` when `kind` is (now) the active selection.
     @discardableResult
     public func requestActivation(of kind: ProviderInfo.Kind) -> Bool {
-        if let current = selection {
+        if let current = explicitSelection {
             if current.kind == kind { return true }
             if isConfigured(current.kind) { return false }
         }
@@ -560,10 +580,7 @@ public final class ProviderManager: @unchecked Sendable {
     /// The kinds that are currently usable. On-device kinds are included
     /// until a check says otherwise.
     public func availableKinds() -> [ProviderInfo.Kind] {
-        let allKinds: [ProviderInfo.Kind] = [
-            .anthropic, .openAI, .chatGPT, .openRouter, .local, .appleIntelligence,
-        ]
-        return allKinds.filter { isConfigured($0) }
+        ProviderInfo.Kind.allCases.filter { isConfigured($0) }
     }
 
     // MARK: - Resolution

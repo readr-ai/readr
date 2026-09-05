@@ -18,6 +18,12 @@ enum AppProviderFactory {
                 return FoundationModelsProvider(info: info)
             }
             #endif
+            // Distinct from the kit factory's refusal (which means the app
+            // wasn't wired to this factory at all): this one is an OS below
+            // 26, and the log line says which.
+            DiagnosticsLog.shared.record(
+                .warning, .provider, "on-device model requested on an OS without FoundationModels"
+            )
             throw ProviderManager.ProviderError.notConfigured(.appleIntelligence)
         }
     }

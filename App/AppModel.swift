@@ -89,6 +89,23 @@ final class AppModel: ObservableObject {
 
         let credentials = Self.makeCredentialStore()
         self.credentialStore = credentials
+        // Under any UI-test flag the reader has chosen nothing and the
+        // fixtures rely on that (the provider-less empty states); otherwise a
+        // device that can run Apple's on-device model uses it until the
+        // reader picks something — resolved on each read, never persisted,
+        // so switching Apple Intelligence off returns them to "nothing
+        // chosen" instead of a pinned selection that fails every question.
+        let isUITest = ProcessInfo.processInfo.arguments.contains { $0.hasPrefix("-uiTest") }
+        var onDeviceDefault: ProviderManager.DefaultSelection?
+        if !isUITest {
+            onDeviceDefault = {
+                guard OnDeviceModel.readiness(maxAge: 5) == .ready else { return nil }
+                return ProviderSelection(
+                    kind: .appleIntelligence,
+                    modelID: ProviderCatalog.defaultModel(for: .appleIntelligence).modelID
+                )
+            }
+        }
         self.providerManager = ProviderManager(
             store: credentials,
             factory: AppProviderFactory.factory(),
@@ -100,7 +117,8 @@ final class AppModel: ObservableObject {
                     throw AuthError.refreshFailed
                 }
                 return try await OAuthClient(config: config).refresh(stored)
-            }
+            },
+            defaultSelection: onDeviceDefault
         )
 
         // All stored properties are initialized above — only now may init
@@ -116,18 +134,6 @@ final class AppModel: ObservableObject {
             if let position = self.store.position(for: book.id) {
                 positionsByBook[book.id] = position
             }
-        }
-
-        // First run on a device that can run Apple's on-device model: make
-        // it the active provider, so Ask works before the reader has heard
-        // of an API key. Only when nothing was ever chosen — a reader who
-        // picked a cloud model keeps it — and never under the UI-test seeds,
-        // which choose their own.
-        if providerManager.selection == nil,
-           !ProcessInfo.processInfo.arguments.contains("-uiTestSeedProviderKeys"),
-           OnDeviceModel.readiness() == .ready {
-            providerManager.setActive(kind: .appleIntelligence)
-            DiagnosticsLog.shared.record(.info, .provider, "first run: on-device model made active")
         }
 
         // A live-picked OpenRouter model persists by id alone. Its context

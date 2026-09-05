@@ -18,25 +18,36 @@ import FoundationModels
 /// mid-download (`modelNotReady`) at any time.
 enum OnDeviceModel {
 
-    /// Whether this OS build can offer the model at all. Device eligibility
-    /// is a runtime question — `readiness()` — but an OS below 26 can never
-    /// show the card.
-    static var isOfferedOnThisOS: Bool {
-        #if canImport(FoundationModels)
-        if #available(iOS 26, macOS 26, *) { return true }
-        #endif
-        return false
-    }
-
-    /// Whether Settings should show the card: the OS offers it and this
-    /// device can run it (Apple Intelligence may still be switched off — that
-    /// is a status on the card, not a reason to hide it).
-    static var isEligibleDevice: Bool {
+    /// Whether Settings should show the card. Permanent for the process: an
+    /// OS below 26 or hardware that can't run the model never changes its
+    /// mind, so this is computed once. Apple Intelligence being switched off
+    /// is a status on the card, not a reason to hide it.
+    static let isEligibleDevice: Bool = {
         if case .unsupported = readiness() { return false }
         return true
+    }()
+
+    private static let cacheLock = NSLock()
+    private static var cached: (readiness: OnDeviceReadiness, at: Date)?
+
+    /// The model's current state. `maxAge` lets hot callers (the provider
+    /// manager's default-selection closure, read from view bodies) reuse a
+    /// recent answer instead of asking the framework on every pass.
+    static func readiness(maxAge: TimeInterval = 0) -> OnDeviceReadiness {
+        if maxAge > 0 {
+            cacheLock.lock()
+            let hit = cached.flatMap { Date().timeIntervalSince($0.at) <= maxAge ? $0.readiness : nil }
+            cacheLock.unlock()
+            if let hit { return hit }
+        }
+        let fresh = currentReadiness()
+        cacheLock.lock()
+        cached = (fresh, Date())
+        cacheLock.unlock()
+        return fresh
     }
 
-    static func readiness() -> OnDeviceReadiness {
+    private static func currentReadiness() -> OnDeviceReadiness {
         #if canImport(FoundationModels)
         if #available(iOS 26, macOS 26, *) {
             return readiness(of: SystemLanguageModel.default)
@@ -83,8 +94,10 @@ enum OnDeviceModelError: LocalizedError, DiagnosticallyDescribable {
     case declined
     /// Even after trimming, the passages didn't fit the 4,096-token window.
     case tooLong
-    /// The OS refused: Apple Intelligence off, model not ready, busy.
+    /// The OS refused: Apple Intelligence off, model not ready, busy. The
+    /// payload is the reader-facing reason.
     case unavailable(String)
+    /// Anything else, with a bounded triage summary that is never shown.
     case other(String)
 
     var errorDescription: String? {
@@ -135,24 +148,29 @@ final class FoundationModelsProvider: LLMProvider, OnDeviceReadinessReporting, @
 
     let info: ProviderInfo
 
-    /// Book text is the reader's own content being summarised and questioned,
-    /// which is the case Apple's relaxed guardrail profile exists for; fiction
-    /// still trips the default profile on violence and intimacy far too often
-    /// to read a novel with.
-    private let model = SystemLanguageModel(
+    /// One handle for the process: the manager builds a provider on every
+    /// `activeProvider()` call, including from view bodies. Book text is the
+    /// reader's own content being summarised and questioned, which is the
+    /// case Apple's relaxed guardrail profile exists for; fiction still trips
+    /// the default profile on violence and intimacy far too often to read a
+    /// novel with.
+    private static let sharedModel = SystemLanguageModel(
         useCase: .general, guardrails: .permissiveContentTransformations
     )
-
-    /// Room kept for the answer inside the window. The context strategy asks
-    /// for 1,024; the window can't afford that alongside the passages.
-    static let maxAnswerTokens = 600
+    private let model: SystemLanguageModel
 
     /// Apple's tokeniser runs a little denser than the kit's four-characters-
     /// per-token estimate on English prose; budget on the safe side.
-    private static let charactersPerToken = 3.4
+    static let charactersPerToken = 3.4
+    /// Headroom for the estimate's error, inside the window.
+    static let windowMargin = 200
+    /// Below this the answer would be cut off mid-thought; better to say the
+    /// question was too long.
+    static let minimumAnswerTokens = 150
 
     init(info: ProviderInfo) {
         self.info = info
+        self.model = Self.sharedModel
     }
 
     func readiness() async -> OnDeviceReadiness {
@@ -163,37 +181,46 @@ final class FoundationModelsProvider: LLMProvider, OnDeviceReadinessReporting, @
         TokenCounter.estimate(text)
     }
 
+    static func tokens(_ text: String) -> Int {
+        TokenCounter.estimate(text, charactersPerToken: charactersPerToken)
+    }
+
     func stream(_ request: ChatRequest) -> AsyncThrowingStream<ChatChunk, Error> {
         AsyncThrowingStream { continuation in
             let task = Task { [model] in
                 do {
-                    var (instructions, prompt) = Self.split(request)
-                    let window = Self.contextWindow(of: model)
-                    let answer = min(request.maxOutputTokens, Self.maxAnswerTokens)
-                    prompt = Self.fit(prompt, instructions: instructions, window: window, answer: answer)
+                    let (instructions, rawPrompt) = Self.split(request)
+                    // `contextSize` is back-deployed to 26.0 (4,096 there).
+                    let window = model.contextSize
+                    let fixed = Self.tokens(instructions) + Self.windowMargin
+                    // The strategy already budgeted passages to the catalog's
+                    // figure; this drops whole passages if the denser estimate
+                    // still overshoots. Prose is never cut.
+                    let prompt = RetrievalPromptTrimmer.fit(
+                        rawPrompt, budget: window - fixed - Self.minimumAnswerTokens, measure: Self.tokens
+                    )
+                    let room = window - fixed - Self.tokens(prompt)
+                    guard room >= Self.minimumAnswerTokens else { throw OnDeviceModelError.tooLong }
+                    // An article gets the whole remaining window; a question
+                    // rarely needs more than the strategy asked for.
+                    let answer = min(request.maxOutputTokens, room)
+                    let session = LanguageModelSession(model: model, instructions: instructions)
                     let options = GenerationOptions(temperature: 0.3, maximumResponseTokens: answer)
 
-                    var attempt = 0
-                    while true {
-                        do {
-                            try await Self.run(
-                                model: model, instructions: instructions, prompt: prompt,
-                                options: options, into: continuation
-                            )
-                            continuation.finish()
-                            return
-                        } catch LanguageModelSession.GenerationError.exceededContextWindowSize(_)
-                            where attempt < 2 {
-                            // The estimate undershot: drop passages and retry,
-                            // rather than fail a question that would fit with
-                            // one fewer.
-                            attempt += 1
-                            guard let shorter = Self.droppingLastPassage(from: prompt) else {
-                                throw OnDeviceModelError.tooLong
-                            }
-                            prompt = shorter
-                        }
+                    // Snapshots are cumulative; the kit's chunks are deltas.
+                    // Tracking a count (not the string) keeps each step O(new
+                    // text). A snapshot shorter than what was shown (a rare
+                    // revision) waits until the text grows past it again.
+                    var deliveredCount = 0
+                    for try await snapshot in session.streamResponse(to: prompt, options: options) {
+                        try Task.checkCancellation()
+                        let content = snapshot.content
+                        let count = content.count
+                        guard count > deliveredCount else { continue }
+                        continuation.yield(ChatChunk(textDelta: String(content.suffix(count - deliveredCount))))
+                        deliveredCount = count
                     }
+                    continuation.finish()
                 } catch {
                     continuation.finish(throwing: Self.mapped(error))
                 }
@@ -202,40 +229,15 @@ final class FoundationModelsProvider: LLMProvider, OnDeviceReadinessReporting, @
         }
     }
 
-    // MARK: Running
+    // MARK: Errors
 
-    private static func run(
-        model: SystemLanguageModel,
-        instructions: String,
-        prompt: String,
-        options: GenerationOptions,
-        into continuation: AsyncThrowingStream<ChatChunk, Error>.Continuation
-    ) async throws {
-        let session = LanguageModelSession(model: model, instructions: instructions)
-        var delivered = ""
-        for try await snapshot in session.streamResponse(to: prompt, options: options) {
-            try Task.checkCancellation()
-            // Snapshots are cumulative; the kit's chunks are deltas.
-            let content = snapshot.content
-            let delta: String
-            if content.hasPrefix(delivered) {
-                delta = String(content.dropFirst(delivered.count))
-            } else {
-                // The model revised earlier text (rare): send the tail past
-                // what was shown rather than duplicate the whole answer.
-                delta = String(content.dropFirst(min(delivered.count, content.count)))
-            }
-            if !delta.isEmpty {
-                continuation.yield(ChatChunk(textDelta: delta))
-            }
-            delivered = content
-        }
-    }
-
-    private static func mapped(_ error: Error) -> Error {
+    static func mapped(_ error: Error) -> Error {
         if error is CancellationError { return error }
+        // The provider's own errors pass through untouched — `.tooLong`
+        // carries the one message that tells the reader what to do.
+        if let own = error as? OnDeviceModelError { return own }
         guard let generation = error as? LanguageModelSession.GenerationError else {
-            return OnDeviceModelError.other(String(reflecting: error))
+            return OnDeviceModelError.other(String(String(describing: error).prefix(300)))
         }
         switch generation {
         case .guardrailViolation, .refusal:
@@ -253,53 +255,8 @@ final class FoundationModelsProvider: LLMProvider, OnDeviceReadinessReporting, @
                 "The on-device model doesn't support this book's language yet. Connect another provider for it."
             )
         default:
-            return OnDeviceModelError.other(String(reflecting: generation))
+            return OnDeviceModelError.other(String(String(describing: generation).prefix(300)))
         }
-    }
-
-    // MARK: Fitting the window
-
-    /// The window in tokens, from the OS where it can say (26.4+), else the
-    /// documented 4,096.
-    private static func contextWindow(of model: SystemLanguageModel) -> Int {
-        if #available(iOS 26.4, macOS 26.4, *) {
-            return model.contextSize
-        }
-        return 4_096
-    }
-
-    private static func estimateTokens(_ text: String) -> Int {
-        Int(Double(text.count) / charactersPerToken) + 1
-    }
-
-    /// Drop retrieved passages from the end until instructions + prompt +
-    /// answer sit inside the window with a margin for the tokeniser's
-    /// disagreement with the estimate.
-    static func fit(_ prompt: String, instructions: String, window: Int, answer: Int) -> String {
-        let margin = 200
-        var fitted = prompt
-        while estimateTokens(instructions) + estimateTokens(fitted) + answer + margin > window,
-              let shorter = droppingLastPassage(from: fitted) {
-            fitted = shorter
-        }
-        return fitted
-    }
-
-    static let passagesHeader = "Relevant passages from elsewhere in the book:\n"
-
-    /// The prompt with its last retrieved passage removed, or nil when there
-    /// is nothing left to drop. Passages are separated by blank lines between
-    /// the header the context strategy writes and its "Question:" line.
-    static func droppingLastPassage(from prompt: String) -> String? {
-        guard let header = prompt.range(of: passagesHeader),
-              let question = prompt.range(of: "\n\nQuestion: ", range: header.upperBound..<prompt.endIndex)
-        else { return nil }
-        let block = String(prompt[header.upperBound..<question.lowerBound])
-        var passages = block.components(separatedBy: "\n\n").filter { !$0.isEmpty }
-        guard !passages.isEmpty else { return nil }
-        passages.removeLast()
-        let kept = passages.isEmpty ? "(passages omitted to fit the on-device model)" : passages.joined(separator: "\n\n")
-        return String(prompt[..<header.upperBound]) + kept + String(prompt[question.lowerBound...])
     }
 
     // MARK: Shaping the request

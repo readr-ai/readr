@@ -292,10 +292,9 @@ public enum ProviderCatalog {
         ),
     ]
 
-    /// Every selectable model, across all kinds.
-    public static let all: [ProviderInfo] =
-        anthropicModels + openAIModels + chatGPTModels + openRouterModels + localModels
-        + appleIntelligenceModels
+    /// Every selectable model, across all kinds — built from the kinds, so a
+    /// new kind can't be left out of the list.
+    public static var all: [ProviderInfo] { ProviderInfo.Kind.allCases.flatMap(models(for:)) }
 
     /// The models available for a given provider kind.
     public static func models(for kind: ProviderInfo.Kind) -> [ProviderInfo] {
