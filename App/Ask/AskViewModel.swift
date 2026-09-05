@@ -48,6 +48,11 @@ final class AskViewModel: ObservableObject {
     /// empty state (A1) without restarting the app.
     @Published private(set) var hasProvider: Bool
 
+    /// True when the active provider can only answer from the book — Apple's
+    /// on-device model. The footer then promises exactly that, and no "wider
+    /// knowledge" a 3B model does not have.
+    @Published private(set) var answersFromBookOnly: Bool
+
     /// The most recently routed tier — what the grounding caption and the
     /// "Using relevant passages" label describe.
     var tier: AssembledContext.Tier? {
@@ -64,6 +69,7 @@ final class AskViewModel: ObservableObject {
     /// the active provider can change while the panel is open, same as
     /// `makeService`.
     private let providerName: () -> String
+    private let providerAnswersFromBookOnly: () -> Bool
     private let book: Book
     private let selection: Selection?
     /// The question the panel was opened with, if any — the Recap button
@@ -87,17 +93,20 @@ final class AskViewModel: ObservableObject {
         book: Book,
         selection: Selection?,
         initialQuestion: String?,
-        providerName: @escaping () -> String = { "unknown" }
+        providerName: @escaping () -> String = { "unknown" },
+        answersFromBookOnly: @escaping () -> Bool = { false }
     ) {
         self.makeService = makeService
         self.prepare = prepare
         self.providerName = providerName
+        self.providerAnswersFromBookOnly = answersFromBookOnly
         self.book = book
         self.selection = selection
         self.initialQuestion = initialQuestion
         let resolved = makeService()
         self.service = resolved
         self.hasProvider = resolved != nil
+        self.answersFromBookOnly = answersFromBookOnly()
     }
 
     /// Re-resolve the provider binding. Called when the providers sheet
@@ -106,6 +115,7 @@ final class AskViewModel: ObservableObject {
         let resolved = makeService()
         service = resolved
         hasProvider = resolved != nil
+        answersFromBookOnly = providerAnswersFromBookOnly()
     }
 
     func ask(_ question: String, scope: ReadingScope) async {
@@ -187,6 +197,16 @@ final class AskViewModel: ObservableObject {
                     // stream incremental deltas.
                     update(id) { $0.answerText = fullText }
                 }
+            }
+            // A small model can end with nothing to show — every sentence it
+            // produced was a copy of the passages, or a loop cut at its first
+            // sentence. The panel says so in a line; the log says which
+            // provider, for the bug report.
+            if exchanges.first(where: { $0.id == id })?.answerText
+                .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == true {
+                DiagnosticsLog.shared.record(
+                    .warning, .provider, "ask: answer came back empty (provider \(providerName()))"
+                )
             }
         } catch {
             // Surface the mapped, actionable sentence from the error (A5):

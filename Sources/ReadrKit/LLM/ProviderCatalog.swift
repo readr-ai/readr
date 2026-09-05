@@ -277,9 +277,24 @@ public enum ProviderCatalog {
         ),
     ]
 
-    /// Every selectable model, across all kinds.
-    public static let all: [ProviderInfo] =
-        anthropicModels + openAIModels + chatGPTModels + openRouterModels + localModels
+    /// The system's on-device model. One entry: the OS picks the model, and
+    /// the app can only ask for it. Its window is 4,096 tokens *including* the
+    /// answer, so the budget here keeps the retrieval tier's passages, anchor
+    /// and question well inside it (`isLocal` already forces retrieval — the
+    /// whole-book tier is never attempted).
+    public static let appleIntelligenceModels: [ProviderInfo] = [
+        ProviderInfo(
+            kind: .appleIntelligence,
+            modelID: "apple-on-device",
+            contextBudget: 2_200,
+            supportsPromptCaching: false,
+            isLocal: true
+        ),
+    ]
+
+    /// Every selectable model, across all kinds — built from the kinds, so a
+    /// new kind can't be left out of the list.
+    public static var all: [ProviderInfo] { ProviderInfo.Kind.allCases.flatMap(models(for:)) }
 
     /// The models available for a given provider kind.
     public static func models(for kind: ProviderInfo.Kind) -> [ProviderInfo] {
@@ -289,6 +304,7 @@ public enum ProviderCatalog {
         case .chatGPT: return chatGPTModels
         case .openRouter: return openRouterModels
         case .local: return localModels
+        case .appleIntelligence: return appleIntelligenceModels
         }
     }
 

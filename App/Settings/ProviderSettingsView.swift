@@ -236,7 +236,7 @@ struct ProviderSettingsView: View {
             }
 
             let pickerEnabled = vendor.methods.contains {
-                (model.hasCredential[$0] ?? false) || $0 == .local
+                (model.hasCredential[$0] ?? false) || $0.isOnDevice
             }
             if pickerKind == .openRouter {
                 // OpenRouter's list is live and hundreds long — a menu can't
@@ -250,7 +250,9 @@ struct ProviderSettingsView: View {
                 ) {
                     showingOpenRouterPicker = true
                 }
-            } else {
+            } else if pickerKind != .appleIntelligence {
+                // The on-device model is whatever the OS ships — one entry,
+                // nothing to pick, and its id is not a name anyone chose.
                 ModelPicker(
                     kind: pickerKind,
                     models: model.models(for: pickerKind),
@@ -327,10 +329,11 @@ struct ProviderSettingsView: View {
                 }
             }
 
-            if kind == .local {
-                // Local: a manual re-check for when the reader has just started
-                // Ollama or pulled the model (mirrors the mockup's "Check
-                // again"). Re-probes and refreshes the status inline.
+            if kind.isOnDevice {
+                // A manual re-check for when the reader has just started
+                // Ollama or pulled the model, or switched Apple Intelligence
+                // on (mirrors the mockup's "Check again"). Re-probes and
+                // refreshes the status inline.
                 Button {
                     Task { await model.validate(kind) }
                 } label: {
@@ -341,7 +344,7 @@ struct ProviderSettingsView: View {
                     )
                 }
                 .buttonStyle(.plain)
-                .accessibilityIdentifier("settings.recheck.local")
+                .accessibilityIdentifier("settings.recheck.\(kind.rawValue)")
                 .disabled(state == .validating)
             } else {
                 if showsSignIn, model.supportsOAuth(kind) {
@@ -430,7 +433,7 @@ struct ProviderSettingsView: View {
         case .chatGPT: return "SUBSCRIPTION"
         case .openRouter: return "SIGN IN OR KEY"
         case .anthropic, .openAI: return "API KEY"
-        case .local: return "ON-DEVICE"
+        case .local, .appleIntelligence: return "ON-DEVICE"
         }
     }
 
@@ -452,7 +455,9 @@ struct ProviderSettingsView: View {
         case (false, true):
             return "Paste an API key to connect."
         case (false, false):
-            return nil
+            return vendor.methods == [.appleIntelligence]
+                ? "Apple's on-device model. Nothing to set up, nothing leaves your device."
+                : nil
         }
     }
 
@@ -544,7 +549,7 @@ struct ProviderSettingsView: View {
         switch kind {
         case .chatGPT: return "Sign in with ChatGPT"
         case .openRouter: return "Sign in with OpenRouter"
-        case .anthropic, .openAI, .local: return "Sign in with subscription"
+        case .anthropic, .openAI, .local, .appleIntelligence: return "Sign in with subscription"
         }
     }
 
@@ -570,8 +575,9 @@ struct ProviderSettingsView: View {
             return (URL(string: "https://platform.openai.com/api-keys")!, "openai")
         case .openRouter:
             return (URL(string: "https://openrouter.ai/keys")!, "openrouter")
-        case .chatGPT, .local:
-            // ChatGPT connects by subscription sign-in only; Local needs no key.
+        case .chatGPT, .local, .appleIntelligence:
+            // ChatGPT connects by subscription sign-in only; the on-device
+            // kinds need no key.
             return nil
         }
     }
@@ -604,7 +610,8 @@ struct ProviderSettingsView: View {
         case .validating:
             return CardStatus(
                 kindRawValue: kind.rawValue,
-                text: kind == .local ? "Checking Ollama…" : "Validating…",
+                text: kind == .local ? "Checking Ollama…"
+                    : kind == .appleIntelligence ? "Checking this device…" : "Validating…",
                 textColor: theme.muted,
                 dotColor: theme.faint.opacity(0.55),
                 showsSpinner: true,

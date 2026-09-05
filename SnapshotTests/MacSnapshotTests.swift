@@ -566,11 +566,21 @@ final class MacSnapshotTests: XCTestCase {
 
         let guidance = SettingsModel.setupGuidance(toDo: "ask questions")
         XCTAssertTrue(guidance.hasSuffix("to ask questions."))
-        // Three paths join with an Oxford "or".
-        XCTAssertEqual(
-            guidance,
-            "Add an API key, sign in, or pick a local model to ask questions."
-        )
+        XCTAssertTrue(guidance.hasPrefix("Add an API key, "))
+        if paths.contains("use the model built into this device") {
+            // A Mac that can run Apple's on-device model offers it too — four
+            // paths, same Oxford "or".
+            XCTAssertEqual(
+                guidance,
+                "Add an API key, use the model built into this device, sign in, or pick a local model to ask questions."
+            )
+        } else {
+            // Three paths join with an Oxford "or".
+            XCTAssertEqual(
+                guidance,
+                "Add an API key, sign in, or pick a local model to ask questions."
+            )
+        }
     }
 
     // MARK: - Library

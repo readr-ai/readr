@@ -1,13 +1,14 @@
 # Authentication & LLM Access
 
-Readr connects to an LLM in one of **three** ways. All three sit behind the
+Readr connects to an LLM in one of **four** ways. All four sit behind the
 `LLMProvider` protocol, so the rest of the app never knows which is active.
 
 | Mode | What the user does | Where credentials live | Network |
 |------|--------------------|------------------------|---------|
 | **Sign in (OAuth)** | "Sign in with ChatGPT" / "Sign in with OpenRouter" in a browser | Tokens/key in **Keychain** | provider API |
 | **Bring your own key** | Pastes an Anthropic / OpenAI / OpenRouter key | API key in **Keychain** | provider API |
-| **Local** | Picks a local model (MLX / llama.cpp / Ollama) | none | **none (on-device)** |
+| **On this device** | Nothing — Apple's on-device model (iOS/macOS 26, Apple Intelligence hardware) is offered where it can run | none | **none (on-device)** |
+| **Local** | Picks a local model (Ollama on a Mac) | none | **none (loopback)** |
 
 ## OAuth design (modeled on Muesli)
 

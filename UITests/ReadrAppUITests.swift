@@ -590,6 +590,31 @@ final class ReadrAppUITests: XCTestCase {
         )
     }
 
+    // An answer that ends with nothing shows one plain line and no Sources —
+    // the on-device model can end that way (every sentence cut as a copy or a
+    // loop), and a blank bubble over chapter chips read as a broken app.
+    func testAskEmptyAnswerShowsAPlainLineAndNoSources() {
+        let app = XCUIApplication()
+        app.launchArguments += ["-uiTestSeed", "-uiTestStubLLM", "-uiTestStubEmpty"]
+        app.launch()
+
+        openAskPanel(app)
+
+        let suggestion = app.buttons["Summarize what I've read so far"].firstMatch
+        XCTAssertTrue(suggestion.waitForExistence(timeout: 5))
+        suggestion.tap()
+        let send = app.buttons["ask.send"].firstMatch
+        XCTAssertTrue(send.waitForExistence(timeout: 3))
+        send.tap()
+
+        XCTAssertTrue(
+            app.staticTexts["ask.emptyAnswer"].waitForExistence(timeout: 10),
+            "an empty answer should be explained in a line"
+        )
+        XCTAssertFalse(app.staticTexts["SOURCES"].exists, "no sources for an answer that isn't there")
+        XCTAssertFalse(app.otherElements["ask.error"].exists, "an empty answer is not an error card")
+    }
+
     // A4 — a whole-book answer shows the honest no-citations copy and never a
     // Sources list. -uiTestStubWholeBook makes the stub report a remote model
     // so the small seeded book routes to the whole-book tier. The panel opens

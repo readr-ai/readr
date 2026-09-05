@@ -79,7 +79,8 @@ struct AskPanelView: View {
             book: book,
             selection: request.selection,
             initialQuestion: request.initialQuestion,
-            providerName: { app.providerManager.selection?.kind.rawValue ?? "none" }
+            providerName: { app.providerManager.selection?.kind.rawValue ?? "none" },
+            answersFromBookOnly: { app.providerManager.selection?.kind == .appleIntelligence }
         ))
     }
 
@@ -302,11 +303,22 @@ struct AskPanelView: View {
             sentQuestion(exchange.question)
             if !exchange.answerText.isEmpty {
                 AnswerMarkdownView(markdown: exchange.answerText, theme: theme)
+            } else if exchange.isEmpty, !exchange.failed {
+                // The stream ended with nothing worth showing (an on-device
+                // answer whose every sentence was cut). A blank bubble over a
+                // Sources list read as a broken app; say what happened.
+                Text("The model couldn\u{2019}t find an answer to that in the book. Try asking about something that happens in it.")
+                    .font(.callout)
+                    .lineSpacing(4)
+                    .foregroundStyle(theme.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier("ask.emptyAnswer")
             }
             // A4: retrieval tier lists real, tappable sources; the whole-book
             // tier explains — honestly — that there is no citation list
-            // because nothing was retrieved.
-            if exchange.tier?.providesCitations == true, !exchange.citations.isEmpty {
+            // because nothing was retrieved. Neither for an empty answer:
+            // sources for nothing point at nothing.
+            if exchange.tier?.providesCitations == true, !exchange.citations.isEmpty, !exchange.answerText.isEmpty {
                 citationsSection(exchange)
             } else if exchange.tier?.providesCitations == false, !exchange.answerText.isEmpty {
                 wholeBookNote(scoped: exchange.scope.isScoped)
@@ -442,6 +454,11 @@ struct AskPanelView: View {
     /// says what the grounding is: what the reader has read, not the book.
     private var groundingCaption: String {
         let grounding = isScoped ? "what you\u{2019}ve read so far" : (vm.tier?.providesCitations == false ? "the whole book" : "this book")
+        if vm.answersFromBookOnly {
+            // The on-device model answers from the passages and nothing else;
+            // promising its "wider knowledge" would promise what it cannot do.
+            return "Answers come from \(grounding) only."
+        }
         if vm.tier?.providesCitations == false {
             return "Grounded in \(grounding) — plus the model\u{2019}s wider knowledge."
         }

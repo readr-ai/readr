@@ -218,10 +218,29 @@ public struct AdaptiveContextStrategy: ContextStrategy {
                 ]
             }
         }
-        let retrieved = passages
-            .map { "[\($0.locator)] \($0.text)" }
-            .joined(separator: "\n\n")
-        let citations = passages.map { passage in
+        // As many passages as the provider's budget holds, best first — a
+        // small-window model (the on-device one: 4,096 tokens *including* the
+        // answer) gets fewer, and the citations shown to the reader are
+        // exactly the passages the model was sent. Decided here, where the
+        // passages are still a list, so no provider has to parse the prompt
+        // to shorten it. The best match always rides along.
+        let fixedCost = TokenCounter.estimate(
+            [systemContent, anchor, Self.passagesHeader, Self.questionPrefix, question].joined()
+                + priorTurns.map(\.content).joined()
+        )
+        var remaining = provider.contextBudget - fixedCost
+        var kept: [RetrievedPassage] = []
+        for passage in passages {
+            let cost = TokenCounter.estimate(Self.passageLine(passage)) + 1
+            if kept.isEmpty || cost <= remaining {
+                kept.append(passage)
+                remaining -= cost
+            } else {
+                break
+            }
+        }
+        let retrieved = kept.map(Self.passageLine).joined(separator: Self.passageSeparator)
+        let citations = kept.map { passage in
             Citation(
                 locator: passage.locator,
                 quotedText: Self.snippet(from: passage.text)
@@ -229,16 +248,27 @@ public struct AdaptiveContextStrategy: ContextStrategy {
         }
         let ask = ChatMessage(
             role: .user,
-            content: anchor
-                + "\n\nRelevant passages from elsewhere in the book:\n"
-                + retrieved
-                + "\n\nQuestion: " + question
+            content: anchor + Self.passagesHeader + retrieved + Self.questionPrefix + question
         )
         let request = ChatRequest(
             messages: [systemMessage] + priorTurns + [ask],
             maxOutputTokens: 1024
         )
         return AssembledContext(tier: .retrieval, request: request, citations: citations)
+    }
+
+    /// The retrieval prompt's fixed parts, public so a provider that must fit
+    /// a hard window can recognise the passage block without a private copy
+    /// of these strings (see `RetrievalPromptTrimmer`).
+    public static let passagesHeader = "\n\nRelevant passages from elsewhere in the book:\n"
+    public static let passageSeparator = "\n\n"
+    public static let questionPrefix = "\n\nQuestion: "
+
+    /// One passage as it appears in the prompt: `[locator] text`. The
+    /// bracketed locator is what marks a passage boundary for a trimmer,
+    /// since passage text itself may contain blank lines.
+    static func passageLine(_ passage: RetrievedPassage) -> String {
+        "[\(passage.locator)] \(passage.text)"
     }
 
     /// Locator of the fallback passage: the end of what the reader has read,

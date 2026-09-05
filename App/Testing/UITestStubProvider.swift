@@ -33,6 +33,14 @@ struct UITestStubProvider: LLMProvider {
                     continuation.finish(throwing: HTTPError.transport(.timedOut))
                     return
                 }
+                // `-uiTestStubEmpty`: a stream that ends cleanly with nothing
+                // — what the on-device model produces when every sentence it
+                // wrote was cut — so UI tests can check the panel says so
+                // rather than leaving a blank over a Sources list.
+                if ProcessInfo.processInfo.arguments.contains("-uiTestStubEmpty") {
+                    continuation.finish()
+                    return
+                }
                 // `-uiTestStubAnswer <text>` overrides the canned answer (same
                 // UserDefaults launch-arg mapping as `-uiTestOpenURL`). The
                 // default is written for the seeded Sample Book; screenshot
