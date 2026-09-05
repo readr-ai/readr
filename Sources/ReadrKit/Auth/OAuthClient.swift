@@ -82,8 +82,8 @@ public struct OAuthProviderConfig: Sendable, Equatable {
         case .chatGPT: return .openAI
         case .openRouter: return .openRouter
         // Anthropic: prohibited by ToS (docs/AUTH.md); openAI kind is
-        // API-key-only by design; local needs no credentials.
-        case .anthropic, .openAI, .local: return nil
+        // API-key-only by design; on-device kinds need no credentials.
+        case .anthropic, .openAI, .local, .appleIntelligence: return nil
         }
     }
 

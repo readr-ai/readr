@@ -89,9 +89,26 @@ final class AppModel: ObservableObject {
 
         let credentials = Self.makeCredentialStore()
         self.credentialStore = credentials
+        // Under any UI-test flag the reader has chosen nothing and the
+        // fixtures rely on that (the provider-less empty states); otherwise a
+        // device that can run Apple's on-device model uses it until the
+        // reader picks something — resolved on each read, never persisted,
+        // so switching Apple Intelligence off returns them to "nothing
+        // chosen" instead of a pinned selection that fails every question.
+        let isUITest = ProcessInfo.processInfo.arguments.contains { $0.hasPrefix("-uiTest") }
+        var onDeviceDefault: ProviderManager.DefaultSelection?
+        if !isUITest {
+            onDeviceDefault = {
+                guard OnDeviceModel.readiness(maxAge: 5) == .ready else { return nil }
+                return ProviderSelection(
+                    kind: .appleIntelligence,
+                    modelID: ProviderCatalog.defaultModel(for: .appleIntelligence).modelID
+                )
+            }
+        }
         self.providerManager = ProviderManager(
             store: credentials,
-            factory: DefaultProviderFactory.factory(),
+            factory: AppProviderFactory.factory(),
             persistingIn: .standard,
             tokenRefresher: { kind, stored in
                 // Only kinds with an OAuth config can renew; anything else
@@ -100,7 +117,8 @@ final class AppModel: ObservableObject {
                     throw AuthError.refreshFailed
                 }
                 return try await OAuthClient(config: config).refresh(stored)
-            }
+            },
+            defaultSelection: onDeviceDefault
         )
 
         // All stored properties are initialized above — only now may init

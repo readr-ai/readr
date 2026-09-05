@@ -67,6 +67,142 @@ final class ProviderManagerTests: XCTestCase {
         XCTAssertNil(factory.lastCredentials)
     }
 
+    // MARK: - On-device model
+
+    /// Stands in for the app's Foundation Models provider: no credentials,
+    /// and a readiness it reports itself.
+    private final class OnDeviceProvider: LLMProvider, OnDeviceReadinessReporting, @unchecked Sendable {
+        let info: ProviderInfo
+        let report: OnDeviceReadiness
+        init(info: ProviderInfo, report: OnDeviceReadiness) {
+            self.info = info
+            self.report = report
+        }
+        func stream(_ request: ChatRequest) -> AsyncThrowingStream<ChatChunk, Error> {
+            AsyncThrowingStream { $0.finish() }
+        }
+        func countTokens(_ text: String) throws -> Int { max(1, text.count / 4) }
+        func readiness() async -> OnDeviceReadiness { report }
+    }
+
+    private func makeOnDeviceManager(reporting report: OnDeviceReadiness) -> ProviderManager {
+        ProviderManager(store: FakeCredentialStore(), factory: { info, credentials in
+            XCTAssertNil(credentials, "the on-device model takes no credentials")
+            return OnDeviceProvider(info: info, report: report)
+        })
+    }
+
+    func testTheOnDeviceModelIsConfiguredBeforeAnyCheck() {
+        let manager = makeOnDeviceManager(reporting: .ready)
+        XCTAssertTrue(manager.isConfigured(.appleIntelligence))
+        XCTAssertFalse(manager.hasStoredCredential(.appleIntelligence))
+        XCTAssertTrue(manager.availableKinds().contains(.appleIntelligence))
+    }
+
+    func testAReadyOnDeviceModelValidatesActive() async throws {
+        let manager = makeOnDeviceManager(reporting: .ready)
+        manager.setActive(kind: .appleIntelligence)
+        let state = await manager.validate(.appleIntelligence)
+        XCTAssertEqual(state, .active)
+        XCTAssertTrue(try manager.activeProvider()?.info.isLocal == true)
+    }
+
+    /// Apple Intelligence switched off, or the model still downloading: the
+    /// reader can fix it, so the card explains and Ask stays optimistic.
+    func testAnOnDeviceModelTheReaderCanEnableIsUnavailableNotInvalid() async throws {
+        let manager = makeOnDeviceManager(
+            reporting: .unavailable(reason: "Turn on Apple Intelligence in Settings.")
+        )
+        manager.setActive(kind: .appleIntelligence)
+        let state = await manager.validate(.appleIntelligence)
+        XCTAssertEqual(state, .unavailable(reason: "Turn on Apple Intelligence in Settings."))
+        XCTAssertFalse(manager.isConfigured(.appleIntelligence))
+        XCTAssertNotNil(try manager.activeProvider(), "a transient state must not block Ask")
+    }
+
+    /// A device or OS that can never run it: proven unusable, so the
+    /// selection must not resolve to a provider that will only fail.
+    func testAnUnsupportedOnDeviceModelIsInvalidAndBlocksTheProvider() async {
+        let manager = makeOnDeviceManager(
+            reporting: .unsupported(reason: "This device can't run the on-device model.")
+        )
+        manager.setActive(kind: .appleIntelligence)
+        let state = await manager.validate(.appleIntelligence)
+        XCTAssertEqual(state, .invalid(reason: "This device can't run the on-device model."))
+        XCTAssertThrowsError(try manager.activeProvider()) {
+            XCTAssertEqual(
+                $0 as? ProviderManager.ProviderError, .notConfigured(.appleIntelligence)
+            )
+        }
+    }
+
+    // MARK: - Default selection
+
+    /// The app can name a provider to use when the reader has chosen none —
+    /// the on-device model, where it is ready. A default is resolved at use,
+    /// never persisted: the moment the reason for it goes away (Apple
+    /// Intelligence switched off), the reader is back to "nothing chosen"
+    /// and the onboarding copy, not stranded on a pinned selection.
+    func testADefaultSelectionResolvesAProviderWhenNothingIsChosen() throws {
+        let manager = ProviderManager(
+            store: FakeCredentialStore(),
+            factory: { info, _ in OnDeviceProvider(info: info, report: .ready) },
+            defaultSelection: { ProviderSelection(kind: .appleIntelligence, modelID: "apple-on-device") }
+        )
+        XCTAssertNil(manager.explicitSelection, "nothing was chosen")
+        XCTAssertEqual(manager.selection?.kind, .appleIntelligence)
+        XCTAssertEqual(try manager.activeProvider()?.info.kind, .appleIntelligence)
+    }
+
+    func testADefaultThatReturnsNilLeavesNoProvider() throws {
+        let manager = ProviderManager(
+            store: FakeCredentialStore(),
+            factory: { info, _ in OnDeviceProvider(info: info, report: .ready) },
+            defaultSelection: { nil }
+        )
+        XCTAssertNil(manager.selection)
+        XCTAssertNil(try manager.activeProvider())
+    }
+
+    func testAnExplicitChoiceOverridesTheDefault() throws {
+        let store = FakeCredentialStore()
+        try store.save(.apiKey("sk-test"), for: .anthropic)
+        let manager = ProviderManager(
+            store: store,
+            factory: { info, _ in MockLLMProvider(info: info) },
+            defaultSelection: { ProviderSelection(kind: .appleIntelligence, modelID: "apple-on-device") }
+        )
+        manager.setActive(kind: .anthropic)
+        XCTAssertEqual(manager.selection?.kind, .anthropic)
+        XCTAssertEqual(manager.explicitSelection?.kind, .anthropic)
+    }
+
+    /// A default is not "something usable holding the slot": a key the reader
+    /// just saved takes over at once, as it would with no selection at all.
+    func testASavedKeyTakesOverFromADefaultImmediately() throws {
+        let store = FakeCredentialStore()
+        let manager = ProviderManager(
+            store: store,
+            factory: { info, _ in MockLLMProvider(info: info) },
+            defaultSelection: { ProviderSelection(kind: .appleIntelligence, modelID: "apple-on-device") }
+        )
+        try store.save(.apiKey("sk-test"), for: .anthropic)
+        XCTAssertTrue(manager.requestActivation(of: .anthropic))
+        XCTAssertEqual(manager.selection?.kind, .anthropic)
+    }
+
+    func testEveryKindIsListedOnce() {
+        XCTAssertEqual(Set(ProviderInfo.Kind.allCases).count, ProviderInfo.Kind.allCases.count)
+        XCTAssertEqual(
+            Set(ProviderInfo.Kind.allCases),
+            Set([.anthropic, .openAI, .chatGPT, .openRouter, .local, .appleIntelligence])
+        )
+        let manager = makeManager(store: FakeCredentialStore(), factory: CapturingFactory())
+        XCTAssertTrue(
+            Set(manager.availableKinds()).isSubset(of: Set(ProviderInfo.Kind.allCases))
+        )
+    }
+
     // MARK: - Remote selection
 
     func testAnthropicSelectionPassesCredentialsToFactory() throws {
@@ -106,16 +242,16 @@ final class ProviderManagerTests: XCTestCase {
         let factory = CapturingFactory()
         let manager = makeManager(store: store, factory: factory)
 
-        // Local is always available even with an empty store.
-        XCTAssertEqual(manager.availableKinds(), [.local])
+        // The on-device kinds are always available even with an empty store.
+        XCTAssertEqual(manager.availableKinds(), [.local, .appleIntelligence])
 
         try store.save(.apiKey("sk-anthropic"), for: .anthropic)
-        XCTAssertEqual(Set(manager.availableKinds()), Set([.anthropic, .local]))
+        XCTAssertEqual(Set(manager.availableKinds()), Set([.anthropic, .local, .appleIntelligence]))
 
         try store.save(.apiKey("sk-openai"), for: .openAI)
         XCTAssertEqual(
             Set(manager.availableKinds()),
-            Set([.anthropic, .openAI, .local])
+            Set([.anthropic, .openAI, .local, .appleIntelligence])
         )
 
         // The sign-in kinds surface once their credentials exist: OpenRouter
@@ -126,7 +262,7 @@ final class ProviderManagerTests: XCTestCase {
         )
         XCTAssertEqual(
             Set(manager.availableKinds()),
-            Set([.anthropic, .openAI, .openRouter, .chatGPT, .local])
+            Set([.anthropic, .openAI, .openRouter, .chatGPT, .local, .appleIntelligence])
         )
     }
 
@@ -354,6 +490,7 @@ final class ProviderManagerTests: XCTestCase {
             + ProviderCatalog.chatGPTModels.count
             + ProviderCatalog.openRouterModels.count
             + ProviderCatalog.localModels.count
+            + ProviderCatalog.appleIntelligenceModels.count
         XCTAssertEqual(ProviderCatalog.all.count, expected)
     }
 

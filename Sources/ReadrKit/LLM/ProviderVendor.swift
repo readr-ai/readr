@@ -6,7 +6,7 @@ public extension ProviderInfo.Kind {
     /// ChatGPT is subscription-only — its backend can't be driven by an API
     /// key — and the local model needs no credential at all.
     var usesAPIKey: Bool {
-        self != .chatGPT && self != .local
+        self != .chatGPT && !isOnDevice
     }
 
     /// Whether this method offers a browser sign-in. Delegates to the single
@@ -68,6 +68,8 @@ public extension ProviderVendor {
     /// (lowest-friction first run), then the key-only cloud vendors, then the
     /// local model.
     static let all: [ProviderVendor] = [
+        // Zero setup leads: nothing to get, nothing to sign in to.
+        ProviderVendor(id: "apple", title: "On this device", methods: [.appleIntelligence]),
         ProviderVendor(id: "openai", title: "OpenAI", methods: [.chatGPT, .openAI]),
         ProviderVendor(id: "openrouter", title: "OpenRouter", methods: [.openRouter]),
         ProviderVendor(id: "anthropic", title: "Claude (Anthropic)", methods: [.anthropic]),
