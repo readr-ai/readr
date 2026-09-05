@@ -8,7 +8,7 @@ import PDFKit
 // lives in `PDFReaderController`, which the platform view is attached to so
 // PDFKit callbacks and SwiftUI observation share one object.
 
-/// Book/model/onAsk are (re)synced on every update — SwiftUI may hand the
+/// Book/model/onAsk/onListen are (re)synced on every update — SwiftUI may hand the
 /// reader a fresh `AppModel` or closure identity while the platform view
 /// lives on. Syncing precedes `loadIfNeeded` so the first document load
 /// already has the store to restore overlays and position from.
@@ -16,11 +16,13 @@ import PDFKit
 private func syncController(
     _ controller: PDFReaderController,
     model: AppModel, book: Book, url: URL,
-    onAsk: @escaping (Selection) -> Void
+    onAsk: @escaping (Selection) -> Void,
+    onListen: @escaping (ListenAnchor) -> Void
 ) {
     controller.model = model
     controller.book = book
     controller.onAsk = onAsk
+    controller.onListen = onListen
     controller.loadIfNeeded(url: url)
 }
 
@@ -31,16 +33,17 @@ struct PDFKitContainerView: UIViewRepresentable {
     let book: Book
     let url: URL
     let onAsk: (Selection) -> Void
+    let onListen: (ListenAnchor) -> Void
 
     func makeUIView(context: Context) -> PDFView {
         let view = PDFView()
         controller.attach(view)
-        syncController(controller, model: model, book: book, url: url, onAsk: onAsk)
+        syncController(controller, model: model, book: book, url: url, onAsk: onAsk, onListen: onListen)
         return view
     }
 
     func updateUIView(_ view: PDFView, context: Context) {
-        syncController(controller, model: model, book: book, url: url, onAsk: onAsk)
+        syncController(controller, model: model, book: book, url: url, onAsk: onAsk, onListen: onListen)
     }
 }
 #elseif canImport(AppKit)
@@ -50,16 +53,17 @@ struct PDFKitContainerView: NSViewRepresentable {
     let book: Book
     let url: URL
     let onAsk: (Selection) -> Void
+    let onListen: (ListenAnchor) -> Void
 
     func makeNSView(context: Context) -> PDFView {
         let view = PDFView()
         controller.attach(view)
-        syncController(controller, model: model, book: book, url: url, onAsk: onAsk)
+        syncController(controller, model: model, book: book, url: url, onAsk: onAsk, onListen: onListen)
         return view
     }
 
     func updateNSView(_ view: PDFView, context: Context) {
-        syncController(controller, model: model, book: book, url: url, onAsk: onAsk)
+        syncController(controller, model: model, book: book, url: url, onAsk: onAsk, onListen: onListen)
     }
 }
 #endif
