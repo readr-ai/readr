@@ -192,6 +192,10 @@ final class SettingsModel: ObservableObject {
         validation[kind] = manager.validationState(kind)
         configured[kind] = manager.isConfigured(kind)
         hasCredential[kind] = manager.hasStoredCredential(kind)
+        // The selection can follow from readiness: the on-device default
+        // applies only while the model is ready, so a check that changed the
+        // answer changes which card carries the Active badge.
+        activeSelection = manager.selection
     }
 
     /// Validate every displayed kind that has something to check: remote kinds

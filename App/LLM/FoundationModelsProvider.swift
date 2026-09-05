@@ -50,7 +50,9 @@ enum OnDeviceModel {
     private static func currentReadiness() -> OnDeviceReadiness {
         #if canImport(FoundationModels)
         if #available(iOS 26, macOS 26, *) {
-            return readiness(of: SystemLanguageModel.default)
+            // The same handle the provider generates with, so "ready" here
+            // and "ready" in validation can never disagree.
+            return readiness(of: FoundationModelsProvider.sharedModel)
         }
         #endif
         return .unsupported(
@@ -154,7 +156,7 @@ final class FoundationModelsProvider: LLMProvider, OnDeviceReadinessReporting, @
     /// case Apple's relaxed guardrail profile exists for; fiction still trips
     /// the default profile on violence and intimacy far too often to read a
     /// novel with.
-    private static let sharedModel = SystemLanguageModel(
+    static let sharedModel = SystemLanguageModel(
         useCase: .general, guardrails: .permissiveContentTransformations
     )
     private let model: SystemLanguageModel
