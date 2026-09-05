@@ -271,17 +271,17 @@ struct AnnotationListView: View {
 
     /// The card, tappable when there is a book to jump into: the whole card
     /// is the target, with "Show in book" kept as the visible, labelled
-    /// affordance. Review-only surfaces (no jump) show the plain card.
+    /// affordance. A tap gesture rather than a Button: a Button would nest
+    /// the Show-in-book button (a tap with two owners) and merge the quote,
+    /// note and locator into one accessibility element, which VoiceOver
+    /// and the UI tests both need kept apart. Review-only surfaces (no
+    /// jump) show the plain card.
     @ViewBuilder
     private func card(for item: AnnotationItem) -> some View {
         if canJump(to: item) {
-            Button {
-                jump(to: item)
-            } label: {
-                cardBody(for: item)
-            }
-            .buttonStyle(.plain)
-            .accessibilityHint("Shows this passage in the book")
+            cardBody(for: item)
+                .contentShape(Rectangle())
+                .onTapGesture { jump(to: item) }
         } else {
             cardBody(for: item)
         }

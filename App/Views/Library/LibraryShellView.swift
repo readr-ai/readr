@@ -54,11 +54,7 @@ struct LibraryShellView: View {
         // once at the split-view root so a single handler covers both columns
         // (no per-screen duplication / double-handling).
         .dropDestination(for: DroppedBookFile.self) { files, _ in
-            Task {
-                for file in files {
-                    await model.importBook(at: file.url)
-                }
-            }
+            Task { await model.importBooks(at: files.map(\.url)) }
             return true
         }
         // R6/D1: generic chrome (back chevron, split-view controls) reads the
@@ -70,11 +66,7 @@ struct LibraryShellView: View {
             allowsMultipleSelection: true
         ) { result in
             if case let .success(urls) = result {
-                Task {
-                    for url in urls {
-                        await model.importBook(at: url)
-                    }
-                }
+                Task { await model.importBooks(at: urls) }
             }
         }
         .sheet(isPresented: $showSettings) {
@@ -280,17 +272,13 @@ struct LibraryShellView: View {
         .background(theme.background)
     }
 
-    private var hasProvider: Bool {
-        model.activeProvider() != nil && model.providerManager.selection?.kind != nil
-    }
+    private var hasProvider: Bool { model.hasConnectedProvider }
 
     /// "Local model" / the provider's name when one is connected and usable,
     /// otherwise the quiet nudge.
     private var providerLine: String {
-        guard model.activeProvider() != nil,
-              let kind = model.providerManager.selection?.kind else {
-            return "No model connected"
-        }
+        guard hasProvider else { return "No model connected" }
+        guard let kind = model.providerManager.selection?.kind else { return "Model connected" }
         switch kind {
         case .local: return "Local model"
         case .anthropic: return "Claude"
@@ -356,7 +344,7 @@ struct LibraryShellView: View {
             case .allBooks:
                 grid(title: "All Books", books: model.books)
             case .books:
-                grid(title: "Books", books: model.books.filter { !model.isPDF($0) })
+                grid(title: "Ebooks", books: model.books.filter { !model.isPDF($0) })
             case .pdfs:
                 grid(title: "PDFs", books: model.books.filter { model.isPDF($0) })
             case .finished:

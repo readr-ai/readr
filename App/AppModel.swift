@@ -347,15 +347,17 @@ final class AppModel: ObservableObject {
         )
         let voyage = Book(
             metadata: BookMetadata(title: "A Voyage North", authors: ["I. Larsen"]),
-            // Four one-page chapters, so a UI test can turn three pages
-            // from the first one and watch the welcome-back line go.
+            // Five one-page chapters: the saved position is the second, so
+            // there is progress to recap, and a UI test can still turn three
+            // pages from there and watch the welcome-back line go.
             chapters: [
                 Chapter(title: "Departure", order: 0, text: paragraph),
                 Chapter(title: "Open Water", order: 1, text: paragraph),
                 Chapter(title: "Landfall", order: 2, text: paragraph),
                 Chapter(title: "Home Again", order: 3, text: paragraph),
+                Chapter(title: "Afterword", order: 4, text: paragraph),
             ],
-            estimatedTokenCount: 360
+            estimatedTokenCount: 450
         )
         let letters = Book(
             metadata: BookMetadata(title: "Letters on Design", authors: ["M. Ortiz"]),
@@ -426,11 +428,12 @@ final class AppModel: ObservableObject {
             }
         }
 
-        // "A Voyage North" was started and then left for six days: it sits
-        // second on Continue Reading, and opening it shows the welcome-back
-        // line with its Recap (no highlights, so the Article studio's
-        // "highlight something first" guidance is still reachable from it).
-        try? store.savePosition(ReadingPosition(chapterIndex: 0, characterOffset: 0), for: voyage.id)
+        // "A Voyage North" was read into its second chapter and then left
+        // for six days: it sits second on Continue Reading, and opening it
+        // shows the welcome-back line with its Recap (no highlights, so the
+        // Article studio's "highlight something first" guidance is still
+        // reachable from it).
+        try? store.savePosition(ReadingPosition(chapterIndex: 1, characterOffset: 0), for: voyage.id)
         try? store.saveBookState(
             BookState(
                 addedAt: now.addingTimeInterval(-8 * 86_400),
@@ -559,6 +562,36 @@ final class AppModel: ObservableObject {
     /// windows), and since `Book.id` is random per parse the store can't
     /// dedupe after the fact.
     private var importingURLs: Set<URL> = []
+
+    /// Several files from one picker or drop, reported once. `importBook`
+    /// writes the single `importError` / `importNotice` per file, so a
+    /// batch would show only whichever problem came last; this collects
+    /// every failure by file name and every notice, then presents each
+    /// alert once.
+    func importBooks(at urls: [URL]) async {
+        guard urls.count > 1 else {
+            if let url = urls.first { await importBook(at: url) }
+            return
+        }
+        var failures: [String] = []
+        var notices: [String] = []
+        for url in urls {
+            importError = nil
+            importNotice = nil
+            await importBook(at: url)
+            if let error = importError {
+                failures.append("\u{2022} \(url.lastPathComponent): \(error)")
+            }
+            if let notice = importNotice {
+                notices.append(notice)
+            }
+        }
+        importNotice = notices.isEmpty ? nil : notices.joined(separator: "\n\n")
+        importError = failures.isEmpty
+            ? nil
+            : "\(failures.count) of \(urls.count) files couldn\u{2019}t be imported.\n\n"
+                + failures.joined(separator: "\n")
+    }
 
     func importBook(at url: URL) async {
         // Idempotent against concurrent duplicate delivery. The check-and-insert
@@ -780,6 +813,7 @@ final class AppModel: ObservableObject {
         bookmarksByBook[book.id] = nil
         statesByBook[book.id] = nil
         positionsByBook[book.id] = nil
+        lastOpenedBeforeOpen[book.id] = nil
         books = store.allBooks()
     }
 
@@ -820,37 +854,32 @@ final class AppModel: ObservableObject {
 
     /// Record that the reader opened this book (drives "Continue Reading").
     /// Stamps `lastOpenedAt`, keeping the stamp it replaced for the reader's
-    /// welcome-back line (`WelcomeBack`). Only the FIRST replacement since
-    /// the book was last taken is kept: the library shell stamps on open and
-    /// the reader stamps again on appearance, and the second must not erase
-    /// the absence the first one measured.
+    /// welcome-back line (`WelcomeBack`). The record always holds the stamp
+    /// the MOST RECENT stamping replaced: the library shell stamps on open
+    /// and the reader takes the record before stamping again, so the
+    /// reader's own stamp records the shell's (seconds ago) — and a stamp
+    /// nobody takes (macOS fronting a window that is already open) is simply
+    /// replaced by the next one, never greeted late.
     func markOpened(_ book: Book) {
         var state = bookState(for: book) ?? BookState()
-        if !absenceRecorded.contains(book.id) {
-            absenceRecorded.insert(book.id)
-            lastOpenedBeforeOpen[book.id] = state.lastOpenedAt
-        }
+        lastOpenedBeforeOpen[book.id] = state.lastOpenedAt
         state.lastOpenedAt = Date()
         try? store.saveBookState(state, for: book.id)
         statesByBook[book.id] = state
     }
 
-    /// The `lastOpenedAt` this open replaced — nil on a first open — taken
-    /// once by the reader. Taking it resets the record, so reopening the
-    /// same book later in the session measures from THIS open, not from the
-    /// absence that was already greeted. A reader that appears before
-    /// anything stamped the book (a window restored at launch) reads the
-    /// stamp still on the book, which IS the previous open.
+    /// The `lastOpenedAt` the latest open replaced — nil on a first open —
+    /// taken once by the reader, which clears it. A reader that appears
+    /// before anything stamped the book (a window restored at launch) reads
+    /// the stamp still on the book, which IS the previous open.
     func takeLastOpenedBeforeOpen(for book: Book) -> Date? {
-        defer {
-            absenceRecorded.remove(book.id)
-            lastOpenedBeforeOpen.removeValue(forKey: book.id)
-        }
+        defer { lastOpenedBeforeOpen.removeValue(forKey: book.id) }
         if let recorded = lastOpenedBeforeOpen[book.id] { return recorded }
         return bookState(for: book)?.lastOpenedAt
     }
 
-    private var absenceRecorded: Set<UUID> = []
+    /// Absent key: nothing stamped since the reader last took it. Present
+    /// with nil: stamped, and it was the book's first open.
     private var lastOpenedBeforeOpen: [UUID: Date?] = [:]
 
     func setFinished(_ finished: Bool, for book: Book) {
@@ -880,12 +909,14 @@ final class AppModel: ObservableObject {
         }
     }
 
-    /// Books never opened, newest import first — Home's second shelf. Unlike
-    /// a "Recently Added" row it never repeats a book that is already on
-    /// Continue Reading, so a small library reads as one shelf, not two
-    /// copies of it.
+    /// Books never opened and not marked finished, newest import first —
+    /// Home's second shelf. Unlike a "Recently Added" row it never repeats a
+    /// book that is already on Continue Reading (or Finished), so a small
+    /// library reads as one shelf, not two copies of it.
     var notStarted: [Book] {
-        recentlyAdded.filter { statesByBook[$0.id]?.lastOpenedAt == nil }
+        recentlyAdded.filter {
+            statesByBook[$0.id]?.lastOpenedAt == nil && statesByBook[$0.id]?.isFinished != true
+        }
     }
 
     /// True when the book is a PDF. The image-only parser verdict remains
@@ -1022,6 +1053,10 @@ final class AppModel: ObservableObject {
     /// The active LLM provider, or nil if none is configured.
     /// `-uiTestStubLLM` (CI screenshot walk only) substitutes a canned local
     /// provider so the Ask flow can be exercised deterministically offline.
+    /// The one answer to "is a model connected?" — Home's nudge and the
+    /// sidebar footer both ask this, so they can never disagree.
+    var hasConnectedProvider: Bool { activeProvider() != nil }
+
     func activeProvider() -> LLMProvider? {
         if ProcessInfo.processInfo.arguments.contains("-uiTestStubLLM") {
             return UITestStubProvider()

@@ -65,7 +65,7 @@ truth for every token; this section mirrors it.
 ```
 NavigationSplitView
 ├── Sidebar                       (translucent source list)
-│   ├── Home                      (Continue Reading + Recently Added)
+│   ├── Home                      (Continue Reading + Not started yet)
 │   ├── LIBRARY
 │   │   ├── All Books
 │   │   ├── Ebooks                (EPUB/text)

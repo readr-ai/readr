@@ -151,7 +151,7 @@ Two second-order costs follow from the same choice:
 Effort: 2–3 days. Touches `ReaderView` (which #92 also edits around the
 narration start path) — schedule after #92 merges to avoid a painful rebase.
 
-### F2. The first-run provider nudge can never appear  `high`
+### F2. The first-run provider nudge can never appear  `high` — shipped in PR #96
 
 `HomeView` shows the "Connect an AI provider" card only inside the
 empty-library state. Since 3.2.2 the sample book is seeded on first launch,
@@ -218,7 +218,7 @@ same job with different chrome; keep the card one.
 
 Effort: 1 day. Touches Settings, so land after #94 or coordinate.
 
-### F5. One object, five names  `medium`
+### F5. One object, five names  `medium` — shipped in PR #96
 
 The reader toolbar button is labelled **Highlights**. It opens a panel
 titled **Notes** that counts **annotations**. The sidebar calls the same
@@ -271,7 +271,7 @@ Effort: 1 day (theme resolution becomes a function of stored value +
 `colorScheme` environment; every `ReadingTheme(rawValue:)` site already goes
 through one accessor, so add a helper and use it).
 
-### F8. Notes cards are not tappable; only their link is  `low`
+### F8. Notes cards are not tappable; only their link is  `low` — shipped in PR #96
 
 The spec says "click → jump to it in the book". In `AnnotationListView` the
 card is inert and the jump is an underlined "Show in book" caption in the
@@ -297,7 +297,7 @@ is: tap a bookmark row = jump, remove via a trailing ✕.
 
 Effort: 1–2 days for the tabbed popover, hours for the minimum.
 
-### F10. Library: small frictions that add up  `low`
+### F10. Library: small frictions that add up  `low` — shipped in PR #96
 
 - **Sort** is an icon with no indication of the current order. Make it a
   labelled menu: "Recent ⌄".
@@ -356,7 +356,7 @@ exists so one highlight shows in both views.
 
 Effort: hours for the control; the mapping is a separate project.
 
-### F14. Starter chips insert instead of send  `low`
+### F14. Starter chips insert instead of send  `low` — shipped in PR #96
 
 The Ask suggestion chips put text in the field; a second tap sends. The
 chips are complete questions. Tapping one should send it (Recap already

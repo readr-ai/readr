@@ -667,12 +667,10 @@ final class ReadrAppUITests: XCTestCase {
         ask.tap()
         XCTAssertTrue(app.navigationBars["Ask the book"].waitForExistence(timeout: 5))
 
+        // A starter chip is a complete question: tapping it sends.
         let recap = app.buttons["Recap what I've read so far \u{2014} no spoilers"].firstMatch
         XCTAssertTrue(recap.waitForExistence(timeout: 5), "a scoped panel leads with the recap starter")
         recap.tap()
-        let send = app.buttons["ask.send"].firstMatch
-        XCTAssertTrue(send.waitForExistence(timeout: 3))
-        send.tap()
 
         XCTAssertTrue(
             sentQuestion(app, startingWith: "Recap what I've read so far").waitForExistence(timeout: 5),
@@ -731,8 +729,8 @@ final class ReadrAppUITests: XCTestCase {
         let line = app.staticTexts["reader.welcomeBack"].firstMatch
         XCTAssertTrue(line.waitForExistence(timeout: 10))
 
-        // Four one-page chapters: each flick is a page turn across a
-        // chapter wall. Two must leave the line in place.
+        // One-page chapters from the restored second one: each flick is a
+        // page turn across a chapter wall. Two must leave the line in place.
         let text = app.textViews.firstMatch
         XCTAssertTrue(text.waitForExistence(timeout: 5))
         text.swipeLeft()

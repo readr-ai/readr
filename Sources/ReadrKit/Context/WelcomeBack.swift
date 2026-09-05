@@ -16,14 +16,28 @@ public enum WelcomeBack {
     /// Page turns after which the line goes on its own.
     public static let pageTurnsBeforeDismissal = 3
 
+    /// Scroll layout has no page turns, so there the line goes after this
+    /// much reading time instead — the same "you have evidently picked the
+    /// thread up" as three pages, measured the only way that layout can.
+    public static let scrollReadingBeforeDismissal: TimeInterval = 2 * 60
+
     /// Whether to offer the line on this open.
     ///
     /// - `lastOpenedAt`: the stamp from *before* this open (nil ⇒ first open).
-    /// - `hasPosition`: a saved reading position exists — without one there
-    ///   is nothing read to recap, and a first open is a first open.
-    public static func shouldOffer(lastOpenedAt: Date?, now: Date, hasPosition: Bool) -> Bool {
-        guard hasPosition, let lastOpenedAt else { return false }
+    /// - `hasProgress`: something has been read — a position past the very
+    ///   start. A book opened and closed at page one has nothing to recap,
+    ///   and a first open is a first open.
+    public static func shouldOffer(lastOpenedAt: Date?, now: Date, hasProgress: Bool) -> Bool {
+        guard hasProgress, let lastOpenedAt else { return false }
         return now.timeIntervalSince(lastOpenedAt) >= minimumAbsence
+    }
+
+    /// "Something has been read": any chapter past the first, or any offset
+    /// into it. The reader's saved position at the top of page one is what
+    /// a book opened and closed unread looks like.
+    public static func hasProgress(_ position: ReadingPosition?) -> Bool {
+        guard let position else { return false }
+        return position.chapterIndex > 0 || position.characterOffset > 0
     }
 
     /// "it’s been 6 days" — the absence in the roundest honest unit. Days

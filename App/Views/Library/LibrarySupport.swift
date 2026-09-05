@@ -53,12 +53,16 @@ enum LibraryProgress {
 
     /// "~N min left in chapter" for a text book with a saved position. PDF
     /// positions get none: their chapter/offset fields don't track the page.
+    ///
+    /// `lengths` is an autoclosure: measuring a book the first time is a
+    /// pass over its whole text, so a grid of never-opened books must not
+    /// pay it for an estimate the guard is about to decline.
     static func minutesLeft(
-        in book: Book, position: ReadingPosition?, lengths: ReadingLengthTable
+        in book: Book, position: ReadingPosition?, lengths: @autoclosure () -> ReadingLengthTable
     ) -> Int? {
         guard let position, position.pdfPageIndex == nil,
               book.chapters.indices.contains(position.chapterIndex) else { return nil }
-        let minutes = ReadingTimeEstimator().minutesLeft(in: lengths, at: ReadingFrontier(position))
+        let minutes = ReadingTimeEstimator().minutesLeft(in: lengths(), at: ReadingFrontier(position))
         return minutes > 0 ? minutes : nil
     }
 }

@@ -70,13 +70,16 @@ struct HomeView: View {
     // MARK: Shelves
 
     private var shelves: some View {
-        ScrollView {
+        // Each shelf sorts the library; take them once per render.
+        let continueReading = model.continueReading
+        let notStarted = model.notStarted
+        return ScrollView {
             VStack(alignment: .leading, spacing: 8) {
-                if !model.continueReading.isEmpty {
-                    sectionHeader("Continue Reading", count: model.continueReading.count)
+                if !continueReading.isEmpty {
+                    sectionHeader("Continue Reading", count: continueReading.count)
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(alignment: .top, spacing: 24) {
-                            ForEach(model.continueReading) { book in
+                            ForEach(continueReading) { book in
                                 // "Chapter 7 of 24" is computed per card, per
                                 // render, from the app's cached chapter
                                 // lengths and its published positions: cheap,
@@ -104,21 +107,21 @@ struct HomeView: View {
                 // so a configured app is never nagged. (It used to live in
                 // the empty-library state alone, which a first run never
                 // shows now that a sample book is seeded.)
-                if model.activeProvider() == nil {
+                if !model.hasConnectedProvider {
                     providerCard
                         .padding(.horizontal, 36)
-                        .padding(.top, model.continueReading.isEmpty ? 6 : 2)
+                        .padding(.top, continueReading.isEmpty ? 6 : 2)
                         .padding(.bottom, 10)
                 }
-                if !model.notStarted.isEmpty {
+                if !notStarted.isEmpty {
                     // Books never opened, newest import first. Not "Recently
                     // Added": in a small library that row repeated every
                     // book on the shelf above it.
-                    sectionHeader("Not started yet", count: model.notStarted.count)
+                    sectionHeader("Not started yet", count: notStarted.count)
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(alignment: .top, spacing: 24) {
-                            ForEach(Array(model.notStarted.prefix(12))) { book in
-                                RecentlyAddedCard(
+                            ForEach(Array(notStarted.prefix(12))) { book in
+                                NotStartedCard(
                                     book: book,
                                     coverImage: model.coverImage(for: book),
                                     theme: theme
@@ -131,7 +134,7 @@ struct HomeView: View {
                         .padding(.vertical, 12)
                     }
                 }
-                if model.continueReading.isEmpty, model.notStarted.isEmpty {
+                if continueReading.isEmpty, notStarted.isEmpty {
                     // Every book is finished: say so rather than show a blank
                     // Home. The Finished shelf still lists them.
                     Text("Everything here is finished. Import a book, or find your finished ones in the sidebar.")
@@ -220,7 +223,7 @@ struct HomeView: View {
             .accessibilityIdentifier("home.import")
             .padding(.top, 6)
 
-            if model.activeProvider() == nil {
+            if !model.hasConnectedProvider {
                 providerCard
                     .padding(.top, 28)
             }
@@ -358,15 +361,18 @@ struct ContinueReadingCard: View {
             .frame(width: 150, alignment: .leading)
         }
         .buttonStyle(.plain)
+        // The chapter line is inside the button, whose label is the title;
+        // VoiceOver hears where the reader is as the button's value.
         .accessibilityLabel(book.metadata.title)
+        .accessibilityValue(position?.chapterLine ?? "")
     }
 }
 
-/// A standard cover card for the Recently Added row.
+/// A standard cover card for the Not started yet row.
 ///
 /// Internal for the same reason as `ContinueReadingCard` — the alignment
 /// snapshot test measures it.
-struct RecentlyAddedCard: View {
+struct NotStartedCard: View {
     let book: Book
     let coverImage: PlatformImage?
     let theme: ReadingTheme

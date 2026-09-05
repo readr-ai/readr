@@ -11,25 +11,38 @@ final class WelcomeBackTests: XCTestCase {
 
     // MARK: - Whether to offer it
 
-    func testOfferedAfterADayAwayWithAPosition() {
-        XCTAssertTrue(WelcomeBack.shouldOffer(lastOpenedAt: ago(1), now: now, hasPosition: true))
-        XCTAssertTrue(WelcomeBack.shouldOffer(lastOpenedAt: ago(6), now: now, hasPosition: true))
+    func testOfferedAfterADayAwayWithProgress() {
+        XCTAssertTrue(WelcomeBack.shouldOffer(lastOpenedAt: ago(1), now: now, hasProgress: true))
+        XCTAssertTrue(WelcomeBack.shouldOffer(lastOpenedAt: ago(6), now: now, hasProgress: true))
     }
 
     func testNotOfferedWithinADay() {
-        XCTAssertFalse(WelcomeBack.shouldOffer(lastOpenedAt: ago(0.99), now: now, hasPosition: true))
-        XCTAssertFalse(WelcomeBack.shouldOffer(lastOpenedAt: now, now: now, hasPosition: true))
+        XCTAssertFalse(WelcomeBack.shouldOffer(lastOpenedAt: ago(0.99), now: now, hasProgress: true))
+        XCTAssertFalse(WelcomeBack.shouldOffer(lastOpenedAt: now, now: now, hasProgress: true))
     }
 
     /// A first open has nothing read to recap — and the stamp is nil then.
-    func testNotOfferedOnAFirstOpenOrWithoutAPosition() {
-        XCTAssertFalse(WelcomeBack.shouldOffer(lastOpenedAt: nil, now: now, hasPosition: true))
-        XCTAssertFalse(WelcomeBack.shouldOffer(lastOpenedAt: ago(6), now: now, hasPosition: false))
+    func testNotOfferedOnAFirstOpenOrWithoutProgress() {
+        XCTAssertFalse(WelcomeBack.shouldOffer(lastOpenedAt: nil, now: now, hasProgress: true))
+        XCTAssertFalse(WelcomeBack.shouldOffer(lastOpenedAt: ago(6), now: now, hasProgress: false))
     }
 
     /// A clock that went backwards must not read as a long absence.
     func testAFutureStampIsNotAnAbsence() {
-        XCTAssertFalse(WelcomeBack.shouldOffer(lastOpenedAt: now.addingTimeInterval(3_600), now: now, hasPosition: true))
+        XCTAssertFalse(WelcomeBack.shouldOffer(lastOpenedAt: now.addingTimeInterval(3_600), now: now, hasProgress: true))
+    }
+
+    /// The top of page one is what a book opened and closed unread looks
+    /// like: no progress. Anything past it is.
+    func testProgressIsAnyPositionPastTheStart() {
+        XCTAssertFalse(WelcomeBack.hasProgress(nil))
+        XCTAssertFalse(WelcomeBack.hasProgress(ReadingPosition(chapterIndex: 0, characterOffset: 0)))
+        XCTAssertTrue(WelcomeBack.hasProgress(ReadingPosition(chapterIndex: 0, characterOffset: 1)))
+        XCTAssertTrue(WelcomeBack.hasProgress(ReadingPosition(chapterIndex: 1, characterOffset: 0)))
+    }
+
+    func testScrollLayoutDismissesAfterTwoMinutesOfReading() {
+        XCTAssertEqual(WelcomeBack.scrollReadingBeforeDismissal, 120)
     }
 
     // MARK: - Wording

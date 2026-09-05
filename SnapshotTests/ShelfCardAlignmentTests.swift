@@ -184,19 +184,19 @@ final class ShelfCardAlignmentTests: XCTestCase {
 
     // MARK: - Recently Added
 
-    func testRecentlyAddedCardHeightIsIndependentOfMetadata() {
+    func testNotStartedCardHeightIsIndependentOfMetadata() {
         let heights = [shortBook, wrappingBook, authorlessBook].map { book in
             fittingHeight(
-                RecentlyAddedCard(book: book, coverImage: nil, theme: theme, action: {})
+                NotStartedCard(book: book, coverImage: nil, theme: theme, action: {})
             )
         }
         XCTAssertEqual(
             heights[0], heights[1], accuracy: 0.5,
-            "Recently Added cards must share one height (\(heights))"
+            "Not started cards must share one height (\(heights))"
         )
         XCTAssertEqual(
             heights[0], heights[2], accuracy: 0.5,
-            "Recently Added cards must share one height (\(heights))"
+            "Not started cards must share one height (\(heights))"
         )
     }
 
@@ -292,10 +292,10 @@ final class ShelfCardAlignmentTests: XCTestCase {
 
     /// The reported bug: a one-line title next to a two-line one moved the
     /// author beneath it. Both authors must render on the same row.
-    func testAuthorLinesShareATopEdgeAcrossRecentlyAddedCards() throws {
+    func testAuthorLinesShareATopEdgeAcrossNotStartedCards() throws {
         let row = HStack(alignment: .top, spacing: cardGap) {
-            RecentlyAddedCard(book: wrappingBook, coverImage: nil, theme: theme, action: {})
-            RecentlyAddedCard(book: shortBook, coverImage: nil, theme: theme, action: {})
+            NotStartedCard(book: wrappingBook, coverImage: nil, theme: theme, action: {})
+            NotStartedCard(book: shortBook, coverImage: nil, theme: theme, action: {})
         }
         .padding(rowPadding)
 
@@ -324,10 +324,10 @@ final class ShelfCardAlignmentTests: XCTestCase {
     /// The titles themselves must start on the same row too: a reserved-space
     /// Text centres a short title in its box, which would drop the first line
     /// of the one-line card.
-    func testTitlesShareATopEdgeAcrossRecentlyAddedCards() throws {
+    func testTitlesShareATopEdgeAcrossNotStartedCards() throws {
         let row = HStack(alignment: .top, spacing: cardGap) {
-            RecentlyAddedCard(book: wrappingBook, coverImage: nil, theme: theme, action: {})
-            RecentlyAddedCard(book: shortBook, coverImage: nil, theme: theme, action: {})
+            NotStartedCard(book: wrappingBook, coverImage: nil, theme: theme, action: {})
+            NotStartedCard(book: shortBook, coverImage: nil, theme: theme, action: {})
         }
         .padding(rowPadding)
 

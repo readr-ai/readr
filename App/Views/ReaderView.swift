@@ -39,11 +39,13 @@ struct ReaderView: View {
     /// been away a day or more, and cleared after a few page turns, on ✕, or
     /// on Recap. Never persisted.
     @State private var welcomeBack: WelcomeBackLine?
-    /// Page turns the reader has made since the line went up. A jump sets
-    /// the anchor and the chapter in one pass, so a turn is counted once per
-    /// pass (`noteReaderTurnedPage`), not once per changed value.
+    /// Page turns the reader has made since the line went up.
     @State private var pageTurnsSinceWelcome = 0
-    @State private var turnCountPending = false
+    /// The (chapter, anchor) the last counted turn landed on. Both values'
+    /// `onChange` handlers report a turn, and a jump changes both in one
+    /// pass, so a turn counts only when the page is a new one — and the
+    /// restore's own writes, which land on this page, count for nothing.
+    @State private var lastCountedPage = PagePosition(chapter: 0, anchor: 0)
     /// The committed text selection in chapter coordinates, reported by the
     /// reading surfaces. Drives the selection-dependent keyboard shortcuts
     /// (⇧⌘H highlight, ⇧⌘M note, and the selection-aware ⇧⌘A ask) — the
@@ -388,7 +390,8 @@ struct ReaderView: View {
                 savePositionTask = nil
                 saveTextPosition(chapterIndex: newValue, characterOffset: anchorToPersist)
                 updateMinutesCache()
-                noteReaderTurnedPage()
+                // A chapter the voice crossed is not a page the reader turned.
+                if !narration.isActive { noteReaderTurnedPage() }
                 // The selection's range belongs to the old chapter. The text
                 // views also report nil when their content is replaced, but
                 // that arrives async — clear eagerly so a shortcut can't race
@@ -419,6 +422,18 @@ struct ReaderView: View {
             // Build the retrieval index in the background when the book opens
             // so the first "ask" is fast. Safe to call repeatedly.
             .task(id: book.id) { await model.ensureIndexed(book) }
+            // Scroll layout has no page turns to count, so there the
+            // welcome-back line goes after a stretch of reading time instead.
+            .task(id: welcomeBackScrollTimerRunning) {
+                guard welcomeBackScrollTimerRunning else { return }
+                try? await Task.sleep(for: .seconds(WelcomeBack.scrollReadingBeforeDismissal))
+                guard !Task.isCancelled else { return }
+                withAnimation(.easeOut(duration: 0.2)) { welcomeBack = nil }
+            }
+    }
+
+    private var welcomeBackScrollTimerRunning: Bool {
+        welcomeBack != nil && layout == .scroll
     }
 
     // MARK: - Reading surface
@@ -1396,19 +1411,17 @@ struct ReaderView: View {
 
     // MARK: - Welcome back
 
-    /// One page turn by the reader. Both `chapterIndex` and `pagedAnchor`
-    /// report it, and a jump changes both in one pass, so the count is taken
-    /// once the pass has settled. After `WelcomeBack.pageTurnsBeforeDismissal`
-    /// the line goes: the reader has evidently picked the thread up.
+    /// One page turn by the reader, counted once per new page (see
+    /// `lastCountedPage`). After `WelcomeBack.pageTurnsBeforeDismissal` the
+    /// line goes: the reader has evidently picked the thread up.
     private func noteReaderTurnedPage() {
-        guard welcomeBack != nil, !turnCountPending else { return }
-        turnCountPending = true
-        Task { @MainActor in
-            turnCountPending = false
-            pageTurnsSinceWelcome += 1
-            if pageTurnsSinceWelcome >= WelcomeBack.pageTurnsBeforeDismissal {
-                withAnimation(.easeOut(duration: 0.2)) { welcomeBack = nil }
-            }
+        guard welcomeBack != nil else { return }
+        let page = PagePosition(chapter: chapterIndex, anchor: pagedAnchor)
+        guard page != lastCountedPage else { return }
+        lastCountedPage = page
+        pageTurnsSinceWelcome += 1
+        if pageTurnsSinceWelcome >= WelcomeBack.pageTurnsBeforeDismissal {
+            withAnimation(.easeOut(duration: 0.2)) { welcomeBack = nil }
         }
     }
 
@@ -1671,20 +1684,22 @@ struct ReaderView: View {
             pagedAnchor = max(0, position.characterOffset)
             chapterIndex = min(max(0, position.chapterIndex), max(0, book.chapters.count - 1))
         }
+        // The restored page is where the count starts: the writes above
+        // report as changes, and they must not count as page turns.
+        lastCountedPage = PagePosition(chapter: chapterIndex, anchor: pagedAnchor)
         let now = Date()
         // A native PDF page is not a reading position: no frontier, no recap.
         guard !isPDFOriginal, !isImageOnlyPDF,
-              WelcomeBack.shouldOffer(lastOpenedAt: lastOpened, now: now, hasPosition: position != nil),
+              WelcomeBack.shouldOffer(
+                  lastOpenedAt: lastOpened, now: now, hasProgress: WelcomeBack.hasProgress(position)
+              ),
               let lastOpened, let position else { return }
         let caption = ReadingPositionSummary(
             book: book, position: position, lengths: model.readingLengths(for: book)
         )?.caption
-        let line = WelcomeBackLine(
+        welcomeBack = WelcomeBackLine(
             absence: WelcomeBack.absencePhrase(from: lastOpened, to: now), caption: caption
         )
-        // After this pass: the restore's own anchor and chapter changes
-        // must not count as page turns against the line.
-        Task { @MainActor in welcomeBack = line }
     }
 
     // MARK: - Bookmarks
@@ -1865,6 +1880,14 @@ struct ReaderView: View {
 struct WelcomeBackLine: Equatable {
     var absence: String
     var caption: String?
+}
+
+/// A page, as the reader's chapter and anchor identify one — what the
+/// welcome-back count compares to tell a new page from the same one
+/// reported twice.
+private struct PagePosition: Equatable {
+    var chapter: Int
+    var anchor: Int
 }
 
 // MARK: - Footnote popup

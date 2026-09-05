@@ -196,7 +196,7 @@ struct LibraryGridView: View {
     /// recently-added ordering (import time) rather than re-deriving it here,
     /// so Home's row and the grid can never disagree about "recent".
     private var sortedBooks: [Book] {
-        switch LibrarySort(rawValue: sortRaw) ?? .recent {
+        switch currentSort {
         case .recent:
             let visible = Set(books.map(\.id))
             return model.recentlyAdded.filter { visible.contains($0.id) }
@@ -257,6 +257,7 @@ struct LibraryGridView: View {
     // MARK: Cells
 
     private func cell(for book: Book) -> some View {
+        let position = model.position(for: book)
         let base = Button {
             openBook(book)
         } label: {
@@ -266,14 +267,10 @@ struct LibraryGridView: View {
                 // on the same line, whatever the titles do (see CardCaption).
                 CardCaption(book: book, theme: theme, spacing: 3, showsAllAuthors: true)
                 LibraryProgressHairline(
-                    fraction: LibraryProgress.fraction(
-                        for: book, position: model.position(for: book)
-                    ),
+                    fraction: LibraryProgress.fraction(for: book, position: position),
                     isFinished: model.bookState(for: book)?.isFinished == true,
                     minutesLeft: LibraryProgress.minutesLeft(
-                        in: book,
-                        position: model.position(for: book),
-                        lengths: model.readingLengths(for: book)
+                        in: book, position: position, lengths: model.readingLengths(for: book)
                     ),
                     theme: theme
                 )
