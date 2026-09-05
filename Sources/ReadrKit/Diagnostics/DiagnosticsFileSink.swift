@@ -96,6 +96,52 @@ public final class DiagnosticsFileSink: @unchecked Sendable {
             .replacingOccurrences(of: "\r", with: " ")
     }
 
+    // MARK: - Reading back
+
+    /// Every event the file still holds, oldest first: the rotated `.1`
+    /// generation, then the current file. This is how a bug report filed
+    /// after a crash-and-relaunch gets the evidence from before the crash —
+    /// the in-memory log died with the process, the file did not.
+    ///
+    /// Best-effort, like writing: a missing file is an empty list and a line
+    /// that doesn't parse (a partial write at the moment of a crash, say) is
+    /// skipped rather than failing the whole read.
+    public func readBack() -> [DiagnosticEvent] {
+        lock.lock()
+        defer { lock.unlock() }
+        return [rotatedURL, fileURL].flatMap { url -> [DiagnosticEvent] in
+            guard let contents = try? String(contentsOf: url, encoding: .utf8) else { return [] }
+            return contents.split(separator: "\n", omittingEmptySubsequences: true)
+                .compactMap { Self.event(from: String($0)) }
+        }
+    }
+
+    /// The inverse of `line(for:)`. The detail separator is the first
+    /// ` — ` in the line, so a message that itself contains one would be
+    /// split early; messages are short shape descriptions and don't.
+    static func event(from line: String) -> DiagnosticEvent? {
+        guard line.hasPrefix("["), let close = line.firstIndex(of: "]") else { return nil }
+        let stamp = String(line[line.index(after: line.startIndex)..<close])
+        guard let timestamp = timestampFormatter.date(from: stamp) else { return nil }
+        let rest = line[line.index(after: close)...].drop(while: { $0 == " " })
+        let parts = rest.split(separator: " ", maxSplits: 2, omittingEmptySubsequences: false)
+        guard parts.count == 3,
+              let level = DiagnosticEvent.Level(rawValue: parts[0].lowercased()),
+              parts[1].hasSuffix(":"),
+              let category = DiagnosticEvent.Category(rawValue: String(parts[1].dropLast()))
+        else { return nil }
+        let body = String(parts[2])
+        let separator = " \u{2014} "
+        if let range = body.range(of: separator) {
+            return DiagnosticEvent(
+                timestamp: timestamp, category: category, level: level,
+                message: String(body[..<range.lowerBound]),
+                detail: String(body[range.upperBound...])
+            )
+        }
+        return DiagnosticEvent(timestamp: timestamp, category: category, level: level, message: body)
+    }
+
     // MARK: - File I/O
 
     private func appendLocked(_ line: String) {

@@ -42,6 +42,53 @@ final class DiagnosticsFileSinkTests: XCTestCase {
         return contents.split(separator: "\n", omittingEmptySubsequences: true).map(String.init)
     }
 
+    // MARK: - Reading back
+
+    /// The bug report used to be composed from the in-memory ring buffer
+    /// alone, so a report filed after a crash-and-relaunch carried only the
+    /// new session's "launched" line — the evidence sat in this file, unread.
+    func testEventsReadBackRoundTripWhatWasWritten() {
+        let sink = DiagnosticsFileSink(fileURL: logURL)
+        let written = [
+            makeEvent(message: "opened epub book: 12 chapters", level: .info, category: .reader,
+                      timestamp: Date(timeIntervalSince1970: 1_735_000_000)),
+            makeEvent(message: "ask failed via anthropic (cloud tier)", level: .error,
+                      category: .provider, detail: "HTTP 529: overloaded — try again",
+                      timestamp: Date(timeIntervalSince1970: 1_735_000_007)),
+        ]
+        written.forEach(sink.write)
+
+        XCTAssertEqual(sink.readBack(), written)
+    }
+
+    func testReadBackReturnsTheRotatedGenerationFirst() {
+        // Two ~44-byte lines fit; the third write rotates the first two out.
+        let sink = DiagnosticsFileSink(fileURL: logURL, maxBytes: 100)
+        let events = (1...3).map { index in
+            makeEvent(message: "event \(index)", timestamp: Date(timeIntervalSince1970: 1_735_000_000 + Double(index)))
+        }
+        events.forEach(sink.write)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: rotatedURL.path), "precondition: rotated")
+
+        XCTAssertEqual(sink.readBack().map(\.message), ["event 1", "event 2", "event 3"])
+    }
+
+    func testReadBackSkipsLinesItCannotParse() throws {
+        let sink = DiagnosticsFileSink(fileURL: logURL)
+        sink.write(makeEvent(message: "good line"))
+        let handle = try FileHandle(forWritingTo: logURL)
+        try handle.seekToEnd()
+        try handle.write(contentsOf: Data("not a diagnostics line at all\n\n[garbage] nope\n".utf8))
+        try handle.close()
+        sink.write(makeEvent(message: "another good line"))
+
+        XCTAssertEqual(sink.readBack().map(\.message), ["good line", "another good line"])
+    }
+
+    func testReadBackWithNoFileIsEmpty() {
+        XCTAssertEqual(DiagnosticsFileSink(fileURL: logURL).readBack(), [])
+    }
+
     // MARK: - Writing
 
     func testWritesOneLinePerEvent() {

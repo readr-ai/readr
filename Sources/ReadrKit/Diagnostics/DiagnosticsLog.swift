@@ -75,8 +75,14 @@ public final class DiagnosticsLog: @unchecked Sendable {
         set { lock.lock(); _sink = newValue; lock.unlock() }
     }
 
-    public init(capacity: Int = 200) {
+    /// When this session's log began. `BugReportComposer.evidence` uses it
+    /// to split the file sink's read-back into "earlier sessions" (kept) and
+    /// "this session" (already in the buffer, so dropped from the file side).
+    public let sessionStart: Date
+
+    public init(capacity: Int = 200, sessionStart: Date = Date()) {
         self.capacity = max(1, capacity)
+        self.sessionStart = sessionStart
         buffer.reserveCapacity(self.capacity)
     }
 

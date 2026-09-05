@@ -49,6 +49,12 @@ struct EPUBFileParser: BookParser {
         do {
             container = try ZipEPUBContainer(url: url)
         } catch {
+            // The reader sees "corrupted"; triage needs the ZIP layer's own
+            // reason, which the rethrow below discards. By extension only —
+            // the filename is usually the title and author.
+            DiagnosticsLog.shared.record(
+                .error, .importer, "could not open EPUB archive", error: error
+            )
             throw BookParserError.corrupted("could not open EPUB archive")
         }
         return try EPUBBookParser().parse(

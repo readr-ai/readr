@@ -79,25 +79,66 @@ enum ReadrShare {
 /// The diagnostics are shown in full rather than summarised: a reader is about
 /// to publish this to a public issue tracker, and "attaches a redacted
 /// diagnostic log" is a claim they should be able to check for themselves.
+///
+/// Nothing here transmits anything. The report leaves the device only by the
+/// reader's own hand — a prefilled tracker link, the clipboard, or the share
+/// sheet — and each of those used to lose it in its own way (a GitHub login
+/// wall, the GitHub app ignoring prefilled text, a URL too long to open, the
+/// newest events cut off the end). So: the link is fitted to what a browser
+/// will open, the report is on the clipboard before the link opens, and the
+/// raw log file can be shared as a file.
 struct ReportBugView: View {
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.openURL) private var openURL
     @AppStorage("readingTheme") private var themeRaw = ReadingTheme.paper.rawValue
     private var theme: ReadingTheme { ReadingTheme(rawValue: themeRaw) ?? .paper }
 
     let log: DiagnosticsLog
+    /// Where earlier sessions' evidence comes from; nil when no file sink is
+    /// installed (previews, tests). Read once when the sheet appears — the
+    /// file is a megabyte at most and the report is composed on every
+    /// keystroke.
+    var fileSink: DiagnosticsFileSink? = AppModel.diagnosticsFileSink
 
     @State private var whatHappened = ""
     @State private var includeDiagnostics = true
     @State private var showingDiagnostics = false
+    @State private var evidence: [DiagnosticEvent] = []
+    @State private var copied = false
 
     private var environment: BugReportEnvironment { .current }
 
+    private var events: [DiagnosticEvent] { includeDiagnostics ? evidence : [] }
+
+    /// The full report, for the clipboard and the share sheet.
     private var report: String {
         BugReportComposer.compose(
-            environment: environment,
-            events: includeDiagnostics ? log.entries : [],
-            userDescription: whatHappened
+            environment: environment, events: events, userDescription: whatHappened
         )
+    }
+
+    /// The same report fitted to a URL a browser will open: the oldest
+    /// events go first, and the report says how many.
+    private var issueURL: URL? {
+        BugReportComposer.issueURL(
+            environment: environment, events: events, userDescription: whatHappened
+        )
+    }
+
+    private var logFileURL: URL? {
+        guard let url = fileSink?.fileURL, FileManager.default.fileExists(atPath: url.path) else {
+            return nil
+        }
+        return url
+    }
+
+    private func loadEvidence() {
+        evidence = BugReportComposer.evidence(fromFile: fileSink?.readBack() ?? [], session: log)
+    }
+
+    private func copyReport() {
+        Pasteboard.copy(report)
+        copied = true
     }
 
     var body: some View {
@@ -128,7 +169,7 @@ struct ReportBugView: View {
                             Text("Include diagnostics")
                                 .font(.subheadline)
                                 .foregroundStyle(theme.inkColor)
-                            Text("App version, device, and recent errors. Never your books, highlights, questions, or keys.")
+                            Text("App version, device, and recent errors from this and earlier sessions. Never your books, highlights, questions, or keys.")
                                 .font(.caption)
                                 .foregroundStyle(theme.muted)
                                 .fixedSize(horizontal: false, vertical: true)
@@ -167,15 +208,33 @@ struct ReportBugView: View {
 
                     Divider().overlay(theme.line)
 
-                    // Two ways out: file it where it gets triaged, or send it
-                    // however the reader prefers.
-                    if let url = BugReportComposer.issueURL(body: report) {
-                        Link(destination: url) {
+                    // Ways out: file it where it gets triaged, keep a copy,
+                    // or send it however the reader prefers. The tracker
+                    // link copies the report first — GitHub's sign-in
+                    // redirect and its iOS app both drop the prefilled text,
+                    // and a reader who pastes still gets it there.
+                    if let url = issueURL {
+                        Button {
+                            copyReport()
+                            openURL(url)
+                        } label: {
                             Label("Open a GitHub issue", systemImage: "arrow.up.right.square")
                                 .font(.subheadline.weight(.semibold))
                         }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(theme.iris)
                         .accessibilityIdentifier("feedback.github")
                     }
+
+                    Button {
+                        copyReport()
+                    } label: {
+                        Label(copied ? "Copied" : "Copy report", systemImage: copied ? "checkmark" : "doc.on.doc")
+                            .font(.subheadline)
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(theme.inkColor)
+                    .accessibilityIdentifier("feedback.copy")
 
                     ShareLink(item: report) {
                         Label("Send another way", systemImage: "square.and.arrow.up")
@@ -183,7 +242,15 @@ struct ReportBugView: View {
                     }
                     .accessibilityIdentifier("feedback.share")
 
-                    Text("Readr has no support inbox — reports go to the public issue tracker, so please don't include anything private.")
+                    if includeDiagnostics, let logFileURL {
+                        ShareLink(item: logFileURL) {
+                            Label("Share the full log file", systemImage: "doc.text")
+                                .font(.subheadline)
+                        }
+                        .accessibilityIdentifier("feedback.shareLog")
+                    }
+
+                    Text("Readr has no support inbox — reports go to the public issue tracker, so please don't include anything private. If GitHub opens without your report (it asks you to sign in first, and its app ignores prefilled text), paste: the report is on your clipboard.")
                         .font(.caption2)
                         .foregroundStyle(theme.faint)
                         .fixedSize(horizontal: false, vertical: true)
@@ -193,6 +260,8 @@ struct ReportBugView: View {
                 .frame(maxWidth: .infinity)
             }
             .background(theme.background)
+            .onAppear(perform: loadEvidence)
+            .onChange(of: whatHappened) { _, _ in copied = false }
             .navigationTitle("Report a bug")
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {

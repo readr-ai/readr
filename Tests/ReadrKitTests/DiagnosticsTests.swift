@@ -273,14 +273,86 @@ final class BugReportTests: XCTestCase {
         )
     }
 
-    /// A URL too long to open is worse than a shortened report.
-    func testIssueURLTruncatesAnOverlongBody() throws {
-        let url = try XCTUnwrap(
-            BugReportComposer.issueURL(body: String(repeating: "x", count: 20_000))
-        )
+    /// A URL too long to open is worse than a shortened report — but the old
+    /// `prefix` cut kept the OLDEST events and threw away the newest, which
+    /// is the failure the reader is reporting. The link is now composed to a
+    /// byte budget on the *encoded* URL (a report full of em-dashes and JSON
+    /// triples in size once percent-encoded), dropping oldest events first
+    /// and saying so.
+    func testIssueURLKeepsTheNewestEventsAndTheEnvironmentWhenShortening() throws {
+        let log = DiagnosticsLog(capacity: 200)
+        for index in 0..<200 {
+            log.record(
+                .error, .provider, "a wordy diagnostic line — number \(index)",
+                error: BookParserError.corrupted("detail with — dashes and “quotes” \(index)")
+            )
+        }
+        let url = try XCTUnwrap(BugReportComposer.issueURL(
+            environment: environment, events: log.entries,
+            userDescription: "Ask spins forever on chapter 3."
+        ))
+        XCTAssertLessThanOrEqual(url.absoluteString.utf8.count, BugReportComposer.maxURLBytes)
+
         let components = try XCTUnwrap(URLComponents(url: url, resolvingAgainstBaseURL: false))
         let body = try XCTUnwrap(components.queryItems?.first { $0.name == "body" }?.value)
-        XCTAssertEqual(body.count, BugReportComposer.maxURLBodyLength)
+        XCTAssertTrue(body.contains("Ask spins forever on chapter 3."), body)
+        XCTAssertTrue(body.contains("iPhone17,1"), body)
+        XCTAssertTrue(body.contains("number 199"), "the newest event must survive:\n\(body)")
+        XCTAssertFalse(body.contains("number 0\n"), "the oldest event goes first:\n\(body)")
+        XCTAssertTrue(body.contains("earlier events omitted"), body)
+    }
+
+    func testIssueURLForAShortReportIsNotShortened() throws {
+        let url = try XCTUnwrap(BugReportComposer.issueURL(
+            environment: environment, events: makeLog().entries, userDescription: "It crashed."
+        ))
+        let components = try XCTUnwrap(URLComponents(url: url, resolvingAgainstBaseURL: false))
+        let body = try XCTUnwrap(components.queryItems?.first { $0.name == "body" }?.value)
+        XCTAssertEqual(
+            body,
+            BugReportComposer.compose(
+                environment: environment, events: makeLog().entries, userDescription: "It crashed."
+            )
+        )
+    }
+
+    // MARK: - Evidence from earlier sessions
+
+    /// The in-memory log dies with the process, so a crash-then-relaunch
+    /// report used to carry one line. The file sink's read-back supplies the
+    /// earlier sessions; this session's own events come from the ring buffer
+    /// (they are in the file too, so anything at or after the session start
+    /// is dropped from the file side rather than listed twice).
+    func testEvidenceCombinesEarlierSessionsFromTheFileWithThisSession() {
+        let start = Date(timeIntervalSince1970: 1_735_000_100)
+        let log = DiagnosticsLog(capacity: 50, sessionStart: start)
+        log.record(.info, .app, "launched Readr 3.3.1 (29)", timestamp: start)
+        log.record(.error, .provider, "ask failed via openRouter (retrieval tier)",
+                   timestamp: start.addingTimeInterval(30))
+        let fromFile = [
+            DiagnosticEvent(timestamp: start.addingTimeInterval(-600), category: .app,
+                            level: .info, message: "launched Readr 3.3.1 (29)"),
+            DiagnosticEvent(timestamp: start.addingTimeInterval(-5), category: .reader,
+                            level: .warning, message: "Readr Voice (MLX) download failed"),
+            // Already in this session's buffer — must not appear twice.
+            DiagnosticEvent(timestamp: start, category: .app, level: .info,
+                            message: "launched Readr 3.3.1 (29)"),
+        ]
+
+        let evidence = BugReportComposer.evidence(fromFile: fromFile, session: log)
+
+        XCTAssertEqual(evidence.map(\.message), [
+            "launched Readr 3.3.1 (29)",
+            "Readr Voice (MLX) download failed",
+            "launched Readr 3.3.1 (29)",
+            "ask failed via openRouter (retrieval tier)",
+        ])
+    }
+
+    func testEvidenceWithNoFileIsJustThisSession() {
+        let log = DiagnosticsLog(capacity: 50)
+        log.record(.info, .app, "launched")
+        XCTAssertEqual(BugReportComposer.evidence(fromFile: [], session: log), log.entries)
     }
 
     // MARK: - Budgeting
