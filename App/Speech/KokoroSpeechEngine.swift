@@ -247,8 +247,8 @@ final class KokoroSpeechEngine: NSObject, ReadrVoiceEngine {
                 guard let self, self.initializeTask == task else { return }
                 self.initializeTask = nil
                 self.readiness = .failed
-                DiagnosticsLog.shared.record(
-                    .error, .reader, "Readr Voice (CoreML) download or load failed", error: error
+                DiagnosticsLog.shared.recordVoiceLoadFailure(
+                    runtime: "CoreML", inForeground: true, error: error
                 )
             }
         }

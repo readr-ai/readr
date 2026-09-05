@@ -977,10 +977,8 @@ final class MLXKokoroSpeechEngine:
                 // "Readr Voice never gets past Preparing" was undiagnosable
                 // from a bug report: this catch was the only place the
                 // download or load failure was known, and it kept it.
-                DiagnosticsLog.shared.record(
-                    .error, .reader,
-                    "Readr Voice (MLX) download or load failed (foreground: \(self.isForeground))",
-                    error: error
+                DiagnosticsLog.shared.recordVoiceLoadFailure(
+                    runtime: "MLX", inForeground: self.isForeground, error: error
                 )
                 // A failure with the app in the foreground is a failure, and
                 // the reader retries from the bar. A failure while

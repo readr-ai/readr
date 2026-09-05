@@ -66,13 +66,24 @@ public final class DiagnosticsFileSink: @unchecked Sendable {
 
     // MARK: - Formatting
 
+    /// The line format's fixed parts, shared by the writer and the parser so
+    /// they cannot drift: `[timestamp] LEVEL category: message<TAB>detail`.
+    /// A tab, because `oneLine` guarantees neither field contains one — an
+    /// em-dash, the old separator, turns up in prose on both sides ("HTTP
+    /// 529: overloaded — try again") and made the split ambiguous. Lines
+    /// written before the change still parse (`legacyDetailSeparator`).
+    /// Timestamps are whole seconds (`.withInternetDateTime`); anything that
+    /// compares them to live `Date`s must floor first.
+    static let detailSeparator = "\t"
+    static let legacyDetailSeparator = " \u{2014} "
+
     private static let timestampFormatter: ISO8601DateFormatter = {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime]
         return formatter
     }()
 
-    /// `[timestamp] LEVEL category: message — detail`, always exactly one
+    /// `[timestamp] LEVEL category: message<TAB>detail`, always exactly one
     /// physical line: a detail carrying a newline (a multi-line HTTP body,
     /// say) is collapsed rather than allowed to split one event across two
     /// lines a reader of the raw file would count as two events.
@@ -85,7 +96,7 @@ public final class DiagnosticsFileSink: @unchecked Sendable {
         var line = "[\(timestamp)] \(event.level.rawValue.uppercased()) "
             + "\(event.category.rawValue): \(oneLine(message))"
         if let detail = event.detail, !detail.isEmpty {
-            line += " \u{2014} \(oneLine(detail))"
+            line += detailSeparator + oneLine(detail)
         }
         return line
     }
@@ -94,6 +105,7 @@ public final class DiagnosticsFileSink: @unchecked Sendable {
         text.replacingOccurrences(of: "\r\n", with: " ")
             .replacingOccurrences(of: "\n", with: " ")
             .replacingOccurrences(of: "\r", with: " ")
+            .replacingOccurrences(of: "\t", with: " ")
     }
 
     // MARK: - Reading back
@@ -107,13 +119,43 @@ public final class DiagnosticsFileSink: @unchecked Sendable {
     /// that doesn't parse (a partial write at the moment of a crash, say) is
     /// skipped rather than failing the whole read.
     public func readBack() -> [DiagnosticEvent] {
-        lock.lock()
-        defer { lock.unlock() }
-        return [rotatedURL, fileURL].flatMap { url -> [DiagnosticEvent] in
-            guard let contents = try? String(contentsOf: url, encoding: .utf8) else { return [] }
-            return contents.split(separator: "\n", omittingEmptySubsequences: true)
+        // Only the file reads sit under the lock — the parse is the expensive
+        // half, and a writer blocked behind it would stall whatever was
+        // logging (a speech-engine failure path, say) for the duration.
+        let contents = withContents { $0 }
+        return contents.flatMap { text -> [DiagnosticEvent] in
+            text.split(separator: "\n", omittingEmptySubsequences: true)
                 .compactMap { Self.event(from: String($0)) }
         }
+    }
+
+    /// A copy of the whole log — the rotated generation, then the current
+    /// one — in a temporary file, for a share sheet. A copy because the sink
+    /// keeps appending and may rotate while the sheet is up, and both
+    /// generations because the report reads both; a "full log" that carried
+    /// less than the report would be the wrong label. Nil when there is
+    /// nothing to share or the copy couldn't be written.
+    public func snapshotForSharing(
+        to directory: URL = FileManager.default.temporaryDirectory,
+        filename: String = "readr-diagnostics.log"
+    ) -> URL? {
+        let joined = withContents { $0 }.joined()
+        guard !joined.isEmpty else { return nil }
+        let url = directory.appendingPathComponent(filename)
+        do {
+            try joined.write(to: url, atomically: true, encoding: .utf8)
+            return url
+        } catch {
+            return nil
+        }
+    }
+
+    /// The two generations' text, oldest first, read under the lock.
+    private func withContents<T>(_ body: ([String]) -> T) -> T {
+        lock.lock()
+        let texts = [rotatedURL, fileURL].compactMap { try? String(contentsOf: $0, encoding: .utf8) }
+        lock.unlock()
+        return body(texts)
     }
 
     /// The inverse of `line(for:)`. The detail separator is the first
@@ -131,8 +173,7 @@ public final class DiagnosticsFileSink: @unchecked Sendable {
               let category = DiagnosticEvent.Category(rawValue: String(parts[1].dropLast()))
         else { return nil }
         let body = String(parts[2])
-        let separator = " \u{2014} "
-        if let range = body.range(of: separator) {
+        if let range = body.range(of: detailSeparator) ?? body.range(of: legacyDetailSeparator) {
             return DiagnosticEvent(
                 timestamp: timestamp, category: category, level: level,
                 message: String(body[..<range.lowerBound]),

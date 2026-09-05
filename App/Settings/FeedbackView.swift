@@ -73,7 +73,6 @@ enum ReadrShare {
 }
 
 // MARK: - Reporting a bug
-
 /// Compose a report, see exactly what it contains, then send it.
 ///
 /// The diagnostics are shown in full rather than summarised: a reader is about
@@ -85,8 +84,9 @@ enum ReadrShare {
 /// sheet — and each of those used to lose it in its own way (a GitHub login
 /// wall, the GitHub app ignoring prefilled text, a URL too long to open, the
 /// newest events cut off the end). So: the link is fitted to what a browser
-/// will open, the report is on the clipboard before the link opens, and the
-/// raw log file can be shared as a file.
+/// will open, the tracker button copies the report first and says so in its
+/// label, and the log can be shared as a file — a snapshot of both
+/// generations, so it never says less than the report does.
 struct ReportBugView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.openURL) private var openURL
@@ -94,51 +94,75 @@ struct ReportBugView: View {
     private var theme: ReadingTheme { ReadingTheme(rawValue: themeRaw) ?? .paper }
 
     let log: DiagnosticsLog
-    /// Where earlier sessions' evidence comes from; nil when no file sink is
-    /// installed (previews, tests). Read once when the sheet appears — the
-    /// file is a megabyte at most and the report is composed on every
-    /// keystroke.
-    var fileSink: DiagnosticsFileSink? = AppModel.diagnosticsFileSink
+    /// Where earlier sessions' evidence comes from. Defaults to the sink the
+    /// app installed; nil (previews, tests) means the report carries this
+    /// session only.
+    var fileSink: DiagnosticsFileSink?
+
+    init(log: DiagnosticsLog, fileSink: DiagnosticsFileSink? = AppModel.diagnosticsFileSink) {
+        self.log = log
+        self.fileSink = fileSink
+    }
 
     @State private var whatHappened = ""
     @State private var includeDiagnostics = true
     @State private var showingDiagnostics = false
+    /// Read once, off the main actor, when the sheet appears: the file is up
+    /// to two megabytes and the parse is thousands of date conversions.
     @State private var evidence: [DiagnosticEvent] = []
+    @State private var evidenceLoaded = false
+    /// A copy of the log file for the share sheet, taken when the sheet
+    /// appears so a rotation mid-share can't pull it away.
+    @State private var logSnapshot: URL?
+    /// The composed report, refreshed when its inputs change — not on every
+    /// body pass, which happens per keystroke.
+    @State private var report = ""
     @State private var copied = false
 
     private var environment: BugReportEnvironment { .current }
 
     private var events: [DiagnosticEvent] { includeDiagnostics ? evidence : [] }
 
-    /// The full report, for the clipboard and the share sheet.
-    private var report: String {
-        BugReportComposer.compose(
+    private func refreshReport() {
+        report = BugReportComposer.compose(
             environment: environment, events: events, userDescription: whatHappened
         )
+        // Whatever was copied is no longer what the screen shows.
+        copied = false
     }
 
-    /// The same report fitted to a URL a browser will open: the oldest
-    /// events go first, and the report says how many.
-    private var issueURL: URL? {
-        BugReportComposer.issueURL(
-            environment: environment, events: events, userDescription: whatHappened
-        )
-    }
-
-    private var logFileURL: URL? {
-        guard let url = fileSink?.fileURL, FileManager.default.fileExists(atPath: url.path) else {
-            return nil
-        }
-        return url
-    }
-
-    private func loadEvidence() {
-        evidence = BugReportComposer.evidence(fromFile: fileSink?.readBack() ?? [], session: log)
+    private func loadEvidence() async {
+        guard !evidenceLoaded else { return }
+        evidenceLoaded = true
+        let sink = fileSink
+        let session = log.entries
+        let start = log.sessionStart
+        let (fromFile, snapshot) = await Task.detached(priority: .userInitiated) {
+            (sink?.readBack() ?? [], sink?.snapshotForSharing())
+        }.value
+        evidence = BugReportComposer.evidence(fromFile: fromFile, session: session, sessionStart: start)
+        logSnapshot = snapshot
+        refreshReport()
     }
 
     private func copyReport() {
         Pasteboard.copy(report)
         copied = true
+    }
+
+    /// Copy, then open the tracker: GitHub's sign-in redirect and its iOS
+    /// app both drop the prefilled text, and a reader who pastes still gets
+    /// it there. The label says both things, so the clipboard is never
+    /// overwritten by surprise.
+    private func copyAndOpenIssue() {
+        copyReport()
+        // Fitted to the URL budget on tap — composing to bytes is the
+        // expensive path, and only this button needs it.
+        if let url = BugReportComposer.issueURL(
+            environment: environment, events: events, userDescription: whatHappened
+        ) {
+            openURL(url)
+        }
     }
 
     var body: some View {
@@ -209,26 +233,18 @@ struct ReportBugView: View {
                     Divider().overlay(theme.line)
 
                     // Ways out: file it where it gets triaged, keep a copy,
-                    // or send it however the reader prefers. The tracker
-                    // link copies the report first — GitHub's sign-in
-                    // redirect and its iOS app both drop the prefilled text,
-                    // and a reader who pastes still gets it there.
-                    if let url = issueURL {
-                        Button {
-                            copyReport()
-                            openURL(url)
-                        } label: {
-                            Label("Open a GitHub issue", systemImage: "arrow.up.right.square")
-                                .font(.subheadline.weight(.semibold))
-                        }
-                        .buttonStyle(.plain)
-                        .foregroundStyle(theme.iris)
-                        .accessibilityIdentifier("feedback.github")
+                    // or send it however the reader prefers.
+                    Button(action: copyAndOpenIssue) {
+                        Label("Copy report and open a GitHub issue", systemImage: "arrow.up.right.square")
+                            .font(.subheadline.weight(.semibold))
                     }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(theme.iris)
+                    .accessibilityAddTraits(.isLink)
+                    .accessibilityHint("Copies the report, then opens GitHub in your browser")
+                    .accessibilityIdentifier("feedback.github")
 
-                    Button {
-                        copyReport()
-                    } label: {
+                    Button(action: copyReport) {
                         Label(copied ? "Copied" : "Copy report", systemImage: copied ? "checkmark" : "doc.on.doc")
                             .font(.subheadline)
                     }
@@ -242,15 +258,19 @@ struct ReportBugView: View {
                     }
                     .accessibilityIdentifier("feedback.share")
 
-                    if includeDiagnostics, let logFileURL {
-                        ShareLink(item: logFileURL) {
+                    if includeDiagnostics, let logSnapshot {
+                        ShareLink(item: logSnapshot) {
                             Label("Share the full log file", systemImage: "doc.text")
                                 .font(.subheadline)
                         }
                         .accessibilityIdentifier("feedback.shareLog")
+                        Text("The whole diagnostics log, including events too old for the report above — same rules: shape only, never your text.")
+                            .font(.caption2)
+                            .foregroundStyle(theme.faint)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
 
-                    Text("Readr has no support inbox — reports go to the public issue tracker, so please don't include anything private. If GitHub opens without your report (it asks you to sign in first, and its app ignores prefilled text), paste: the report is on your clipboard.")
+                    Text("Readr has no support inbox — reports go to the public issue tracker, so please don't include anything private. If GitHub opens without your report (it asks you to sign in first, and its app ignores prefilled text), paste it: the report is on your clipboard.")
                         .font(.caption2)
                         .foregroundStyle(theme.faint)
                         .fixedSize(horizontal: false, vertical: true)
@@ -260,8 +280,10 @@ struct ReportBugView: View {
                 .frame(maxWidth: .infinity)
             }
             .background(theme.background)
-            .onAppear(perform: loadEvidence)
-            .onChange(of: whatHappened) { _, _ in copied = false }
+            .task { await loadEvidence() }
+            .onAppear(perform: refreshReport)
+            .onChange(of: whatHappened) { _, _ in refreshReport() }
+            .onChange(of: includeDiagnostics) { _, _ in refreshReport() }
             .navigationTitle("Report a bug")
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {

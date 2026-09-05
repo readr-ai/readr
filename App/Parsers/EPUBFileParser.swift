@@ -50,12 +50,15 @@ struct EPUBFileParser: BookParser {
             container = try ZipEPUBContainer(url: url)
         } catch {
             // The reader sees "corrupted"; triage needs the ZIP layer's own
-            // reason, which the rethrow below discards. By extension only —
-            // the filename is usually the title and author.
-            DiagnosticsLog.shared.record(
-                .error, .importer, "could not open EPUB archive", error: error
+            // reason, which used to be discarded here. It rides in the error's
+            // detail — recorded once, by `importBook`'s `recordImportFailure`
+            // — as a type and a code, never the description: ZIPFoundation's
+            // errors carry the file path, and the filename is usually the
+            // title and author.
+            let underlying = error as NSError
+            throw BookParserError.corrupted(
+                "could not open EPUB archive (\(underlying.domain) \(underlying.code))"
             )
-            throw BookParserError.corrupted("could not open EPUB archive")
         }
         return try EPUBBookParser().parse(
             container: container,

@@ -25,8 +25,8 @@ public struct BugReportEnvironment: Sendable, Equatable {
 /// leave the device, and belt-and-braces is cheap.
 public enum BugReportComposer {
 
-    /// Mail bodies ride in a `mailto:` URL, which the OS will refuse past a
-    /// certain length. Diagnostics are trimmed from the oldest end to fit.
+    /// The longest report worth putting on a clipboard or in a share sheet.
+    /// Diagnostics are trimmed from the oldest end to fit.
     public static let maxReportLength = 6_000
 
     public static let subject = "Readr bug report"
@@ -36,7 +36,9 @@ public enum BugReportComposer {
     /// It used to be unbudgeted, so a long description ate the whole allowance
     /// and the final `prefix` took the environment block, the diagnostics and
     /// even the "N events omitted" notice with it — leaving a report with no
-    /// version, no device and no evidence, and nothing saying so.
+    /// version, no device and no evidence, and nothing saying so. The cap
+    /// scales down with `maxLength` for the same reason: a short link budget
+    /// must still carry the environment and at least a line of evidence.
     public static let maxDescriptionLength = 2_000
 
     public static func compose(
@@ -49,9 +51,10 @@ public enum BugReportComposer {
 
         // The reader's description leads. Everything below it is evidence.
         let described = userDescription?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let descriptionBudget = min(maxDescriptionLength, max(0, maxLength / 2))
         if var described, !described.isEmpty {
-            if described.count > maxDescriptionLength {
-                described = String(described.prefix(maxDescriptionLength))
+            if described.count > descriptionBudget {
+                described = String(described.prefix(descriptionBudget))
                     + "\n…(description truncated)"
             }
             body += described + "\n\n"
@@ -70,27 +73,41 @@ public enum BugReportComposer {
         if events.isEmpty {
             body += "(no diagnostics recorded this session)\n"
         } else {
-            body += render(events, within: maxLength - body.count - 32)
+            body += render(events, within: maxLength - body.count)
         }
 
+        // Redaction only ever shortens, and `render` keeps to its budget, so
+        // this is a backstop for the environment block on an absurdly small
+        // budget — never the mechanism by which a report is trimmed.
         let redacted = HTTPError.redactingSecrets(in: body)
         guard redacted.count > maxLength else { return redacted }
         return String(redacted.prefix(maxLength))
     }
 
-    /// The events a report should carry: earlier sessions from the file
-    /// sink's read-back, then this session from the in-memory log.
+    // MARK: - Evidence
+
+    /// The events a report should carry, oldest first: everything the file
+    /// sink read back that this session's in-memory log no longer holds, then
+    /// the in-memory log itself.
     ///
     /// The file holds this session's events too (the sink writes every one),
-    /// so anything stamped at or after `session.sessionStart` is dropped from
-    /// the file side rather than listed twice. Oldest first throughout, so
-    /// `compose` trims the earlier sessions before anything recent.
+    /// but only the ring buffer keeps their full-precision timestamps and
+    /// untrimmed messages — so for the span the buffer covers, the buffer
+    /// wins, and the file contributes what came before it: earlier sessions,
+    /// and this session's events the buffer has already dropped. File
+    /// timestamps are whole seconds (`DiagnosticsFileSink.line(for:)`), so the
+    /// cut is made on the floor of the buffer's first timestamp; an event in
+    /// that same second is taken from the buffer's side only.
     public static func evidence(
         fromFile fileEvents: [DiagnosticEvent],
-        session: DiagnosticsLog
+        session: [DiagnosticEvent],
+        sessionStart: Date
     ) -> [DiagnosticEvent] {
-        fileEvents.filter { $0.timestamp < session.sessionStart } + session.entries
+        let boundary = (session.first?.timestamp ?? sessionStart).timeIntervalSince1970.rounded(.down)
+        return fileEvents.filter { $0.timestamp.timeIntervalSince1970 < boundary } + session
     }
+
+    // MARK: - The tracker link
 
     /// The longest "new issue" URL worth handing to a browser. GitHub's front
     /// end rejects request lines past ~8KB with a 414, and the body rides
@@ -102,7 +119,7 @@ public enum BugReportComposer {
     /// A prefilled "new issue" link for the project's tracker, shortened to
     /// fit `maxURLBytes` by dropping the OLDEST diagnostics first (the newest
     /// are the failure being reported) and saying how many went. The
-    /// description and the environment block always survive.
+    /// description is budgeted down before the environment block ever is.
     ///
     /// Readr has no support inbox — triage happens in GitHub issues, and this
     /// puts the reader's report straight there with the diagnostics attached.
@@ -113,29 +130,38 @@ public enum BugReportComposer {
         events: [DiagnosticEvent],
         userDescription: String?
     ) -> URL? {
+        func link(_ body: String) -> URL? { issueURL(repository: repository, subject: subject, body: body) }
+        func fits(_ url: URL) -> Bool { url.absoluteString.utf8.count <= maxURLBytes }
+
         var budget = maxReportLength
-        while true {
-            let body = compose(
-                environment: environment, events: events,
-                userDescription: userDescription, maxLength: budget
+        var body = compose(
+            environment: environment, events: events, userDescription: userDescription, maxLength: budget
+        )
+        guard var url = link(body) else { return nil }
+        // Encoded size is close to linear in the body, so one proportional
+        // step lands near the budget; the loop only tightens from there.
+        var passes = 0
+        while !fits(url), budget > 200, passes < 8 {
+            let encoded = url.absoluteString.utf8.count
+            budget = max(200, min(budget * 3 / 4, budget * maxURLBytes / encoded * 9 / 10))
+            body = compose(
+                environment: environment, events: events, userDescription: userDescription, maxLength: budget
             )
-            guard let url = issueURL(repository: repository, subject: subject, body: body) else {
-                return nil
-            }
-            // Past the floor, the description alone is what's left; a link
-            // that opens with less beats a report that never arrives.
-            if url.absoluteString.utf8.count <= maxURLBytes || budget <= 500 { return url }
-            budget = budget * 3 / 4
+            guard let next = link(body) else { return nil }
+            url = next
+            passes += 1
         }
+        // A description of nothing but wide characters can defeat any text
+        // budget; the link must still open, so the body is cut to the bytes.
+        while !fits(url), !body.isEmpty {
+            body = String(body.dropLast(max(1, body.count / 10)))
+            guard let next = link(body) else { return nil }
+            url = next
+        }
+        return url
     }
 
-    /// The link for an already-composed body, untruncated. Prefer the
-    /// `events:` overload, which fits the body to the URL budget.
-    public static func issueURL(
-        repository: String = "readr-ai/readr",
-        subject: String = subject,
-        body: String
-    ) -> URL? {
+    private static func issueURL(repository: String, subject: String, body: String) -> URL? {
         var components = URLComponents(string: "https://github.com/\(repository)/issues/new")
         components?.queryItems = [
             URLQueryItem(name: "title", value: subject),
@@ -144,29 +170,36 @@ public enum BugReportComposer {
         return components?.url
     }
 
-    /// Newest events matter most, so the *oldest* are dropped when the budget
-    /// runs out — and the report says how many, rather than silently
-    /// truncating.
-    private static func render(_ events: [DiagnosticEvent], within budget: Int) -> String {
+    // MARK: - Rendering
+
+    private static let timeFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.dateFormat = "HH:mm:ss"
         formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        return formatter
+    }()
 
+    /// Newest events matter most, so the *oldest* are dropped when the budget
+    /// runs out — and the report says how many, rather than silently
+    /// truncating. The notice is reserved up front, so the result never
+    /// overshoots `budget`.
+    private static func render(_ events: [DiagnosticEvent], within budget: Int) -> String {
+        let notice = "(\(events.count) earlier events omitted)\n"
+        var remaining = budget - notice.count
         var lines: [String] = []
-        var used = 0
         var dropped = 0
 
         for event in events.reversed() {
-            var line = "[\(formatter.string(from: event.timestamp))] "
+            var line = "[\(timeFormatter.string(from: event.timestamp))] "
                 + "\(event.level.rawValue.uppercased()) \(event.category.rawValue): \(event.message)"
             if let detail = event.detail, !detail.isEmpty {
                 line += "\n    \(detail)"
             }
-            if used + line.count + 1 > budget {
+            if line.count + 1 > remaining {
                 dropped = events.count - lines.count
                 break
             }
-            used += line.count + 1
+            remaining -= line.count + 1
             lines.append(line)
         }
 

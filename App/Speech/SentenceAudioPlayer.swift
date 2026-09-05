@@ -196,9 +196,6 @@ final class SentenceAudioPlayer: NSObject {
             guard activeRequest?.id == request.id else { return }
             activeRequest = nil
             player = nil
-            // "Narration went silent" left no trace: the controller hears
-            // this through onFail and moves on, and nothing wrote it down.
-            DiagnosticsLog.shared.record(.error, .reader, "sentence playback failed", error: error)
             onFail?(request.id, error)
         }
     }
