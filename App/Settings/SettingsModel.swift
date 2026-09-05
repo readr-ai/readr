@@ -92,8 +92,8 @@ final class SettingsModel: ObservableObject {
     /// swapped out.
     var displayedKinds: [ProviderInfo.Kind] {
         var kinds = Self.displayedKinds
-        if manager.explicitSelection?.kind == .appleIntelligence, !kinds.contains(.appleIntelligence) {
-            kinds.insert(.appleIntelligence, at: 0)
+        if let chosen = manager.explicitSelection?.kind, chosen.isOnDevice, chosen != .local, !kinds.contains(chosen) {
+            kinds.insert(chosen, at: 0)
         }
         return kinds
     }
@@ -237,8 +237,24 @@ final class SettingsModel: ObservableObject {
         hasCredential[kind] = manager.hasStoredCredential(kind)
     }
 
+    /// The models the picker offers. Downloaded models are filtered to what
+    /// this device's memory can hold — offering the 4B on a 6 GB phone let a
+    /// reader download 3.1 GB of weights that could never load.
     func models(for kind: ProviderInfo.Kind) -> [ProviderInfo] {
-        ProviderCatalog.models(for: kind)
+        let all = ProviderCatalog.models(for: kind)
+        #if os(iOS)
+        if kind == .downloadedModel {
+            let fits = Set(DownloadedModelCatalog.models(forPhysicalMemory: MLXLLMProvider.physicalMemory).map(\.repository))
+            return all.filter { fits.contains($0.modelID) }
+        }
+        #endif
+        return all
+    }
+
+    /// What "Make Active" chooses for a kind: the catalog default, except
+    /// for downloaded models, where it is the best one this device can run.
+    func defaultModelID(for kind: ProviderInfo.Kind) -> String {
+        models(for: kind).first?.modelID ?? ProviderCatalog.defaultModel(for: kind).modelID
     }
 
     /// Bring in the OpenRouter catalogue: the disk copy when it is fresh,

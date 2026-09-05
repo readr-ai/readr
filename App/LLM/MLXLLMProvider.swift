@@ -12,7 +12,8 @@ import MLXLMCommon
 /// the stronger model (Qwen3.5 4B) where it fits.
 ///
 /// iOS only: the Mac app doesn't link MLX (its Metal shaders need the
-/// separately downloaded Metal toolchain on CI), and Macs have Ollama.
+/// separately downloaded Metal toolchain on CI), and Macs have Ollama. Every
+/// GPU graph goes through `MLXGPULease`, shared with Readr Voice.
 final class MLXLLMProvider: LLMProvider, OnDeviceReadinessReporting, @unchecked Sendable {
 
     let info: ProviderInfo
@@ -20,8 +21,6 @@ final class MLXLLMProvider: LLMProvider, OnDeviceReadinessReporting, @unchecked 
 
     /// Headroom for the estimate's error inside the context budget.
     static let windowMargin = 256
-    static let minimumAnswerTokens = 150
-    static let maxQuestionTokens = 400
 
     init(info: ProviderInfo) {
         self.info = info
@@ -31,19 +30,27 @@ final class MLXLLMProvider: LLMProvider, OnDeviceReadinessReporting, @unchecked 
     // MARK: Readiness
 
     /// Whether this device can run any downloaded model at all: a Metal GPU
-    /// (not the Simulator), enough memory for the smallest model.
-    static var isSupportedDevice: Bool {
-        MLXKokoroSpeechEngine.isAvailableOnThisDevice
-            && !DownloadedModelCatalog.models(forPhysicalMemory: Int64(ProcessInfo.processInfo.physicalMemory)).isEmpty
+    /// (not the Simulator), enough memory for the smallest model. Computed
+    /// once — neither changes for the life of the process.
+    static let isSupportedDevice: Bool = MLXRuntimeAvailability.hasMetalGPU
+        && !DownloadedModelCatalog.models(forPhysicalMemory: MLXLLMProvider.physicalMemory).isEmpty
+
+    static var physicalMemory: Int64 { Int64(ProcessInfo.processInfo.physicalMemory) }
+
+    /// Whether this particular model fits this device.
+    private var fitsThisDevice: Bool {
+        guard let spec else { return false }
+        return Self.isSupportedDevice && spec.minimumPhysicalMemory <= Self.physicalMemory
     }
 
     func readiness() async -> OnDeviceReadiness {
-        guard Self.isSupportedDevice, let spec else {
+        guard let spec, Self.isSupportedDevice else {
             return .unsupported(reason: "This device can't run a downloaded model. Connect a cloud provider to ask questions.")
         }
-        guard spec.minimumPhysicalMemory <= Int64(ProcessInfo.processInfo.physicalMemory) else {
+        guard fitsThisDevice else {
             return .unsupported(reason: "\(spec.displayName) needs more memory than this device has. Pick the smaller model.")
         }
+        // The disk check needs no actor; the in-flight state does.
         let state = await MainActor.run { MLXModelStore.shared.state(for: spec.repository) }
         switch state {
         case .downloaded:
@@ -67,54 +74,89 @@ final class MLXLLMProvider: LLMProvider, OnDeviceReadinessReporting, @unchecked 
         AsyncThrowingStream { continuation in
             let task = Task {
                 do {
-                    guard let spec = self.spec else { throw MLXModelError.invalidRepository(self.info.modelID) }
-                    guard Self.isSupportedDevice else { throw MLXModelError.unsupportedDevice }
-                    let downloaded = await MainActor.run { MLXModelStore.shared.isDownloaded(spec.repository) }
-                    guard downloaded else { throw MLXModelError.notDownloaded }
-
-                    var (instructions, rawPrompt) = LocalPromptShaping.split(request)
-                    let isQuestion = rawPrompt.contains(AdaptiveContextStrategy.passagesHeader)
-                    if isQuestion {
-                        instructions += "\n\n" + LocalPromptShaping.questionStyle
-                        rawPrompt += LocalPromptShaping.answerCue
-                    }
-                    let budget = spec.contextBudget
-                    let fixed = TokenCounter.estimate(instructions) + Self.windowMargin
-                    let prompt = RetrievalPromptTrimmer.fit(
-                        rawPrompt, budget: budget - fixed - Self.minimumAnswerTokens, measure: { TokenCounter.estimate($0) }
-                    )
-                    let room = budget - fixed - TokenCounter.estimate(prompt)
-                    guard room >= Self.minimumAnswerTokens else { throw OnDeviceModelError.tooLong }
-                    let answer = min(request.maxOutputTokens, room, isQuestion ? Self.maxQuestionTokens : .max)
-
-                    let container = try await MLXModelStore.shared.container(for: spec.repository)
-                    let session = ChatSession(
-                        container,
-                        instructions: instructions,
-                        generateParameters: GenerateParameters(
-                            maxTokens: answer, temperature: 0.5, topP: 0.9, repetitionPenalty: 1.1
+                    guard let spec = self.spec, self.fitsThisDevice else {
+                        throw OnDeviceModelError.unavailable(
+                            "This device can't run \(self.spec?.displayName ?? "that model"). Pick another provider in Settings → AI Providers."
                         )
-                    )
-                    var shown = ShownAnswer(source: isQuestion ? prompt : "")
-                    var content = ""
-                    for try await chunk in session.streamResponse(to: prompt) {
-                        try Task.checkCancellation()
-                        content += chunk
-                        guard shown.observe(content, into: continuation) else { break }
                     }
-                    shown.finish(content, into: continuation)
+                    guard MLXModelStore.snapshotIsComplete(for: spec.repository, in: .default) else {
+                        throw OnDeviceModelError.unavailable(
+                            "Download \(spec.displayName) (\(spec.downloadSizeDescription)) in Settings → AI Providers first."
+                        )
+                    }
+                    let container = try await MLXModelStore.shared.container(for: spec.repository)
+                    let shaped = try await LocalPromptShaping.shape(
+                        request, window: self.info.contextBudget, margin: Self.windowMargin,
+                        measure: { TokenCounter.estimate($0) },
+                        classify: { question in await Self.isAboutTheBook(question, container: container) }
+                    )
+                    try await MLXGPULease.shared.withLease {
+                        let session = ChatSession(
+                            container,
+                            instructions: shaped.instructions,
+                            generateParameters: GenerateParameters(
+                                maxTokens: shaped.answerTokens, temperature: 0.5, topP: 0.9, repetitionPenalty: 1.1
+                            ),
+                            // Qwen3.5's template opens a <think> block unless
+                            // told not to; the reasoning would eat the answer.
+                            additionalContext: ["enable_thinking": false]
+                        )
+                        var shown = ShownAnswer(source: shaped.copySource)
+                        var content = ""
+                        var judgedCount = 0
+                        for try await chunk in session.streamResponse(to: shaped.prompt) {
+                            try Task.checkCancellation()
+                            guard MLXGPULease.shared.isForeground else { throw MLXGPULeaseError.backgrounded }
+                            content += chunk
+                            // Judge at sentence boundaries (or every so often
+                            // for prose without them), not on every token.
+                            if chunk.contains(where: { ".!?\n".contains($0) }) || content.count - judgedCount > 160 {
+                                judgedCount = content.count
+                                guard shown.observe(content, into: continuation) else { break }
+                            }
+                        }
+                        shown.finish(content, into: continuation)
+                    }
                     continuation.finish()
                 } catch {
-                    if error is CancellationError || error is MLXModelError || error is OnDeviceModelError {
-                        continuation.finish(throwing: error)
-                    } else {
-                        DiagnosticsLog.shared.record(.error, .provider, "downloaded model: generation failed", error: error)
-                        continuation.finish(throwing: OnDeviceModelError.other(String(String(describing: error).prefix(300))))
-                    }
+                    continuation.finish(throwing: Self.mapped(error))
                 }
             }
             continuation.onTermination = { _ in task.cancel() }
         }
     }
+
+    /// The off-topic router, on the same model: one short greedy call.
+    static func isAboutTheBook(_ question: String, container: ModelContainer) async -> Bool? {
+        do {
+            return try await MLXGPULease.shared.withLease {
+                let session = ChatSession(
+                    container,
+                    instructions: LocalPromptShaping.classifierInstructions,
+                    generateParameters: GenerateParameters(maxTokens: 4, temperature: 0),
+                    additionalContext: ["enable_thinking": false]
+                )
+                return LocalPromptShaping.isBook(reply: try await session.respond(to: LocalPromptShaping.classifierPrompt(for: question)))
+            }
+        } catch {
+            return nil
+        }
+    }
+
+    static func mapped(_ error: Error) -> Error {
+        if error is CancellationError || error is OnDeviceModelError { return error }
+        if error is MLXGPULeaseError {
+            return OnDeviceModelError.unavailable("The answer stopped because Readr went into the background. Ask again.")
+        }
+        DiagnosticsLog.shared.record(.error, .provider, "downloaded model: generation failed", error: error)
+        return OnDeviceModelError.other(String(String(describing: error).prefix(300)))
+    }
+}
+
+/// "Can MLX run here at all" — a Metal GPU, and not the Simulator — for
+/// every MLX user in the app, so neither the speech engine nor the language
+/// model has to borrow the other's flag.
+enum MLXRuntimeAvailability {
+    static let hasMetalGPU: Bool = MLXKokoroSpeechEngine.isAvailableOnThisDevice
 }
 #endif

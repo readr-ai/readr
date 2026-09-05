@@ -8,6 +8,7 @@ Readr connects to an LLM in one of **four** ways. All four sit behind the
 | **Sign in (OAuth)** | "Sign in with ChatGPT" / "Sign in with OpenRouter" in a browser | Tokens/key in **Keychain** | provider API |
 | **Bring your own key** | Pastes an Anthropic / OpenAI / OpenRouter key | API key in **Keychain** | provider API |
 | **On this device** | Nothing — Apple's on-device model (iOS/macOS 26, Apple Intelligence hardware) is offered where it can run | none | **none (on-device)** |
+| **Downloaded model** | Taps Download once (size shown first); Qwen3.5 runs on MLX on the iPhone | none | **one fetch of weights from huggingface.co, then none** |
 | **Local** | Picks a local model (Ollama on a Mac) | none | **none (loopback)** |
 
 ## OAuth design (modeled on Muesli)

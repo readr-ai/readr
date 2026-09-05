@@ -336,7 +336,8 @@ struct ProviderSettingsView: View {
                     onChange: { Task { await model.validate(kind) } }
                 )
                 #endif
-            } else if kind.isOnDevice {
+            }
+            if kind.isOnDevice {
                 // A manual re-check for when the reader has just started
                 // Ollama or pulled the model, or switched Apple Intelligence
                 // on (mirrors the mockup's "Check again"). Re-probes and
@@ -422,9 +423,7 @@ struct ProviderSettingsView: View {
         if let selection = model.activeSelection, selection.kind == .downloadedModel {
             return selection.modelID
         }
-        return DownloadedModelCatalog
-            .recommendedModel(forPhysicalMemory: Int64(ProcessInfo.processInfo.physicalMemory))?.repository
-            ?? ProviderCatalog.defaultModel(for: .downloadedModel).modelID
+        return model.defaultModelID(for: .downloadedModel)
     }
 
     /// The OpenRouter id the picker row names: the active selection when it
@@ -537,10 +536,7 @@ struct ProviderSettingsView: View {
     /// produces, so the control and its result read as one affordance.
     private func makeActiveButton(for kind: ProviderInfo.Kind) -> some View {
         Button {
-            model.makeActive(
-                kind: kind,
-                modelID: ProviderCatalog.defaultModel(for: kind).modelID
-            )
+            model.makeActive(kind: kind, modelID: model.defaultModelID(for: kind))
         } label: {
             Text("Make Active")
                 .font(.caption2.weight(.semibold))
@@ -846,12 +842,14 @@ private struct ModelPicker: View {
 
 #if os(iOS)
 /// The downloaded-model card's own controls: what a Download costs before it
-/// starts (App Review 4.2.3(ii)), its progress, and Delete afterwards.
+/// starts (App Review 4.2.3(ii)), its progress with a Cancel, Delete
+/// afterwards, and a plain retry — the Hub client resumes partial blobs, so
+/// a failed download never starts from zero.
 private struct DownloadedModelControls: View {
     let modelID: String
     let theme: ReadingTheme
-    /// Fired when the model's state settles (downloaded, deleted, failed) so
-    /// the card re-validates.
+    /// Fired when the model's state settles (downloaded, deleted, failed,
+    /// cancelled) so the card re-validates.
     let onChange: () -> Void
 
     @ObservedObject private var store = MLXModelStore.shared
@@ -859,8 +857,10 @@ private struct DownloadedModelControls: View {
     private var spec: DownloadedModelSpec? { DownloadedModelCatalog.spec(for: modelID) }
 
     var body: some View {
+        // Read once per body: the state may come from a directory scan.
+        let state = store.state(for: modelID)
         VStack(alignment: .leading, spacing: 8) {
-            switch store.state(for: modelID) {
+            switch state {
             case .notDownloaded:
                 Button {
                     store.download(modelID)
@@ -877,26 +877,30 @@ private struct DownloadedModelControls: View {
                     .foregroundStyle(theme.faint)
                     .fixedSize(horizontal: false, vertical: true)
             case .downloading(let fraction):
-                ProgressView(value: fraction) {
-                    Text("Downloading \(spec?.displayName ?? "model")… \(Int(fraction * 100))%")
+                HStack(spacing: 12) {
+                    ProgressView(value: fraction) {
+                        Text("Downloading \(spec?.displayName ?? "model")… \(Int(fraction * 100))%")
+                            .font(.caption)
+                            .foregroundStyle(theme.muted)
+                    }
+                    .tint(theme.iris)
+                    .accessibilityIdentifier("settings.download.progress")
+                    Button("Cancel") { store.cancelDownload(modelID) }
+                        .buttonStyle(.plain)
                         .font(.caption)
                         .foregroundStyle(theme.muted)
+                        .accessibilityIdentifier("settings.download.cancel")
                 }
-                .tint(theme.iris)
-                .accessibilityIdentifier("settings.download.progress")
             case .downloaded:
                 HStack(spacing: 12) {
                     Text("Downloaded · \(spec?.downloadSizeDescription ?? "")")
                         .font(.caption)
                         .foregroundStyle(theme.muted)
-                    Button("Delete", role: .destructive) {
-                        store.delete(modelID)
-                        onChange()
-                    }
-                    .buttonStyle(.plain)
-                    .font(.caption)
-                    .foregroundStyle(.red)
-                    .accessibilityIdentifier("settings.download.delete")
+                    Button("Delete", role: .destructive) { store.delete(modelID) }
+                        .buttonStyle(.plain)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                        .accessibilityIdentifier("settings.download.delete")
                 }
             case .failed(let message):
                 Text(message)
@@ -904,7 +908,7 @@ private struct DownloadedModelControls: View {
                     .foregroundStyle(.orange)
                     .fixedSize(horizontal: false, vertical: true)
                 Button {
-                    store.delete(modelID)
+                    store.dismissFailure(modelID)
                     store.download(modelID)
                 } label: {
                     CardActionLabel(title: "Try again", systemImage: "arrow.clockwise", theme: theme)
@@ -912,9 +916,7 @@ private struct DownloadedModelControls: View {
                 .buttonStyle(.plain)
             }
         }
-        .onChange(of: store.state(for: modelID)) { _, state in
-            if case .downloaded = state { onChange() }
-        }
+        .onChange(of: state) { _, _ in onChange() }
     }
 }
 #endif

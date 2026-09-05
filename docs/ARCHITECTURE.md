@@ -14,7 +14,7 @@
 │  Reader   ── BookParser (EPUB/PDF) ──▶ Book model            │
 │  Context  ── ContextStrategy (Tier 1/2/3 router)            │
 │  RAG      ── RAGIndex (sqlite-vec + FTS5, rerank)            │
-│  LLM      ── LLMProvider (Apple on-device / cloud / Ollama)  │
+│  LLM      ── LLMProvider (on-device: Apple, MLX / cloud)     │
 │  Article  ── ArticleComposer (highlights+notes → Markdown)   │
 │  Speech   ── NarrationController (segments → SpeechEngine)   │
 │  Models   ── Book, Chapter, Highlight, Note, Conversation    │
@@ -30,7 +30,7 @@ can be swapped or mocked.
 | Protocol | Responsibility | Default impl |
 |----------|----------------|--------------|
 | `BookParser` | Turn an EPUB/PDF/text file into a `Book` (chapters, text, TOC, metadata) | Native: `PlainTextBookParser`, `EPUBBookParser` (+ZIPFoundation), `PDFKitBookParser` |
-| `LLMProvider` | Chat completion + streaming + token counting | Apple on-device (FoundationModels, app layer) / Anthropic / OpenAI / OpenRouter / ChatGPT / Local (Ollama) |
+| `LLMProvider` | Chat completion + streaming + token counting | Apple on-device (FoundationModels) and downloaded models (Qwen3.5 on MLX), both app layer / Anthropic / OpenAI / OpenRouter / ChatGPT / Local (Ollama) |
 | `EmbeddingProvider` | Text → vectors | Hosted or on-device (MLX) |
 | `RAGIndex` | Build/query the hybrid index for a book | SQLite (`sqlite-vec` + FTS5) |
 | `ContextStrategy` | Assemble the optimal prompt context for a query | `AdaptiveContextStrategy` |

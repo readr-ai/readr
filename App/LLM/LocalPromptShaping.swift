@@ -150,3 +150,92 @@ struct ShownAnswer {
         if !kept.isEmpty { continuation.yield(ChatChunk(textDelta: kept)) }
     }
 }
+
+// MARK: - The shared request → prompt pipeline
+
+extension LocalPromptShaping {
+
+    /// Everything both on-device providers do to a request before generating.
+    struct Shaped {
+        var instructions: String
+        var prompt: String
+        /// Tokens the answer may use, inside the window.
+        var answerTokens: Int
+        /// A retrieval-tier question (as opposed to an article), which gets
+        /// the answer style, the trimmer and the copy filter.
+        var isQuestion: Bool
+        /// The text the copy filter compares against: the prompt for a
+        /// question, nothing for an article.
+        var copySource: String { isQuestion ? prompt : "" }
+    }
+
+    /// Below this the answer would be cut off mid-thought; better to say the
+    /// question was too long.
+    static let minimumAnswerTokens = 150
+    /// A question's answer: a paragraph or two. Articles are not capped here.
+    static let maxQuestionTokens = 350
+
+    /// Shape `request` for a model with `window` tokens of context.
+    ///
+    /// `classify` is the off-topic router: given the reader's question, it
+    /// answers whether the question is about the book (nil when unsure). A
+    /// question judged not about the book is answered from common sense with
+    /// no passages in front of the model — a 3B model given eight passages
+    /// answers from the passages whatever was asked. `measure` is the
+    /// provider's token estimate, so a denser tokeniser can budget on the
+    /// safe side. Throws `OnDeviceModelError.tooLong` when even the trimmed
+    /// prompt leaves no room for an answer.
+    static func shape(
+        _ request: ChatRequest,
+        window: Int,
+        margin: Int,
+        measure: (String) -> Int,
+        classify: (String) async -> Bool?
+    ) async throws -> Shaped {
+        var (instructions, rawPrompt) = split(request)
+        var isQuestion = rawPrompt.contains(AdaptiveContextStrategy.passagesHeader)
+        if isQuestion, let question = question(in: rawPrompt), await classify(question) == false {
+            DiagnosticsLog.shared.record(
+                .info, .provider, "local model: question judged not about the book; answering without passages"
+            )
+            instructions = generalInstructions
+            rawPrompt = generalPrompt(question: question, bookLine: bookLine(in: rawPrompt))
+            isQuestion = false
+        }
+        if isQuestion {
+            instructions += "\n\n" + questionStyle
+            // Small models answer what they read last: restate the task after
+            // the question, not only in the instructions.
+            rawPrompt += answerCue
+        }
+        let fixed = measure(instructions) + margin
+        // The strategy already budgeted passages to the catalog's figure; this
+        // drops whole passages if the estimate still overshoots. Prose is
+        // never cut.
+        let prompt = RetrievalPromptTrimmer.fit(
+            rawPrompt, budget: window - fixed - minimumAnswerTokens, measure: measure
+        )
+        let room = window - fixed - measure(prompt)
+        guard room >= minimumAnswerTokens else { throw OnDeviceModelError.tooLong }
+        // An article gets the whole remaining window; a question is answered
+        // in a few sentences, and a small model left to run on will fill the
+        // rest with the passages.
+        let answer = min(request.maxOutputTokens, room, isQuestion ? maxQuestionTokens : .max)
+        return Shaped(instructions: instructions, prompt: prompt, answerTokens: answer, isQuestion: isQuestion)
+    }
+
+    /// The one-word sorting prompt both runtimes use for the off-topic
+    /// router. The reply is read by `isBook(reply:)`.
+    static let classifierInstructions = "You sort a reader's questions. Reply with exactly one word: BOOK if the question asks about the story, characters, events, themes, or text of the book they are reading; GENERAL if it is about the reader themself, the real world, or anything the book would not answer."
+
+    static func classifierPrompt(for question: String) -> String {
+        "The reader's question: \"\(question)\"\nOne word, BOOK or GENERAL:"
+    }
+
+    static func isBook(reply: String) -> Bool? {
+        let upper = reply.uppercased()
+        if upper.contains("GENERAL") { return false }
+        if upper.contains("BOOK") { return true }
+        return nil
+    }
+}

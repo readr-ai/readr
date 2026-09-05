@@ -1278,6 +1278,11 @@ final class MLXKokoroSpeechEngine:
                 ? MLXKokoroSpeechEngine.gpuSynthesisTimeout
                 : MLXKokoroSpeechEngine.cpuSynthesisTimeout
             let mlxDevice: Device = device == .cpu ? Device.cpu : Device.gpu
+            // The process-wide gate shared with the downloaded language
+            // model: one Metal graph at a time across both MLX users.
+            if device == .gpu {
+                try await MLXGPULease.shared.acquire()
+            }
             let started = Date()
             if device == .gpu {
                 gpuWork.begin(at: started)
@@ -1318,6 +1323,7 @@ final class MLXKokoroSpeechEngine:
                 defer {
                     if device == .gpu {
                         gpuWork.end()
+                        Task { await MLXGPULease.shared.release() }
                     }
                 }
                 return try await withError {

@@ -166,11 +166,6 @@ final class FoundationModelsProvider: LLMProvider, OnDeviceReadinessReporting, @
     static let charactersPerToken = 3.4
     /// Headroom for the estimate's error, inside the window.
     static let windowMargin = 200
-    /// Below this the answer would be cut off mid-thought; better to say the
-    /// question was too long.
-    static let minimumAnswerTokens = 150
-    /// A question's answer: a paragraph or two. Articles are not capped here.
-    static let maxQuestionTokens = 350
 
     init(info: ProviderInfo) {
         self.info = info
@@ -198,37 +193,19 @@ final class FoundationModelsProvider: LLMProvider, OnDeviceReadinessReporting, @
     static func isAboutTheBook(_ question: String, model: SystemLanguageModel) async -> Bool? {
         let session = LanguageModelSession(
             model: model,
-            instructions: "You sort a reader's questions. Reply with exactly one word: BOOK if the question asks about the story, characters, events, themes, or text of the book they are reading; GENERAL if it is about the reader themself, the real world, or anything the book would not answer."
+            instructions: LocalPromptShaping.classifierInstructions
         )
         do {
             let reply = try await session.respond(
-                to: "The reader's question: \"\(question)\"\nOne word, BOOK or GENERAL:",
+                to: LocalPromptShaping.classifierPrompt(for: question),
                 options: GenerationOptions(sampling: .greedy, maximumResponseTokens: 3)
-            ).content.uppercased()
-            if reply.contains("GENERAL") { return false }
-            if reply.contains("BOOK") { return true }
-            return nil
+            ).content
+            return LocalPromptShaping.isBook(reply: reply)
         } catch {
             return nil
         }
     }
 
-    init(info: ProviderInfo) {
-        self.info = info
-        self.model = Self.sharedModel
-    }
-
-    func readiness() async -> OnDeviceReadiness {
-        OnDeviceModel.readiness(of: model)
-    }
-
-    func countTokens(_ text: String) throws -> Int {
-        TokenCounter.estimate(text)
-    }
-
-    static func tokens(_ text: String) -> Int {
-        TokenCounter.estimate(text, charactersPerToken: charactersPerToken)
-    }
 
     /// The window in tokens. `contextSize` arrived in the 26.4 SDK
     /// (back-deployed to 26.0, where it answers 4,096); CI builds with the
@@ -246,48 +223,14 @@ final class FoundationModelsProvider: LLMProvider, OnDeviceReadinessReporting, @
         AsyncThrowingStream { continuation in
             let task = Task { [model] in
                 do {
-                    var (instructions, rawPrompt) = LocalPromptShaping.split(request)
-                    var isQuestion = rawPrompt.contains(AdaptiveContextStrategy.passagesHeader)
-                    if isQuestion, let question = LocalPromptShaping.question(in: rawPrompt),
-                       await Self.isAboutTheBook(question, model: model) == false {
-                        // A small model handed eight passages answers from the
-                        // passages whatever was asked — "can I be a rabbit?"
-                        // came back "Yes, Alice can become a rabbit." Asked
-                        // first whether the question is about the book at
-                        // all, it can tell; if not, it answers plainly from
-                        // common sense, with one line tying back to the book.
-                        DiagnosticsLog.shared.record(
-                            .info, .provider, "on-device: question judged not about the book; answering without passages"
-                        )
-                        instructions = LocalPromptShaping.generalInstructions
-                        rawPrompt = LocalPromptShaping.generalPrompt(
-                            question: question, bookLine: LocalPromptShaping.bookLine(in: rawPrompt)
-                        )
-                        isQuestion = false
-                    }
-                    if isQuestion {
-                        // A 3B model given eight passages will copy them out at
-                        // length unless told plainly not to; a reader asked
-                        // "can I be a rabbit?" and got two pages of dialogue.
-                        instructions += "\n\n" + LocalPromptShaping.questionStyle
-                        // Small models answer what they read last: restate the
-                        // task after the question, not only in the instructions.
-                        rawPrompt += LocalPromptShaping.answerCue
-                    }
-                    let window = Self.contextWindow(of: model)
-                    let fixed = Self.tokens(instructions) + Self.windowMargin
-                    // The strategy already budgeted passages to the catalog's
-                    // figure; this drops whole passages if the denser estimate
-                    // still overshoots. Prose is never cut.
-                    let prompt = RetrievalPromptTrimmer.fit(
-                        rawPrompt, budget: window - fixed - Self.minimumAnswerTokens, measure: Self.tokens
+                    let shaped = try await LocalPromptShaping.shape(
+                        request, window: Self.contextWindow(of: model), margin: Self.windowMargin,
+                        measure: Self.tokens,
+                        classify: { question in await Self.isAboutTheBook(question, model: model) }
                     )
-                    let room = window - fixed - Self.tokens(prompt)
-                    guard room >= Self.minimumAnswerTokens else { throw OnDeviceModelError.tooLong }
-                    // An article gets the whole remaining window; a question
-                    // is answered in a few sentences, and a small model left
-                    // to run on will fill the rest with the passages.
-                    let answer = min(request.maxOutputTokens, room, isQuestion ? Self.maxQuestionTokens : .max)
+                    let instructions = shaped.instructions
+                    let prompt = shaped.prompt
+                    let answer = shaped.answerTokens
                     let session = LanguageModelSession(model: model, instructions: instructions)
                     // Nucleus sampling with some warmth: greedy-ish decoding is
                     // what sends a small model round the same sentence.
@@ -306,7 +249,7 @@ final class FoundationModelsProvider: LLMProvider, OnDeviceReadinessReporting, @
                     // pasted from the passages (`isCopied`) — a whole copied
                     // sentence answers nothing — released a completed sentence
                     // at a time so both guards judge it first.
-                    var shown = ShownAnswer(source: isQuestion ? prompt : "")
+                    var shown = ShownAnswer(source: shaped.copySource)
                     var content = ""
                     for try await snapshot in session.streamResponse(to: prompt, options: options) {
                         try Task.checkCancellation()
