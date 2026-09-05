@@ -34,11 +34,16 @@ struct ReaderView: View {
     /// voice — is the one moving.
     @State private var narrationResumeAnchor: Int?
     @State private var didRestorePosition = false
-    /// Set once the reader is on screen and its position restored. A recap
-    /// asked for by the library (`AppModel.pendingRecapBookID`) is only
-    /// presented after this, so the sheet never goes up over a reader that
-    /// is still being pushed and the frontier it uses is the restored one.
-    @State private var hasAppeared = false
+    /// The welcome-back line (`WelcomeBack`): a one-line card above the page
+    /// offering a spoiler-free recap, set on restore when the reader has
+    /// been away a day or more, and cleared after a few page turns, on ✕, or
+    /// on Recap. Never persisted.
+    @State private var welcomeBack: WelcomeBackLine?
+    /// Page turns the reader has made since the line went up. A jump sets
+    /// the anchor and the chapter in one pass, so a turn is counted once per
+    /// pass (`noteReaderTurnedPage`), not once per changed value.
+    @State private var pageTurnsSinceWelcome = 0
+    @State private var turnCountPending = false
     /// The committed text selection in chapter coordinates, reported by the
     /// reading surfaces. Drives the selection-dependent keyboard shortcuts
     /// (⇧⌘H highlight, ⇧⌘M note, and the selection-aware ⇧⌘A ask) — the
@@ -333,15 +338,6 @@ struct ReaderView: View {
             }
             .onAppear {
                 restoreOnce()
-                // A recap the library asked for is for ONE book. Any reader
-                // appearing for a different one means that request has gone
-                // stale (the push was abandoned, another book was opened),
-                // and it must not fire a paid recap the reader never asked
-                // for the next time that book happens to open.
-                if let pending = model.pendingRecapBookID, pending != book.id {
-                    model.pendingRecapBookID = nil
-                }
-                hasAppeared = true
                 updateMinutesCache()
                 // The page follows the voice: narration reports the sentence
                 // it moves to, and the reader turns to it.
@@ -392,6 +388,7 @@ struct ReaderView: View {
                 savePositionTask = nil
                 saveTextPosition(chapterIndex: newValue, characterOffset: anchorToPersist)
                 updateMinutesCache()
+                noteReaderTurnedPage()
                 // The selection's range belongs to the old chapter. The text
                 // views also report nil when their content is replaced, but
                 // that arrives async — clear eagerly so a shortcut can't race
@@ -417,26 +414,11 @@ struct ReaderView: View {
                 // they are — their page is the anchor again.
                 narrationResumeAnchor = nil
                 scheduleAnchorSave(after: 1, throttled: false)
+                noteReaderTurnedPage()
             }
             // Build the retrieval index in the background when the book opens
             // so the first "ask" is fast. Safe to call repeatedly.
             .task(id: book.id) { await model.ensureIndexed(book) }
-            // The library's Continue Reading card asked for a recap of this
-            // book. Keyed on both the pending id and appearance, so it runs
-            // once the reader is on screen with its position restored — and
-            // again if the library asks while this reader is already open
-            // (macOS: `openWindow` fronts the existing window instead of
-            // making one, so `onAppear` never fires). Presenting straight
-            // from the task works on the iPhone simulator; no deferral.
-            .task(id: RecapTrigger(pending: model.pendingRecapBookID, appeared: hasAppeared)) {
-                consumePendingRecap()
-            }
-    }
-
-    /// What re-runs the pending-recap task: see its `.task(id:)`.
-    private struct RecapTrigger: Equatable {
-        var pending: UUID?
-        var appeared: Bool
     }
 
     // MARK: - Reading surface
@@ -470,6 +452,14 @@ struct ReaderView: View {
                 readingSurface(for: chapter)
             } else {
                 ContentUnavailableView("No readable content", systemImage: "doc")
+            }
+        }
+        // The welcome-back line insets the page from the top for the same
+        // reason the Listen bar insets it from the bottom: nothing floats
+        // over the words.
+        .safeAreaInset(edge: .top, spacing: 0) {
+            if let welcomeBack {
+                welcomeBackBar(welcomeBack)
             }
         }
         // The Listen bar insets the reading surface rather than floating over
@@ -1392,33 +1382,99 @@ struct ReaderView: View {
 
     /// Recap: Ask, with "recap what I've read so far" already sent. The
     /// answer stops where the reader stopped (`askScope`), and the panel
-    /// says where that is. Reached from Home's Continue Reading card (see
-    /// below); inside the reader the Ask panel's first starter row is the
-    /// recap, so the toolbar carries one ✦ entry point, not two doors into
-    /// the same panel (owner feedback, 3.3.1). A native PDF page is not a
-    /// reading position, so a PDF never gets a recap.
+    /// says where that is. Reached from the welcome-back line; the Ask
+    /// panel's first starter row is the recap too, so the toolbar carries
+    /// one ✦ entry point, not two doors into the same panel (owner
+    /// feedback, 3.3.1). A native PDF page is not a reading position, so a
+    /// PDF never gets a recap.
     private func openRecap() {
         let scope = askScope(selection: nil)
         guard scope.isScoped else { return }
+        welcomeBack = nil
         askRequest = AskRequest(selection: nil, scope: scope, initialQuestion: AskPanelView.recapQuestion)
     }
 
-    /// The library's Continue Reading card asked for a recap of this book
-    /// (`AppModel.pendingRecapBookID`). Runs from the `.task(id:)` in `body`
-    /// once the reader has appeared; the pending id is cleared at the moment
-    /// the request is set, and only then — a task that runs too early leaves
-    /// it for the run that can act on it.
-    private func consumePendingRecap() {
-        guard hasAppeared, model.pendingRecapBookID == book.id else { return }
-        let scope = askScope(selection: nil)
-        guard scope.isScoped else {
-            // A PDF card never offers Recap, but the id must not outlive a
-            // request the reader cannot be shown.
-            model.pendingRecapBookID = nil
-            return
+    // MARK: - Welcome back
+
+    /// One page turn by the reader. Both `chapterIndex` and `pagedAnchor`
+    /// report it, and a jump changes both in one pass, so the count is taken
+    /// once the pass has settled. After `WelcomeBack.pageTurnsBeforeDismissal`
+    /// the line goes: the reader has evidently picked the thread up.
+    private func noteReaderTurnedPage() {
+        guard welcomeBack != nil, !turnCountPending else { return }
+        turnCountPending = true
+        Task { @MainActor in
+            turnCountPending = false
+            pageTurnsSinceWelcome += 1
+            if pageTurnsSinceWelcome >= WelcomeBack.pageTurnsBeforeDismissal {
+                withAnimation(.easeOut(duration: 0.2)) { welcomeBack = nil }
+            }
         }
-        askRequest = AskRequest(selection: nil, scope: scope, initialQuestion: AskPanelView.recapQuestion)
-        model.pendingRecapBookID = nil
+    }
+
+    /// "✦ Welcome back — it’s been 6 days · Chapter 1 of 12 · 31% · Recap ›"
+    /// on the elevated surface, sized to the reading measure.
+    private func welcomeBackBar(_ line: WelcomeBackLine) -> some View {
+        HStack(spacing: 12) {
+            Text(AppTheme.aiGlyph)
+                .font(.system(size: 17))
+                .foregroundStyle(style.theme.iris)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Welcome back \u{2014} \(line.absence)")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(style.theme.inkColor)
+                    .accessibilityIdentifier("reader.welcomeBack")
+                if let caption = line.caption {
+                    Text(caption)
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(style.theme.muted)
+                        .lineLimit(1)
+                }
+            }
+            Spacer(minLength: 8)
+            Button(action: openRecap) {
+                HStack(spacing: 3) {
+                    Text("Recap")
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 10, weight: .semibold))
+                }
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(style.theme.iris)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("Recap what you've read so far, spoiler-free")
+            .accessibilityLabel("Recap what you've read so far")
+            .accessibilityIdentifier("reader.welcomeRecap")
+            Button {
+                withAnimation(.easeOut(duration: 0.2)) { welcomeBack = nil }
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(style.theme.faint)
+                    .frame(width: 28, height: 28)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("Dismiss")
+            .accessibilityLabel("Dismiss")
+            .accessibilityIdentifier("reader.welcomeDismiss")
+        }
+        .padding(.vertical, 10)
+        .padding(.horizontal, 14)
+        .background(style.theme.elevated, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .strokeBorder(style.theme.line, lineWidth: 1)
+        )
+        .frame(maxWidth: 620)
+        .padding(.horizontal, 16)
+        .padding(.top, 8)
+        .padding(.bottom, 4)
+        .frame(maxWidth: .infinity)
+        .background(layout == .scroll ? style.theme.background : style.theme.paper)
+        .transition(.move(edge: .top).combined(with: .opacity))
     }
 
     private var notesButton: some View {
@@ -1605,11 +1661,30 @@ struct ReaderView: View {
     private func restoreOnce() {
         guard !didRestorePosition else { return }
         didRestorePosition = true
+        // The stamp this open replaced decides the welcome-back line. Taken
+        // BEFORE the reader stamps again, and taken once — a reopen later in
+        // the session measures from now, not from an absence already greeted.
+        let lastOpened = model.takeLastOpenedBeforeOpen(for: book)
         model.markOpened(book)
-        if let position = model.position(for: book) {
+        let position = model.position(for: book)
+        if let position {
             pagedAnchor = max(0, position.characterOffset)
             chapterIndex = min(max(0, position.chapterIndex), max(0, book.chapters.count - 1))
         }
+        let now = Date()
+        // A native PDF page is not a reading position: no frontier, no recap.
+        guard !isPDFOriginal, !isImageOnlyPDF,
+              WelcomeBack.shouldOffer(lastOpenedAt: lastOpened, now: now, hasPosition: position != nil),
+              let lastOpened, let position else { return }
+        let caption = ReadingPositionSummary(
+            book: book, position: position, lengths: model.readingLengths(for: book)
+        )?.caption
+        let line = WelcomeBackLine(
+            absence: WelcomeBack.absencePhrase(from: lastOpened, to: now), caption: caption
+        )
+        // After this pass: the restore's own anchor and chapter changes
+        // must not count as page turns against the line.
+        Task { @MainActor in welcomeBack = line }
     }
 
     // MARK: - Bookmarks
@@ -1781,6 +1856,15 @@ struct ReaderView: View {
         // prefix clamps to the text's end, matching the old upper-bound clamp.
         return String(text[lower...].prefix(range.upperBound - lowerOffset))
     }
+}
+
+// MARK: - Welcome back
+
+/// What the welcome-back line says: the absence ("it’s been 6 days") and
+/// where the reader is ("Chapter 1 of 12 · 31% · Down the Rabbit-Hole").
+struct WelcomeBackLine: Equatable {
+    var absence: String
+    var caption: String?
 }
 
 // MARK: - Footnote popup

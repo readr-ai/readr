@@ -154,17 +154,24 @@ struct LibraryGridView: View {
                 }
             }
         } label: {
-            Image(systemName: "arrow.up.arrow.down")
-                .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(theme.muted)
-                .padding(6)
-                .contentShape(Rectangle())
+            // Names the current order: a bare arrows icon said only that a
+            // sort existed, not which one was on.
+            HStack(spacing: 4) {
+                Text(currentSort.label)
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 9, weight: .semibold))
+            }
+            .font(.system(size: 12, weight: .medium))
+            .foregroundStyle(theme.muted)
+            .padding(6)
+            .contentShape(Rectangle())
         }
         .menuStyle(.button)
         .buttonStyle(.plain)
         .fixedSize()
         .help("Sort the library")
         .accessibilityLabel("Sort")
+        .accessibilityValue(currentSort.label)
         .accessibilityIdentifier("library.sort")
     }
 
@@ -182,6 +189,8 @@ struct LibraryGridView: View {
             .padding(.bottom, 36)
         }
     }
+
+    private var currentSort: LibrarySort { LibrarySort(rawValue: sortRaw) ?? .recent }
 
     /// `books` in the user's chosen order. Recent reuses the model's
     /// recently-added ordering (import time) rather than re-deriving it here,
@@ -261,6 +270,11 @@ struct LibraryGridView: View {
                         for: book, position: model.position(for: book)
                     ),
                     isFinished: model.bookState(for: book)?.isFinished == true,
+                    minutesLeft: LibraryProgress.minutesLeft(
+                        in: book,
+                        position: model.position(for: book),
+                        lengths: model.readingLengths(for: book)
+                    ),
                     theme: theme
                 )
             }
@@ -364,7 +378,7 @@ struct LibraryGridView: View {
         Button {
             showNotes(book)
         } label: {
-            Label("Highlights & Notes", systemImage: "highlighter")
+            Label("Highlights", systemImage: "highlighter")
         }
         Button {
             articleBook = book

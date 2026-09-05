@@ -54,7 +54,7 @@ struct LibraryNotesView: View {
             }
         }
         .background(theme.background)
-        .navigationTitle("Highlights & Notes")
+        .navigationTitle("Highlights")
     }
 
     // MARK: Layouts
@@ -227,6 +227,6 @@ struct LibraryNotesView: View {
 
     private func annotationLabel(for book: Book) -> String {
         let count = annotationCount(for: book)
-        return count == 1 ? "1 annotation" : "\(count) annotations"
+        return count == 1 ? "1 highlight" : "\(count) highlights"
     }
 }

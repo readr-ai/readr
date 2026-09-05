@@ -22,12 +22,6 @@ final class AppModel: ObservableObject {
     /// that will be shown as extracted text). Same alert-binding pattern as
     /// `importError`, but the import itself succeeded.
     @Published var importNotice: String?
-    /// A book the library asked to open straight into a recap (the Continue
-    /// Reading card's Recap action). The reader for that book consumes it on
-    /// appearance — or on change, when its window is already open — and
-    /// presents Ask with the recap already sent. Nil the rest of the time.
-    @Published var pendingRecapBookID: UUID?
-
     private let store: any LibraryStore
     private let parsers: BookParserRegistry
     private let highlightService = HighlightService()
@@ -353,8 +347,15 @@ final class AppModel: ObservableObject {
         )
         let voyage = Book(
             metadata: BookMetadata(title: "A Voyage North", authors: ["I. Larsen"]),
-            chapters: [Chapter(title: "Departure", order: 0, text: paragraph)],
-            estimatedTokenCount: 90
+            // Four one-page chapters, so a UI test can turn three pages
+            // from the first one and watch the welcome-back line go.
+            chapters: [
+                Chapter(title: "Departure", order: 0, text: paragraph),
+                Chapter(title: "Open Water", order: 1, text: paragraph),
+                Chapter(title: "Landfall", order: 2, text: paragraph),
+                Chapter(title: "Home Again", order: 3, text: paragraph),
+            ],
+            estimatedTokenCount: 360
         )
         let letters = Book(
             metadata: BookMetadata(title: "Letters on Design", authors: ["M. Ortiz"]),
@@ -425,9 +426,16 @@ final class AppModel: ObservableObject {
             }
         }
 
-        // "A Voyage North" is a fresh import (leads Recently Added) …
+        // "A Voyage North" was started and then left for six days: it sits
+        // second on Continue Reading, and opening it shows the welcome-back
+        // line with its Recap (no highlights, so the Article studio's
+        // "highlight something first" guidance is still reachable from it).
+        try? store.savePosition(ReadingPosition(chapterIndex: 0, characterOffset: 0), for: voyage.id)
         try? store.saveBookState(
-            BookState(addedAt: now.addingTimeInterval(-3_600)),
+            BookState(
+                addedAt: now.addingTimeInterval(-8 * 86_400),
+                lastOpenedAt: now.addingTimeInterval(-6 * 86_400)
+            ),
             for: voyage.id
         )
         // … and "Letters on Design" is finished, populating the Finished
@@ -811,12 +819,39 @@ final class AppModel: ObservableObject {
     }
 
     /// Record that the reader opened this book (drives "Continue Reading").
+    /// Stamps `lastOpenedAt`, keeping the stamp it replaced for the reader's
+    /// welcome-back line (`WelcomeBack`). Only the FIRST replacement since
+    /// the book was last taken is kept: the library shell stamps on open and
+    /// the reader stamps again on appearance, and the second must not erase
+    /// the absence the first one measured.
     func markOpened(_ book: Book) {
         var state = bookState(for: book) ?? BookState()
+        if !absenceRecorded.contains(book.id) {
+            absenceRecorded.insert(book.id)
+            lastOpenedBeforeOpen[book.id] = state.lastOpenedAt
+        }
         state.lastOpenedAt = Date()
         try? store.saveBookState(state, for: book.id)
         statesByBook[book.id] = state
     }
+
+    /// The `lastOpenedAt` this open replaced — nil on a first open — taken
+    /// once by the reader. Taking it resets the record, so reopening the
+    /// same book later in the session measures from THIS open, not from the
+    /// absence that was already greeted. A reader that appears before
+    /// anything stamped the book (a window restored at launch) reads the
+    /// stamp still on the book, which IS the previous open.
+    func takeLastOpenedBeforeOpen(for book: Book) -> Date? {
+        defer {
+            absenceRecorded.remove(book.id)
+            lastOpenedBeforeOpen.removeValue(forKey: book.id)
+        }
+        if let recorded = lastOpenedBeforeOpen[book.id] { return recorded }
+        return bookState(for: book)?.lastOpenedAt
+    }
+
+    private var absenceRecorded: Set<UUID> = []
+    private var lastOpenedBeforeOpen: [UUID: Date?] = [:]
 
     func setFinished(_ finished: Bool, for book: Book) {
         var state = bookState(for: book) ?? BookState()
@@ -843,6 +878,14 @@ final class AppModel: ObservableObject {
             (statesByBook[$0.id]?.addedAt ?? .distantPast)
                 > (statesByBook[$1.id]?.addedAt ?? .distantPast)
         }
+    }
+
+    /// Books never opened, newest import first — Home's second shelf. Unlike
+    /// a "Recently Added" row it never repeats a book that is already on
+    /// Continue Reading, so a small library reads as one shelf, not two
+    /// copies of it.
+    var notStarted: [Book] {
+        recentlyAdded.filter { statesByBook[$0.id]?.lastOpenedAt == nil }
     }
 
     /// True when the book is a PDF. The image-only parser verdict remains

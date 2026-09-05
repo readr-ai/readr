@@ -2,8 +2,10 @@ import SwiftUI
 import ReadrKit
 
 /// Home: resume reading and see what's new — content first, zero
-/// merchandising (per docs/DESIGN.md). An empty library gets the welcome
-/// state: import guidance plus a nudge to connect an AI provider.
+/// merchandising (per docs/DESIGN.md). Two shelves — Continue Reading and
+/// Not started yet — with the connect-a-model card between them while no
+/// model is connected. An empty library gets the welcome state: import
+/// guidance plus the same nudge.
 ///
 /// Marginalia styling: serif section headers with faint counts, flat covers
 /// with hairline progress marks, and the ink-pill Continue affordance.
@@ -75,30 +77,20 @@ struct HomeView: View {
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(alignment: .top, spacing: 24) {
                             ForEach(model.continueReading) { book in
-                                // Computed per card, per render, from the
-                                // app's cached chapter lengths and its
-                                // published positions: cheap, and current
-                                // the moment the reader saves a position —
-                                // "Chapter 7 of 24" is right after a session,
-                                // and Recap never vanishes because a cache
-                                // was built before the book was opened.
-                                let summary = positionSummary(for: book)
+                                // "Chapter 7 of 24" is computed per card, per
+                                // render, from the app's cached chapter
+                                // lengths and its published positions: cheap,
+                                // and current the moment the reader saves a
+                                // position.
                                 ContinueReadingCard(
                                     book: book,
                                     coverImage: model.coverImage(for: book),
                                     progress: LibraryProgress.fraction(
                                         for: book, position: model.position(for: book)
                                     ),
-                                    minutesLeft: minutesLeft(in: book),
                                     theme: theme,
                                     action: { openBook(book) },
-                                    position: summary,
-                                    onRecap: summary == nil ? nil : {
-                                        // Open the book, then the recap: the
-                                        // reader picks the id up on appearance.
-                                        model.pendingRecapBookID = book.id
-                                        openBook(book)
-                                    }
+                                    position: positionSummary(for: book)
                                 )
                             }
                         }
@@ -107,11 +99,25 @@ struct HomeView: View {
                         .padding(.vertical, 12)
                     }
                 }
-                if !model.recentlyAdded.isEmpty {
-                    sectionHeader("Recently Added", count: model.recentlyAdded.count)
+                // The nudge sits where a reader with books actually looks —
+                // between the shelves — and only while nothing is connected,
+                // so a configured app is never nagged. (It used to live in
+                // the empty-library state alone, which a first run never
+                // shows now that a sample book is seeded.)
+                if model.activeProvider() == nil {
+                    providerCard
+                        .padding(.horizontal, 36)
+                        .padding(.top, model.continueReading.isEmpty ? 6 : 2)
+                        .padding(.bottom, 10)
+                }
+                if !model.notStarted.isEmpty {
+                    // Books never opened, newest import first. Not "Recently
+                    // Added": in a small library that row repeated every
+                    // book on the shelf above it.
+                    sectionHeader("Not started yet", count: model.notStarted.count)
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(alignment: .top, spacing: 24) {
-                            ForEach(Array(model.recentlyAdded.prefix(12))) { book in
+                            ForEach(Array(model.notStarted.prefix(12))) { book in
                                 RecentlyAddedCard(
                                     book: book,
                                     coverImage: model.coverImage(for: book),
@@ -124,6 +130,15 @@ struct HomeView: View {
                         .padding(.horizontal, 36)
                         .padding(.vertical, 12)
                     }
+                }
+                if model.continueReading.isEmpty, model.notStarted.isEmpty {
+                    // Every book is finished: say so rather than show a blank
+                    // Home. The Finished shelf still lists them.
+                    Text("Everything here is finished. Import a book, or find your finished ones in the sidebar.")
+                        .font(.system(size: 12.5))
+                        .foregroundStyle(theme.muted)
+                        .padding(.horizontal, 36)
+                        .padding(.top, 8)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -148,10 +163,9 @@ struct HomeView: View {
         .padding(.top, 10)
     }
 
-    /// "Chapter 7 of 24" for the resume card — and, when present, the Recap
-    /// action. Same rule as `minutesLeft`: a PDF page is not a reading
-    /// position, so PDFs get neither. Built from the cached chapter lengths,
-    /// so it is safe to compute in body.
+    /// "Chapter 7 of 24" for the resume card. A PDF page is not a reading
+    /// position, so PDFs get none. Built from the cached chapter lengths, so
+    /// it is safe to compute in body.
     private func positionSummary(for book: Book) -> ReadingPositionSummary? {
         guard !model.isPDF(book),
               let position = model.position(for: book),
@@ -159,19 +173,6 @@ struct HomeView: View {
         return ReadingPositionSummary(
             book: book, position: position, lengths: model.readingLengths(for: book)
         )
-    }
-
-    /// "~N min left in chapter" for the resume card, when a position is saved.
-    /// PDF positions get no estimate: their chapterIndex/characterOffset don't
-    /// track the page, so a chapter-text estimate would be meaningless.
-    private func minutesLeft(in book: Book) -> Int? {
-        guard let position = model.position(for: book),
-              position.pdfPageIndex == nil,
-              book.chapters.indices.contains(position.chapterIndex) else { return nil }
-        let minutes = ReadingTimeEstimator().minutesLeft(
-            in: model.readingLengths(for: book), at: ReadingFrontier(position)
-        )
-        return minutes > 0 ? minutes : nil
     }
 
     // MARK: Empty state
@@ -298,11 +299,11 @@ struct HomeView: View {
     }
 }
 
-/// A large resume card: cover, title, hairline progress, minutes-left
-/// estimate, and the ink-pill Continue affordance. The card is one button —
-/// one click resumes at the exact saved position — with a "where am I" line
-/// beneath it that carries the ✦ Recap action when the book has a position
-/// to recap up to.
+/// A large resume card: cover, title, hairline progress, the ink-pill
+/// Continue affordance, and a "where am I" line. The card is one button —
+/// one click resumes at the exact saved position. Nothing on it is an AI
+/// moment: the spoiler-free Recap greets the reader inside the book when
+/// they come back after a while (`WelcomeBack`), not on the shelf.
 ///
 /// Internal (not private) so the macOS snapshot suite can measure two cards
 /// side by side and assert the shelf stays aligned.
@@ -310,92 +311,49 @@ struct ContinueReadingCard: View {
     let book: Book
     let coverImage: PlatformImage?
     let progress: Double?
-    let minutesLeft: Int?
     let theme: ReadingTheme
     let action: () -> Void
     /// "Chapter 7 of 24"; nil for a PDF or an unopened book.
     var position: ReadingPositionSummary? = nil
-    /// Open the book and recap it. Nil hides the action.
-    var onRecap: (() -> Void)? = nil
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            resumeButton
-            whereAmI
-        }
-        .frame(width: 150, alignment: .leading)
-    }
-
-    /// "Chapter 7 of 24" and ✦ Recap, on one line of reserved height so every
-    /// card on the shelf stays the same height — a PDF card shows the line
-    /// blank rather than shorter. Outside `resumeButton`: a button inside a
-    /// button is a tap with two owners.
-    private var whereAmI: some View {
-        HStack(spacing: 8) {
-            Text(position?.chapterLine ?? " ")
-                .font(.system(size: 11))
-                .foregroundStyle(theme.faint)
-                .lineLimit(1)
-                .minimumScaleFactor(0.7)
-                .accessibilityHidden(position == nil)
-            Spacer(minLength: 0)
-            if let onRecap {
-                // The one iris moment on the shelf: the ✦ AI mark.
-                Button(action: onRecap) {
-                    Text("\(AppTheme.aiGlyph) Recap")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(theme.iris)
-                        .fixedSize()
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .help("Recap what you've read so far, spoiler-free")
-                .accessibilityLabel("Recap \(book.metadata.title) so far")
-                .accessibilityIdentifier("library.recap")
-            }
-        }
-        .frame(height: 16)
-    }
-
-    /// The card proper, as one button.
-    private var resumeButton: some View {
         Button(action: action) {
             VStack(alignment: .leading, spacing: 8) {
-                // Same slot width as Recently Added — the two shelves must
-                // read as ONE bookshelf (mismatched jacket sizes looked like
-                // a layout bug), and the slot rests covers of any aspect on
+                // Same slot width as the other shelf — the two must read as
+                // ONE bookshelf (mismatched jacket sizes looked like a
+                // layout bug), and the slot rests covers of any aspect on
                 // its bottom-leading corner (see BookCoverView.Slot).
                 BookCoverView.Slot(book: book, coverImage: coverImage, width: 150)
                 // Every row below the jacket keeps a fixed height, so the
-                // hairline, the percentage and the Continue pill sit on the
-                // same line across the whole shelf. Without the reserved
-                // space a one-line title (or a book with no author) pulls its
-                // card's controls up and the row reads as broken.
+                // hairline, the pill and the chapter line sit on the same
+                // line across the whole shelf. Without the reserved space a
+                // one-line title (or a book with no author) pulls its card's
+                // controls up and the row reads as broken.
                 CardCaption(book: book, theme: theme)
                 LibraryProgressHairline(
                     fraction: progress,
                     isFinished: false,
                     theme: theme
                 )
-                HStack(spacing: 8) {
-                    Text("Continue")
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(theme.background)
-                        // Never wraps ("Contin/ue" on the 150pt card — seen
-                        // in the CI gallery); the minutes text yields instead.
-                        .fixedSize()
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 6)
-                        .background(Capsule().fill(theme.inkColor))
-                    if let minutesLeft {
-                        Text("~\(minutesLeft) min left")
-                            .font(.system(size: 11))
-                            .foregroundStyle(theme.faint)
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.7)
-                    }
-                }
-                .padding(.top, 2)
+                Text("Continue")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(theme.background)
+                    // Never wraps ("Contin/ue" on the 150pt card — seen in
+                    // the CI gallery).
+                    .fixedSize()
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 6)
+                    .background(Capsule().fill(theme.inkColor))
+                    .padding(.top, 2)
+                // "Chapter 7 of 24" on a line of reserved height, so a PDF
+                // card shows it blank rather than shorter.
+                Text(position?.chapterLine ?? " ")
+                    .font(.system(size: 11))
+                    .foregroundStyle(theme.faint)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
+                    .frame(height: 16)
+                    .accessibilityHidden(position == nil)
             }
             .frame(width: 150, alignment: .leading)
         }

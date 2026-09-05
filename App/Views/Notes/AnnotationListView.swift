@@ -269,10 +269,28 @@ struct AnnotationListView: View {
 
     // MARK: Cards
 
+    /// The card, tappable when there is a book to jump into: the whole card
+    /// is the target, with "Show in book" kept as the visible, labelled
+    /// affordance. Review-only surfaces (no jump) show the plain card.
+    @ViewBuilder
+    private func card(for item: AnnotationItem) -> some View {
+        if canJump(to: item) {
+            Button {
+                jump(to: item)
+            } label: {
+                cardBody(for: item)
+            }
+            .buttonStyle(.plain)
+            .accessibilityHint("Shows this passage in the book")
+        } else {
+            cardBody(for: item)
+        }
+    }
+
     /// One Marginalia highlight card. The quote is typographically quoted for
     /// display but keeps its raw text as the accessibility label so it remains
     /// findable as its own static text (the UI tests rely on this).
-    private func card(for item: AnnotationItem) -> some View {
+    private func cardBody(for item: AnnotationItem) -> some View {
         HStack(alignment: .top, spacing: 14) {
             RoundedRectangle(cornerRadius: 1.5)
                 .fill(ReadingTheme.markerSwatch(item.color))

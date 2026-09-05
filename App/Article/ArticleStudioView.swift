@@ -146,10 +146,10 @@ struct ArticleStudioView: View {
                 Button {
                     startCompose()
                 } label: {
-                    quietAction("↻ Regenerate")
+                    quietAction("↻ Compose again")
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel("Regenerate")
+                .accessibilityLabel("Compose again")
                 .help("Compose again from the same highlights (replaces this text)")
                 Button {
                     showExporter = true
@@ -368,7 +368,7 @@ struct ArticleStudioView: View {
                 .overlay(RoundedRectangle(cornerRadius: 9).strokeBorder(theme.line, lineWidth: 1))
                 .onSubmit(startCompose)
             Button(action: startCompose) {
-                Text("Rewrite")
+                Text("Compose again")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(theme.background)
                     .padding(.vertical, 7)

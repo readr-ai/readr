@@ -692,21 +692,76 @@ final class ReadrAppUITests: XCTestCase {
         )
     }
 
-    // Library — the Continue Reading card's ✦ Recap opens the book and then
-    // the recap, with nothing else to tap in between.
-    func testContinueReadingRecapOpensTheBookIntoARecap() {
+    // MARK: - Welcome back
+
+    // Reader — coming back to a book after days away shows the welcome-back
+    // line above the page; its Recap opens Ask with the recap already sent.
+    // "A Voyage North" was last opened six days ago (seed) and has a saved
+    // position, which is exactly what the line is for.
+    func testWelcomeBackLineOffersRecapAfterDaysAway() {
         let app = launchSeeded(stubLLM: true)
         XCTAssertTrue(app.staticTexts["Continue Reading"].waitForExistence(timeout: 10))
 
-        let recap = app.buttons["library.recap"].firstMatch
-        XCTAssertTrue(recap.waitForExistence(timeout: 5), "the mid-read seeded book should offer Recap on its card")
-        recap.tap()
+        let voyage = app.buttons["A Voyage North"].firstMatch
+        XCTAssertTrue(voyage.waitForExistence(timeout: 5), "the six-days-ago book should be on Continue Reading")
+        voyage.tap()
 
+        let line = app.staticTexts["reader.welcomeBack"].firstMatch
+        XCTAssertTrue(line.waitForExistence(timeout: 10), "a book left for six days should greet the reader on return")
+        XCTAssertTrue(line.label.hasPrefix("Welcome back"), "unexpected greeting: \(line.label)")
+        XCTAssertTrue(line.label.contains("6 days"), "the greeting should say how long it has been: \(line.label)")
+
+        app.buttons["reader.welcomeRecap"].firstMatch.tap()
         XCTAssertTrue(app.navigationBars["Ask the book"].waitForExistence(timeout: 10))
         XCTAssertTrue(
             sentQuestion(app, startingWith: "Recap what I've read so far").waitForExistence(timeout: 5),
-            "the card's Recap should land in Ask with the recap already sent"
+            "the line's Recap should land in Ask with the recap already sent"
         )
+    }
+
+    // … and the line goes on its own once the reader has turned three pages:
+    // they have evidently picked the thread up.
+    func testWelcomeBackLineGoesAfterThreePageTurns() {
+        let app = launchSeeded()
+        XCTAssertTrue(app.staticTexts["Continue Reading"].waitForExistence(timeout: 10))
+        let voyage = app.buttons["A Voyage North"].firstMatch
+        XCTAssertTrue(voyage.waitForExistence(timeout: 5))
+        voyage.tap()
+
+        let line = app.staticTexts["reader.welcomeBack"].firstMatch
+        XCTAssertTrue(line.waitForExistence(timeout: 10))
+
+        // Four one-page chapters: each flick is a page turn across a
+        // chapter wall. Two must leave the line in place.
+        let text = app.textViews.firstMatch
+        XCTAssertTrue(text.waitForExistence(timeout: 5))
+        text.swipeLeft()
+        text.swipeLeft()
+        XCTAssertTrue(line.exists, "two page turns are not yet 'reading on'")
+        text.swipeLeft()
+        XCTAssertTrue(
+            waitForDisappearance(line, timeout: 5),
+            "after three page turns the welcome-back line should go on its own"
+        )
+    }
+
+    // A book opened today gets no greeting — the sample book's stamp is now.
+    func testNoWelcomeBackForABookOpenedToday() {
+        let app = launchSeeded()
+        let sample = app.staticTexts["Sample Book"].firstMatch
+        XCTAssertTrue(sample.waitForExistence(timeout: 10))
+        sample.tap()
+        XCTAssertTrue(app.staticTexts["Chapter One"].waitForExistence(timeout: 10))
+        XCTAssertFalse(
+            app.staticTexts["reader.welcomeBack"].firstMatch.waitForExistence(timeout: 2),
+            "a book opened today must not be greeted as if the reader had been away"
+        )
+    }
+
+    private func waitForDisappearance(_ element: XCUIElement, timeout: TimeInterval) -> Bool {
+        let gone = NSPredicate(format: "exists == false")
+        let expectation = XCTNSPredicateExpectation(predicate: gone, object: element)
+        return XCTWaiter().wait(for: [expectation], timeout: timeout) == .completed
     }
 
     // MARK: - Screenshots for CI

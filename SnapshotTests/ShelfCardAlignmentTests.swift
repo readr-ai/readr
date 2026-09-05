@@ -50,14 +50,19 @@ final class ShelfCardAlignmentTests: XCTestCase {
         book(title: "Walden", authors: [])
     }
 
-    private func continueCard(_ book: Book, minutesLeft: Int?) -> ContinueReadingCard {
+    /// `chapterLine` stands in for the card's "where am I" line: present
+    /// for a text book, absent (nil) for a PDF — the row must not change
+    /// height between the two.
+    private func continueCard(_ book: Book, chapterLine: Bool) -> ContinueReadingCard {
         ContinueReadingCard(
             book: book,
             coverImage: nil,
             progress: 0.34,
-            minutesLeft: minutesLeft,
             theme: theme,
-            action: {}
+            action: {},
+            position: chapterLine
+                ? ReadingPositionSummary(book: book, frontier: ReadingFrontier(chapterIndex: 0, characterOffset: 0))
+                : nil
         )
     }
 
@@ -145,8 +150,8 @@ final class ShelfCardAlignmentTests: XCTestCase {
 
     /// The bug as reported: a wrapping title next to a one-line title.
     func testContinueCardHeightIsIndependentOfTitleLength() {
-        let short = fittingHeight(continueCard(shortBook, minutesLeft: 9))
-        let wrapping = fittingHeight(continueCard(wrappingBook, minutesLeft: 8))
+        let short = fittingHeight(continueCard(shortBook, chapterLine: true))
+        let wrapping = fittingHeight(continueCard(wrappingBook, chapterLine: true))
         XCTAssertEqual(
             short, wrapping, accuracy: 0.5,
             "A wrapping title must not make its card taller — the whole row "
@@ -156,8 +161,8 @@ final class ShelfCardAlignmentTests: XCTestCase {
 
     /// A book with no author must still reserve the author's line.
     func testContinueCardHeightIsIndependentOfMissingAuthor() {
-        let withAuthor = fittingHeight(continueCard(shortBook, minutesLeft: 9))
-        let without = fittingHeight(continueCard(authorlessBook, minutesLeft: 9))
+        let withAuthor = fittingHeight(continueCard(shortBook, chapterLine: true))
+        let without = fittingHeight(continueCard(authorlessBook, chapterLine: true))
         XCTAssertEqual(
             withAuthor, without, accuracy: 0.5,
             "An author-less book must reserve the author line, not collapse it "
@@ -167,9 +172,9 @@ final class ShelfCardAlignmentTests: XCTestCase {
 
     /// A missing minutes-left estimate (PDFs never get one) must not resize
     /// the Continue row either.
-    func testContinueCardHeightIsIndependentOfMinutesEstimate() {
-        let withEstimate = fittingHeight(continueCard(shortBook, minutesLeft: 9))
-        let without = fittingHeight(continueCard(shortBook, minutesLeft: nil))
+    func testContinueCardHeightIsIndependentOfChapterLine() {
+        let withEstimate = fittingHeight(continueCard(shortBook, chapterLine: true))
+        let without = fittingHeight(continueCard(shortBook, chapterLine: false))
         XCTAssertEqual(
             withEstimate, without, accuracy: 0.5,
             "The Continue pill sets the row height; the estimate must not "
@@ -354,8 +359,8 @@ final class ShelfCardAlignmentTests: XCTestCase {
     /// share a top edge — the first thing the screenshots showed going wrong.
     func testContinuePillsShareATopEdgeAcrossCards() throws {
         let row = HStack(alignment: .top, spacing: cardGap) {
-            continueCard(shortBook, minutesLeft: 9)
-            continueCard(wrappingBook, minutesLeft: 8)
+            continueCard(shortBook, chapterLine: true)
+            continueCard(wrappingBook, chapterLine: true)
         }
         .padding(rowPadding)
 

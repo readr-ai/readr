@@ -99,14 +99,6 @@ private struct ReaderWindowRoot: View {
                 description: Text("This book is no longer in your library.")
             )
             .frame(minWidth: 400, minHeight: 300)
-            // A window that could not show its book cannot show its recap
-            // either: drop the request rather than leave it waiting to fire
-            // the next time this id resolves.
-            .onAppear {
-                if let bookID, model.pendingRecapBookID == bookID {
-                    model.pendingRecapBookID = nil
-                }
-            }
         }
     }
 }
