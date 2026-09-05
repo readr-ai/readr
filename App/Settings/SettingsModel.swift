@@ -44,7 +44,9 @@ final class SettingsModel: ObservableObject {
     /// Every provider kind the app knows about, in display order: the two
     /// sign-in paths lead (lowest-friction first-run), then the key-only
     /// cloud providers, then Local.
-    static let allKinds: [ProviderInfo.Kind] = [.chatGPT, .openRouter, .anthropic, .openAI, .local]
+    static let allKinds: [ProviderInfo.Kind] = [
+        .appleIntelligence, .downloadedModel, .chatGPT, .openRouter, .anthropic, .openAI, .local,
+    ]
 
     let kinds: [ProviderInfo.Kind] = SettingsModel.allKinds
 
@@ -66,14 +68,35 @@ final class SettingsModel: ObservableObject {
     ///
     /// macOS shows everything.
     static var displayedKinds: [ProviderInfo.Kind] {
+        var hidden: Set<ProviderInfo.Kind> = []
         #if os(iOS)
-        return allKinds.filter { $0 != .local && $0 != .chatGPT }
-        #else
-        return allKinds
+        hidden = [.local, .chatGPT]
         #endif
+        // The on-device model's card appears only where this device can run
+        // it (iOS/macOS 26 on Apple Intelligence hardware); a switched-off
+        // Apple Intelligence shows as the card's status, not as absence.
+        if !OnDeviceModel.isEligibleDevice { hidden.insert(.appleIntelligence) }
+        // Downloaded models run on MLX, which only the iOS app links, and
+        // need a Metal GPU and 6 GB or more of memory.
+        #if os(iOS)
+        if !MLXLLMProvider.isSupportedDevice { hidden.insert(.downloadedModel) }
+        #else
+        hidden.insert(.downloadedModel)
+        #endif
+        return allKinds.filter { !hidden.contains($0) }
     }
 
-    var displayedKinds: [ProviderInfo.Kind] { Self.displayedKinds }
+    /// The static list, plus the on-device card when the reader explicitly
+    /// chose it on hardware that can no longer run it (a restore onto an
+    /// older device): hidden, it could never be validated, explained, or
+    /// swapped out.
+    var displayedKinds: [ProviderInfo.Kind] {
+        var kinds = Self.displayedKinds
+        if let chosen = manager.explicitSelection?.kind, chosen.isOnDevice, chosen != .local, !kinds.contains(chosen) {
+            kinds.insert(chosen, at: 0)
+        }
+        return kinds
+    }
 
     /// The cards the settings screen renders: one per company, each carrying
     /// only the connection methods this build exposes. `.chatGPT` and
@@ -84,7 +107,7 @@ final class SettingsModel: ObservableObject {
         ProviderVendor.displayed(forKinds: displayedKinds)
     }
 
-    var displayedVendors: [ProviderVendor] { Self.displayedVendors }
+    var displayedVendors: [ProviderVendor] { ProviderVendor.displayed(forKinds: displayedKinds) }
 
     // MARK: - First-run guidance (A6)
 
@@ -95,8 +118,15 @@ final class SettingsModel: ObservableObject {
     /// model" only when the Local row is shown (never on iOS — see
     /// `displayedKinds`). "Add an API key" is always available.
     static var availableSetupPaths: [String] {
-        var paths = ["Add an API key"]
         let displayed = displayedKinds
+        // Capitalised: it leads the sentence `setupGuidance` builds.
+        var paths = ["Add an API key"]
+        if displayed.contains(.appleIntelligence) {
+            paths.append("use the model built into this device")
+        }
+        if displayed.contains(.downloadedModel) {
+            paths.append("download a model")
+        }
         if displayed.contains(where: { oauthConfig(for: $0) != nil }) {
             paths.append("sign in")
         }
@@ -172,6 +202,10 @@ final class SettingsModel: ObservableObject {
         validation[kind] = manager.validationState(kind)
         configured[kind] = manager.isConfigured(kind)
         hasCredential[kind] = manager.hasStoredCredential(kind)
+        // The selection can follow from readiness: the on-device default
+        // applies only while the model is ready, so a check that changed the
+        // answer changes which card carries the Active badge.
+        activeSelection = manager.selection
     }
 
     /// Validate every displayed kind that has something to check: remote kinds
@@ -182,7 +216,7 @@ final class SettingsModel: ObservableObject {
     /// check failed transiently must be re-checked when the sheet reopens, or
     /// its card would stay stuck on the stale failure forever.
     func validateDisplayed() async {
-        for kind in displayedKinds where kind == .local || (hasCredential[kind] ?? false) {
+        for kind in displayedKinds where kind.isOnDevice || (hasCredential[kind] ?? false) {
             await validateIfStale(kind)
         }
     }
@@ -203,8 +237,24 @@ final class SettingsModel: ObservableObject {
         hasCredential[kind] = manager.hasStoredCredential(kind)
     }
 
+    /// The models the picker offers. Downloaded models are filtered to what
+    /// this device's memory can hold — offering the 4B on a 6 GB phone let a
+    /// reader download 3.1 GB of weights that could never load.
     func models(for kind: ProviderInfo.Kind) -> [ProviderInfo] {
-        ProviderCatalog.models(for: kind)
+        let all = ProviderCatalog.models(for: kind)
+        #if os(iOS)
+        if kind == .downloadedModel {
+            let fits = Set(DownloadedModelCatalog.models(forPhysicalMemory: MLXLLMProvider.physicalMemory).map(\.repository))
+            return all.filter { fits.contains($0.modelID) }
+        }
+        #endif
+        return all
+    }
+
+    /// What "Make Active" chooses for a kind: the catalog default, except
+    /// for downloaded models, where it is the best one this device can run.
+    func defaultModelID(for kind: ProviderInfo.Kind) -> String {
+        models(for: kind).first?.modelID ?? ProviderCatalog.defaultModel(for: kind).modelID
     }
 
     /// Bring in the OpenRouter catalogue: the disk copy when it is fresh,
@@ -309,8 +359,8 @@ final class SettingsModel: ObservableObject {
         manager.setActive(kind: kind, modelID: modelID)
         activeSelection = manager.selection
         // The selected model feeds Local's readiness probe (which model tag it
-        // looks for), so re-validate Local when its model changes.
-        if kind == .local {
+        // looks for), so re-validate the on-device kinds when made active.
+        if kind.isOnDevice {
             Task { await validate(kind) }
         }
     }

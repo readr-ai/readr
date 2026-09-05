@@ -14,6 +14,20 @@ final class DefaultProviderFactoryTests: XCTestCase {
         XCTAssertEqual(provider.info.kind, .local)
     }
 
+    /// The on-device model's runtime is an Apple framework, so the app
+    /// supplies it (`AppProviderFactory`); the kit's factory must refuse
+    /// rather than pretend, and the catalog entry must route to retrieval
+    /// (local, small budget) since the model's window is 4,096 tokens.
+    func testTheOnDeviceModelIsLocalSmallAndNotBuiltByTheKitFactory() {
+        let info = ProviderCatalog.defaultModel(for: .appleIntelligence)
+        XCTAssertTrue(info.isLocal)
+        XCTAssertFalse(info.supportsPromptCaching)
+        XCTAssertLessThanOrEqual(info.contextBudget, 3_500)
+        XCTAssertThrowsError(try DefaultProviderFactory.make(info: info, credentials: nil, http: http)) {
+            XCTAssertEqual($0 as? ProviderManager.ProviderError, .notConfigured(.appleIntelligence))
+        }
+    }
+
     func testAnthropicBuildsWithCredentials() throws {
         let info = ProviderCatalog.defaultModel(for: .anthropic)
         let provider = try DefaultProviderFactory.make(

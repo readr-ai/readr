@@ -30,6 +30,32 @@ final class ProviderVendorTests: XCTestCase {
         XCTAssertFalse(ProviderInfo.Kind.local.offersSignIn)
     }
 
+    /// The on-device model is the zero-setup door: no key, no account, no
+    /// server to run. Readers who can't get an API key are the reason it
+    /// exists, so nothing about it may ask for one.
+    func testTheOnDeviceModelNeedsNeitherKeyNorSignIn() {
+        XCTAssertFalse(ProviderInfo.Kind.appleIntelligence.usesAPIKey)
+        XCTAssertFalse(ProviderInfo.Kind.appleIntelligence.offersSignIn)
+        XCTAssertTrue(ProviderInfo.Kind.appleIntelligence.isOnDevice)
+        XCTAssertTrue(ProviderInfo.Kind.local.isOnDevice)
+        XCTAssertFalse(ProviderInfo.Kind.openRouter.isOnDevice)
+        XCTAssertFalse(ProviderInfo.Kind.anthropic.isOnDevice)
+    }
+
+    func testTheOnDeviceCardLeadsAndReadsOnDevice() {
+        XCTAssertEqual(ProviderVendor.all.first?.id, "apple")
+        XCTAssertEqual(ProviderVendor.vendor(for: .appleIntelligence)?.methods, [.appleIntelligence])
+        XCTAssertEqual(ProviderVendor.vendor(for: .appleIntelligence)?.badge, "On-device")
+        // A build (or device) that can't offer it drops the card entirely.
+        XCTAssertFalse(
+            ProviderVendor.displayed(forKinds: [.anthropic, .openRouter]).contains { $0.id == "apple" }
+        )
+        XCTAssertEqual(
+            ProviderVendor.displayed(forKinds: [.appleIntelligence, .anthropic]).map(\.id),
+            ["apple", "anthropic"]
+        )
+    }
+
     // MARK: - Grouping
 
     func testChatGPTAndOpenAIShareOneVendor() {
@@ -53,14 +79,17 @@ final class ProviderVendorTests: XCTestCase {
         XCTAssertEqual(Set(listed).count, listed.count, "a kind is listed twice")
         XCTAssertEqual(
             Set(listed),
-            Set([.chatGPT, .openAI, .anthropic, .openRouter, .local] as [ProviderInfo.Kind])
+            Set([.chatGPT, .openAI, .anthropic, .openRouter, .local, .appleIntelligence, .downloadedModel]
+                as [ProviderInfo.Kind])
         )
     }
 
-    /// Sign-in vendors lead: a first run should meet the lowest-friction path
-    /// before the paste-a-key ones.
-    func testSignInVendorsComeFirst() {
-        XCTAssertEqual(ProviderVendor.all.map(\.id), ["openai", "openrouter", "anthropic", "local"])
+    /// Lowest friction first: the on-device model needs nothing at all, then
+    /// the sign-in vendors, then the paste-a-key ones.
+    func testZeroSetupThenSignInVendorsComeFirst() {
+        XCTAssertEqual(
+            ProviderVendor.all.map(\.id), ["apple", "downloaded", "openai", "openrouter", "anthropic", "local"]
+        )
     }
 
     // MARK: - Badges
