@@ -317,7 +317,7 @@ Effort: 1–2 days for the tabbed popover, hours for the minimum.
 
 Effort: hours each.
 
-### F11. Settings model rows show raw ids  `low` — shipped in the Settings-names PR
+### F11. Settings model rows show raw ids  `low` — shipped in PR #102
 
 *Shipped:* every catalogue row carries a display name (`ProviderInfo.name`,
 with `ModelDisplayName` deriving one for ids the catalogue has never seen);
