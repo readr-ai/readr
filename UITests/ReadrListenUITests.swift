@@ -93,6 +93,60 @@ final class ReadrListenUITests: XCTestCase {
         XCTAssertTrue(waitForText(app, "Chapter One"))
     }
 
+    // MARK: - Listen from a selection
+
+    /// Select a word mid-page, tap the annotation bar's headphones, and the
+    /// Listen bar appears reading the sentence the word is in — the fix for
+    /// "there's no way to start from the middle of a chapter".
+    ///
+    /// Same LIMITATION as the highlight-from-selection flow in
+    /// ReadrFlowUITests: XCUITest has no text-selection API, so a long-press
+    /// (then a double-tap) is attempted and the test SKIPS if neither raises
+    /// the annotation bar on this simulator boot.
+    func testListenFromSelectionStartsNarrationAtThatSentence() throws {
+        let app = launchSeeded()
+        openSampleBook(app)
+
+        let text = app.textViews.firstMatch
+        XCTAssertTrue(text.waitForExistence(timeout: 5), "The reading surface should be present")
+
+        let listenHere = element(app, "annotation.listen")
+        var barIsUp = false
+        for dy in [0.5, 0.65, 0.3, 0.42] {
+            let point = text.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: dy))
+            point.press(forDuration: 1.2)
+            if !listenHere.waitForExistence(timeout: 5) {
+                point.doubleTap()
+                _ = listenHere.waitForExistence(timeout: 5)
+            }
+            if listenHere.exists { barIsUp = true; break }
+        }
+        guard barIsUp else {
+            throw XCTSkip(
+                "No annotation bar at any probed press point — word selection "
+                    + "isn't automatable on this simulator boot. The seek rule is "
+                    + "pinned in ReadrKit (SpeechPlaylistTests, NarrationControllerTests)."
+            )
+        }
+        // Whatever sentence the press landed in is what the bar must read.
+        listenHere.tap()
+
+        XCTAssertTrue(
+            element(app, "listen.bar").waitForExistence(timeout: 5),
+            "Listen from here should reveal the Listen bar"
+        )
+        let sentence = element(app, "listen.sentence")
+        XCTAssertTrue(sentence.waitForExistence(timeout: 5))
+        let spoken = (sentence.label.isEmpty ? sentence.value as? String : sentence.label) ?? ""
+        XCTAssertFalse(
+            spoken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+            "The bar should name the sentence being read"
+        )
+        // Closing the bar stops narration, as with the toolbar Listen.
+        element(app, "listen.close").tap()
+        XCTAssertTrue(element(app, "listen.bar").waitForNonExistence(timeout: 5))
+    }
+
     /// Opens the seeded book and starts narration.
     @discardableResult
     private func startListening(_ app: XCUIApplication) -> XCUIApplication {

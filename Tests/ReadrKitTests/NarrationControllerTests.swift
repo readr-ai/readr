@@ -77,6 +77,31 @@ final class NarrationControllerTests: XCTestCase {
         XCTAssertEqual(engine.spokenTexts, ["Alpha three."])
     }
 
+    func testStartFromASelectionReadsTheSentenceTheSelectionIsIn() {
+        let (controller, engine) = makeController()
+        // The inverse of the page rule above: offset 15 is a selection inside
+        // "Alpha two.", and "Listen from here" must read that sentence, not
+        // skip to "Alpha three.".
+        controller.start(atChapter: 0, characterOffset: 15, anchor: .sentenceContaining)
+
+        XCTAssertEqual(controller.status, .speaking)
+        XCTAssertEqual(engine.spokenTexts, ["Alpha two."])
+        XCTAssertEqual(controller.position?.sentenceStart, 11)
+    }
+
+    func testStartFromASelectionWithNothingToReadFinishes() {
+        let book = Book(
+            metadata: BookMetadata(title: "Silent"),
+            chapters: [Chapter(title: "Plate", order: 0, text: "\u{FFFC}")],
+            estimatedTokenCount: 1
+        )
+        let (controller, engine) = makeController(book: book)
+        controller.start(atChapter: 0, characterOffset: 0, anchor: .sentenceContaining)
+
+        XCTAssertEqual(controller.status, .finished)
+        XCTAssertEqual(engine.spokenTexts, [])
+    }
+
     func testStartInANonLinearChapterReadsItAnyway() {
         let (controller, engine) = makeController()
         controller.start(atChapter: 1)

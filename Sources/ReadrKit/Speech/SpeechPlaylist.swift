@@ -132,31 +132,56 @@ public struct SpeechPlaylist: Sendable {
 
     // MARK: - Moving
 
-    /// Place the cursor at the first sentence that *begins* at or after
-    /// `characterOffset` — the entry point for "read from here", whether *here*
-    /// is the visible page, a chapter picked from the Contents list, or a
-    /// selection.
+    /// How a "read from here" offset picks its first sentence.
+    public enum SeekAnchor: Sendable, Equatable {
+        /// The first sentence that *begins* at or after the offset — the rule
+        /// for the top of a page or a chapter picked from Contents. A sentence
+        /// straddling the page break is skipped rather than half-read, so the
+        /// page never drags backwards to follow the voice.
+        case nextSentenceStart
+        /// The sentence *containing* the offset — the rule for a selection.
+        /// A reader who selected words mid-sentence means this sentence; the
+        /// page rule would skip the very words they pointed at. An offset in
+        /// the gap between sentences (whitespace, an image placeholder, a
+        /// dropped scene break) falls forward to the next one.
+        case sentenceContaining
+    }
+
+    /// Place the cursor at the sentence `anchor` selects for `characterOffset`
+    /// — the entry point for "read from here", whether *here* is the visible
+    /// page, a chapter picked from the Contents list (`.nextSentenceStart`),
+    /// or a selection (`.sentenceContaining`).
     ///
-    /// Begins-after, not contains. The anchor a reader presses Listen on is the
-    /// top of the visible page, and the sentence spanning that boundary started
-    /// on the page *before* it. Starting there read correctly but dragged the
-    /// page backwards to follow the voice — on a device it looked like Listen
-    /// had thrown the reader back a spread, and with a fixture whose paragraphs
-    /// were identical it looked like it had restarted the chapter. The cost is
+    /// For a page anchor (`.nextSentenceStart`): begins-after, not contains.
+    /// The anchor a reader presses Listen on is the top of the visible page,
+    /// and the sentence spanning that boundary started on the page *before*
+    /// it. Starting there read correctly but dragged the page backwards to
+    /// follow the voice — on a device it looked like Listen had thrown the
+    /// reader back a spread, and with a fixture whose paragraphs were
+    /// identical it looked like it had restarted the chapter. The cost is
     /// that a sentence straddling the page break is skipped rather than
     /// half-read; the promise is "the first sentence of the page in front of
     /// you", and that is the sentence that keeps it.
     ///
-    /// The fallback covers an anchor inside the chapter's final sentence, where
-    /// nothing begins later: that sentence is still the right answer. A chapter
-    /// with nothing left to read at all (empty, image-only, or an offset past
-    /// its end) rolls forward into the next one with something to say. Returns
-    /// nil only when the rest of the book is silent.
+    /// For a selection (`.sentenceContaining`) that first rule is skipped, and
+    /// the shared fallback below is the whole answer: the first sentence that
+    /// *ends* after the offset is the one containing it — or, for an offset
+    /// in the gap between sentences, the next one. It is the same clause that
+    /// covers a page anchor inside the chapter's final sentence, where nothing
+    /// begins later and that sentence is still right. A chapter with nothing
+    /// left to read at all (empty, image-only, or an offset past its end)
+    /// rolls forward into the next one with something to say. Returns nil
+    /// only when the rest of the book is silent.
     @discardableResult
-    public mutating func seek(toChapter index: Int, characterOffset: Int = 0) -> SpeechSegment? {
+    public mutating func seek(
+        toChapter index: Int,
+        characterOffset: Int = 0,
+        anchor: SeekAnchor = .nextSentenceStart
+    ) -> SpeechSegment? {
         guard book.chapters.indices.contains(index) else { return nil }
         let segments = self.segments(inChapter: index)
-        if let position = segments.firstIndex(where: { $0.range.lowerBound >= characterOffset }) {
+        if anchor == .nextSentenceStart,
+           let position = segments.firstIndex(where: { $0.range.lowerBound >= characterOffset }) {
             cursor = Cursor(chapter: index, segment: position)
             return current
         }

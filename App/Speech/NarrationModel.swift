@@ -231,8 +231,13 @@ final class NarrationModel: ObservableObject {
 
     // MARK: - Session
 
-    /// Start (or restart) narration at a reading position — the Listen button.
-    func start(book: Book, chapterIndex: Int, characterOffset: Int) {
+    /// Start (or restart) narration at a reading position — the Listen button
+    /// (`.nextSentenceStart`, the page top) or "Listen from here" on a
+    /// selection (`.sentenceContaining`).
+    func start(
+        book: Book, chapterIndex: Int, characterOffset: Int,
+        anchor: SpeechPlaylist.SeekAnchor = .nextSentenceStart
+    ) {
         let narration = makeNarration(for: book)
         // Every start, not just the first: `stop()` hands the remote commands
         // back, and `makeNarration` early-returns for a book already set up —
@@ -240,7 +245,7 @@ final class NarrationModel: ObservableObject {
         // controls dead for every listening session after the first.
         // Idempotent (see the guard inside).
         registerRemoteCommands()
-        narration.start(atChapter: chapterIndex, characterOffset: characterOffset)
+        narration.start(atChapter: chapterIndex, characterOffset: characterOffset, anchor: anchor)
         startTicking()
         refresh()
         updateNowPlaying()
