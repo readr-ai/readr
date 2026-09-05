@@ -262,6 +262,18 @@ final class FoundationModelsProvider: LLMProvider, OnDeviceReadinessReporting, @
         TokenCounter.estimate(text, charactersPerToken: charactersPerToken)
     }
 
+    /// The window in tokens. `contextSize` arrived in the 26.4 SDK
+    /// (back-deployed to 26.0, where it answers 4,096); CI builds with the
+    /// 26.3 SDK, whose framework has no such member, so the read is a
+    /// compile-time gate on the Swift 6.3 toolchain that ships with 26.4.
+    static func contextWindow(of model: SystemLanguageModel) -> Int {
+        #if compiler(>=6.3)
+        return model.contextSize
+        #else
+        return 4_096
+        #endif
+    }
+
     func stream(_ request: ChatRequest) -> AsyncThrowingStream<ChatChunk, Error> {
         AsyncThrowingStream { continuation in
             let task = Task { [model] in
@@ -292,8 +304,7 @@ final class FoundationModelsProvider: LLMProvider, OnDeviceReadinessReporting, @
                         // task after the question, not only in the instructions.
                         rawPrompt += Self.answerCue
                     }
-                    // `contextSize` is back-deployed to 26.0 (4,096 there).
-                    let window = model.contextSize
+                    let window = Self.contextWindow(of: model)
                     let fixed = Self.tokens(instructions) + Self.windowMargin
                     // The strategy already budgeted passages to the catalog's
                     // figure; this drops whole passages if the denser estimate
