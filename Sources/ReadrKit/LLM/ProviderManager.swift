@@ -49,6 +49,8 @@ public final class ProviderManager: @unchecked Sendable {
                     return "OpenRouter isn't connected. Sign in or add an API key in Settings → AI Providers."
                 case .local:
                     return "The local model isn't available. Make sure Ollama is running on this device."
+                case .appleIntelligence:
+                    return "The on-device model isn't available here. Turn on Apple Intelligence in Settings, or connect another provider in Settings → AI Providers."
                 }
             case .localMismatch:
                 return "The local model is misconfigured. Re-select a model in Settings → AI Providers."
@@ -475,6 +477,15 @@ public final class ProviderManager: @unchecked Sendable {
                     reason: "The model \"\(requested)\" isn't installed in Ollama. Pull it, or pick a different local model."
                 )
             }
+        } else if let onDevice = provider as? OnDeviceReadinessReporting {
+            switch await onDevice.readiness() {
+            case .ready:
+                state = .active
+            case let .unavailable(reason):
+                state = .unavailable(reason: reason)
+            case let .unsupported(reason):
+                state = .invalid(reason: reason)
+            }
         } else if let remote = provider as? CredentialValidating {
             do {
                 try await remote.validateCredential()
@@ -530,7 +541,7 @@ public final class ProviderManager: @unchecked Sendable {
         if let state = validationState(kind) {
             return state == .active
         }
-        if kind == .local { return true }
+        if kind.isOnDevice { return true }
         // `try?` yields `Credentials??`; flatten and test for a stored value.
         let stored = (try? store.load(for: kind)) ?? nil
         return stored != nil
@@ -546,9 +557,12 @@ public final class ProviderManager: @unchecked Sendable {
         ((try? store.load(for: kind)) ?? nil) != nil
     }
 
-    /// The kinds that are currently usable. Local is always included.
+    /// The kinds that are currently usable. On-device kinds are included
+    /// until a check says otherwise.
     public func availableKinds() -> [ProviderInfo.Kind] {
-        let allKinds: [ProviderInfo.Kind] = [.anthropic, .openAI, .chatGPT, .openRouter, .local]
+        let allKinds: [ProviderInfo.Kind] = [
+            .anthropic, .openAI, .chatGPT, .openRouter, .local, .appleIntelligence,
+        ]
         return allKinds.filter { isConfigured($0) }
     }
 

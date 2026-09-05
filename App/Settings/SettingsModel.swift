@@ -44,7 +44,9 @@ final class SettingsModel: ObservableObject {
     /// Every provider kind the app knows about, in display order: the two
     /// sign-in paths lead (lowest-friction first-run), then the key-only
     /// cloud providers, then Local.
-    static let allKinds: [ProviderInfo.Kind] = [.chatGPT, .openRouter, .anthropic, .openAI, .local]
+    static let allKinds: [ProviderInfo.Kind] = [
+        .appleIntelligence, .chatGPT, .openRouter, .anthropic, .openAI, .local,
+    ]
 
     let kinds: [ProviderInfo.Kind] = SettingsModel.allKinds
 
@@ -66,10 +68,16 @@ final class SettingsModel: ObservableObject {
     ///
     /// macOS shows everything.
     static var displayedKinds: [ProviderInfo.Kind] {
+        // The on-device model's card appears only where this device can run
+        // it (iOS/macOS 26 on Apple Intelligence hardware); a switched-off
+        // Apple Intelligence shows as the card's status, not as absence.
+        let onDevice = OnDeviceModel.isEligibleDevice
         #if os(iOS)
-        return allKinds.filter { $0 != .local && $0 != .chatGPT }
+        return allKinds.filter {
+            $0 != .local && $0 != .chatGPT && ($0 != .appleIntelligence || onDevice)
+        }
         #else
-        return allKinds
+        return allKinds.filter { $0 != .appleIntelligence || onDevice }
         #endif
     }
 
@@ -95,8 +103,12 @@ final class SettingsModel: ObservableObject {
     /// model" only when the Local row is shown (never on iOS — see
     /// `displayedKinds`). "Add an API key" is always available.
     static var availableSetupPaths: [String] {
-        var paths = ["Add an API key"]
         let displayed = displayedKinds
+        var paths: [String] = []
+        if displayed.contains(.appleIntelligence) {
+            paths.append("Use the model built into this device")
+        }
+        paths.append(paths.isEmpty ? "Add an API key" : "add an API key")
         if displayed.contains(where: { oauthConfig(for: $0) != nil }) {
             paths.append("sign in")
         }
@@ -182,7 +194,7 @@ final class SettingsModel: ObservableObject {
     /// check failed transiently must be re-checked when the sheet reopens, or
     /// its card would stay stuck on the stale failure forever.
     func validateDisplayed() async {
-        for kind in displayedKinds where kind == .local || (hasCredential[kind] ?? false) {
+        for kind in displayedKinds where kind.isOnDevice || (hasCredential[kind] ?? false) {
             await validateIfStale(kind)
         }
     }
@@ -309,8 +321,8 @@ final class SettingsModel: ObservableObject {
         manager.setActive(kind: kind, modelID: modelID)
         activeSelection = manager.selection
         // The selected model feeds Local's readiness probe (which model tag it
-        // looks for), so re-validate Local when its model changes.
-        if kind == .local {
+        // looks for), so re-validate the on-device kinds when made active.
+        if kind.isOnDevice {
             Task { await validate(kind) }
         }
     }

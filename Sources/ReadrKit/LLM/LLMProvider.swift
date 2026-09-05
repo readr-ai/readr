@@ -32,12 +32,43 @@ public protocol LocalReadinessProbing: Sendable {
     func probe() async -> LocalLLMProvider.ProbeResult
 }
 
+/// Where a model that runs inside the app itself stands — the system's
+/// on-device model (`.appleIntelligence`), or a bundled runtime later.
+/// Reported by the app's provider, consumed by `ProviderManager.validate`.
+public enum OnDeviceReadiness: Sendable, Equatable {
+    /// Loaded, or loadable on the first request.
+    case ready
+    /// Not usable right now for a reason the reader can fix or wait out:
+    /// Apple Intelligence switched off, the model still downloading. Maps to
+    /// `ValidationState.unavailable` — the selection stays optimistic.
+    case unavailable(reason: String)
+    /// This device or OS can never run it. Maps to `ValidationState.invalid`,
+    /// so the selection refuses to resolve to a provider that can only fail.
+    case unsupported(reason: String)
+}
+
+/// A provider that runs inside the app and can say whether it is usable.
+/// Implemented by the app's Foundation Models provider; consumed by
+/// `ProviderManager`.
+public protocol OnDeviceReadinessReporting: Sendable {
+    func readiness() async -> OnDeviceReadiness
+}
+
 public struct ProviderInfo: Sendable, Hashable {
     /// `openAI` is the API-key path against api.openai.com; `chatGPT` is the
     /// separate subscription-OAuth path against ChatGPT's backend — distinct
     /// kinds because their credentials, catalogs, and endpoints all differ.
+    /// `appleIntelligence` is the system's on-device model (Apple's
+    /// FoundationModels framework, iOS/macOS 26+): no key, no account, no
+    /// server. `local` is a loopback Ollama server the reader runs
+    /// themselves. Both are `isLocal`; see `isOnDevice`.
     public enum Kind: String, Sendable, Hashable, Codable {
-        case anthropic, openAI, chatGPT, openRouter, local
+        case anthropic, openAI, chatGPT, openRouter, local, appleIntelligence
+
+        /// Runs without credentials: nothing to store, validate, or revoke.
+        public var isOnDevice: Bool {
+            self == .local || self == .appleIntelligence
+        }
     }
     public var kind: Kind
     public var modelID: String

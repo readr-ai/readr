@@ -91,7 +91,7 @@ final class AppModel: ObservableObject {
         self.credentialStore = credentials
         self.providerManager = ProviderManager(
             store: credentials,
-            factory: DefaultProviderFactory.factory(),
+            factory: AppProviderFactory.factory(),
             persistingIn: .standard,
             tokenRefresher: { kind, stored in
                 // Only kinds with an OAuth config can renew; anything else
@@ -116,6 +116,18 @@ final class AppModel: ObservableObject {
             if let position = self.store.position(for: book.id) {
                 positionsByBook[book.id] = position
             }
+        }
+
+        // First run on a device that can run Apple's on-device model: make
+        // it the active provider, so Ask works before the reader has heard
+        // of an API key. Only when nothing was ever chosen — a reader who
+        // picked a cloud model keeps it — and never under the UI-test seeds,
+        // which choose their own.
+        if providerManager.selection == nil,
+           !ProcessInfo.processInfo.arguments.contains("-uiTestSeedProviderKeys"),
+           OnDeviceModel.readiness() == .ready {
+            providerManager.setActive(kind: .appleIntelligence)
+            DiagnosticsLog.shared.record(.info, .provider, "first run: on-device model made active")
         }
 
         // A live-picked OpenRouter model persists by id alone. Its context
