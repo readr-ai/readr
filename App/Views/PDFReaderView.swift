@@ -19,6 +19,9 @@ struct PDFAnnotationActions {
     /// Navigate the live PDF to a page (R1: Notes-list "Show in book" jumps a
     /// PDF annotation to its page, mirroring the text reader's chapter jump).
     var goToPage: (Int) -> Void
+    /// The page in view — the host's Listen anchor while the PDF is up, and
+    /// what narration's page-follow compares against before turning.
+    var currentPageIndex: () -> Int
     /// Recolor a stored PDF highlight AND its live PDFKit overlay in one step
     /// (R2: a Notes-list color change must repaint the page, not just the
     /// store). No-op on the page when the highlight isn't currently overlaid.
@@ -45,6 +48,9 @@ struct PDFReaderView: View {
     let book: Book
     let url: URL
     var onAsk: (Selection) -> Void
+    /// "Listen from here" on a PDF selection or highlight: the page index and
+    /// the character offset into that page's text where the reader pointed.
+    var onListen: (Int, Int) -> Void
     /// Published while this surface is mounted so the host's shortcuts and
     /// toolbar Ask reach the PDF selection (it lives in `controller`, private
     /// to this view).
@@ -108,6 +114,7 @@ struct PDFReaderView: View {
                     noteSelection: { controller.noteCurrentSelection() },
                     askSelection: { controller.askCurrentSelection() },
                     goToPage: { controller.goToPage($0) },
+                    currentPageIndex: { controller.currentPageIndex },
                     recolorHighlight: { controller.recolorHighlight($0, to: $1) },
                     removeHighlight: { controller.removeHighlight($0) }
                 )
@@ -191,7 +198,8 @@ struct PDFReaderView: View {
             model: model,
             book: book,
             url: url,
-            onAsk: onAsk
+            onAsk: onAsk,
+            onListen: onListen
         )
         .overlay(alignment: .bottom) { bottomOverlay }
     }
@@ -419,6 +427,7 @@ struct PDFReaderView: View {
     let book: Book
     let url: URL
     var onAsk: (Selection) -> Void
+    var onListen: (Int, Int) -> Void
     @Binding var annotationActions: PDFAnnotationActions?
 
     var body: some View {

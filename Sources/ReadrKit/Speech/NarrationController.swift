@@ -150,13 +150,19 @@ public final class NarrationController {
 
     /// Start reading at a position — the Listen button's entry point, where
     /// the position is the top of the visible page (or a chapter picked from
-    /// Contents). Narration begins at the first sentence that hasn't been
-    /// passed, never mid-sentence.
-    public func start(atChapter chapterIndex: Int, characterOffset: Int = 0) {
+    /// Contents), or "Listen from here" on a selection. Narration always
+    /// begins at a sentence start, never mid-sentence: `anchor` decides
+    /// whether that is the sentence containing the offset (a selection) or the
+    /// first one beginning after it (a page top) — see `SpeechPlaylist.SeekAnchor`.
+    public func start(
+        atChapter chapterIndex: Int,
+        characterOffset: Int = 0,
+        anchor: SpeechPlaylist.SeekAnchor = .nextSentenceStart
+    ) {
         engine.stop()
         activeRequestID = nil
         guard let segment = playlist.seek(
-            toChapter: chapterIndex, characterOffset: characterOffset
+            toChapter: chapterIndex, characterOffset: characterOffset, anchor: anchor
         ) else {
             currentSegment = nil
             setStatus(.finished)

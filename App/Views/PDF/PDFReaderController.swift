@@ -47,6 +47,10 @@ final class PDFReaderController: NSObject, ObservableObject {
     weak var model: AppModel?
     var book: Book?
     var onAsk: ((Selection) -> Void)?
+    /// "Listen from here": the page index and the character offset into that
+    /// page's text (== the narration chapter and offset — `PDFPageChapters`
+    /// makes one chapter per page from `PDFPage.string` verbatim).
+    var onListen: ((Int, Int) -> Void)?
     /// Current reading theme, so the annotation selection menu the controller
     /// renders (macOS NSPopover / iOS floating bar) matches the Marginalia
     /// palette rather than defaulting to `.paper`. Set by the host PDF view.
@@ -386,6 +390,12 @@ final class PDFReaderController: NSObject, ObservableObject {
                     if !text.isEmpty { Pasteboard.copy(text) }
                     self.finishSelectionAction()
                 },
+                onListen: { [weak self] in
+                    guard let self else { return }
+                    let anchor = self.committedSelection().flatMap { self.listenAnchor(for: $0) }
+                    self.finishSelectionAction()
+                    if let anchor { self.onListen?(anchor.pageIndex, anchor.characterOffset) }
+                },
                 onRemove: nil
             )
         case .edit(let highlight):
@@ -417,6 +427,14 @@ final class PDFReaderController: NSObject, ObservableObject {
                 onCopy: { [weak self] in
                     Pasteboard.copy(highlight.quotedText)
                     self?.dismissMenu()
+                },
+                onListen: { [weak self] in
+                    guard let self else { return }
+                    self.dismissMenu()
+                    let offset = self.listenAnchor(
+                        forQuoted: highlight.quotedText, pageIndex: highlight.pageIndex
+                    )
+                    self.onListen?(highlight.pageIndex, offset)
                 },
                 onRemove: { [weak self] in self?.removeHighlight(highlight) }
             )
@@ -619,6 +637,46 @@ final class PDFReaderController: NSObject, ObservableObject {
             surroundingText: surrounding,
             chapterTitle: "Page \(index + 1)"
         )
+    }
+
+    // MARK: Listen from here
+
+    /// Where a selection starts, as a narration anchor: the index of its
+    /// first page and the *Character* offset into that page's text.
+    ///
+    /// `PDFSelection.range(at:on:)` is exact (the same text PDFKit hands
+    /// `page.string`, in UTF-16 units), so it is preferred over the
+    /// string search `askSelection` uses — a repeated phrase would otherwise
+    /// send the voice to its first occurrence. UTF-16 → Character conversion
+    /// goes through `Range(_, in:)`, never arithmetic: a ligature or an emoji
+    /// on the page would drift a raw count. A selection spanning a page break
+    /// anchors on its first page; narration crosses into the next page-chapter
+    /// on its own.
+    func listenAnchor(for selection: PDFSelection) -> (pageIndex: Int, characterOffset: Int)? {
+        guard let document = pdfView?.document, let page = selection.pages.first else { return nil }
+        let pageIndex = document.index(for: page)
+        let pageText = page.string ?? ""
+        guard selection.numberOfTextRanges(on: page) > 0 else {
+            // No text range on the first page (a rect-only selection): fall
+            // back to the phrase search, then to the top of the page.
+            return (pageIndex, listenAnchor(forQuoted: selection.string ?? "", pageIndex: pageIndex))
+        }
+        let utf16Range = selection.range(at: 0, on: page)
+        guard utf16Range.location != NSNotFound,
+              let range = Range(utf16Range, in: pageText)
+        else { return (pageIndex, 0) }
+        return (pageIndex, pageText.distance(from: pageText.startIndex, to: range.lowerBound))
+    }
+
+    /// A stored highlight keeps its page and its quoted text, not an offset:
+    /// find the phrase on the page (its first occurrence — the same
+    /// approximation `askSelection` makes), or start the page from the top.
+    func listenAnchor(forQuoted quoted: String, pageIndex: Int) -> Int {
+        guard !quoted.isEmpty,
+              let pageText = pdfView?.document?.page(at: pageIndex)?.string,
+              let found = pageText.range(of: quoted)
+        else { return 0 }
+        return pageText.distance(from: pageText.startIndex, to: found.lowerBound)
     }
 
     // MARK: Outline (TOC)

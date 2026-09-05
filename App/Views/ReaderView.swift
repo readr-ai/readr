@@ -445,6 +445,12 @@ struct ReaderView: View {
                         // frontier, so the whole document is in scope.
                         askRequest = AskRequest(selection: selection, scope: .wholeBook, initialQuestion: nil)
                     },
+                    onListen: { pageIndex, characterOffset in
+                        // A PDF's narration chapters are its pages, and each
+                        // chapter's text is the page's text verbatim — so a
+                        // page-local offset is already a narration offset.
+                        listen(fromChapter: pageIndex, characterOffset: characterOffset)
+                    },
                     annotationActions: $pdfAnnotationActions
                 )
             } else if isImageOnlyPDF {
@@ -793,14 +799,44 @@ struct ReaderView: View {
             // it needs the number that was actually handed over, not another
             // description of where the page looked. A chapter index and an
             // offset, never any of the text (see DiagnosticsLog).
+            // With the original PDF pages up, the page in view is the
+            // anchor: the text-mode `chapterIndex`/`pagedAnchor` are only ever
+            // written by the text surface, so on a PDF read page by page they
+            // still point at wherever text mode was last left (page 1, for
+            // most readers) — and Listen started the document over.
+            let startChapter: Int
+            let startOffset: Int
+            if isPDFOriginal, let page = pdfAnnotationActions?.currentPageIndex() {
+                startChapter = page
+                startOffset = 0
+            } else {
+                startChapter = chapterIndex
+                startOffset = pagedAnchor
+            }
             DiagnosticsLog.shared.record(
                 .info, .reader,
-                "Narration start: chapter \(chapterIndex) offset \(pagedAnchor)"
+                "Narration start: chapter \(startChapter) offset \(startOffset)"
             )
             narration.start(
-                book: book, chapterIndex: chapterIndex, characterOffset: pagedAnchor
+                book: book, chapterIndex: startChapter, characterOffset: startOffset
             )
         }
+    }
+
+    /// "Listen from here": read aloud from the sentence containing a selection
+    /// or highlight, given in chapter coordinates (a PDF page index and an
+    /// offset into that page's text, for the native PDF surface). Restarts a
+    /// voice already reading rather than layering a second one.
+    private func listen(fromChapter index: Int, characterOffset: Int) {
+        guard book.chapters.indices.contains(index) else { return }
+        DiagnosticsLog.shared.record(
+            .info, .reader,
+            "Narration start from selection: chapter \(index) offset \(characterOffset)"
+        )
+        narration.start(
+            book: book, chapterIndex: index, characterOffset: characterOffset,
+            anchor: .sentenceContaining
+        )
     }
 
     /// Keep the page under the voice. Narration reports each sentence it moves
@@ -809,6 +845,14 @@ struct ReaderView: View {
     /// position that gets persisted is where the reader actually listened to.
     private func followNarration(_ position: NarrationPosition) {
         guard book.chapters.indices.contains(position.chapterIndex) else { return }
+        // Original PDF pages: the narration chapter *is* the page, so turn to
+        // it when the voice crosses onto the next one. Only on a change —
+        // PDFKit's go(to:) rescrolls to the page top, which would yank a
+        // reader who scrolled within the page back up on every sentence.
+        if isPDFOriginal, let actions = pdfAnnotationActions,
+           actions.currentPageIndex() != position.chapterIndex {
+            actions.goToPage(position.chapterIndex)
+        }
         guard position.chapterIndex == chapterIndex else {
             jump(toChapter: position.chapterIndex, offset: position.characterOffset)
             return
@@ -1645,6 +1689,16 @@ struct ReaderView: View {
                 scope: askScope(selection: range),
                 initialQuestion: nil
             )
+
+        case .listen:
+            let range: Range<Int>
+            switch target {
+            case let .selection(selected):
+                range = selected
+            case let .span(span):
+                range = highlight(withID: span.id)?.range ?? span.range
+            }
+            listen(fromChapter: chapterIndex, characterOffset: range.lowerBound)
 
         case .copy:
             let copied: String
