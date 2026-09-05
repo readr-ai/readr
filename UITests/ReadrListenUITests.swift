@@ -396,4 +396,33 @@ final class ReadrListenUITests: XCTestCase {
         listen.tap()
         assertGone(element(app, "listen.bar"))
     }
+
+    // MARK: - Listen in a PDF
+
+    /// Listen in a PDF starts on the page in view, not at the top of the
+    /// document — the dense-PDF half of "no way to start from the middle".
+    /// The seeded Field Notes PDF has two pages with distinct text; on page 2
+    /// the bar must name a page-2 sentence.
+    func testListenInAPDFStartsOnThePageInView() {
+        let app = launchSeeded()
+        openFieldNotesPDF(app)
+        pageSeededPDFToPageTwo(app)
+
+        let listen = element(app, "reader.listen")
+        XCTAssertTrue(listen.waitForExistence(timeout: 5), "The PDF reader should offer Listen")
+        listen.tap()
+        XCTAssertTrue(element(app, "listen.bar").waitForExistence(timeout: 10), "Listen on a PDF page should start narration")
+
+        let sentence = element(app, "listen.sentence")
+        XCTAssertTrue(sentence.waitForExistence(timeout: 5))
+        let spoken = (sentence.label.isEmpty ? sentence.value as? String : sentence.label) ?? ""
+        XCTAssertTrue(
+            spoken.contains("season") || spoken.contains("gaps"),
+            "Listen on page 2 should start with page 2's text, got: \(spoken)"
+        )
+        XCTAssertFalse(
+            spoken.contains("promise to your future self"),
+            "Listen on page 2 must not start from page 1: \(spoken)"
+        )
+    }
 }

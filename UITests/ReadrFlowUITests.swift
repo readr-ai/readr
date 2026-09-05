@@ -291,29 +291,6 @@ final class ReadrFlowUITests: XCTestCase {
         }
     }
 
-    // Opens the seeded "Field Notes" PDF from Home and waits for the native
-    // PDFKit reader (asserted via its page indicator). Mirrors the inline
-    // open in `testFieldNotesPDFShowsPageIndicator`.
-    private func openFieldNotesPDF(_ app: XCUIApplication) {
-        let pdfButton = app.buttons["Field Notes"].firstMatch
-        let pdfCard = pdfButton.waitForExistence(timeout: 10)
-            ? pdfButton
-            : app.staticTexts["Field Notes"].firstMatch
-        XCTAssertTrue(pdfCard.waitForExistence(timeout: 5), "The seeded PDF should be on the shelf")
-        if !pdfCard.isHittable { app.swipeUp() }
-        pdfCard.tap()
-
-        let indicator = app.staticTexts["pdf.pageIndicator"].firstMatch
-        XCTAssertTrue(
-            indicator.waitForExistence(timeout: 15),
-            "The PDF reader should show its page indicator"
-        )
-        XCTAssertTrue(
-            indicator.label.hasPrefix("Page 1 of 2"),
-            "A freshly opened 2-page PDF should read 'Page 1 of 2' (got: \(indicator.label))"
-        )
-    }
-
     // MARK: - PDF search (R3)
 
     // R3: pressing Return in the PDF find field jumps to the first hit. The

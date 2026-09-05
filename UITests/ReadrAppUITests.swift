@@ -160,6 +160,44 @@ final class ReadrAppUITests: XCTestCase {
         )
     }
 
+    // #41 follow-up — the report carries evidence, not just a promise of it:
+    // the preview and the copied report both hold the version line and the
+    // recent diagnostics section, and neither leaks a file path.
+    func testBugReportCarriesVersionAndRecentEvidence() throws {
+        let app = launchSeeded()
+        let settingsButton = button(app, id: "library.settings", label: "Settings")
+        XCTAssertTrue(settingsButton.waitForExistence(timeout: 10))
+        settingsButton.tap()
+        let report = app.buttons["settings.reportBug"].firstMatch
+        for _ in 0..<3 where !report.isHittable { app.swipeUp() }
+        XCTAssertTrue(report.waitForExistence(timeout: 5))
+        report.tap()
+
+        let preview = app.buttons["feedback.preview"].firstMatch
+        XCTAssertTrue(preview.waitForExistence(timeout: 5))
+        preview.tap()
+
+        let shown = app.staticTexts.matching(
+            NSPredicate(format: "label CONTAINS %@", "Recent diagnostics:")
+        ).firstMatch
+        XCTAssertTrue(shown.waitForExistence(timeout: 5), "The preview must show the diagnostics section")
+        XCTAssertTrue(shown.label.contains("Readr "), "The preview must name the app version: \(shown.label.prefix(120))")
+        XCTAssertFalse(shown.label.contains("/Users/"), "No file paths in a report")
+
+        // Copy flips its own label; the pasteboard itself is not read from the
+        // runner (reading it there hangs the automation session on iOS 26).
+        let copy = app.buttons["feedback.copy"].firstMatch
+        for _ in 0..<3 where !copy.isHittable { app.swipeUp() }
+        XCTAssertTrue(copy.waitForExistence(timeout: 5))
+        copy.tap()
+        XCTAssertTrue(
+            app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Copied")).firstMatch
+                .waitForExistence(timeout: 5),
+            "Copy report should confirm the copy"
+        )
+        XCTAssertTrue(app.buttons["feedback.github"].firstMatch.exists, "The GitHub route must be offered")
+    }
+
     // Provider sign-in — the settings screen surfaces both OAuth paths with
     // per-provider labels, and the ChatGPT card carries its ToS caveat. The
     // generic "Sign in with subscription" label must never reappear.

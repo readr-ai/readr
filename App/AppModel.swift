@@ -2,6 +2,9 @@ import Foundation
 import ReadrKit
 import CoreGraphics
 import CoreText
+#if canImport(PDFKit)
+import PDFKit
+#endif
 
 /// App-level state for M1: the library, import, reading position, and
 /// highlights. AI features (ask, article) attach to this in later milestones.
@@ -512,11 +515,20 @@ final class AppModel: ObservableObject {
         }
         context.closePDF()
 
+        // Chapters exactly as an import stores them: one per page, holding
+        // the text PDFKit extracts (a line break at every wrapped line) — so
+        // the fixture takes the same page-is-chapter path a real PDF does.
+        // A one-chapter fixture once hid that Listen on page 2 had nothing
+        // to start from, on a shape no import ever produces.
+        var pageTexts: [String?] = [pageOne, pageTwo]
+        #if canImport(PDFKit)
+        if let document = PDFDocument(url: url), document.pageCount > 0 {
+            pageTexts = (0..<document.pageCount).map { document.page(at: $0)?.string }
+        }
+        #endif
         let book = Book(
             metadata: BookMetadata(title: "Field Notes", authors: ["R. Calder"]),
-            chapters: [
-                Chapter(title: "Field Notes", order: 0, text: pageOne + "\n\n" + pageTwo)
-            ],
+            chapters: PDFPageChapters.build(fromPageTexts: pageTexts).chapters,
             estimatedTokenCount: 80,
             sourceFilename: "field-notes.pdf"
         )
