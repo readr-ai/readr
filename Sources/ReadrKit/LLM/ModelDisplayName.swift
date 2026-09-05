@@ -1,13 +1,15 @@
 import Foundation
 
 /// A reader-facing name for a model id the catalogue has no name for — a
-/// live OpenRouter pick before its catalogue row is on disk, or an id that
-/// arrived by hand. Catalogue rows carry their own `displayName`; this is
-/// the fallback behind `ProviderInfo.name`, so Settings never shows a wire
-/// id as a name. (September 2026 UX review, F11.)
+/// live OpenRouter pick whose list has not been registered yet, or an id
+/// that arrived by hand. Catalogue rows carry their own `displayName`, and a
+/// live OpenRouter list registers its names as it loads; this is the
+/// fallback behind `ProviderInfo.name`, so Settings never shows a wire id as
+/// a name. (September 2026 UX review, F11.)
 ///
-/// The shape follows the catalogue's own rows: `anthropic/claude-sonnet-5`
-/// reads "Claude Sonnet 5", `gpt-4.1-mini` reads "GPT-4.1 mini",
+/// The shape follows the catalogue's own rows, without a vendor table of its
+/// own (vendor spellings live in the catalogue): `anthropic/claude-sonnet-5`
+/// reads "Claude Sonnet 5", `gpt-4o-mini` reads "GPT-4o mini",
 /// `minimax/minimax-m3:free` reads "Minimax M3 (free)".
 public enum ModelDisplayName {
 
@@ -23,54 +25,51 @@ public enum ModelDisplayName {
             suffix = " (\(id[id.index(after: colon)...]))"
             id = String(id[..<colon])
         }
-        let words = id.split(separator: "-").map(String.init)
         var parts: [String] = []
-        var index = 0
-        while index < words.count {
-            let word = words[index]
-            if isNumber(word) {
-                // Hyphenated version parts join with a dot: `4-5` is 4.5.
-                var version = word
-                while index + 1 < words.count, isNumber(words[index + 1]) {
-                    index += 1
-                    version += "." + words[index]
-                }
-                if let family = parts.last, family == "GPT" {
-                    // "GPT-5.6", the way OpenAI writes it.
-                    parts[parts.count - 1] = family + "-" + version
-                } else {
-                    parts.append(version)
-                }
+        var versionsSeen = 0
+        var previousWasVersion = false
+        for word in id.split(separator: "-").map(String.init) {
+            let isVersion = isNumber(word)
+            if word.first?.isNumber == true, parts.last == "GPT" {
+                // "GPT-5.6", "GPT-4o": the way OpenAI writes them.
+                parts[parts.count - 1] = "GPT-" + word
+            } else if isVersion, previousWasVersion, versionsSeen == 1,
+                      word.count <= 2, !word.contains("."), parts.last?.contains(".") == false {
+                // The first hyphenated version joins with a dot: `4-5` is
+                // 4.5. Later runs of digits are dates and sizes, left alone.
+                parts[parts.count - 1] += "." + word
             } else {
-                parts.append(readable(word))
+                parts.append(isVersion ? word : cased(word))
             }
-            index += 1
+            if isVersion { versionsSeen += 1 }
+            previousWasVersion = isVersion
         }
         return parts.joined(separator: " ") + suffix
     }
 
-    private static func isNumber(_ word: String) -> Bool {
+    private static func isNumber(_ word: Substring) -> Bool {
         !word.isEmpty && word.allSatisfy { $0.isNumber || $0 == "." }
     }
 
-    /// One word of an id: a known family in its own casing, a trailing
-    /// number split off ("llama3" → "Llama 3"), otherwise capitalized.
-    private static func readable(_ word: String) -> String {
+    private static func isNumber(_ word: String) -> Bool { isNumber(word[...]) }
+
+    /// One word of an id: a family in its own casing, a size word the
+    /// vendors write in lower case, a name with its version run together
+    /// ("llama3" → "Llama 3" — a short code like "m3" stays whole),
+    /// otherwise capitalized.
+    private static func cased(_ word: String) -> String {
         if let spelled = spellings[word.lowercased()] { return spelled }
-        // "llama3", "qwen2.5": a family name then its version, no hyphen.
-        // Short codes stay whole: "m3", "k3", "v4" are the name.
         if let firstDigit = word.firstIndex(where: \.isNumber),
            word.distance(from: word.startIndex, to: firstDigit) >= 3,
-           word[firstDigit...].allSatisfy({ $0.isNumber || $0 == "." }) {
-            return readable(String(word[..<firstDigit])) + " " + word[firstDigit...]
+           isNumber(word[firstDigit...]) {
+            return cased(String(word[..<firstDigit])) + " " + word[firstDigit...]
         }
         return word.prefix(1).uppercased() + word.dropFirst()
     }
 
-    /// Families whose casing is not "first letter up", and size words the
-    /// vendors write in lower case.
+    /// The one family whose casing is not "first letter up", and the size
+    /// words the vendors write in lower case.
     private static let spellings: [String: String] = [
-        "gpt": "GPT", "glm": "GLM", "deepseek": "DeepSeek", "xai": "xAI",
-        "mini": "mini", "nano": "nano", "lite": "lite",
+        "gpt": "GPT", "mini": "mini", "nano": "nano", "lite": "lite",
     ]
 }

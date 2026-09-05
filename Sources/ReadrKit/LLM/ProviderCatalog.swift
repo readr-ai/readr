@@ -209,20 +209,28 @@ public enum ProviderCatalog {
     /// The `UserDefaults.standard` key under which registered OpenRouter
     /// context windows persist, as a compact `[modelID: contextLength]`.
     public static let openRouterContextLengthsKey = "openRouter.contextLengths"
+    /// Its sibling for the models' names (`[modelID: name]`), so a live pick
+    /// is named the way the catalogue named it — in Settings, the sidebar,
+    /// anywhere — and still after a relaunch.
+    public static let openRouterNamesKey = "openRouter.names"
 
     private final class OpenRouterBudgetRegistry: @unchecked Sendable {
         private let lock = NSLock()
         private var contextLengths: [String: Int] = [:]
+        private var names: [String: String] = [:]
         private var seeded = false
 
         private var defaults: UserDefaults { .standard }
 
-        /// Read the persisted mirror once, lazily, under the lock.
+        /// Read the persisted mirrors once, lazily, under the lock.
         private func seedIfNeeded() {
             guard !seeded else { return }
             seeded = true
             if let stored = defaults.dictionary(forKey: openRouterContextLengthsKey) as? [String: Int] {
                 contextLengths = stored
+            }
+            if let stored = defaults.dictionary(forKey: openRouterNamesKey) as? [String: String] {
+                names = stored
             }
         }
 
@@ -230,10 +238,12 @@ public enum ProviderCatalog {
             lock.lock(); defer { lock.unlock() }
             seedIfNeeded()
             guard !models.isEmpty else { return }
-            for model in models where model.contextLength > 0 {
-                contextLengths[model.id] = model.contextLength
+            for model in models {
+                if model.contextLength > 0 { contextLengths[model.id] = model.contextLength }
+                if !model.name.isEmpty { names[model.id] = model.name }
             }
             defaults.set(contextLengths, forKey: openRouterContextLengthsKey)
+            defaults.set(names, forKey: openRouterNamesKey)
         }
 
         func budget(for id: String) -> Int? {
@@ -242,22 +252,30 @@ public enum ProviderCatalog {
             return contextLengths[id].map(openRouterBudget(forContext:))
         }
 
-        /// Forget the in-memory map (what a relaunch does), and optionally
-        /// the persisted mirror too.
+        func name(for id: String) -> String? {
+            lock.lock(); defer { lock.unlock() }
+            seedIfNeeded()
+            return names[id]
+        }
+
+        /// Forget the in-memory maps (what a relaunch does), and optionally
+        /// the persisted mirrors too.
         func reset(clearingPersisted: Bool) {
             lock.lock(); defer { lock.unlock() }
             contextLengths = [:]
+            names = [:]
             seeded = false
             if clearingPersisted {
                 defaults.removeObject(forKey: openRouterContextLengthsKey)
+                defaults.removeObject(forKey: openRouterNamesKey)
             }
         }
     }
 
-    /// Remember the context windows of a live OpenRouter list so a model
-    /// picked from it resolves with a real budget — now and after a relaunch
-    /// (the map is mirrored to `UserDefaults`). Idempotent; later lists
-    /// overwrite earlier rows.
+    /// Remember the context windows and names of a live OpenRouter list so a
+    /// model picked from it resolves with a real budget and its own name —
+    /// now and after a relaunch (the maps are mirrored to `UserDefaults`).
+    /// Idempotent; later lists overwrite earlier rows.
     public static func registerOpenRouterModels(_ models: [OpenRouterModel]) {
         openRouterBudgets.register(models)
     }
@@ -360,7 +378,8 @@ public enum ProviderCatalog {
                     modelID: id,
                     contextBudget: openRouterBudgets.budget(for: id) ?? openRouterFallbackBudget,
                     supportsPromptCaching: false,
-                    isLocal: false
+                    isLocal: false,
+                    displayName: openRouterBudgets.name(for: id)
                 )
             }
         }

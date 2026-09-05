@@ -15,13 +15,13 @@ public enum DefaultProviderFactory {
             guard let credentials else { throw ProviderManager.ProviderError.notConfigured(.anthropic) }
             return AnthropicProvider(
                 credentials: credentials, model: info.modelID,
-                http: http, contextBudget: info.contextBudget
+                http: http, contextBudget: info.contextBudget, displayName: info.displayName
             )
         case .openAI:
             guard let credentials else { throw ProviderManager.ProviderError.notConfigured(.openAI) }
             return OpenAIProvider(
                 credentials: credentials, model: info.modelID,
-                http: http, contextBudget: info.contextBudget
+                http: http, contextBudget: info.contextBudget, displayName: info.displayName
             )
         case .chatGPT:
             // This kind only works with subscription OAuth tokens — an API key
@@ -31,18 +31,19 @@ public enum DefaultProviderFactory {
             }
             return ChatGPTSubscriptionProvider(
                 credentials: credentials, model: info.modelID,
-                http: http, contextBudget: info.contextBudget
+                http: http, contextBudget: info.contextBudget, displayName: info.displayName
             )
         case .openRouter:
             guard let credentials else { throw ProviderManager.ProviderError.notConfigured(.openRouter) }
             return OpenAIProvider(
                 credentials: credentials, model: info.modelID,
                 http: http, contextBudget: info.contextBudget,
-                endpoints: .openRouter
+                endpoints: .openRouter, displayName: info.displayName
             )
         case .local:
             return LocalLLMProvider(
-                model: info.modelID, http: http, contextBudget: info.contextBudget
+                model: info.modelID, http: http, contextBudget: info.contextBudget,
+                displayName: info.displayName
             )
         case .appleIntelligence:
             // The runtime is an Apple framework, so the app's factory wraps

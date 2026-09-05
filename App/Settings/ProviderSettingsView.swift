@@ -49,7 +49,7 @@ struct ProviderSettingsView: View {
                     // Which model Ask is actually using, in one line — with
                     // four cards and a runtime default, the cards alone
                     // leave the reader to work it out (F11).
-                    Text(askUsesLine)
+                    Text(model.askUsesLine)
                         .font(.footnote)
                         .foregroundStyle(theme.muted)
                         .fixedSize(horizontal: false, vertical: true)
@@ -266,7 +266,8 @@ struct ProviderSettingsView: View {
                     kind: pickerKind,
                     models: model.models(for: pickerKind),
                     selection: model.activeSelection,
-                    enabled: pickerEnabled
+                    enabled: pickerEnabled,
+                    theme: theme
                 ) { modelID in
                     model.makeActive(kind: pickerKind, modelID: modelID)
                 }
@@ -431,25 +432,6 @@ struct ProviderSettingsView: View {
     /// Name and price for the row — the live list first, the curated table
     /// offline, nil for an id the app has no data on (the row then shows the
     /// bare id).
-    /// "Ask uses Claude Opus 5 · Claude (Anthropic)": the active selection
-    /// by its name and its card. A cloud selection with no credential is
-    /// named too, with the state that stops it.
-    private var askUsesLine: String {
-        guard let selection = model.activeSelection else {
-            return "Ask uses no model yet — connect one below."
-        }
-        let kind = selection.kind
-        let name: String
-        if kind == .openRouter, let live = model.openRouterModel(id: selection.modelID) {
-            name = live.name
-        } else {
-            name = ProviderCatalog.resolve(modelID: selection.modelID, for: kind).name
-        }
-        let card = ProviderVendor.vendor(for: kind)?.title ?? kind.rawValue
-        let connected = kind.isOnDevice || (model.hasCredential[kind] ?? false)
-        return "Ask uses \(name) · \(card)" + (connected ? "" : " — not connected")
-    }
-
     private var currentOpenRouterModel: OpenRouterModel? {
         model.openRouterModel(id: currentOpenRouterModelID)
     }
@@ -793,7 +775,10 @@ private struct OpenRouterModelRow: View {
         Button(action: onTap) {
             HStack(spacing: 8) {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(model?.name ?? modelID)
+                    // An id neither list knows still gets a name — the
+                    // registered one, or one made from the id. Never the
+                    // wire id as the title.
+                    Text(model?.name ?? ProviderCatalog.resolve(modelID: modelID, for: .openRouter).name)
                         .font(.callout)
                         .foregroundStyle(theme.inkColor)
                         .lineLimit(1)
@@ -827,10 +812,17 @@ private struct ModelPicker: View {
     let models: [ProviderInfo]
     let selection: ProviderSelection?
     let enabled: Bool
+    let theme: ReadingTheme
     let onSelect: (String) -> Void
 
+    /// The id the picker and its caption show: a stored selection resolved
+    /// through the catalogue, so a retired id (`claude-sonnet-4-6`) shows as
+    /// its successor — the model Ask will actually use — rather than a
+    /// blank menu over a caption naming a model that no longer exists.
     private var currentModelID: String {
-        if let selection, selection.kind == kind { return selection.modelID }
+        if let selection, selection.kind == kind {
+            return ProviderCatalog.resolve(modelID: selection.modelID, for: kind).modelID
+        }
         return models.first?.modelID ?? ""
     }
 
@@ -849,10 +841,12 @@ private struct ModelPicker: View {
             .disabled(!enabled)
             .accessibilityIdentifier("settings.model.\(kind.rawValue)")
             // The id stays, as a caption, for whoever needs to match it to
-            // a vendor console or a bill.
+            // a vendor console or a bill — the picker sheet's id caption,
+            // dimmed with the picker.
             Text(currentModelID)
-                .font(.caption2.monospaced())
-                .foregroundStyle(.secondary)
+                .font(.caption)
+                .foregroundStyle(theme.faint)
+                .opacity(enabled ? 1 : 0.5)
                 .accessibilityIdentifier("settings.modelID.\(kind.rawValue)")
         }
     }

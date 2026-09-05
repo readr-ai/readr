@@ -174,6 +174,20 @@ final class SettingsModel: ObservableObject {
     /// until the user has chosen one.
     var activeKind: ProviderInfo.Kind? { activeSelection?.kind }
 
+    /// Which model Ask is actually using, in one line: "Ask uses Claude
+    /// Opus 5 · Claude (Anthropic)". Connected means usable — a stored key
+    /// the check rejected, Ollama not running, Apple Intelligence switched
+    /// off all add "— not connected", the way the card's dot goes red.
+    /// Read from the manager directly before the first refresh has mirrored
+    /// it, so the first frame does not flash the wrong state.
+    var askUsesLine: String {
+        guard let selection = activeSelection ?? manager.selection else {
+            return "Ask uses no model yet — connect one below."
+        }
+        let connected = configured[selection.kind] ?? manager.isConfigured(selection.kind)
+        return "Ask uses " + selection.summary(connected: connected)
+    }
+
     /// Kick off (or refresh) validation for a kind and mirror the result:
     /// remote keys get a lightweight authenticated probe, Local hits Ollama's
     /// `api/tags`. `validation[kind]` flips to `.validating` immediately so the

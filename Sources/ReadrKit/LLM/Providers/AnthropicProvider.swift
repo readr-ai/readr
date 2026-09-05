@@ -18,6 +18,8 @@ public struct AnthropicProvider: LLMProvider, CredentialValidating {
         model: String = "claude-opus-5",
         http: HTTPClient = URLSessionHTTPClient(),
         contextBudget: Int = 200_000
+,
+        displayName: String? = nil
     ) {
         self.credentials = credentials
         self.model = model
@@ -28,6 +30,8 @@ public struct AnthropicProvider: LLMProvider, CredentialValidating {
             contextBudget: contextBudget,
             supportsPromptCaching: true,
             isLocal: false
+,
+            displayName: displayName
         )
     }
 

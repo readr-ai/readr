@@ -16,6 +16,8 @@ public struct LocalLLMProvider: LLMProvider, LocalReadinessProbing {
         baseURL: URL = URL(string: "http://127.0.0.1:11434")!,
         http: HTTPClient = URLSessionHTTPClient(),
         contextBudget: Int = 8_192
+,
+        displayName: String? = nil
     ) {
         self.model = model
         self.baseURL = baseURL
@@ -26,6 +28,8 @@ public struct LocalLLMProvider: LLMProvider, LocalReadinessProbing {
             contextBudget: contextBudget,
             supportsPromptCaching: false,
             isLocal: true
+,
+            displayName: displayName
         )
     }
 
