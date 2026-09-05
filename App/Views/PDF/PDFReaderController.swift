@@ -47,10 +47,9 @@ final class PDFReaderController: NSObject, ObservableObject {
     weak var model: AppModel?
     var book: Book?
     var onAsk: ((Selection) -> Void)?
-    /// "Listen from here": the page index and the character offset into that
-    /// page's text (== the narration chapter and offset — `PDFPageChapters`
-    /// makes one chapter per page from `PDFPage.string` verbatim).
-    var onListen: ((Int, Int) -> Void)?
+    /// "Listen from here" on a selection or a stored highlight, resolved to
+    /// narration coordinates by `listenAnchor(for:)`.
+    var onListen: ((ListenAnchor) -> Void)?
     /// Current reading theme, so the annotation selection menu the controller
     /// renders (macOS NSPopover / iOS floating bar) matches the Marginalia
     /// palette rather than defaulting to `.paper`. Set by the host PDF view.
@@ -392,9 +391,12 @@ final class PDFReaderController: NSObject, ObservableObject {
                 },
                 onListen: { [weak self] in
                     guard let self else { return }
-                    let anchor = self.committedSelection().flatMap { self.listenAnchor(for: $0) }
+                    // Resolve BEFORE the selection is cleared: `committedSelection`
+                    // reads the live PDFView selection, which `finishSelectionAction`
+                    // clears.
+                    let anchor = self.listenAnchorForCurrentSelection()
                     self.finishSelectionAction()
-                    if let anchor { self.onListen?(anchor.pageIndex, anchor.characterOffset) }
+                    self.fireListen(anchor)
                 },
                 onRemove: nil
             )
@@ -431,10 +433,7 @@ final class PDFReaderController: NSObject, ObservableObject {
                 onListen: { [weak self] in
                     guard let self else { return }
                     self.dismissMenu()
-                    let offset = self.listenAnchor(
-                        forQuoted: highlight.quotedText, pageIndex: highlight.pageIndex
-                    )
-                    self.onListen?(highlight.pageIndex, offset)
+                    self.fireListen(self.listenAnchor(for: highlight))
                 },
                 onRemove: { [weak self] in self?.removeHighlight(highlight) }
             )
@@ -639,43 +638,165 @@ final class PDFReaderController: NSObject, ObservableObject {
         )
     }
 
-    // MARK: Listen from here
+    // MARK: Pages ↔ narration chapters
 
-    /// Where a selection starts, as a narration anchor: the index of its
-    /// first page and the *Character* offset into that page's text.
-    ///
-    /// `PDFSelection.range(at:on:)` is exact (the same text PDFKit hands
-    /// `page.string`, in UTF-16 units), so it is preferred over the
-    /// string search `askSelection` uses — a repeated phrase would otherwise
-    /// send the voice to its first occurrence. UTF-16 → Character conversion
-    /// goes through `Range(_, in:)`, never arithmetic: a ligature or an emoji
-    /// on the page would drift a raw count. A selection spanning a page break
-    /// anchors on its first page; narration crosses into the next page-chapter
-    /// on its own.
-    func listenAnchor(for selection: PDFSelection) -> (pageIndex: Int, characterOffset: Int)? {
-        guard let document = pdfView?.document, let page = selection.pages.first else { return nil }
-        let pageIndex = document.index(for: page)
-        let pageText = page.string ?? ""
-        guard selection.numberOfTextRanges(on: page) > 0 else {
-            // No text range on the first page (a rect-only selection): fall
-            // back to the phrase search, then to the top of the page.
-            return (pageIndex, listenAnchor(forQuoted: selection.string ?? "", pageIndex: pageIndex))
-        }
-        let utf16Range = selection.range(at: 0, on: page)
-        guard utf16Range.location != NSNotFound,
-              let range = Range(utf16Range, in: pageText)
-        else { return (pageIndex, 0) }
-        return (pageIndex, pageText.distance(from: pageText.startIndex, to: range.lowerBound))
+    /// The book's text is narrated chapter by chapter, and `PDFPageChapters`
+    /// makes one chapter per page — so for a book imported since 3.3.1 the
+    /// mapping is the identity. Books imported by the earlier parser, which
+    /// skipped text-less pages, are persisted as they were parsed (nothing
+    /// re-parses on open), so for them a page is matched to the chapter
+    /// carrying its text. `chapterText(forPage:)` applies the same
+    /// normalisation `PDFPageChapters.build` did (whitespace-only → empty).
+    private var pagesMatchChapters: Bool {
+        guard let book, pageCount > 0 else { return false }
+        return book.chapters.count == pageCount
     }
 
-    /// A stored highlight keeps its page and its quoted text, not an offset:
-    /// find the phrase on the page (its first occurrence — the same
-    /// approximation `askSelection` makes), or start the page from the top.
-    func listenAnchor(forQuoted quoted: String, pageIndex: Int) -> Int {
-        guard !quoted.isEmpty,
-              let pageText = pdfView?.document?.page(at: pageIndex)?.string,
-              let found = pageText.range(of: quoted)
-        else { return 0 }
+    /// Legacy imports only: chapter index → page index, built once from the
+    /// pages' text. Chapters whose text is empty are ambiguous and unmapped.
+    private var legacyPageByChapter: [Int: Int]?
+
+    private func chapterText(forPage index: Int) -> String {
+        let text = pdfView?.document?.page(at: index)?.string ?? ""
+        return text.contains { !$0.isWhitespace } ? text : ""
+    }
+
+    /// The narration chapter for a page, or nil when the page has none.
+    func chapterIndex(forPage page: Int) -> Int? {
+        guard let book, book.chapters.indices.contains(page) || !pagesMatchChapters else { return nil }
+        if pagesMatchChapters { return page }
+        let text = chapterText(forPage: page)
+        guard !text.isEmpty else { return nil }
+        return book.chapters.firstIndex { $0.text == text }
+    }
+
+    /// The page holding a narration chapter, or nil when none does.
+    func pageIndex(forChapter chapter: Int) -> Int? {
+        guard let book, book.chapters.indices.contains(chapter) else { return nil }
+        if pagesMatchChapters { return chapter }
+        if legacyPageByChapter == nil {
+            var byText: [String: Int] = [:]
+            for page in 0..<pageCount {
+                let text = chapterText(forPage: page)
+                if !text.isEmpty, byText[text] == nil { byText[text] = page }
+            }
+            legacyPageByChapter = Dictionary(uniqueKeysWithValues: book.chapters.enumerated().compactMap {
+                index, chapter in byText[chapter.text].map { (index, $0) }
+            })
+            DiagnosticsLog.shared.record(
+                .info, .reader,
+                "PDF narration: legacy import, mapped \(legacyPageByChapter?.count ?? 0) of "
+                    + "\(book.chapters.count) chapters to \(pageCount) pages"
+            )
+        }
+        return legacyPageByChapter?[chapter]
+    }
+
+    // MARK: Following the voice
+
+    /// The page the voice was last shown on, so a page is turned to once when
+    /// the voice crosses onto it — never re-snapped on every sentence, which
+    /// would yank a reader who scrolled within the page (or ahead to check a
+    /// figure) back to its top. Compared against what narration asked for,
+    /// not `currentPageIndex`: in continuous scrolling PDFKit's current page
+    /// is whichever dominates the viewport, and it updates asynchronously.
+    private var lastNarratedPage: Int?
+
+    func followNarration(toChapter chapter: Int) {
+        guard let page = pageIndex(forChapter: chapter), page != lastNarratedPage else { return }
+        lastNarratedPage = page
+        goToPage(page)
+    }
+
+    // MARK: Listen from here
+
+    private func fireListen(_ anchor: ListenAnchor?) {
+        guard let anchor else {
+            DiagnosticsLog.shared.record(
+                .warning, .reader, "PDF Listen from here: no narration chapter for the page"
+            )
+            return
+        }
+        onListen?(anchor)
+    }
+
+    /// The anchor for the selection an action should act on, falling back to
+    /// the top of the page in view so the button always does something.
+    private func listenAnchorForCurrentSelection() -> ListenAnchor? {
+        if let selection = committedSelection(), let anchor = listenAnchor(for: selection) {
+            return anchor
+        }
+        return chapterIndex(forPage: currentPageIndex).map {
+            ListenAnchor(chapterIndex: $0, characterOffset: 0, isExact: false)
+        }
+    }
+
+    /// Where a selection starts, as a narration anchor.
+    ///
+    /// `PDFSelection.range(at:on:)` is exact (the same text PDFKit hands
+    /// `page.string`, in UTF-16 units), so it is preferred over a string
+    /// search — a repeated phrase would otherwise send the voice to its first
+    /// occurrence. UTF-16 → Character conversion goes through
+    /// `TextRangeConvert`, never arithmetic: a ligature or an emoji on the
+    /// page would drift a raw count. A selection spanning a page break
+    /// anchors on its first page; narration crosses into the next
+    /// page-chapter on its own. Nil when the page has no narration chapter.
+    func listenAnchor(for selection: PDFSelection) -> ListenAnchor? {
+        guard let document = pdfView?.document, let page = selection.pages.first else { return nil }
+        let pageIndex = document.index(for: page)
+        guard pageIndex != NSNotFound, let chapter = chapterIndex(forPage: pageIndex) else { return nil }
+        if selection.numberOfTextRanges(on: page) > 0 {
+            let utf16Range = selection.range(at: 0, on: page)
+            if utf16Range.location != NSNotFound,
+               let offset = TextRangeConvert.characterOffset(
+                   fromUTF16Location: utf16Range.location, in: page.string ?? ""
+               ) {
+                return ListenAnchor(chapterIndex: chapter, characterOffset: offset, isExact: true)
+            }
+        }
+        // A rect-only selection, or a range PDFKit couldn't place in its own
+        // text: the phrase, then the top of the page.
+        return ListenAnchor(
+            chapterIndex: chapter,
+            characterOffset: offset(ofPhrase: selection.string ?? "", onPage: page) ?? 0,
+            isExact: false
+        )
+    }
+
+    /// A stored highlight keeps its page and its line rects, not an offset.
+    /// The first line's rect selects the same text PDFKit selected when the
+    /// highlight was made, so its range is exact; the quoted text is only a
+    /// fallback, and an approximate one — it was built from per-line trimmed
+    /// strings joined by spaces, so a multi-line quote never matches
+    /// `page.string` whole. Its first line usually does.
+    func listenAnchor(for highlight: PDFHighlight) -> ListenAnchor? {
+        guard let document = pdfView?.document,
+              let page = document.page(at: highlight.pageIndex),
+              let chapter = chapterIndex(forPage: highlight.pageIndex)
+        else { return nil }
+        let pageText = page.string ?? ""
+        if let first = highlight.lineRects.first,
+           let selection = page.selection(for: CGRect(x: first.x, y: first.y, width: first.width, height: first.height)),
+           selection.numberOfTextRanges(on: page) > 0 {
+            let utf16Range = selection.range(at: 0, on: page)
+            if utf16Range.location != NSNotFound,
+               let offset = TextRangeConvert.characterOffset(fromUTF16Location: utf16Range.location, in: pageText) {
+                return ListenAnchor(chapterIndex: chapter, characterOffset: offset, isExact: true)
+            }
+        }
+        let firstLine = highlight.quotedText.split(separator: " ").prefix(6).joined(separator: " ")
+        return ListenAnchor(
+            chapterIndex: chapter,
+            characterOffset: offset(ofPhrase: firstLine, onPage: page) ?? 0,
+            isExact: false
+        )
+    }
+
+    /// The Character offset of a phrase's first occurrence on a page.
+    private func offset(ofPhrase phrase: String, onPage page: PDFPage) -> Int? {
+        guard !phrase.isEmpty, let pageText = page.string,
+              let found = pageText.range(of: phrase)
+        else { return nil }
         return pageText.distance(from: pageText.startIndex, to: found.lowerBound)
     }
 

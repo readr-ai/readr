@@ -17,7 +17,7 @@ private func syncController(
     _ controller: PDFReaderController,
     model: AppModel, book: Book, url: URL,
     onAsk: @escaping (Selection) -> Void,
-    onListen: @escaping (Int, Int) -> Void
+    onListen: @escaping (ListenAnchor) -> Void
 ) {
     controller.model = model
     controller.book = book
@@ -33,7 +33,7 @@ struct PDFKitContainerView: UIViewRepresentable {
     let book: Book
     let url: URL
     let onAsk: (Selection) -> Void
-    let onListen: (Int, Int) -> Void
+    let onListen: (ListenAnchor) -> Void
 
     func makeUIView(context: Context) -> PDFView {
         let view = PDFView()
@@ -53,7 +53,7 @@ struct PDFKitContainerView: NSViewRepresentable {
     let book: Book
     let url: URL
     let onAsk: (Selection) -> Void
-    let onListen: (Int, Int) -> Void
+    let onListen: (ListenAnchor) -> Void
 
     func makeNSView(context: Context) -> PDFView {
         let view = PDFView()

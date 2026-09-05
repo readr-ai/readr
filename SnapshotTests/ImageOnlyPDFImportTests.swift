@@ -180,7 +180,8 @@ final class ImageOnlyPDFImportTests: XCTestCase {
         try? store.add(book)
         let model = AppModel(store: store, seedsSampleBook: false)
         let view = PDFReaderView(
-            book: book, url: url, onAsk: { _ in }, annotationActions: .constant(nil)
+            book: book, url: url, onAsk: { _ in }, onListen: { _ in },
+            annotationActions: .constant(nil)
         )
         .environmentObject(model)
         let host = NSHostingView(rootView: AnyView(view))

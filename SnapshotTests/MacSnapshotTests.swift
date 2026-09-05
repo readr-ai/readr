@@ -351,12 +351,14 @@ final class MacSnapshotTests: XCTestCase {
                     mode: .create,
                     theme: .paper,
                     onHighlight: { _ in }, onNote: {}, onAsk: {}, onCopy: {},
+                    onListen: {},
                     onRemove: nil
                 )
                 AnnotationMenuView(
                     mode: .edit(currentColor: .green, hasNote: true),
                     theme: .paper,
                     onHighlight: { _ in }, onNote: {}, onAsk: {}, onCopy: {},
+                    onListen: {},
                     onRemove: {}
                 )
             }

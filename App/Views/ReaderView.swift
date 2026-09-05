@@ -59,6 +59,13 @@ struct ReaderView: View {
     /// annotation-shortcut registration and dispatches per mode — a single
     /// owner, so no mode can register a duplicate key equivalent.
     @State private var pdfAnnotationActions: PDFAnnotationActions?
+    /// Set by "Listen from here": the selected sentence may have begun on the
+    /// page before the one the reader is looking at, and following the voice
+    /// there would flip the page backwards — the very regression the Listen
+    /// button's begins-after rule exists for. So the page holds until the
+    /// voice reaches it (or moves on to another sentence).
+    @State private var holdsPageForSelectionStart = false
+    @State private var heldSentenceStart: Int?
     /// The Ask panel's request — selection, scope and any question to send
     /// on open — and, by being non-nil, the fact that it is presented. One
     /// value carries the whole presentation, so `.sheet(item:)` gives every
@@ -445,12 +452,7 @@ struct ReaderView: View {
                         // frontier, so the whole document is in scope.
                         askRequest = AskRequest(selection: selection, scope: .wholeBook, initialQuestion: nil)
                     },
-                    onListen: { pageIndex, characterOffset in
-                        // A PDF's narration chapters are its pages, and each
-                        // chapter's text is the page's text verbatim — so a
-                        // page-local offset is already a narration offset.
-                        listen(fromChapter: pageIndex, characterOffset: characterOffset)
-                    },
+                    onListen: { anchor in listen(from: anchor) },
                     annotationActions: $pdfAnnotationActions
                 )
             } else if isImageOnlyPDF {
@@ -793,50 +795,79 @@ struct ReaderView: View {
             // The reading anchor, so narration picks up at the top of the page
             // in view rather than at the chapter's start.
             //
-            // Recorded because a device test saw narration begin near the top
-            // of the chapter after paging to its last page, and every route
-            // that turns a page does write this anchor — so the next report of
-            // it needs the number that was actually handed over, not another
-            // description of where the page looked. A chapter index and an
-            // offset, never any of the text (see DiagnosticsLog).
             // With the original PDF pages up, the page in view is the
             // anchor: the text-mode `chapterIndex`/`pagedAnchor` are only ever
             // written by the text surface, so on a PDF read page by page they
             // still point at wherever text mode was last left (page 1, for
-            // most readers) — and Listen started the document over.
-            let startChapter: Int
-            let startOffset: Int
-            if isPDFOriginal, let page = pdfAnnotationActions?.currentPageIndex() {
-                startChapter = page
-                startOffset = 0
+            // most readers) — and Listen started the document over. The
+            // surface publishes the page's chapter while mounted; under a
+            // sheet (the shortcut still fires) the saved page stands in.
+            if model.isPDF(book), isPDFOriginal {
+                let chapter = pdfAnnotationActions?.narrationChapterInView()
+                    ?? model.position(for: book)?.pdfPageIndex
+                guard let chapter, book.chapters.indices.contains(chapter) else {
+                    DiagnosticsLog.shared.record(
+                        .warning, .reader, "Narration start refused: PDF page has no chapter"
+                    )
+                    return
+                }
+                // Pressing Listen again on the page the voice stopped on picks
+                // up at that sentence, as text mode does through its anchor.
+                let resume = narration.position.flatMap {
+                    $0.chapterIndex == chapter ? $0.sentenceStart : nil
+                }
+                startNarration(
+                    chapter: chapter, offset: resume ?? 0, anchor: .nextSentenceStart,
+                    origin: "page in view"
+                )
             } else {
-                startChapter = chapterIndex
-                startOffset = pagedAnchor
+                startNarration(
+                    chapter: chapterIndex, offset: pagedAnchor, anchor: .nextSentenceStart,
+                    origin: "page top"
+                )
             }
-            DiagnosticsLog.shared.record(
-                .info, .reader,
-                "Narration start: chapter \(startChapter) offset \(startOffset)"
-            )
-            narration.start(
-                book: book, chapterIndex: startChapter, characterOffset: startOffset
-            )
         }
     }
 
     /// "Listen from here": read aloud from the sentence containing a selection
-    /// or highlight, given in chapter coordinates (a PDF page index and an
-    /// offset into that page's text, for the native PDF surface). Restarts a
-    /// voice already reading rather than layering a second one.
-    private func listen(fromChapter index: Int, characterOffset: Int) {
-        guard book.chapters.indices.contains(index) else { return }
+    /// or highlight, on either surface. Restarts a voice already reading
+    /// rather than layering a second one.
+    private func listen(from anchor: ListenAnchor) {
+        guard book.chapters.indices.contains(anchor.chapterIndex) else {
+            DiagnosticsLog.shared.record(
+                .warning, .reader,
+                "Listen from here refused: chapter \(anchor.chapterIndex) is not in the book"
+            )
+            return
+        }
+        holdsPageForSelectionStart = true
+        heldSentenceStart = nil
+        startNarration(
+            chapter: anchor.chapterIndex, offset: anchor.characterOffset,
+            anchor: .sentenceContaining,
+            origin: anchor.isExact ? "selection" : "selection, approximate"
+        )
+    }
+
+    /// The one place narration is started from this view. Recorded because a
+    /// device test saw narration begin near the top of the chapter after
+    /// paging to its last page, and every route that turns a page does write
+    /// the anchor — so the next report of it needs the number that was
+    /// actually handed over, not another description of where the page
+    /// looked. A chapter index, an offset and where they came from — never
+    /// any of the text (see DiagnosticsLog).
+    private func startNarration(
+        chapter: Int, offset: Int, anchor: SpeechPlaylist.SeekAnchor, origin: String
+    ) {
+        if anchor == .nextSentenceStart {
+            holdsPageForSelectionStart = false
+            heldSentenceStart = nil
+        }
         DiagnosticsLog.shared.record(
             .info, .reader,
-            "Narration start from selection: chapter \(index) offset \(characterOffset)"
+            "Narration start (\(origin)): chapter \(chapter) offset \(offset)"
         )
-        narration.start(
-            book: book, chapterIndex: index, characterOffset: characterOffset,
-            anchor: .sentenceContaining
-        )
+        narration.start(book: book, chapterIndex: chapter, characterOffset: offset, anchor: anchor)
     }
 
     /// Keep the page under the voice. Narration reports each sentence it moves
@@ -845,19 +876,33 @@ struct ReaderView: View {
     /// position that gets persisted is where the reader actually listened to.
     private func followNarration(_ position: NarrationPosition) {
         guard book.chapters.indices.contains(position.chapterIndex) else { return }
-        // Original PDF pages: the narration chapter *is* the page, so turn to
-        // it when the voice crosses onto the next one. Only on a change —
-        // PDFKit's go(to:) rescrolls to the page top, which would yank a
-        // reader who scrolled within the page back up on every sentence.
-        if isPDFOriginal, let actions = pdfAnnotationActions,
-           actions.currentPageIndex() != position.chapterIndex {
-            actions.goToPage(position.chapterIndex)
+        // Original PDF pages: the surface owns the page, so it turns the page
+        // (once per page the voice crosses onto) and the text-mode state —
+        // `chapterIndex`, `pagedAnchor`, their saves — is left alone; a
+        // `jump` here would count as a reader move and drop the resume
+        // anchor and the selection on every page. Cheap check first: the
+        // actions exist only while the PDF surface is mounted, and
+        // `isPDFOriginal` touches the filesystem.
+        if pdfAnnotationActions != nil || (model.isPDF(book) && isPDFOriginal) {
+            pdfAnnotationActions?.followNarration(position.chapterIndex)
+            return
         }
         guard position.chapterIndex == chapterIndex else {
             jump(toChapter: position.chapterIndex, offset: position.characterOffset)
             return
         }
         narrationResumeAnchor = position.sentenceStart
+        if holdsPageForSelectionStart {
+            // Still inside the selected sentence and behind the page the
+            // reader is on: hold the page. Anything else releases the hold.
+            if position.characterOffset < pagedAnchor,
+               heldSentenceStart == nil || heldSentenceStart == position.sentenceStart {
+                heldSentenceStart = position.sentenceStart
+                return
+            }
+            holdsPageForSelectionStart = false
+            heldSentenceStart = nil
+        }
         guard position.characterOffset != pagedAnchor else { return }
         narrationMove.isActive = true
         pagedAnchor = position.characterOffset
@@ -1677,13 +1722,7 @@ struct ReaderView: View {
             }
 
         case .ask:
-            let range: Range<Int>
-            switch target {
-            case let .selection(selected):
-                range = selected
-            case let .span(span):
-                range = highlight(withID: span.id)?.range ?? span.range
-            }
+            let range = self.range(for: target)
             askRequest = AskRequest(
                 selection: model.makeSelection(in: chapter, range: range),
                 scope: askScope(selection: range),
@@ -1691,14 +1730,12 @@ struct ReaderView: View {
             )
 
         case .listen:
-            let range: Range<Int>
-            switch target {
-            case let .selection(selected):
-                range = selected
-            case let .span(span):
-                range = highlight(withID: span.id)?.range ?? span.range
-            }
-            listen(fromChapter: chapterIndex, characterOffset: range.lowerBound)
+            // The chapter the menu was opened in, like every sibling case —
+            // not the view's current one, which a chapter turn could move.
+            let index = book.chapters.firstIndex { $0.id == chapter.id } ?? chapterIndex
+            listen(from: ListenAnchor(
+                chapterIndex: index, characterOffset: range(for: target).lowerBound, isExact: true
+            ))
 
         case .copy:
             let copied: String
@@ -1716,6 +1753,18 @@ struct ReaderView: View {
             if case let .span(span) = target, let existing = highlight(withID: span.id) {
                 model.removeHighlight(existing, in: book)
             }
+        }
+    }
+
+    /// The live range a menu target stands for: a selection as given, a
+    /// highlight's stored range (which may have been re-ranged since the span
+    /// was painted), falling back to the span's.
+    private func range(for target: AnnotationTarget) -> Range<Int> {
+        switch target {
+        case let .selection(selected):
+            return selected
+        case let .span(span):
+            return highlight(withID: span.id)?.range ?? span.range
         }
     }
 

@@ -1,6 +1,19 @@
 import SwiftUI
 import ReadrKit
 
+/// Where "Listen from here" should start, in narration coordinates: a
+/// chapter of the book's text and a character offset into it. Both surfaces
+/// hand the host one of these, so the seek rule is chosen in one place.
+struct ListenAnchor: Equatable {
+    var chapterIndex: Int
+    var characterOffset: Int
+    /// False when the exact spot couldn't be recovered and this is the best
+    /// approximation — a highlight's phrase found by search, or the top of its
+    /// page. Logged, so a "started in the wrong place" report can tell the
+    /// two apart.
+    var isExact: Bool
+}
+
 /// The native PDF surface's selection-dependent annotation actions, published
 /// up to the host reader while the surface is mounted (nil otherwise). The
 /// host owns every annotation keyboard shortcut registration — a single
@@ -19,9 +32,15 @@ struct PDFAnnotationActions {
     /// Navigate the live PDF to a page (R1: Notes-list "Show in book" jumps a
     /// PDF annotation to its page, mirroring the text reader's chapter jump).
     var goToPage: (Int) -> Void
-    /// The page in view — the host's Listen anchor while the PDF is up, and
-    /// what narration's page-follow compares against before turning.
-    var currentPageIndex: () -> Int
+    /// The narration chapter for the page in view — the Listen button's
+    /// anchor while the PDF is up. Nil when that page has no chapter (a
+    /// legacy import whose chapters skipped text-less pages; see
+    /// `PDFReaderController.chapterIndex(forPage:)`).
+    var narrationChapterInView: () -> Int?
+    /// Turn the pages with the voice: show the page holding this narration
+    /// chapter, once per page the voice crosses onto. The surface owns the
+    /// page, so the host's text-mode state is never touched for a PDF.
+    var followNarration: (Int) -> Void
     /// Recolor a stored PDF highlight AND its live PDFKit overlay in one step
     /// (R2: a Notes-list color change must repaint the page, not just the
     /// store). No-op on the page when the highlight isn't currently overlaid.
@@ -48,9 +67,8 @@ struct PDFReaderView: View {
     let book: Book
     let url: URL
     var onAsk: (Selection) -> Void
-    /// "Listen from here" on a PDF selection or highlight: the page index and
-    /// the character offset into that page's text where the reader pointed.
-    var onListen: (Int, Int) -> Void
+    /// "Listen from here" on a PDF selection or highlight.
+    var onListen: (ListenAnchor) -> Void
     /// Published while this surface is mounted so the host's shortcuts and
     /// toolbar Ask reach the PDF selection (it lives in `controller`, private
     /// to this view).
@@ -114,7 +132,8 @@ struct PDFReaderView: View {
                     noteSelection: { controller.noteCurrentSelection() },
                     askSelection: { controller.askCurrentSelection() },
                     goToPage: { controller.goToPage($0) },
-                    currentPageIndex: { controller.currentPageIndex },
+                    narrationChapterInView: { controller.chapterIndex(forPage: controller.currentPageIndex) },
+                    followNarration: { controller.followNarration(toChapter: $0) },
                     recolorHighlight: { controller.recolorHighlight($0, to: $1) },
                     removeHighlight: { controller.removeHighlight($0) }
                 )
@@ -427,7 +446,7 @@ struct PDFReaderView: View {
     let book: Book
     let url: URL
     var onAsk: (Selection) -> Void
-    var onListen: (Int, Int) -> Void
+    var onListen: (ListenAnchor) -> Void
     @Binding var annotationActions: PDFAnnotationActions?
 
     var body: some View {

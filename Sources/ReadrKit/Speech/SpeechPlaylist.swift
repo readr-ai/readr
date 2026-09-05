@@ -152,21 +152,26 @@ public struct SpeechPlaylist: Sendable {
     /// page, a chapter picked from the Contents list (`.nextSentenceStart`),
     /// or a selection (`.sentenceContaining`).
     ///
-    /// Begins-after, not contains. The anchor a reader presses Listen on is the
-    /// top of the visible page, and the sentence spanning that boundary started
-    /// on the page *before* it. Starting there read correctly but dragged the
-    /// page backwards to follow the voice — on a device it looked like Listen
-    /// had thrown the reader back a spread, and with a fixture whose paragraphs
-    /// were identical it looked like it had restarted the chapter. The cost is
+    /// For a page anchor (`.nextSentenceStart`): begins-after, not contains.
+    /// The anchor a reader presses Listen on is the top of the visible page,
+    /// and the sentence spanning that boundary started on the page *before*
+    /// it. Starting there read correctly but dragged the page backwards to
+    /// follow the voice — on a device it looked like Listen had thrown the
+    /// reader back a spread, and with a fixture whose paragraphs were
+    /// identical it looked like it had restarted the chapter. The cost is
     /// that a sentence straddling the page break is skipped rather than
     /// half-read; the promise is "the first sentence of the page in front of
     /// you", and that is the sentence that keeps it.
     ///
-    /// The fallback covers an anchor inside the chapter's final sentence, where
-    /// nothing begins later: that sentence is still the right answer. A chapter
-    /// with nothing left to read at all (empty, image-only, or an offset past
-    /// its end) rolls forward into the next one with something to say. Returns
-    /// nil only when the rest of the book is silent.
+    /// For a selection (`.sentenceContaining`) that first rule is skipped, and
+    /// the shared fallback below is the whole answer: the first sentence that
+    /// *ends* after the offset is the one containing it — or, for an offset
+    /// in the gap between sentences, the next one. It is the same clause that
+    /// covers a page anchor inside the chapter's final sentence, where nothing
+    /// begins later and that sentence is still right. A chapter with nothing
+    /// left to read at all (empty, image-only, or an offset past its end)
+    /// rolls forward into the next one with something to say. Returns nil
+    /// only when the rest of the book is silent.
     @discardableResult
     public mutating func seek(
         toChapter index: Int,
@@ -175,12 +180,8 @@ public struct SpeechPlaylist: Sendable {
     ) -> SpeechSegment? {
         guard book.chapters.indices.contains(index) else { return nil }
         let segments = self.segments(inChapter: index)
-        if anchor == .sentenceContaining,
-           let position = segments.firstIndex(where: { $0.range.contains(characterOffset) }) {
-            cursor = Cursor(chapter: index, segment: position)
-            return current
-        }
-        if let position = segments.firstIndex(where: { $0.range.lowerBound >= characterOffset }) {
+        if anchor == .nextSentenceStart,
+           let position = segments.firstIndex(where: { $0.range.lowerBound >= characterOffset }) {
             cursor = Cursor(chapter: index, segment: position)
             return current
         }
