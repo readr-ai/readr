@@ -135,8 +135,11 @@ appearance controls inline; September 2026 UX review, F3):
 - **Listen** (⌘⇧L): the now-reading card insets the page from the bottom —
   chapter in caps, the sentence being read, a hairline of chapter progress,
   speed · ◀ ● ▶ · Sleep, ✕ in the corner. The voice is chosen in the Aa
-  popover; chapter skips are in Contents. Ask opened while the voice reads
-  pauses it, is about the sentence being read, and resumes it on Done.
+  popover (voices resolved for the book before the first Listen, so it
+  works there first); chapter skips are in Contents, which takes the voice
+  along. Ask opened while the voice reads pauses it, is about the sentence
+  being read, and resumes it on Done — unless the reader restarted or
+  paused the voice themselves meanwhile.
 - Footer (text modes): "Page x of y · ~N min left in chapter" (estimated from
   ~240 wpm until measured), page-turn arrows; ←/→ keys and trackpad swipe.
   Scroll layout on the Mac carries previous/next-chapter arrows in its

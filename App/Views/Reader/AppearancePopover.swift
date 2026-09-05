@@ -50,6 +50,30 @@ struct AppearancePopover: View {
     }
 
     var body: some View {
+        #if os(iOS)
+        if isSheetPresentation {
+            // The sheet takes the measured height of the controls. When a
+            // short screen (an iPhone in landscape) clamps the detent, the
+            // sections scroll rather than falling off the bottom — the Voice
+            // and PDF sections are the ones that would.
+            ScrollView { content }
+                .scrollBounceBehavior(.basedOnSize)
+                .presentationDetents(
+                    measuredHeight > 0 ? [.height(measuredHeight)] : [.medium]
+                )
+                .presentationDragIndicator(.visible)
+                .presentationBackground(theme.elevated)
+        } else {
+            content
+                .presentationBackground(theme.elevated)
+        }
+        #else
+        content
+            .presentationBackground(theme.elevated)
+        #endif
+    }
+
+    private var content: some View {
         VStack(alignment: .leading, spacing: 18) {
             Text("Appearance")
                 .font(.system(size: 17, weight: .semibold, design: .serif))
@@ -105,19 +129,12 @@ struct AppearancePopover: View {
         .frame(width: isSheetPresentation ? nil : 320, alignment: .leading)
         .frame(maxWidth: isSheetPresentation ? .infinity : nil, alignment: .leading)
         .background(theme.elevated)
-        #if os(iOS)
         // Size the adapted sheet to the measured content height, so it fits
         // exactly at any Dynamic Type size and never strands the controls in
         // a half-empty screen. `.medium` is the pre-measurement fallback.
         .onGeometryChange(for: CGFloat.self, of: { $0.size.height }) {
             measuredHeight = $0
         }
-        .presentationDetents(
-            measuredHeight > 0 ? [.height(measuredHeight)] : [.medium]
-        )
-        .presentationDragIndicator(.visible)
-        #endif
-        .presentationBackground(theme.elevated)
     }
 
     /// A captioned group: a faint section label above its control row.

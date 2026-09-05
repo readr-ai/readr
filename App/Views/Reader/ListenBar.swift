@@ -12,9 +12,10 @@ import UIKit
 /// chapter's progress, and one row of controls — speed on the left, ◀ ● ▶
 /// in the middle, the sleep timer on the right, ✕ in the corner. That is
 /// the whole of it. The voice is chosen in the Aa popover (once, not per
-/// listen); chapter skips live in Contents; and the "N min ready" figure
-/// is gone — the buffer's state shows only when it matters: preparing, or
-/// failed. (September 2026 UX review, F6, Option B.)
+/// listen); chapter skips live in Contents (a jump there takes the voice
+/// along); and the "N min ready" figure is gone — the buffer's state shows
+/// only when it matters: preparing, or failed. (September 2026 UX review,
+/// F6, Option B.)
 ///
 /// Styling follows the reading theme, so switching to Dark doesn't leave a
 /// bright slab at the bottom of the page.
@@ -45,21 +46,21 @@ struct ListenBar: View {
 
     private var card: some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack(alignment: .top, spacing: 8) {
-                VStack(alignment: .leading, spacing: 4) {
-                    if let chapterTitle, !chapterTitle.isEmpty {
-                        Text(chapterTitle.uppercased())
-                            .font(.system(size: 10, weight: .semibold))
-                            .kerning(1.5)
-                            .foregroundStyle(theme.faint)
-                            .lineLimit(1)
-                            .accessibilityHidden(true)
-                    }
-                    statusLine
+            VStack(alignment: .leading, spacing: 4) {
+                if let chapterTitle, !chapterTitle.isEmpty {
+                    Text(chapterTitle.uppercased())
+                        .font(.system(size: 10, weight: .semibold))
+                        .kerning(1.5)
+                        .foregroundStyle(theme.faint)
+                        .lineLimit(1)
+                        .accessibilityHidden(true)
                 }
-                Spacer(minLength: 8)
-                closeButton
+                statusLine
             }
+            // Room for the ✕, which sits in the card's corner (an overlay
+            // on the card, not a row member) so its 44pt target can reach
+            // the edge without the text running under it.
+            .padding(.trailing, 36)
             progressTrack
                 .padding(.top, 10)
                 .padding(.bottom, 2)
@@ -79,6 +80,7 @@ struct ListenBar: View {
             RoundedRectangle(cornerRadius: 16, style: .continuous)
                 .strokeBorder(theme.line, lineWidth: 1)
         )
+        .overlay(alignment: .topTrailing) { closeButton }
         .shadow(color: .black.opacity(0.10), radius: 12, y: 4)
     }
 
@@ -120,7 +122,9 @@ struct ListenBar: View {
             Image(systemName: symbol)
                 .font(.system(size: 14))
                 .foregroundStyle(theme.inkColor)
-                .frame(width: 36, height: 44)
+                // 44×44: the touch floor (Theme.swift, R5), like every
+                // other control on the card.
+                .frame(width: 44, height: 44)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -309,17 +313,18 @@ struct ListenBar: View {
         return String(format: "%d:%02d", total / 60, total % 60)
     }
 
+    /// ✕ in the card's top-right corner: a 44pt target (R5) drawn as a small
+    /// glyph, inset just enough to clear the rounded border.
     private var closeButton: some View {
         Button { onClose() } label: {
             Image(systemName: "xmark")
                 .font(.system(size: 11, weight: .semibold))
                 .foregroundStyle(theme.muted)
-                .frame(width: 32, height: 32)
+                .frame(width: 44, height: 44)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .padding(.top, -6)
-        .padding(.trailing, -8)
+        .padding(2)
         .accessibilityIdentifier("listen.close")
         .accessibilityLabel("Stop listening")
         .help("Stop listening — your place is kept")
@@ -381,7 +386,7 @@ struct NarrationVoicePicker: View {
                     }
                     .pickerStyle(.inline)
                 }
-                .accessibilityIdentifier("listen.otherVoices")
+                .accessibilityIdentifier("appearance.otherVoices")
             } else {
                 Picker("Voice", selection: voiceBinding) {
                     ForEach(narration.voices) { voice in
@@ -410,6 +415,7 @@ struct NarrationVoicePicker: View {
         .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(theme.line, lineWidth: 1))
         .help(narration.voiceName.map { "Voice — \($0)" } ?? "Voice")
         .accessibilityLabel("Voice")
+        .accessibilityValue(narration.voiceName ?? "")
         .accessibilityIdentifier("appearance.voice")
     }
 

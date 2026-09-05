@@ -133,9 +133,11 @@ control instead):
 - [ ] Press Listen mid-chapter: a voice speaks, and it is a **normal** voice —
       on macOS, `Samantha` or whatever System Settings names as the default,
       never `Albert`, `Bad News`, `Bubbles` or another novelty voice
-- [ ] The voice menu **opens on** that same sensible voice, and the joke ones are
+- [ ] Aa › Voice **opens on** that same sensible voice, and the joke ones are
       at the **bottom** of the list — checking only the first row misses this,
-      which is how it survived one round of fixes
+      which is how it survived one round of fixes. Open Aa › Voice on a fresh
+      book **before** pressing Listen: the row already names the voice and the
+      list is there (it used to be empty until the first Listen)
 - [ ] Narration starts at the first sentence of the page in view, **not** the
       chapter's start and **not** a sentence that began on the previous page —
       page to the last page of a chapter first, then press Listen. Read the
@@ -151,7 +153,12 @@ control instead):
 - [ ] Speeds are honest — "2×" takes about half as long as "1×", not a quarter.
       Worth timing rather than eyeballing; the mapping is calibrated to a
       measurement and the constant lives in `SpeechSettings`
-- [ ] Open Ask while narrating: the voice keeps going
+- [ ] Open Ask while narrating: the voice **pauses** on its sentence and the
+      panel quotes that sentence; Done (or closing the panel) resumes it
+      there. Then: open Ask, press ● on the card to keep listening, press ●
+      again to pause, close Ask — it **stays paused**
+- [ ] While narrating, open Contents and pick another chapter: the page
+      turns there and the voice follows (it does not turn the page back)
 - [ ] Let it run to the end of the book: it **stops** within a couple of
       seconds and the control returns to ▶, rather than sitting on ⏸ forever
 - [ ] Pause, wait, play: it resumes rather than restarting the sentence
@@ -177,27 +184,30 @@ Xcode attached for the memory gauge. Record the device model and iOS version
 with the results.
 
 - [ ] **First Listen waits for Readr Voice.** Fresh install (or delete the
-      app first). Open Alice, press Listen: no voice starts. The bar's
-      middle reads "Preparing Readr Voice… N% of 410MB, once" with a
-      progress line while the weights download, then a small spinner for
-      the pronunciation assets and the load; the play/pause control shows
-      Pause. Open the voice menu: Readr Voice is the only row, checked, with
+      app first). Open Alice, press Listen: no voice starts. The card
+      reads "Preparing Readr Voice… N% of 410MB, once" with a progress
+      line while the weights download, then a small spinner for the
+      pronunciation assets and the load; the play/pause control shows
+      Pause. Open Aa › Voice: Readr Voice is the only row, checked, with
       an "Other voices…" submenu holding the Apple voices; no downloading
       note, no locked-screen note. When the model is in (one to two minutes
       on Wi-Fi) the first sentence is Readr Voice — **no Apple voice at any
-      point**, no sentence repeated, none skipped — and the bar shows the
+      point**, no sentence repeated, none skipped — and the card shows the
       sentence. Note how long it took from pressing Listen. Press pause
-      during the wait: the bar flips to Play and the download carries on;
+      during the wait: the card flips to Play and the download carries on;
       press play: "Preparing" is back. Turn Wi-Fi off before pressing
-      Listen: the bar reads "Readr Voice couldn't download." with a Retry;
+      Listen: the card reads "Readr Voice couldn't download." with a Retry;
       turn Wi-Fi on, press Retry: preparing, then Readr Voice.
-- [ ] **The buffer fills.** In the foreground, watch the right of the bar:
-      "1 min ready" within a minute, climbing to about an hour and stopping
-      there. Plug the phone in: it climbs on, to the end of the book or two
-      hours. Unplug: it stops adding, keeps what it has. Skip back a
-      sentence: instant. Change speed to 1.5×: the sentence continues from
-      where it is, no restart, and the figure does not drop. **Record** how
-      long it took to reach 10 minutes ready.
+- [ ] **The buffer fills.** The card no longer shows a "ready" figure (it
+      was an engineering number); the diagnostics log does — each sentence
+      played from the buffer is logged with "Ns ahead". In the foreground,
+      let it read a minute, then skip forward a dozen sentences: each
+      arrives at once, in Readr Voice. Plug the phone in: the "ahead"
+      figure climbs on past an hour, to the end of the book or two hours.
+      Unplug: it stops adding, keeps what it has. Skip back a sentence:
+      instant. Change speed to 1.5×: the sentence continues from where it
+      is, no restart, and the figure does not drop. **Record** from the log
+      how long it took to reach 10 minutes (600s) ahead.
 - [ ] **Thirty minutes continuous, foreground.** Leave it reading. No quit,
       no stall, no sentence heard twice, no Apple voice at any point. Watch
       the read-along line keep pace with the audio.
@@ -207,8 +217,9 @@ with the results.
       reading normally, prefetch is a GPU sentence like any other. Read
       ahead so a sentence is regularly being synthesized right as you lock
       (skip forward past the buffer, or read as fast as the GPU/CPU
-      refill), and lock the phone right as the "ready" figure is
-      momentarily thin, unlock it, and repeat for 20 total locks. MLX cannot
+      refill), and lock the phone right after skipping past what is
+      buffered (the next sentence is being synthesized as you lock),
+      unlock it, and repeat for 20 total locks. MLX cannot
       cancel the one Metal graph already submitted, so diagnostics
       warning-log each lock that catches one with its elapsed milliseconds
       (every GPU use is also logged at `.info` with its duration, so the
@@ -225,8 +236,8 @@ with the results.
       cap is meant to stop). The on-disk buffer is not memory; check it
       separately under Settings › General › iPhone Storage › Readr (about
       30MB an hour of audio).
-- [ ] **Thirty minutes locked.** With "20 min ready" or more, lock the
-      phone. Readr Voice keeps reading from the lock screen — the same
+- [ ] **Thirty minutes locked.** After twenty minutes of foreground
+      listening (the log's "ahead" figure past 1200s), lock the phone. Readr Voice keeps reading from the lock screen — the same
       voice, no gap. Leave it locked for thirty minutes with Xcode attached:
       no quit, no stall; lock-screen pause/play and the headphone pinch
       work. Unlock: still Readr Voice, no sentence twice. Then **measure**,
@@ -250,14 +261,14 @@ with the results.
       session` at `.warning` with the underlying error, once. **The app
       must not crash.** From then on: no further CPU attempts (no more
       `sentence N: cpu` lines), the buffer plays out normally, and once it
-      runs dry the bar shows "Paused — unlock Readr to keep listening" (the
+      runs dry the card shows "Paused — unlock Readr to keep listening" (the
       existing hold) rather than silence or an Apple voice. Unlocking
       resumes on the GPU.
 - [ ] **Lock with nothing ready.** Fresh install; press Listen and lock
       the phone as soon as the first sentence is heard. The next sentence
       either arrives in Readr Voice after a CPU synthesis or narration
       pauses at the boundary with "Paused — unlock Readr to keep listening"
-      on the bar, the lock screen's title, and as a notification (the first
+      on the card, the lock screen's title, and as a notification (the first
       Listen asked for permission — decline it and the diagnostics file
       should carry a "hold notification permission not granted" line). No
       Apple voice. Unlock and open Readr: it resumes on the same sentence by
@@ -265,15 +276,15 @@ with the results.
 - [ ] **Lock during the first download.** Fresh install again. Press
       Listen, then lock the phone immediately and leave it locked past the
       point the download would have finished (five minutes on Wi-Fi). The
-      bar was on "Preparing"; nothing speaks and the app does not quit —
+      card was on "Preparing"; nothing speaks and the app does not quit —
       the GPU load waits for the foreground. Unlock: preparing finishes and
       Readr Voice reads.
 - [ ] **Relaunch from the buffer.** Force-quit, reopen, press Listen at the
       same place: the sentence starts at once in Readr Voice before the
-      model has loaded, and "N min ready" shows what survived.
+      model has loaded, and the log's "ahead" figure shows what survived.
 - [ ] **Delete a book.** Delete Alice: Settings › General › iPhone Storage ›
       Readr shrinks by its audio.
-- [ ] **Pause and resume.** Pause mid-sentence from the bar, wait ten
+- [ ] **Pause and resume.** Pause mid-sentence from the card, wait ten
       seconds, play: it resumes rather than restarting the sentence. Same
       from the lock screen and with a headphone pinch.
 - [ ] **Skips and a chapter crossing.** Skip forward and back a sentence in

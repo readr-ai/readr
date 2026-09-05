@@ -49,7 +49,9 @@ Reviewed against the before/after canvas
 - Previous / next **chapter** buttons go; Contents already does that.
 - The voice picker leaves the bar; it is chosen once, in the ⋯ menu (A) or
   the Aa popover (B).
-- The iPhone bottom bar hides while the voice reads.
+- The iPhone bottom bar stays (owner decision: Contents, Bookmarks, Find,
+  Listen and Ask keep their places; Contents is the card's chapter skip and
+  takes the voice along).
 - **Option A, transport only:** speed on the left, ◀ ● ▶ centred, ⋯ and ✕
   on the right. No sentence line — the page underlines the sentence being
   read (this needs the deferred read-along highlighting in
@@ -118,7 +120,7 @@ none); a scrubber, if chosen, is a page slider.
 Each finding: what it is, why it hurts, the proposed change, rough effort,
 and whether it touches in-flight work.
 
-### F1. Ask covers the book on every platform  `high` — shipped in the Ask-inspector PR (Mac/iPad column; iPhone keeps the sheet by decision; conversation kept per book)
+### F1. Ask covers the book on every platform  `high` — shipped in PR #99 (Mac/iPad column; iPhone keeps the sheet by decision; conversation kept per book)
 
 `ReaderView` presents the Ask panel with `.sheet(item:)`. On macOS that is a
 window-modal sheet: the page cannot be scrolled, selected, or read while the
@@ -173,7 +175,7 @@ state.
 
 Effort: half a day. No conflict except the #94 sequencing note.
 
-### F3. The macOS reader toolbar carries up to 17 controls  `high` — shipped in the reader-chrome PR
+### F3. The macOS reader toolbar carries up to 17 controls  `high` — shipped in PR #100
 
 *Shipped:* the bar is Contents · ribbon | Find · Aa · Listen · ✦ Ask ·
 Highlights on every platform; the inline controls and the chapter chevrons
@@ -200,7 +202,7 @@ Effort: 1 day, mostly deleting `layoutSegmentControl`, `fontStepperControl`,
 `themeDotsControl`, `typographyMenu`, `pdfDisplayMenu`. Snapshot baselines
 change.
 
-### F4. Sheet headers: six surfaces, six grammars  `medium` — shipped in the reader-chrome PR
+### F4. Sheet headers: six surfaces, six grammars  `medium` — shipped in PR #100
 
 *Shipped:* `AISheetHeader` (✦ + caps) in Ask and Article; Done on the right
 of every sheet, with Escape kept; one `NoteEditor` wherever a note is edited
@@ -248,9 +250,19 @@ Article", sheet title "✦ ARTICLE", primary "Compose", re-run "Compose again".
 Effort: hours. Touches UI-test string lookups (`staticTexts`), so run the
 suites.
 
-### F6. The Listen bar has no compact layout  `medium` — shipped in the Listen-card PR (Option B)
+### F6. The Listen bar has no compact layout  `medium` — shipped in PR #101 (Option B)
 
-`ListenBar` is one `HStack`: five transport buttons, the sentence line,
+*Shipped:* the bar is a now-reading card (Option B, see "F6 redesign"
+above): chapter kicker, the sentence, a progress hairline, speed · ◀ ● ▶ ·
+Sleep, ✕ in the corner. The voice moved to the Aa popover (resolved for the
+book before the first Listen, so it can be chosen there first); chapter
+skips are Contents, which takes the voice along; the "N min ready" figure is
+gone; Ask opened mid-listen pauses the voice on its sentence, quotes it, and
+resumes on Done unless the reader has moved the voice since. Not done: the
+read-along underline (still deferred) and hiding the iPhone bottom bar (the
+owner kept it). The text below is the original finding.
+
+`ListenBar` was one `HStack`: five transport buttons, the sentence line,
 "N min ready", speed, voice, sleep, close. On a 393pt iPhone that is roughly
 300pt of controls before the sentence gets any width, and the bar sits on
 top of the iPhone bottom bar (Contents · Bookmarks · Find · Listen · Ask),
@@ -294,7 +306,7 @@ swipe is already there).
 
 Effort: hours.
 
-### F9. Bookmarks are a menu of submenus  `low` — shipped in the reader-chrome PR (Option A)
+### F9. Bookmarks are a menu of submenus  `low` — shipped in PR #100 (Option A)
 
 *Shipped:* the ribbon toggle in the bar, bookmarks (page bookmarks too) at
 the top of Contents with tap-to-jump and ✕, a ribbon on rows that hold one;
