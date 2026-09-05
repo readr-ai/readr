@@ -157,8 +157,9 @@ appearance controls inline; September 2026 UX review, F3):
   `PDFOutline`, search via `findString`, thumbnails sidebar, bookmark = page.
 - Every highlight (EPUB and PDF) appears in the Notes panel instantly.
 
-### Notes panel (inspector, ⌘⇧N)
-- Right-hand inspector column (min 280 / ideal 340): this book's annotations
+### Highlights panel (inspector, ⌘⇧N)
+- Right-hand inspector column (min 280 / ideal 340), the Highlights tab
+  beside Ask on the Mac and iPad: this book's annotations
   in reading order — color dot, quoted text (serif), note beneath, chapter/page
   locator. Click → jump to it in the book. Swipe/context: edit note, change
   color, delete. Filter chips by color; search field.
@@ -179,7 +180,16 @@ appearance controls inline; September 2026 UX review, F3):
   Settings.
 
 ### Ask panel
-- Now openable with no selection (whole-book questions). Shows selection quote
+- **Lives beside the page.** On the Mac and a regular-width iPad, ✦ Ask
+  opens the reader's inspector on an **Ask** tab beside **Highlights** — one
+  column, two tabs, the page readable and scrollable next to the answer.
+  On iPhone it stays a full-height sheet (owner decision, September 2026).
+- **One conversation per book, per session.** The reader owns the
+  conversation (`AskViewModel`); closing the sheet, or switching the
+  inspector to Highlights and back, resumes it. A new ✦ Ask on another
+  passage points the same conversation at that passage. "New conversation"
+  in the column header starts over.
+- Openable with no selection (whole-book questions). Shows selection quote
   when present, streams the answer, citations as clickable disclosure rows
   (future: jump-to-passage). Tier badge stays ("whole book" / "passages").
 - Scope is a labelled two-way choice, not a switch: an "Answers from"

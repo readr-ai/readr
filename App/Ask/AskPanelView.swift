@@ -34,15 +34,30 @@ struct AskRequest: Identifiable {
 /// switch — lifts that for the questions that follow; it is not offered when
 /// there is no reading position to scope to (a native PDF page).
 struct AskPanelView: View {
+    /// Where the panel is: a sheet (iPhone) with its own navigation bar and
+    /// Done, or a column in the reader's inspector beside Highlights (Mac,
+    /// iPad) with a slim header and "New conversation" — the page stays
+    /// readable beside the answer (September 2026 UX review, F1).
+    enum Presentation {
+        case sheet, inspector
+    }
+
     let book: Book
-    let selection: Selection?
     /// The scope the panel was opened with. `frontier` is what a scoped
     /// question is held to; nil means the toggle is hidden and every
     /// question is about the whole book.
     private let frontier: ReadingFrontier?
     private let initialQuestion: String?
+    private let presentation: Presentation
+    /// Inspector only: start a fresh conversation for this book.
+    private let onNewConversation: (() -> Void)?
 
-    @StateObject private var vm: AskViewModel
+    /// The conversation, owned by the reader so it outlives this view:
+    /// closing the panel and opening it again resumes where it was.
+    @ObservedObject private var vm: AskViewModel
+
+    /// The passage the conversation is about right now.
+    private var selection: Selection? { vm.selection }
     @State private var question = ""
     /// The reader's current choice — starts scoped whenever a frontier
     /// exists, and every question sent after a flip uses the new value.
@@ -64,13 +79,38 @@ struct AskPanelView: View {
         var index: Int
     }
 
-    init(app: AppModel, book: Book, request: AskRequest) {
+    /// A panel over `conversation`, which the caller owns (the reader keeps
+    /// one per book for the session).
+    init(
+        app: AppModel,
+        book: Book,
+        request: AskRequest,
+        conversation: AskViewModel,
+        presentation: Presentation = .sheet,
+        onNewConversation: (() -> Void)? = nil
+    ) {
         self.book = book
-        self.selection = request.selection
         self.frontier = request.scope.frontier
         self.initialQuestion = request.initialQuestion
+        self.presentation = presentation
+        self.onNewConversation = onNewConversation
         _wholeBook = State(initialValue: request.scope.frontier == nil)
-        _vm = StateObject(wrappedValue: AskViewModel(
+        _vm = ObservedObject(wrappedValue: conversation)
+    }
+
+    /// A self-contained sheet over a fresh conversation (previews, the
+    /// snapshot suite).
+    init(app: AppModel, book: Book, request: AskRequest) {
+        self.init(
+            app: app, book: book, request: request,
+            conversation: Self.makeConversation(app: app, book: book, request: request)
+        )
+    }
+
+    /// The conversation a reader keeps for a book: the service and
+    /// credential-refresh hooks bound to the app, opened on `request`.
+    static func makeConversation(app: AppModel, book: Book, request: AskRequest) -> AskViewModel {
+        AskViewModel(
             makeService: { app.makeAskService() },
             prepare: {
                 await app.ensureIndexed(book)
@@ -81,7 +121,7 @@ struct AskPanelView: View {
             initialQuestion: request.initialQuestion,
             providerName: { app.providerManager.selection?.kind.rawValue ?? "none" },
             answersFromBookOnly: { app.providerManager.selection?.kind == .appleIntelligence }
-        ))
+        )
     }
 
     /// What the next question will be allowed to see.
@@ -103,7 +143,71 @@ struct AskPanelView: View {
     }
 
     var body: some View {
+        Group {
+            switch presentation {
+            case .sheet:
+                sheetBody
+            case .inspector:
+                inspectorBody
+            }
+        }
+        // Recap: the question arrives already sent. Sent once per opening,
+        // the first time the panel has a provider to send it to — a panel
+        // opened into the empty state sends it when a key is connected
+        // there. The request drove this view's identity, so the values the
+        // conversation was opened with are the values it was presented with.
+        .onAppear { vm.sendInitialQuestionIfReady(scope: scope) }
+        .onChange(of: vm.hasProvider) { vm.sendInitialQuestionIfReady(scope: scope) }
+    }
+
+    /// The inspector column: a slim ✦ header with "New conversation", then
+    /// the same transcript and composer the sheet shows.
+    private var inspectorBody: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 8) {
+                AISheetHeader(title: "Ask the book", theme: theme)
+                    .accessibilityIdentifier("ask.header")
+                Spacer(minLength: 8)
+                if !vm.exchanges.isEmpty, let onNewConversation {
+                    Button("New conversation", action: onNewConversation)
+                        .buttonStyle(.plain)
+                        .font(.system(size: 11))
+                        .foregroundStyle(theme.muted)
+                        .help("Start over with an empty transcript")
+                        .accessibilityIdentifier("ask.newConversation")
+                }
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .overlay(alignment: .bottom) { theme.line.frame(height: 1) }
+            panelContent
+        }
+        .background(theme.background)
+    }
+
+    /// The sheet: the panel inside its own navigation bar, Done on the right.
+    private var sheetBody: some View {
         NavigationStack {
+            panelContent
+            .navigationTitle("Ask the book")
+            #if os(iOS)
+            .navigationBarTitleDisplayMode(.inline)
+            #endif
+            .toolbar {
+                ToolbarItem(placement: .principal) {
+                    AISheetHeader(title: "Ask the book", theme: theme)
+                        .accessibilityIdentifier("ask.header")
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
+        }
+    }
+
+    /// The conversation, or the guided empty state while no provider is
+    /// connected.
+    private var panelContent: some View {
             Group {
                 if vm.hasProvider {
                     askContent
@@ -137,26 +241,6 @@ struct AskPanelView: View {
                 }
             }
             .background(theme.background)
-            .navigationTitle("Ask the book")
-            #if os(iOS)
-            .navigationBarTitleDisplayMode(.inline)
-            #endif
-            .toolbar {
-                ToolbarItem(placement: .principal) {
-                    AISheetHeader(title: "Ask the book", theme: theme)
-                }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Done") { dismiss() }
-                }
-            }
-        }
-        // Recap: the question arrives already sent. Sent once, the first
-        // time the panel has a provider to send it to — a panel opened into
-        // the empty state sends it when a key is connected there. The
-        // request drove this view's identity, so the values the view model
-        // was created with are the values it was presented with.
-        .onAppear { vm.sendInitialQuestionIfReady(scope: scope) }
-        .onChange(of: vm.hasProvider) { vm.sendInitialQuestionIfReady(scope: scope) }
     }
 
     private var askContent: some View {

@@ -71,11 +71,14 @@ final class AskViewModel: ObservableObject {
     private let providerName: () -> String
     private let providerAnswersFromBookOnly: () -> Bool
     private let book: Book
-    private let selection: Selection?
-    /// The question the panel was opened with, if any — the Recap button
-    /// opens the panel with the recap already asked. Sent once, the first
-    /// time there is a provider to send it to.
-    private let initialQuestion: String?
+    /// The passage the conversation is currently about, or nil for the book
+    /// at large. Set per opening (`open`): the conversation outlives the
+    /// panel, and the next ✦ Ask on a different passage points it there.
+    @Published private(set) var selection: Selection?
+    /// The question the panel was opened with, if any — the Recap line
+    /// opens the panel with the recap already asked. Sent once per opening,
+    /// the first time there is a provider to send it to.
+    private var initialQuestion: String?
     /// Whether `initialQuestion` has gone out. Set the moment it is sent, so
     /// no number of re-appearances or provider refreshes sends it twice.
     private var didSendInitialQuestion = false
@@ -107,6 +110,15 @@ final class AskViewModel: ObservableObject {
         self.service = resolved
         self.hasProvider = resolved != nil
         self.answersFromBookOnly = answersFromBookOnly()
+    }
+
+    /// Point the conversation at a new opening: the passage (or none) and,
+    /// for a Recap, the question to send on the panel's behalf. The
+    /// transcript stays — one conversation per book, per session.
+    func open(_ request: AskRequest) {
+        selection = request.selection
+        initialQuestion = request.initialQuestion
+        didSendInitialQuestion = false
     }
 
     /// Re-resolve the provider binding. Called when the providers sheet

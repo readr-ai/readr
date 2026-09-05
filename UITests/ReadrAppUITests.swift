@@ -533,7 +533,7 @@ final class ReadrAppUITests: XCTestCase {
         let ask = button(app, id: "reader.ask", label: "Ask the book")
         XCTAssertTrue(ask.waitForExistence(timeout: 5))
         ask.tap()
-        XCTAssertTrue(app.navigationBars["Ask the book"].waitForExistence(timeout: 5))
+        XCTAssertTrue(waitForAskPanel(app, timeout: 5))
     }
 
     // A1 — the Ask panel refreshes after a key is saved from its own empty
@@ -735,7 +735,7 @@ final class ReadrAppUITests: XCTestCase {
         XCTAssertTrue(ask.waitForExistence(timeout: 5))
         XCTAssertFalse(app.buttons["reader.recap"].exists, "the reader toolbar no longer carries a separate Recap button")
         ask.tap()
-        XCTAssertTrue(app.navigationBars["Ask the book"].waitForExistence(timeout: 5))
+        XCTAssertTrue(waitForAskPanel(app, timeout: 5))
 
         // A starter chip is a complete question: tapping it sends.
         let recap = app.buttons["Recap what I've read so far \u{2014} no spoilers"].firstMatch
@@ -780,7 +780,7 @@ final class ReadrAppUITests: XCTestCase {
         XCTAssertTrue(line.label.contains("6 days"), "the greeting should say how long it has been: \(line.label)")
 
         app.buttons["reader.welcomeRecap"].firstMatch.tap()
-        XCTAssertTrue(app.navigationBars["Ask the book"].waitForExistence(timeout: 10))
+        XCTAssertTrue(waitForAskPanel(app, timeout: 10))
         XCTAssertTrue(
             sentQuestion(app, startingWith: "Recap what I've read so far").waitForExistence(timeout: 5),
             "the line's Recap should land in Ask with the recap already sent"
@@ -965,7 +965,7 @@ final class ReadrAppUITests: XCTestCase {
         let ask = button(app, id: "reader.ask", label: "Ask the book")
         if ask.waitForExistence(timeout: 3), ask.isHittable {
             ask.tap()
-            _ = app.navigationBars["Ask the book"].waitForExistence(timeout: 3)
+            _ = waitForAskPanel(app, timeout: 3)
             snap(app, "10-ask")
             let done = app.buttons["Done"].firstMatch
             if done.waitForExistence(timeout: 2) { done.tap() }
