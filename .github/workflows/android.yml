@@ -1,0 +1,106 @@
+name: Android
+
+on:
+  pull_request:
+    paths:
+      - "android/**"
+      - "Sources/**"
+      - "Package.swift"
+      - ".github/workflows/android.yml"
+  push:
+    branches: [main]
+    paths:
+      - "android/**"
+      - "Sources/**"
+      - "Package.swift"
+      - ".github/workflows/android.yml"
+
+env:
+  SWIFT_VERSION: "6.3.3"
+  SWIFT_ANDROID_SDK_URL: https://download.swift.org/swift-6.3.3-release/android-sdk/swift-6.3.3-RELEASE/swift-6.3.3-RELEASE_android.artifactbundle.tar.gz
+  SWIFT_ANDROID_SDK_CHECKSUM: d160cc3206dd1886dae3fef2337af5e25ec034692cd0ec225721c56cc69da7f5
+  NDK_VERSION: "27.3.13750724"
+
+jobs:
+  android:
+    name: Build, kit tests on emulator, instrumented tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Enable KVM for the emulator
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules && sudo udevadm trigger --name-match=kvm
+
+      - name: Install Swift via swiftly
+        run: |
+          curl -fsSL https://download.swift.org/swiftly/linux/swiftly-$(uname -m).tar.gz | tar -xz -C /tmp
+          /tmp/swiftly init -y --skip-install --no-modify-profile
+          ~/.local/share/swiftly/bin/swiftly install ${SWIFT_VERSION} --use -y
+          echo "$HOME/.local/share/swiftly/bin" >> "$GITHUB_PATH"
+          echo "SWIFTLY_PATH=$HOME/.local/share/swiftly/bin/swiftly" >> "$GITHUB_ENV"
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: |
+            25
+            17
+      - name: Record JDK 25 for swift-java publishing
+        run: echo "JAVA_HOME_25=$JAVA_HOME_25_X64" >> "$GITHUB_ENV"
+
+      - uses: android-actions/setup-android@v3
+      - name: Install NDK and emulator packages
+        run: |
+          yes | sdkmanager --licenses >/dev/null
+          sdkmanager "ndk;${NDK_VERSION}" "platform-tools" "emulator" "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Install the Swift SDK for Android
+        run: |
+          swift sdk install "$SWIFT_ANDROID_SDK_URL" --checksum "$SWIFT_ANDROID_SDK_CHECKSUM"
+          BUNDLE=$HOME/.config/swiftpm/swift-sdks/swift-${SWIFT_VERSION}-RELEASE_android.artifactbundle/swift-android
+          ANDROID_NDK_HOME="$ANDROID_HOME/ndk/${NDK_VERSION}" "$BUNDLE/scripts/setup-android-sdk.sh"
+          swift sdk list
+
+      - name: Publish swiftkit-core to the local Maven repository
+        working-directory: android
+        run: ./gradlew :readrkit:publishSwiftKit --no-daemon
+
+      - name: Build app and test APKs (x86_64 for the emulator)
+        working-directory: android
+        env:
+          READR_ANDROID_ABIS: x86_64
+        run: ./gradlew :app:assembleDebug :app:assembleDebugAndroidTest --no-daemon
+
+      - name: Cross-compile the ReadrKit test suite for x86_64 Android
+        run: swift build --swift-sdk x86_64-unknown-linux-android28 --build-tests
+
+      - name: Kit tests + instrumented tests on the emulator
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          arch: x86_64
+          target: google_apis
+          emulator-boot-timeout: 900
+          script: |
+            BUNDLE=$HOME/.config/swiftpm/swift-sdks/swift-${SWIFT_VERSION}-RELEASE_android.artifactbundle/swift-android
+            LIBS=$BUNDLE/swift-resources/usr/lib/swift-x86_64/android
+            adb shell 'rm -rf /data/local/tmp/readr; mkdir -p /data/local/tmp/readr/lib /data/local/tmp/readr/tmp'
+            adb push .build/x86_64-unknown-linux-android28/debug/ReadrKitPackageTests.xctest /data/local/tmp/readr/
+            for f in $LIBS/*.so; do adb push "$f" /data/local/tmp/readr/lib/ >/dev/null; done
+            adb push $BUNDLE/ndk-sysroot/usr/lib/x86_64-linux-android/libc++_shared.so /data/local/tmp/readr/lib/ >/dev/null
+            adb shell 'cd /data/local/tmp/readr && TMPDIR=/data/local/tmp/readr/tmp HOME=/data/local/tmp/readr LD_LIBRARY_PATH=/data/local/tmp/readr/lib ./ReadrKitPackageTests.xctest' | tee kit-tests.log
+            grep -q "with 0 failures" kit-tests.log
+            cd android && ./gradlew :app:connectedDebugAndroidTest --no-daemon
+
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-test-reports
+          path: |
+            kit-tests.log
+            android/app/build/reports/androidTests/
+            android/app/build/outputs/androidTest-results/
