@@ -30,12 +30,12 @@ and listening never costs you your spot.
 The narrator is Readr Voice, a neural voice that runs entirely on your
 device: no account, no subscription, and nothing about your book ever leaves
 the device to be read aloud. Its voice model downloads once, the first time
-you listen, and the Listen bar shows the wait. Readr Voice keeps reading with the screen locked: it reads ahead
+you listen, and the Listen card shows the wait. Readr Voice keeps reading with the screen locked: it reads ahead
 while the app is open and plays from that with the phone in your pocket.
 Prefer Apple's built-in voices? They're a tap away under "Other voices" in
-the voice menu, with nothing to download at all.
+the Aa menu's Voice row, with nothing to download at all.
 
-Skip by sentence or by chapter, change the speed or the voice mid-sentence and
+Skip by sentence, jump chapters from Contents, change the speed or the voice mid-sentence and
 it carries on from that word, and set a sleep timer that counts listening
 rather than clock time — pause for lunch and the countdown waits for you. It
 keeps playing with the screen locked, with lock-screen and headphone controls,

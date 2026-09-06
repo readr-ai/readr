@@ -4,77 +4,113 @@ import ReadrKit
 import UIKit
 #endif
 
-/// The narration bar: what the reader sees while the book is being read aloud.
+/// The now-reading card: what the reader sees while the book is read aloud.
 ///
-/// It sits under the page as a safe-area inset rather than floating over it —
-/// listening and reading happen together (the page turns itself to follow the
-/// voice), so the bar must never cover the words being spoken. Styling follows
-/// the reading theme, so switching to Night doesn't leave a bright slab at the
-/// bottom of the page.
+/// One card, insetting the page from the bottom rather than floating over
+/// it (the page turns itself to follow the voice, so nothing may cover the
+/// words): the chapter in caps, the sentence being read, a hairline of the
+/// chapter's progress, and one row of controls — speed on the left, ◀ ● ▶
+/// in the middle, the sleep timer on the right, ✕ in the corner. That is
+/// the whole of it. The voice is chosen in the Aa popover (once, not per
+/// listen); chapter skips live in Contents (a jump there takes the voice
+/// along); and the "N min ready" figure is gone — the buffer's state shows
+/// only when it matters: preparing, or failed. (September 2026 UX review,
+/// F6, Option B.)
+///
+/// Styling follows the reading theme, so switching to Dark doesn't leave a
+/// bright slab at the bottom of the page.
 struct ListenBar: View {
     @ObservedObject var narration: NarrationModel
     let style: ReaderStyle
-    /// Close the bar and end narration.
+    /// The chapter the voice is in, for the card's kicker.
+    var chapterTitle: String? = nil
+    /// The reading surface behind the card, so its margins are the page.
+    var surface: Color? = nil
+    /// Close the card and end narration.
     let onClose: () -> Void
 
     private var theme: ReadingTheme { style.theme }
 
     var body: some View {
-        VStack(spacing: 0) {
-            Rectangle().fill(theme.line).frame(height: 1)
-            progressTrack
-            HStack(spacing: 12) {
-                transportControls
+        card
+            .padding(.horizontal, 14)
+            .padding(.top, 8)
+            .padding(.bottom, 10)
+            .frame(maxWidth: 620)
+            .frame(maxWidth: .infinity)
+            .background(surface ?? theme.paper)
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("listen.bar")
+            .accessibilityLabel("Narration controls")
+    }
+
+    private var card: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: 4) {
+                if let chapterTitle, !chapterTitle.isEmpty {
+                    Text(chapterTitle.uppercased())
+                        .font(.system(size: 10, weight: .semibold))
+                        .kerning(1.5)
+                        .foregroundStyle(theme.faint)
+                        .lineLimit(1)
+                        .accessibilityHidden(true)
+                }
                 statusLine
-                Spacer(minLength: 8)
-                aheadFigure
-                speedMenu
-                voiceMenu
-                sleepMenu
-                closeButton
             }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 10)
+            // Room for the ✕, which sits in the card's corner (an overlay
+            // on the card, not a row member) so its 44pt target can reach
+            // the edge without the text running under it.
+            .padding(.trailing, 36)
+            progressTrack
+                .padding(.top, 10)
+                .padding(.bottom, 2)
+            HStack(alignment: .center, spacing: 0) {
+                speedMenu
+                Spacer(minLength: 0)
+                transportControls
+                Spacer(minLength: 0)
+                sleepMenu
+            }
         }
-        .background(theme.elevated)
-        .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("listen.bar")
-        .accessibilityLabel("Narration controls")
+        .padding(.top, 12)
+        .padding(.horizontal, 14)
+        .padding(.bottom, 6)
+        .background(theme.elevated, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .strokeBorder(theme.line, lineWidth: 1)
+        )
+        .overlay(alignment: .topTrailing) { closeButton }
+        .shadow(color: .black.opacity(0.10), radius: 12, y: 4)
     }
 
     // MARK: - Transport
 
     private var transportControls: some View {
-        HStack(spacing: 4) {
+        HStack(spacing: 6) {
             control(
-                "backward.end", id: "listen.previousChapter", label: "Previous chapter",
-                help: "Previous chapter"
-            ) { narration.previousChapter() }
-            control(
-                "backward", id: "listen.previous", label: "Previous sentence",
+                "backward.fill", id: "listen.previous", label: "Previous sentence",
                 help: "Previous sentence"
             ) { narration.skipBackward() }
             // Preparing shows Pause too: the voice is on its way and the
             // control pauses the wait, the way it pauses speech.
             Button { narration.togglePlayPause() } label: {
                 Image(systemName: narration.isUnderway ? "pause.fill" : "play.fill")
-                    .font(.system(size: 17))
-                    .foregroundStyle(theme.inkColor)
-                    .frame(width: 34, height: 30)
-                    .contentShape(Rectangle())
+                    .font(.system(size: 16))
+                    .foregroundStyle(theme.background)
+                    .frame(width: 44, height: 44)
+                    .background(Circle().fill(theme.inkColor))
+                    .contentShape(Circle())
             }
             .buttonStyle(.plain)
+            .padding(.horizontal, 6)
             .accessibilityIdentifier("listen.playPause")
             .accessibilityLabel(narration.isUnderway ? "Pause" : "Play")
             .help(narration.isUnderway ? "Pause narration" : "Play narration")
             control(
-                "forward", id: "listen.next", label: "Next sentence",
+                "forward.fill", id: "listen.next", label: "Next sentence",
                 help: "Next sentence"
             ) { narration.skipForward() }
-            control(
-                "forward.end", id: "listen.nextChapter", label: "Next chapter",
-                help: "Next chapter"
-            ) { narration.nextChapter() }
         }
     }
 
@@ -84,9 +120,11 @@ struct ListenBar: View {
     ) -> some View {
         Button(action: action) {
             Image(systemName: symbol)
-                .font(.system(size: 12))
-                .foregroundStyle(theme.muted)
-                .frame(width: 28, height: 30)
+                .font(.system(size: 14))
+                .foregroundStyle(theme.inkColor)
+                // 44×44: the touch floor (Theme.swift, R5), like every
+                // other control on the card.
+                .frame(width: 44, height: 44)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -97,9 +135,9 @@ struct ListenBar: View {
 
     // MARK: - Status line
 
-    /// What the middle of the bar says: the wait for the Readr Voice model,
-    /// a failed download with its Retry, or — nearly always — the sentence
-    /// being read.
+    /// What the card says under the kicker: the wait for the Readr Voice
+    /// model, a failed download with its Retry, a hold, or — nearly always
+    /// — the sentence being read.
     @ViewBuilder
     private var statusLine: some View {
         if narration.isPreparing {
@@ -113,48 +151,31 @@ struct ListenBar: View {
         }
     }
 
+    /// The sentence being spoken. The page follows the voice on its own, so
+    /// this is a confirmation of *where* rather than the only way to tell.
+    private var sentenceLine: some View {
+        Text(narration.currentSentence)
+            .font(.system(size: 14, design: .serif))
+            .italic()
+            .foregroundStyle(theme.inkColor)
+            .lineLimit(2)
+            .truncationMode(.tail)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .accessibilityIdentifier("listen.sentence")
+            .accessibilityLabel("Now reading: \(narration.currentSentence)")
+    }
+
     /// Narration paused on its own — with the screen locked, nothing was
     /// ready for the next sentence. Unlocking resumes it; this is for the
     /// reader who has just done that and wants to know why it stopped.
     private func holdLine(_ text: String) -> some View {
         Text(text)
-            .font(.system(size: 12))
+            .font(.system(size: 13))
             .foregroundStyle(theme.muted)
-            .lineLimit(1)
-            .truncationMode(.tail)
-            .frame(maxWidth: 420, alignment: .leading)
+            .lineLimit(2)
+            .frame(maxWidth: .infinity, alignment: .leading)
             .accessibilityIdentifier("listen.hold")
             .accessibilityLabel(text)
-    }
-
-    /// How much Readr Voice audio is already made for what follows — the
-    /// quiet reassurance that a locked screen has something to play from.
-    /// Shown from a minute up; nothing worth saying below that.
-    @ViewBuilder
-    private var aheadFigure: some View {
-        if narration.usesReadrVoice, let label = Self.aheadLabel(seconds: narration.secondsAhead) {
-            Text(label)
-                .font(.system(size: 11))
-                .foregroundStyle(theme.muted)
-                .monospacedDigit()
-                .lineLimit(1)
-                .fixedSize()
-                .accessibilityIdentifier("listen.ahead")
-                .accessibilityLabel("\(label) in Readr Voice")
-                .help("Readr Voice audio already prepared for what follows")
-        }
-    }
-
-    /// "48 min ready", "1 h 12 min ready"; nil under a minute.
-    static func aheadLabel(seconds: TimeInterval) -> String? {
-        let minutes = Int(seconds / 60)
-        guard minutes >= 1 else { return nil }
-        if minutes >= 60 {
-            let hours = minutes / 60
-            let rest = minutes % 60
-            return rest == 0 ? "\(hours) h ready" : "\(hours) h \(rest) min ready"
-        }
-        return "\(minutes) min ready"
     }
 
     /// The first Listen's one-time download, with the download library's
@@ -174,12 +195,11 @@ struct ListenBar: View {
                     .tint(theme.muted)
             }
             Text(preparingText)
-                .font(.system(size: 12))
+                .font(.system(size: 13))
                 .foregroundStyle(theme.muted)
-                .lineLimit(1)
-                .truncationMode(.tail)
+                .lineLimit(2)
         }
-        .frame(maxWidth: 420, alignment: .leading)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityElement(children: .combine)
         .accessibilityIdentifier("listen.preparing")
         .accessibilityLabel(preparingText)
@@ -195,45 +215,30 @@ struct ListenBar: View {
 
     /// The download failed (or a synthesis hung). Narration is paused on
     /// the sentence; Retry fetches again and picks it back up. An Apple
-    /// voice is a pick away under "Other voices", never automatic.
+    /// voice is a pick away in the Aa popover, never automatic.
     private var failedLine: some View {
         HStack(spacing: 8) {
             Text("Readr Voice couldn\u{2019}t download.")
-                .font(.system(size: 12))
+                .font(.system(size: 13))
                 .foregroundStyle(theme.muted)
-                .lineLimit(1)
-                .truncationMode(.tail)
+                .lineLimit(2)
             Button("Retry") { narration.retryReadrVoice() }
-                .font(.system(size: 12, weight: .medium))
+                .font(.system(size: 13, weight: .medium))
                 .foregroundStyle(theme.iris)
                 .buttonStyle(.plain)
                 .accessibilityIdentifier("listen.retry")
                 .accessibilityLabel("Retry the Readr Voice download")
                 .help("Download Readr Voice again and keep listening")
         }
-        .frame(maxWidth: 420, alignment: .leading)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityIdentifier("listen.failed")
-    }
-
-    /// The sentence being spoken. The page follows the voice on its own, so
-    /// this is a confirmation of *where* rather than the only way to tell.
-    private var sentenceLine: some View {
-        Text(narration.currentSentence)
-            .font(.system(size: 12, design: .serif))
-            .italic()
-            .foregroundStyle(theme.muted)
-            .lineLimit(1)
-            .truncationMode(.tail)
-            .frame(maxWidth: 420, alignment: .leading)
-            .accessibilityIdentifier("listen.sentence")
-            .accessibilityLabel("Now reading: \(narration.currentSentence)")
     }
 
     private var progressTrack: some View {
         GeometryReader { geometry in
             ZStack(alignment: .leading) {
-                Rectangle().fill(theme.line)
-                Rectangle()
+                Capsule().fill(theme.line)
+                Capsule()
                     .fill(theme.iris)
                     .frame(width: geometry.size.width * min(max(narration.chapterProgress, 0), 1))
             }
@@ -242,15 +247,7 @@ struct ListenBar: View {
         .accessibilityHidden(true)
     }
 
-    // MARK: - Voice controls
-
-    private var osName: String {
-        #if os(iOS)
-        UIDevice.current.systemName
-        #else
-        "macOS"
-        #endif
-    }
+    // MARK: - Speed and sleep
 
     private var speedMenu: some View {
         Menu {
@@ -262,11 +259,14 @@ struct ListenBar: View {
             .pickerStyle(.inline)
         } label: {
             Text(SpeechSettings.rateLabel(narration.rate))
-                .font(.system(size: 12, weight: .medium))
+                .font(.system(size: 13, weight: .semibold))
                 .foregroundStyle(theme.inkColor)
                 .monospacedDigit()
-                .frame(minWidth: 34)
+                .frame(minWidth: 44, minHeight: 44)
+                .contentShape(Rectangle())
         }
+        .menuStyle(.button)
+        .buttonStyle(.plain)
         .fixedSize()
         .accessibilityIdentifier("listen.speed")
         .accessibilityLabel("Speaking speed")
@@ -277,35 +277,93 @@ struct ListenBar: View {
         Binding(get: { narration.rate }, set: { narration.setRate($0) })
     }
 
-    private var voiceMenu: some View {
+    private var sleepMenu: some View {
+        Menu {
+            Button("Off") { narration.setSleepTimer(.off) }
+            Divider()
+            ForEach(SleepTimer.minuteOptions, id: \.self) { minutes in
+                Button("\(minutes) min") { narration.setSleepTimer(.after(minutes: minutes)) }
+            }
+            Button("End of chapter") { narration.setSleepTimer(.endOfChapter) }
+        } label: {
+            HStack(spacing: 5) {
+                Image(systemName: narration.sleepMode.isOn ? "moon.fill" : "moon")
+                    .font(.system(size: 12))
+                Text(sleepCountdown ?? "Sleep")
+                    .font(.system(size: 13, weight: .medium))
+                    .monospacedDigit()
+            }
+            .foregroundStyle(narration.sleepMode.isOn ? theme.iris : theme.inkColor)
+            .frame(minHeight: 44)
+            .padding(.horizontal, 4)
+            .contentShape(Rectangle())
+        }
+        .menuStyle(.button)
+        .buttonStyle(.plain)
+        .fixedSize()
+        .accessibilityIdentifier("listen.sleep")
+        .accessibilityLabel("Sleep timer")
+        .help("Sleep timer — \(narration.sleepMode.displayName)")
+    }
+
+    /// mm:ss left on a timed sleep; nil for Off and End of chapter.
+    private var sleepCountdown: String? {
+        guard let remaining = narration.sleepRemaining else { return nil }
+        let total = Int(remaining.rounded())
+        return String(format: "%d:%02d", total / 60, total % 60)
+    }
+
+    /// ✕ in the card's top-right corner: a 44pt target (R5) drawn as a small
+    /// glyph, inset just enough to clear the rounded border.
+    private var closeButton: some View {
+        Button { onClose() } label: {
+            Image(systemName: "xmark")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(theme.muted)
+                .frame(width: 44, height: 44)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .padding(2)
+        .accessibilityIdentifier("listen.close")
+        .accessibilityLabel("Stop listening")
+        .help("Stop listening — your place is kept")
+    }
+}
+
+// MARK: - Voice picker (Aa popover)
+
+/// The narrator, chosen once in the Aa popover rather than on every Listen
+/// bar: Readr Voice (checked) with the Apple voices behind a disclosure for
+/// an English book, the Apple voices for the book's language otherwise,
+/// and the notes that used to ride the bar's menu.
+struct NarrationVoicePicker: View {
+    @ObservedObject var narration: NarrationModel
+    let theme: ReadingTheme
+
+    private var osName: String {
+        #if os(iOS)
+        UIDevice.current.systemName
+        #else
+        "macOS"
+        #endif
+    }
+
+    var body: some View {
         Menu {
             // Notes go above the list, not below it: the voice list is as
             // long as the reader has voices installed, and anything under it
-            // is off the bottom of the menu — unreachable, and never even
-            // rendered.
+            // is off the bottom of the menu.
             menuNote("More voices: Settings \u{203A} Accessibility \u{203A} Spoken Content")
-            // The failure note stays while Readr Voice is the selected
-            // narrator: the bar carries the Retry, this says where it is.
-            // (The old "downloading — switching automatically" note is gone:
-            // the wait is the bar's preparing state now, and nothing
-            // switches — Readr Voice reads from the first sentence.)
             if narration.readrVoiceFailed {
                 menuNote(
                     "Readr Voice couldn\u{2019}t download or stopped responding \u{2014} "
-                        + "Retry is on the Listen bar"
+                        + "Retry is on the Listen card"
                 )
             }
-            // iPhone/iPad: the buffer plays with the screen locked and the
-            // CPU refills it. Said once, up front, because 3.3.0 said the
-            // opposite here and a reader who remembers that deserves the
-            // correction where they read it.
             if narration.readrVoiceKeepsReadingWhenLocked, narration.usesReadrVoice {
                 menuNote("Keeps reading with the screen locked")
             }
-            // This is scoped to readers who would otherwise have Readr Voice:
-            // an English book with no stored choice, or a stored Readr Voice.
-            // An explicitly chosen Apple voice needs no warning about a voice
-            // the reader did not ask for.
             if narration.readrVoiceUnavailable {
                 menuNote(readrVoiceUnavailableNote)
             }
@@ -313,12 +371,6 @@ struct ListenBar: View {
             if narration.voices.isEmpty {
                 menuNote("No voices installed")
             } else if narration.readrVoiceOffered {
-                // An English book where Readr Voice can run: Readr Voice is
-                // the menu, checked, and the Apple voices sit behind a
-                // disclosure. They are kept — an accessibility reader who
-                // set one up keeps it, and a stored pick still shows checked
-                // in there — but they are no longer a wall of rows between
-                // the reader and the one voice this menu is about.
                 Picker("Voice", selection: voiceBinding) {
                     ForEach(narration.voices.filter { KokoroSpeechEngine.isKokoroVoiceID($0.id) }) {
                         voice in
@@ -334,7 +386,7 @@ struct ListenBar: View {
                     }
                     .pickerStyle(.inline)
                 }
-                .accessibilityIdentifier("listen.otherVoices")
+                .accessibilityIdentifier("appearance.otherVoices")
             } else {
                 Picker("Voice", selection: voiceBinding) {
                     ForEach(narration.voices) { voice in
@@ -344,14 +396,27 @@ struct ListenBar: View {
                 .pickerStyle(.inline)
             }
         } label: {
-            Image(systemName: "waveform")
-                .font(.system(size: 12))
-                .foregroundStyle(theme.muted)
+            HStack {
+                Text(narration.voiceName ?? "Voice")
+                    .font(.system(size: 13))
+                    .foregroundStyle(theme.inkColor)
+                    .lineLimit(1)
+                Spacer()
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(theme.muted)
+            }
+            .padding(.horizontal, 12)
+            .frame(height: 34)
+            .contentShape(Rectangle())
         }
-        .fixedSize()
-        .accessibilityIdentifier("listen.voice")
-        .accessibilityLabel("Voice")
+        .menuStyle(.button)
+        .buttonStyle(.plain)
+        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(theme.line, lineWidth: 1))
         .help(narration.voiceName.map { "Voice — \($0)" } ?? "Voice")
+        .accessibilityLabel("Voice")
+        .accessibilityValue(narration.voiceName ?? "")
+        .accessibilityIdentifier("appearance.voice")
     }
 
     /// Why Readr Voice is missing from the list. On a Mac it is the OS gate
@@ -372,65 +437,11 @@ struct ListenBar: View {
         Binding(get: { narration.voiceID }, set: { narration.setVoice($0) })
     }
 
-    /// An informational row inside a menu — where better voices come from, or
-    /// that none are installed.
-    ///
-    /// A disabled Button rather than a bare `Text` because a Button is
-    /// unambiguously a menu row on both platforms, where a bare `Text`'s
-    /// treatment varies. (This was my first guess at why the UI test couldn't
-    /// find this line, and it was wrong — the row was rendering, just below a
-    /// voice list long enough to push it off the end of the menu. The row's
-    /// POSITION is the fix; the Button is kept because it is the more defined
-    /// of the two, not because `Text` was proven broken.)
+    /// An informational row inside a menu. A disabled Button rather than a
+    /// bare `Text` because a Button is unambiguously a menu row on both
+    /// platforms.
     private func menuNote(_ text: String) -> some View {
         Button(text) {}
             .disabled(true)
-    }
-
-    private var sleepMenu: some View {
-        Menu {
-            Button("Off") { narration.setSleepTimer(.off) }
-            Divider()
-            ForEach(SleepTimer.minuteOptions, id: \.self) { minutes in
-                Button("\(minutes) min") { narration.setSleepTimer(.after(minutes: minutes)) }
-            }
-            Button("End of chapter") { narration.setSleepTimer(.endOfChapter) }
-        } label: {
-            HStack(spacing: 4) {
-                Image(systemName: narration.sleepMode.isOn ? "moon.fill" : "moon")
-                    .font(.system(size: 12))
-                if let countdown = sleepCountdown {
-                    Text(countdown)
-                        .font(.system(size: 11))
-                        .monospacedDigit()
-                }
-            }
-            .foregroundStyle(narration.sleepMode.isOn ? theme.iris : theme.muted)
-        }
-        .fixedSize()
-        .accessibilityIdentifier("listen.sleep")
-        .accessibilityLabel("Sleep timer")
-        .help("Sleep timer — \(narration.sleepMode.displayName)")
-    }
-
-    /// mm:ss left on a timed sleep; nil for Off and End of chapter.
-    private var sleepCountdown: String? {
-        guard let remaining = narration.sleepRemaining else { return nil }
-        let total = Int(remaining.rounded())
-        return String(format: "%d:%02d", total / 60, total % 60)
-    }
-
-    private var closeButton: some View {
-        Button { onClose() } label: {
-            Image(systemName: "xmark")
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(theme.muted)
-                .frame(width: 26, height: 30)
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .accessibilityIdentifier("listen.close")
-        .accessibilityLabel("Stop listening")
-        .help("Stop listening")
     }
 }

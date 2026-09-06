@@ -167,8 +167,13 @@ docs/DEVELOPMENT-PLAN.md §M6–M8.
   unit-tested on Linux CI against a mock engine
 - [x] `AVSpeechEngine` (Apple's on-device voices — offline, nothing to
   download, no egress), `NarrationModel`, and the reader's Listen bar
-- [x] Controls: play/pause, sentence and chapter skip, speed, voice, sleep
-  timer (timed + end-of-chapter), auto-advance
+- [x] Controls: play/pause, sentence skip, speed, sleep timer (timed +
+  end-of-chapter), auto-advance. *September 2026 (UX review, F6): the bar
+  became a now-reading card — chapter in caps, the sentence, a progress
+  hairline, ◀ ● ▶ with speed and Sleep; the voice is chosen in the Aa
+  popover, chapter skips live in Contents, and the "N min ready" figure is
+  gone. Ask opened while listening pauses the voice and is about the
+  sentence being read; it resumes when Ask goes away.*
 - [x] The page follows the voice, and the position it persists is where the
   reader listened to
 - [x] iOS background audio: `UIBackgroundModes: audio`, Now Playing, and

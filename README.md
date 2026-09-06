@@ -56,15 +56,15 @@ a shareable article.
   huggingface.co — ~104MB on a Mac; ~330MB of weights, ~60MB of voice packs
   and ~20MB of pronunciation assets on an iPhone or iPad, kept as a cache
   plus a working copy so it can take up to twice that on disk until iOS
-  purges the cache. The Listen bar shows that first wait ("Preparing Readr
+  purges the cache. The Listen card shows that first wait ("Preparing Readr
   Voice…") and narration starts the moment the model is in. On iPhone and
   iPad Readr Voice reads ahead while the app is open and keeps reading
   with the screen locked from that buffer (kept on disk, about 30MB an
   hour, two hours at most); your book never leaves the device, and Apple's
-  zero-download voices remain a pick away under "Other voices".
-  Sentence skip, speed, voice, and a sleep timer; the page turns itself to
-  follow the voice, and lock-screen/headphone controls work with the screen
-  off (iOS).
+  zero-download voices remain a pick away under "Other voices" in the Aa
+  popover's Voice row. Sentence skip, speed and a sleep timer on the card,
+  chapter jumps from Contents; the page turns itself to follow the voice,
+  and lock-screen/headphone controls work with the screen off (iOS).
 - ✍️ **Highlights → article**: auto-compose your highlights and notes into an
   editable, exportable Markdown article (streams in live).
 - 🔌 **Bring your own LLM**: paste an **Anthropic** or **OpenAI** API key, or

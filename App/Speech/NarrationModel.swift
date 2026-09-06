@@ -18,7 +18,7 @@ import UserNotifications
 @MainActor
 final class NarrationModel: ObservableObject {
     @Published private(set) var status: NarrationStatus = .idle
-    /// The sentence being read, for the Listen bar's read-along line.
+    /// The sentence being read, for the Listen card's read-along line.
     @Published private(set) var currentSentence = ""
     @Published private(set) var chapterProgress: Double = 0
     @Published private(set) var sleepMode: SleepTimer = .off
@@ -31,7 +31,7 @@ final class NarrationModel: ObservableObject {
     /// Where the Readr Voice model stands (first use is a download: ~104MB of
     /// CoreML weights on a Mac; ~330MB of MLX weights, ~60MB of voice packs
     /// and ~20MB of pronunciation assets on an iPhone or iPad). While it is
-    /// on its way narration sits in `.preparing` — the bar shows the wait,
+    /// on its way narration sits in `.preparing` — the card shows the wait,
     /// with `readrVoiceDownloadProgress` when the download reports it — and
     /// starts the moment it is in; nothing else reads meanwhile.
     @Published private(set) var readrVoiceReadiness: ReadrVoiceReadiness = .notReady
@@ -55,16 +55,12 @@ final class NarrationModel: ObservableObject {
     /// locked and refills it on the CPU: the voice menu says "Keeps reading
     /// with the screen locked". True only with the MLX engine.
     let readrVoiceKeepsReadingWhenLocked: Bool
-    /// Seconds of Readr Voice audio already synthesized for what follows the
-    /// sentence being read — the Listen bar's "48 min ready". Zero for an
-    /// Apple voice, and until the engine has anything.
-    @Published private(set) var secondsAhead: TimeInterval = 0
     /// Why narration paused on its own, when it did (nil for the reader's
-    /// pause): the bar and the lock screen show it.
+    /// pause): the card and the lock screen show it.
     @Published private(set) var holdReason: NarrationHoldReason?
 
-    /// The hold, as the bar, the lock screen and the notification say it.
-    /// "Paused" leads because a listener who glances at the bar mid-hold sees
+    /// The hold, as the card, the lock screen and the notification say it.
+    /// "Paused" leads because a listener who glances at the card mid-hold sees
     /// a stopped state before they read why — the same shape as `failedLine`.
     var holdText: String? {
         switch holdReason {
@@ -110,14 +106,14 @@ final class NarrationModel: ObservableObject {
     var isActive: Bool { status != .idle }
     var isSpeaking: Bool { status == .speaking }
     /// Waiting for the Readr Voice model before the first sentence can be
-    /// heard — the bar's "Preparing Readr Voice" state.
+    /// heard — the card's "Preparing Readr Voice" state.
     var isPreparing: Bool { status == .preparing }
     /// Speaking or preparing: what the play/pause control shows as Pause.
     var isUnderway: Bool { status == .speaking || status == .preparing }
     /// The selected narrator is Readr Voice.
     var usesReadrVoice: Bool { KokoroSpeechEngine.isKokoroVoiceID(voiceID) }
     /// Readr Voice is selected and its model could not be fetched (or a
-    /// synthesis hung): narration is paused on the sentence and the bar
+    /// synthesis hung): narration is paused on the sentence and the card
     /// offers Retry. No Apple voice reads in its place.
     var readrVoiceFailed: Bool { usesReadrVoice && readrVoiceReadiness == .failed }
     /// The Apple voices, for the "Other voices" disclosure.
@@ -131,6 +127,13 @@ final class NarrationModel: ObservableObject {
     /// Where the voice is right now — for the reader to re-sync its page after
     /// an overlay kept `onPosition` unwired (events fired meanwhile are gone).
     var position: NarrationPosition? { narration?.position }
+    /// The sentence being read, as a range of the chapter's text — what Ask
+    /// quotes when it is opened mid-listen. Taken from the segment, not from
+    /// `currentSentence`: that string is collapsed for display (muted footnote
+    /// markers leave runs of spaces), so its length is not the sentence's.
+    var currentSentenceRange: Range<Int>? { narration?.currentSegment?.range }
+    /// The book `voices` and `voiceID` were resolved for.
+    private var voicesBookID: UUID?
 
     /// Name of the chosen voice, for the picker's label.
     var voiceName: String? {
@@ -252,7 +255,7 @@ final class NarrationModel: ObservableObject {
         requestHoldNotificationsIfNeeded()
     }
 
-    /// Tear narration down: closing the Listen bar, or leaving the reader.
+    /// Tear narration down: closing the Listen card, or leaving the reader.
     func stop() {
         // Same rule as deinit: only a model whose narration was live may
         // release the process-global session and lock-screen entry — a stale
@@ -273,6 +276,33 @@ final class NarrationModel: ObservableObject {
         if let existing = narration, self.book?.id == book.id { return existing }
 
         self.book = book
+        prepareVoices(for: book)
+        let controller = NarrationController(
+            book: book,
+            engine: engine,
+            settings: SpeechSettings(rate: rate, voiceID: voiceID)
+        )
+        controller.lookaheadHorizon = lookaheadHorizon()
+        controller.onStatusChange = { [weak self] _ in
+            self?.refresh()
+            self?.updateNowPlaying()
+        }
+        controller.onPositionChange = { [weak self] position in
+            self?.onPosition?(position)
+            self?.refresh()
+        }
+        narration = controller
+        registerRemoteCommands()
+        return controller
+    }
+
+    /// Resolve the voices offered for a book and the one that reads it —
+    /// without starting narration. The Aa popover's Voice section is where
+    /// the narrator is chosen, and a reader may open it before the first
+    /// Listen; `start` reuses what this resolved. Once per book.
+    func prepareVoices(for book: Book) {
+        guard voicesBookID != book.id else { return }
+        voicesBookID = book.id
         let selector = VoiceSelector()
         let installed = AVSpeechEngine.availableVoices()
         // A book that declares no language — most PDFs, plenty of EPUBs — would
@@ -357,24 +387,6 @@ final class NarrationModel: ObservableObject {
            let installedChoice = installed.first(where: { $0.id == chosen }) {
             voices.append(installedChoice)
         }
-
-        let controller = NarrationController(
-            book: book,
-            engine: engine,
-            settings: SpeechSettings(rate: rate, voiceID: voiceID)
-        )
-        controller.lookaheadHorizon = lookaheadHorizon()
-        controller.onStatusChange = { [weak self] _ in
-            self?.refresh()
-            self?.updateNowPlaying()
-        }
-        controller.onPositionChange = { [weak self] position in
-            self?.onPosition?(position)
-            self?.refresh()
-        }
-        narration = controller
-        registerRemoteCommands()
-        return controller
     }
 
     // MARK: - Controls
@@ -454,7 +466,9 @@ final class NarrationModel: ObservableObject {
         // Picking Readr Voice after a failure is the other Retry: re-prepare
         // BEFORE the settings change re-speaks the sentence, so the
         // re-spoken request finds an engine that is trying, not the backstop.
-        if KokoroSpeechEngine.isKokoroVoiceID(id) {
+        // Only with a session under way: picked before the first Listen (in
+        // the Aa popover) the download still waits for the first sentence.
+        if KokoroSpeechEngine.isKokoroVoiceID(id), narration != nil {
             router?.prepareKokoro()
         }
         narration?.settings.voiceID = id
@@ -480,7 +494,6 @@ final class NarrationModel: ObservableObject {
             chapterProgress = 0
             sleepMode = .off
             sleepRemaining = nil
-            secondsAhead = 0
             holdReason = nil
             announcedHold = false
             return
@@ -493,8 +506,6 @@ final class NarrationModel: ObservableObject {
             announcedHold = true
             announceHold()
         }
-        secondsAhead = usesReadrVoice
-            ? (router?.secondsBuffered(ahead: narration.lookahead) ?? 0) : 0
         // Muted footnote markers leave runs of spaces in segment text
         // (length-preserving by design); collapse them for display only.
         // The contains-check matters: refresh runs on a once-a-second tick,
