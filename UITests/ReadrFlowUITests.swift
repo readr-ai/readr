@@ -980,39 +980,44 @@ final class ReadrFlowUITests: XCTestCase {
         XCTAssertTrue(opener.waitForExistence(timeout: 5))
         opener.tap()
 
-        XCTAssertTrue(
-            waitForText(app, "New York", timeout: 5) || waitForText(app, "Font", timeout: 5),
-            "Appearance should offer the reading typeface menu"
-        )
+        // Every control is found by identifier, whatever element type the
+        // platform gives it: the typeface `Menu` is a pop-up button on macOS
+        // and a button on iOS, the section label renders as "FONT", and the
+        // popover is its own window on macOS. Matching on text ("Font",
+        // "New York") found nothing there — the macOS lane's red build.
+        let font = app.descendants(matching: .any)["appearance.font"].firstMatch
+        // An NSPopover keeps XCUITest's idle wait busy for a minute before it
+        // gives up and carries on; the timeout is generous for that.
+        if !font.waitForExistence(timeout: 20) {
+            // The tree, for the next person reading a red macOS lane.
+            add(XCTAttachment(string: app.debugDescription))
+        }
+        XCTAssertTrue(font.exists, "Appearance should offer the reading typeface menu")
 
-        // iOS renders the presets as identified segment buttons; the macOS menu
-        // renders them as rows carrying only their display name. Accept either.
-        for (raw, display) in [("compact", "Compact"), ("normal", "Normal"), ("relaxed", "Relaxed")] {
+        for raw in ["compact", "normal", "relaxed"] {
             XCTAssertTrue(
-                app.buttons["appearance.spacing.\(raw)"].firstMatch.exists
-                    || waitForText(app, display, timeout: 2),
-                "Appearance should offer the \(display) line-spacing preset"
+                app.descendants(matching: .any)["appearance.spacing.\(raw)"].firstMatch.exists,
+                "Appearance should offer the \(raw) line-spacing preset"
+            )
+        }
+        XCTAssertTrue(
+            app.descendants(matching: .any)["appearance.justify"].firstMatch.exists,
+            "Appearance should offer the justification toggle"
+        )
+        for raw in ["scroll", "singlePage"] {
+            XCTAssertTrue(
+                app.descendants(matching: .any)["appearance.layout.\(raw)"].firstMatch.exists,
+                "Appearance should offer the \(raw) layout"
             )
         }
 
-        XCTAssertTrue(
-            app.switches["appearance.justify"].firstMatch.exists
-                || app.switches["Justify text"].firstMatch.exists
-                || app.menuItems["Justify text"].firstMatch.exists
-                || waitForText(app, "Justify text", timeout: 2),
-            "Appearance should offer the justification toggle"
-        )
-
         #if canImport(UIKit)
         // Live-preview controls: picking a spacing preset keeps the popover
-        // open and the reader intact. iOS only — selecting a row in the macOS
-        // pull-down dismisses the menu by design, so "stays open" is not the
-        // contract there.
+        // open and the reader intact. iOS only — a macOS popover closes on
+        // the click that lands outside it, which the segment tap is not, but
+        // the "stays open" contract is only asserted where it was proven.
         app.buttons["appearance.spacing.relaxed"].firstMatch.tap()
-        XCTAssertTrue(
-            button(app, id: "appearance.font", label: "Font").exists,
-            "Spacing presets should preview live"
-        )
+        XCTAssertTrue(font.exists, "Spacing presets should preview live")
         app.buttons["appearance.spacing.normal"].firstMatch.tap() // restore
         #endif
     }
