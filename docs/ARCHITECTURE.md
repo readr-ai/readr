@@ -21,6 +21,12 @@
 └──────────────────────────────────────────────────────────────┘
 ```
 
+The Android app (`android/`, Kotlin + Jetpack Compose) sits in the same place
+as `ReadrApp`: it links `ReadrKit` cross-compiled with the Swift SDK for
+Android, through a thin Swift facade (`ReadrAndroid`) that swift-java turns
+into JNI bindings. Platform pieces (secure storage, the synthesizer, PDF
+rendering) are Kotlin implementations of the kit's protocols.
+
 The app talks only to `ReadrKit` protocols. Every external dependency (rendering
 engine, LLM vendor, embedding model, vector store) sits behind a protocol so it
 can be swapped or mocked.
