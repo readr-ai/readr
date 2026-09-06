@@ -1217,14 +1217,13 @@ struct ReaderView: View {
     /// PDF pages/text switch — on both platforms.
     ///
     /// iOS presents it from the toolbar button. macOS presents it from an
-    /// anchor in the content (`appearancePopoverAnchor`), not from the
-    /// toolbar item: a popover bridged through a toolbar item makes SwiftUI
-    /// re-vend the toolbar during AppKit's layout pass, the popover's size
-    /// query feeds back into that, and AppKit gives up with an exception
-    /// from `_postWindowNeedsUpdateConstraints` — the app hung, then died,
-    /// on every Aa click in CI's macOS lane (crash report and thread
-    /// samples in the ci-screenshots branch). The footnote popover has
-    /// anchored to the content for the same reason.
+    /// anchor in the content (`appearancePopoverAnchor`) in an AppKit
+    /// popover of its own: SwiftUI's bridged `.popover` re-showed itself
+    /// on every re-render of the presenter — from the toolbar item, and
+    /// from the content too — until AppKit gave up with an exception from
+    /// `_postWindowNeedsUpdateConstraints`; the app hung, then died, on
+    /// every Aa click in CI's macOS lane (crash reports and thread samples
+    /// in the ci-screenshots branch). See `MacPopover`.
     private var appearanceButton: some View {
         let button = Button { showAppearance = true } label: {
             Label("Appearance", systemImage: "textformat.size")
@@ -1255,14 +1254,16 @@ struct ReaderView: View {
 
     #if os(macOS)
     /// A one-point anchor under the toolbar's Aa button, so the popover
-    /// hangs from where it was asked for without being presented by the
-    /// toolbar item itself (see `appearanceButton`).
+    /// hangs from where it was asked for — in an AppKit popover of its own
+    /// (`MacPopover`), not SwiftUI's bridged one (see `appearanceButton`).
     private var appearancePopoverAnchor: some View {
-        Color.clear
-            .frame(width: 1, height: 1)
-            .padding(.trailing, 150)
-            .popover(isPresented: $showAppearance, arrowEdge: .top) { appearancePopover }
-            .accessibilityHidden(true)
+        MacPopover(isPresented: $showAppearance) {
+            appearancePopover
+                .environment(\.popoverDismiss, PopoverDismiss { showAppearance = false })
+        }
+        .frame(width: 1, height: 1)
+        .padding(.trailing, 150)
+        .accessibilityHidden(true)
     }
     #endif
 
