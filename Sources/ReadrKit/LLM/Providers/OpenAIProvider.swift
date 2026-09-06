@@ -63,7 +63,8 @@ public struct OpenAIProvider: LLMProvider, CredentialValidating {
         model: String = "gpt-5.6-sol",
         http: HTTPClient = URLSessionHTTPClient(),
         contextBudget: Int = 200_000,
-        endpoints: Endpoints = .openAI
+        endpoints: Endpoints = .openAI,
+        displayName: String? = nil
     ) {
         self.credentials = credentials
         self.model = model
@@ -75,7 +76,8 @@ public struct OpenAIProvider: LLMProvider, CredentialValidating {
             contextBudget: contextBudget,
             // OpenAI caches automatically; report false to keep the router conservative.
             supportsPromptCaching: false,
-            isLocal: false
+            isLocal: false,
+            displayName: displayName
         )
     }
 

@@ -317,7 +317,14 @@ Effort: 1–2 days for the tabbed popover, hours for the minimum.
 
 Effort: hours each.
 
-### F11. Settings model rows show raw ids  `low`
+### F11. Settings model rows show raw ids  `low` — shipped in PR #102
+
+*Shipped:* every catalogue row carries a display name (`ProviderInfo.name`,
+with `ModelDisplayName` deriving one for ids the catalogue has never seen);
+the Claude / OpenAI pickers list names with the id as a monospaced caption,
+and the sheet opens with "Ask uses Claude Opus 5 · Claude (Anthropic)" (or
+"— not connected", or "no model yet"). The text below is the original
+finding.
 
 The Claude and OpenAI pickers list `claude-opus-4-8`, `gpt-4.1`. OpenRouter
 already shows a name and price per row. Give every catalogue entry a display
@@ -399,7 +406,7 @@ the in-flight PRs are in, and leave the rest for a polish release.
 6. F1 Ask in the inspector (mac/iPad) with detents (iPhone), conversation kept per book.
 7. F4 one sheet header, one note editor (touches Settings, so after #94).
 8. F6 Listen bar compact layout (coordinate with the voice-picker branch).
-9. F11 model display names and an "Ask uses:" line (after #94).
+9. F11 model display names and an "Ask uses:" line (after #94) — shipped.
 
 **Later — polish release**
 

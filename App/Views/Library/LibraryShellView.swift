@@ -274,19 +274,12 @@ struct LibraryShellView: View {
 
     private var hasProvider: Bool { model.hasConnectedProvider }
 
-    /// "Local model" / the provider's name when one is connected and usable,
-    /// otherwise the quiet nudge.
+    /// The model's name ("Claude Opus 5", "Apple Intelligence") when one is
+    /// connected and usable, otherwise the quiet nudge. The same name
+    /// Settings shows, from the same place (`ProviderSelection.modelName`).
     private var providerLine: String {
         guard hasProvider else { return "No model connected" }
-        guard let kind = model.providerManager.selection?.kind else { return "Model connected" }
-        switch kind {
-        case .local: return "Local model"
-        case .appleIntelligence: return "On-device model"
-        case .anthropic: return "Claude"
-        case .openAI: return "OpenAI"
-        case .chatGPT: return "ChatGPT"
-        case .openRouter: return "OpenRouter"
-        }
+        return model.providerManager.selection?.modelName ?? "Model connected"
     }
 
     // MARK: Sidebar counts

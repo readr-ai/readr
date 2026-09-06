@@ -78,19 +78,30 @@ public struct ProviderInfo: Sendable, Hashable {
     public var supportsPromptCaching: Bool
     /// True for on-device models — enables the zero-egress privacy mode.
     public var isLocal: Bool
+    /// The name Settings shows for this model, when the catalogue has one
+    /// ("Claude Opus 5"); see `name` for the fallback.
+    public var displayName: String?
+
+    /// What the reader sees: the catalogue's name, or one derived from the
+    /// id for a model the catalogue has no row for. Never the bare id.
+    public var name: String {
+        displayName ?? ModelDisplayName.name(for: modelID)
+    }
 
     public init(
         kind: Kind,
         modelID: String,
         contextBudget: Int,
         supportsPromptCaching: Bool,
-        isLocal: Bool
+        isLocal: Bool,
+        displayName: String? = nil
     ) {
         self.kind = kind
         self.modelID = modelID
         self.contextBudget = contextBudget
         self.supportsPromptCaching = supportsPromptCaching
         self.isLocal = isLocal
+        self.displayName = displayName
     }
 }
 

@@ -9,6 +9,26 @@ public struct ProviderSelection: Sendable, Equatable, Codable {
         self.kind = kind
         self.modelID = modelID
     }
+
+    /// The model by the name the catalogue gives it (a retired id by its
+    /// successor's) — the sidebar's line.
+    public var modelName: String {
+        ProviderCatalog.resolve(modelID: modelID, for: kind).name
+    }
+
+    /// The model and the card it lives on, the way Settings says it:
+    /// "Claude Opus 5 · Claude (Anthropic)". A vendor with two ways in says
+    /// which one is meant ("GPT-5.4 · OpenAI via ChatGPT"); `connected`
+    /// false adds the state that stops Ask. One source for every surface
+    /// that names the active model. (September 2026 UX review, F11.)
+    public func summary(connected: Bool) -> String {
+        let vendor = ProviderVendor.vendor(for: kind)
+        var card = vendor?.title ?? kind.rawValue
+        if let vendor, vendor.hasMultipleMethods {
+            card += kind.usesAPIKey ? " via API key" : " via ChatGPT"
+        }
+        return "\(modelName) · \(card)" + (connected ? "" : " — not connected")
+    }
 }
 
 /// Selects the active provider, resolves it against the `ProviderCatalog`, and

@@ -47,6 +47,8 @@ public struct ChatGPTSubscriptionProvider: LLMProvider, CredentialValidating {
         model: String = "gpt-5.4-mini",
         http: HTTPClient = URLSessionHTTPClient(),
         contextBudget: Int = 128_000
+,
+        displayName: String? = nil
     ) {
         self.credentials = credentials
         self.model = model
@@ -57,6 +59,8 @@ public struct ChatGPTSubscriptionProvider: LLMProvider, CredentialValidating {
             contextBudget: contextBudget,
             supportsPromptCaching: false,
             isLocal: false
+,
+            displayName: displayName
         )
     }
 
