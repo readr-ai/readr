@@ -8,15 +8,15 @@ import org.swift.swiftkit.core.SwiftArena
  * `com.readrai.readr.kit.AndroidLibrary` / `AndroidCredentials` facades
  * (native Swift, cross-compiled from the repo's `Sources/ReadrKit`).
  *
- * The arena owns the Swift objects' lifetime; it lives as long as the process.
+ * Opening loads the Swift runtime and reads the whole library file, so call
+ * `open` off the main thread; the arena owns the Swift objects for the life
+ * of the process.
  */
 class Kit private constructor(
-    val arena: SwiftArena,
+    @Suppress("unused") private val arena: SwiftArena,
     val library: AndroidLibrary,
     val credentials: AndroidCredentials,
 ) {
-    val description: String get() = library.kitDescription()
-
     companion object {
         fun open(root: File, secrets: SecretStore): Kit {
             val arena = SwiftArena.ofAuto()

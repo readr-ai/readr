@@ -1,18 +1,21 @@
 package com.readrai.readr.data
 
+import com.readrai.readr.kit.KitLimits
 import java.io.File
 import java.io.InputStream
+import java.util.zip.ZipException
 import java.util.zip.ZipInputStream
 
 /**
  * Unzips an EPUB into a directory for ReadrKit's `DirectoryEPUBContainer`,
- * with the same ceilings as the kit's `EPUBExtractionLimits` (64 MB per
- * entry, 512 MB in total) and no path traversal. The archive bytes stream
- * through once; nothing is held in memory.
+ * enforcing the kit's own ceilings (`EPUBExtractionLimits`, read through the
+ * bridge so the two cannot drift) and rejecting path traversal. The archive
+ * bytes stream through once; nothing is held in memory. `Rejected` messages
+ * are reader-facing and never include archive entry names.
  */
 object EpubExtractor {
-    private const val PER_ENTRY_CAP = 64L * 1024 * 1024
-    private const val TOTAL_CAP = 512L * 1024 * 1024
+    private val perEntryCap: Long by lazy { KitLimits.epubPerEntryByteCap() }
+    private val totalCap: Long by lazy { KitLimits.epubCumulativeByteCap() }
 
     class Rejected(message: String) : Exception(message)
 
@@ -26,10 +29,10 @@ object EpubExtractor {
             while (true) {
                 // Android 14+ validates entry paths itself (SafeZipPathValidator);
                 // older versions rely on the canonical-path check below.
-                val entry = try { zip.nextEntry } catch (e: java.util.zip.ZipException) { throw Rejected("malformed archive: ${e.message}") } ?: break
+                val entry = try { zip.nextEntry } catch (e: ZipException) { throw Rejected("This file isn't a valid EPUB archive.") } ?: break
                 if (entry.isDirectory) { zip.closeEntry(); continue }
                 val target = File(root, entry.name).canonicalFile
-                if (!target.path.startsWith(root.path + File.separator)) throw Rejected("entry escapes the archive: ${entry.name}")
+                if (!target.path.startsWith(root.path + File.separator)) throw Rejected("This EPUB isn't safe to open: an entry points outside the archive.")
                 target.parentFile?.mkdirs()
                 var written = 0L
                 target.outputStream().use { out ->
@@ -37,8 +40,8 @@ object EpubExtractor {
                         val n = zip.read(buffer)
                         if (n < 0) break
                         written += n; total += n
-                        if (written > PER_ENTRY_CAP) throw Rejected("entry too large: ${entry.name}")
-                        if (total > TOTAL_CAP) throw Rejected("archive expands past the cumulative cap")
+                        if (written > perEntryCap) throw Rejected("This EPUB has an entry larger than Readr will open.")
+                        if (total > totalCap) throw Rejected("This EPUB expands past the size Readr will open.")
                         out.write(buffer, 0, n)
                     }
                 }

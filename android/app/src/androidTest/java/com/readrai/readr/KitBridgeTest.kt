@@ -8,6 +8,7 @@ import com.readrai.readr.data.EpubExtractor
 import com.readrai.readr.data.ReadingPosition
 import com.readrai.readr.data.kitJson
 import com.readrai.readr.kit.KeystoreSecretStore
+import com.readrai.readr.kit.KitLimits
 import com.readrai.readr.kit.Kit
 import java.io.File
 import kotlinx.coroutines.future.await
@@ -38,7 +39,13 @@ class KitBridgeTest {
 
     @Test
     fun describesItself() {
-        assertTrue(kit.description.startsWith("ReadrKit on"))
+        assertTrue(kit.library.kitDescription().startsWith("ReadrKit on"))
+    }
+
+    @Test
+    fun extractionCapsComeFromTheKit() {
+        assertEquals(64L * 1024 * 1024, KitLimits.epubPerEntryByteCap())
+        assertEquals(512L * 1024 * 1024, KitLimits.epubCumulativeByteCap())
     }
 
     @Test
@@ -54,7 +61,7 @@ class KitBridgeTest {
 
         assertEquals("", kit.library.positionJSON(book.id))
         kit.library.savePosition(book.id, 0, 12)
-        assertEquals(ReadingPosition(0, 12), kitJson.decodeFromString<ReadingPosition>(kit.library.positionJSON(book.id)))
+        assertEquals(ReadingPosition(0, 12, null), kitJson.decodeFromString<ReadingPosition>(kit.library.positionJSON(book.id)))
 
         kit.library.removeBook(book.id)
         assertEquals("[]", kit.library.booksJSON())
@@ -70,6 +77,8 @@ class KitBridgeTest {
         assertEquals("Alice's Adventures in Wonderland", book.title)
         assertEquals(12, book.chapterCount)
         assertFalse(book.isImageOnly)
+        // Covers live as files, never inside library.json (it is rewritten on every position save).
+        assertFalse(File(root, "library.json").readText().contains("coverImageData\":\""))
         val chapters = kitJson.decodeFromString<List<ChapterSummary>>(kit.library.chaptersJSON(book.id))
         assertEquals(12, chapters.size)
         assertTrue(chapters[0].title.contains("Rabbit-Hole"))
@@ -78,12 +87,14 @@ class KitBridgeTest {
 
     @Test
     fun seedsTheSampleOnce() = runTest {
+        assertTrue(kit.library.needsSampleSeed())
         val original = File(root, "alice.epub")
         context.assets.open("alice-in-wonderland.epub").use { i -> original.outputStream().use { i.copyTo(it) } }
         val extracted = File(root, "alice")
         EpubExtractor.extract(original.inputStream(), extracted)
         val first = kit.library.seedSampleIfNeeded(extracted.absolutePath, original.absolutePath).await()
         assertTrue(first.contains("Alice"))
+        assertFalse(kit.library.needsSampleSeed())
         val second = kit.library.seedSampleIfNeeded(extracted.absolutePath, original.absolutePath).await()
         assertEquals("", second)
         assertEquals(1, kitJson.decodeFromString<List<BookSummary>>(kit.library.booksJSON()).size)
@@ -109,7 +120,17 @@ class KitBridgeTest {
             EpubExtractor.extract(zip.inputStream(), File(root, "evil"))
             assertTrue("expected rejection", false)
         } catch (e: EpubExtractor.Rejected) {
-            assertTrue(e.message, e.message!!.contains("escapes") || e.message!!.contains("malformed"))
+            assertFalse("entry names never reach the reader", e.message!!.contains("escape.txt"))
+        }
+    }
+
+    @Test
+    fun kitErrorsArriveReaderFacing() {
+        try {
+            kit.library.chaptersJSON("not-a-book")
+            assertTrue("expected a failure", false)
+        } catch (e: Exception) {
+            assertEquals("This book is no longer in your library.", e.message)
         }
     }
 }

@@ -30,10 +30,10 @@ Design rationale and measurements: the Android scoping note of 2026-09-06
    `JAVA_HOME_25` (or `JAVA_HOME`) for that one task.
 
 macOS note: SwiftPM's plugin sandbox blocks the Gradle step swift-java's
-plugin runs; `:readrkit` passes `--disable-sandbox`, and if the step still
-fails with `SocketException: Operation not permitted`, replace
-`readrkit/.build/checkouts/swift-java/gradlew` with `#!/bin/sh\nexit 0` after
-`publishSwiftKit` has built SwiftKitCore once. Linux (CI) has no such sandbox.
+plugin runs inside `swift build`. `:readrkit:publishSwiftKit` builds
+SwiftKitCore once with the real wrapper (kept as `gradlew.real`) and then
+installs a no-op `gradlew` in the checkout; re-run it after
+`swift package reset` or a swift-java bump. Linux (CI) has no such sandbox.
 
 ## Build and run
 
@@ -41,6 +41,7 @@ fails with `SocketException: Operation not permitted`, replace
 cd android
 ./gradlew :app:installDebug            # both ABIs; READR_ANDROID_ABIS=x86_64 for an emulator-only build
 ./gradlew :app:connectedDebugAndroidTest
+./gradlew :app:assembleRelease         # cross-compiles the Swift half with -c release
 ```
 
 The kit's own XCTest suite runs on an emulator too — see
@@ -50,5 +51,9 @@ The kit's own XCTest suite runs on an emulator too — see
 
 `filesDir/library.json` (FileLibraryStore), `filesDir/Books/<uuid>.epub|txt`
 (originals), `filesDir/Covers/`, `filesDir/.sample-seeded`. Provider secrets:
-AES-GCM under an Android Keystore key, ciphertext in `secrets` preferences —
-never plaintext on disk.
+AES-GCM under an Android Keystore key that is usable only while the device is
+unlocked, ciphertext in `secrets` preferences — never plaintext on disk.
+
+Every packaged Swift library is checked against the facade's `DT_NEEDED`
+entries (transitively) at build time, so a new Foundation module the kit
+starts using fails the build instead of the app's first launch.

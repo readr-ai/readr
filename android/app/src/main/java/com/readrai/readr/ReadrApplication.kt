@@ -4,16 +4,13 @@ import android.app.Application
 import com.readrai.readr.data.LibraryRepository
 import com.readrai.readr.kit.KeystoreSecretStore
 import com.readrai.readr.kit.Kit
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 class ReadrApplication : Application() {
-    lateinit var kit: Kit
-        private set
-    lateinit var library: LibraryRepository
-        private set
+    /** Opened on first use, off the main thread: loading the Swift runtime and decoding library.json is real work. */
+    private val kit: Kit by lazy { Kit.open(filesDir, KeystoreSecretStore(this)) }
+    private val libraryRepository: LibraryRepository by lazy { LibraryRepository(this, kit) }
 
-    override fun onCreate() {
-        super.onCreate()
-        kit = Kit.open(filesDir, KeystoreSecretStore(this))
-        library = LibraryRepository(this, kit)
-    }
+    suspend fun library(): LibraryRepository = withContext(Dispatchers.IO) { libraryRepository }
 }

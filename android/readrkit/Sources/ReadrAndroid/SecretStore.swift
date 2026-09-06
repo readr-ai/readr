@@ -41,13 +41,26 @@ final class SecretCredentialStore: CredentialStore, @unchecked Sendable {
   }
 }
 
-enum AndroidBridgeError: Error, CustomStringConvertible {
+/// Facade errors. `errorDescription` is reader-facing (it is what reaches the
+/// screen through `ReaderFacingError`); `diagnosticSummary` is for logs.
+enum AndroidBridgeError: LocalizedError, CustomStringConvertible {
   case secretStoreFailed(String)
   case unknownBook(String)
   case unknownProviderKind(String)
   case invalidChapter(Int)
 
-  var description: String {
+  var errorDescription: String? {
+    switch self {
+    case .secretStoreFailed: return "Readr couldn't save this key on the device."
+    case .unknownBook: return "This book is no longer in your library."
+    case .unknownProviderKind: return "That provider isn't supported on this device."
+    case .invalidChapter: return "That chapter doesn't exist in this book."
+    }
+  }
+
+  var description: String { errorDescription ?? "Readr hit an unexpected error." }
+
+  var diagnosticSummary: String {
     switch self {
     case .secretStoreFailed(let what): return "secret store failed: \(what)"
     case .unknownBook(let id): return "no book with id \(id)"
@@ -69,8 +82,10 @@ public final class AndroidCredentials {
 
   /// `kind` is a `ProviderInfo.Kind` raw value ("anthropic", "openAI", ...).
   public func saveAPIKey(_ kind: String, apiKey: String) throws {
-    guard let k = ProviderInfo.Kind(rawValue: kind) else { throw AndroidBridgeError.unknownProviderKind(kind) }
-    try credentialStore.save(.apiKey(apiKey), for: k)
+    try readerFacing {
+      guard let k = ProviderInfo.Kind(rawValue: kind) else { throw AndroidBridgeError.unknownProviderKind(kind) }
+      try credentialStore.save(.apiKey(apiKey), for: k)
+    }
   }
 
   public func hasCredential(_ kind: String) -> Bool {
@@ -85,7 +100,9 @@ public final class AndroidCredentials {
   }
 
   public func deleteCredential(_ kind: String) throws {
-    guard let k = ProviderInfo.Kind(rawValue: kind) else { throw AndroidBridgeError.unknownProviderKind(kind) }
-    try credentialStore.delete(for: k)
+    try readerFacing {
+      guard let k = ProviderInfo.Kind(rawValue: kind) else { throw AndroidBridgeError.unknownProviderKind(kind) }
+      try credentialStore.delete(for: k)
+    }
   }
 }

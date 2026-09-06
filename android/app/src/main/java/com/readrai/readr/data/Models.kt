@@ -13,6 +13,7 @@ data class BookSummary(
     val chapterCount: Int,
     val estimatedTokenCount: Int,
     val isImageOnly: Boolean = false,
+    val isFixedLayout: Boolean = false,
     val coverPath: String? = null,
     val sourceFilename: String? = null,
 )
@@ -20,7 +21,8 @@ data class BookSummary(
 @Serializable
 data class ChapterSummary(val index: Int, val title: String, val characterCount: Int)
 
+/** ReadrKit's `ReadingPosition`, field for field. */
 @Serializable
-data class ReadingPosition(val chapterIndex: Int, val characterOffset: Int)
+data class ReadingPosition(val chapterIndex: Int, val characterOffset: Int = 0, val pdfPageIndex: Int? = null)
 
 val kitJson = Json { ignoreUnknownKeys = true }

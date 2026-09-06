@@ -1,5 +1,6 @@
 package com.readrai.readr.ui.library
 
+import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -35,6 +36,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -46,6 +48,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.readrai.readr.data.BookSummary
 import com.readrai.readr.ui.theme.Marginalia
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -105,10 +109,26 @@ private fun BookCard(book: BookSummary, onClick: () -> Unit) {
     }
 }
 
+/** Decodes a cover off the main thread, downsampled to the card's size (covers are often 1600×2400). */
+@Composable
+private fun rememberCover(path: String?): Bitmap? {
+    val bitmap by produceState<Bitmap?>(initialValue = null, path) {
+        value = path?.let { p ->
+            withContext(Dispatchers.IO) {
+                val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                BitmapFactory.decodeFile(p, bounds)
+                val sample = maxOf(1, minOf(bounds.outWidth / 360, bounds.outHeight / 540))
+                BitmapFactory.decodeFile(p, BitmapFactory.Options().apply { inSampleSize = sample })
+            }
+        }
+    }
+    return bitmap
+}
+
 @Composable
 private fun Cover(book: BookSummary) {
     val shape = RoundedCornerShape(6.dp)
-    val bitmap = remember(book.coverPath) { book.coverPath?.let { BitmapFactory.decodeFile(it) } }
+    val bitmap = rememberCover(book.coverPath)
     if (bitmap != null) {
         Image(bitmap.asImageBitmap(), contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxWidth().aspectRatio(2f / 3f).clip(shape))
     } else {

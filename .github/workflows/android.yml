@@ -34,10 +34,28 @@ jobs:
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
           sudo udevadm control --reload-rules && sudo udevadm trigger --name-match=kvm
 
+      - name: Install Swift's system dependencies
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q binutils gnupg2 libc6-dev libcurl4-openssl-dev libedit2 libgcc-13-dev \
+            libpython3-dev libsqlite3-0 libstdc++-13-dev libxml2-dev libncurses-dev libz3-dev pkg-config \
+            tzdata unzip zlib1g-dev
+
+      - name: Cache the Swift toolchain and Android SDK bundle
+        id: swift-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.local/share/swiftly
+            ~/.config/swiftpm/swift-sdks
+          key: swift-${{ env.SWIFT_VERSION }}-android-${{ env.SWIFT_ANDROID_SDK_CHECKSUM }}-ndk-${{ env.NDK_VERSION }}-v1
+
       - name: Install Swift via swiftly
         run: |
-          curl -fsSL https://download.swift.org/swiftly/linux/swiftly-$(uname -m).tar.gz | tar -xz -C /tmp
-          /tmp/swiftly init -y --skip-install --no-modify-profile
+          if [ ! -x "$HOME/.local/share/swiftly/bin/swiftly" ]; then
+            curl -fsSL https://download.swift.org/swiftly/linux/swiftly-$(uname -m).tar.gz | tar -xz -C /tmp
+            /tmp/swiftly init -y --skip-install --no-modify-profile
+          fi
           ~/.local/share/swiftly/bin/swiftly install ${SWIFT_VERSION} --use -y
           echo "$HOME/.local/share/swiftly/bin" >> "$GITHUB_PATH"
           echo "SWIFTLY_PATH=$HOME/.local/share/swiftly/bin/swiftly" >> "$GITHUB_ENV"
@@ -59,20 +77,24 @@ jobs:
 
       - name: Install the Swift SDK for Android
         run: |
-          swift sdk install "$SWIFT_ANDROID_SDK_URL" --checksum "$SWIFT_ANDROID_SDK_CHECKSUM"
           BUNDLE=$HOME/.config/swiftpm/swift-sdks/swift-${SWIFT_VERSION}-RELEASE_android.artifactbundle/swift-android
+          if [ ! -d "$BUNDLE" ]; then
+            swift sdk install "$SWIFT_ANDROID_SDK_URL" --checksum "$SWIFT_ANDROID_SDK_CHECKSUM"
+          fi
           ANDROID_NDK_HOME="$ANDROID_HOME/ndk/${NDK_VERSION}" "$BUNDLE/scripts/setup-android-sdk.sh"
           swift sdk list
 
+      - uses: gradle/actions/setup-gradle@v4
+
       - name: Publish swiftkit-core to the local Maven repository
         working-directory: android
-        run: ./gradlew :readrkit:publishSwiftKit --no-daemon
+        run: ./gradlew :readrkit:publishSwiftKit
 
       - name: Build app and test APKs (x86_64 for the emulator)
         working-directory: android
         env:
           READR_ANDROID_ABIS: x86_64
-        run: ./gradlew :app:assembleDebug :app:assembleDebugAndroidTest --no-daemon
+        run: ./gradlew :app:assembleDebug :app:assembleDebugAndroidTest
 
       - name: Cross-compile the ReadrKit test suite for x86_64 Android
         run: swift build --swift-sdk x86_64-unknown-linux-android28 --build-tests
@@ -91,9 +113,15 @@ jobs:
             adb push .build/x86_64-unknown-linux-android28/debug/ReadrKitPackageTests.xctest /data/local/tmp/readr/
             for f in $LIBS/*.so; do adb push "$f" /data/local/tmp/readr/lib/ >/dev/null; done
             adb push $BUNDLE/ndk-sysroot/usr/lib/x86_64-linux-android/libc++_shared.so /data/local/tmp/readr/lib/ >/dev/null
-            adb shell 'cd /data/local/tmp/readr && TMPDIR=/data/local/tmp/readr/tmp HOME=/data/local/tmp/readr LD_LIBRARY_PATH=/data/local/tmp/readr/lib ./ReadrKitPackageTests.xctest' | tee kit-tests.log
-            grep -q "with 0 failures" kit-tests.log
-            cd android && ./gradlew :app:connectedDebugAndroidTest --no-daemon
+            set -o pipefail
+            adb shell 'cd /data/local/tmp/readr && TMPDIR=/data/local/tmp/readr/tmp HOME=/data/local/tmp/readr LD_LIBRARY_PATH=/data/local/tmp/readr/lib ./ReadrKitPackageTests.xctest; echo XCTEST_EXIT=$?' | tee kit-tests.log
+            # adb shell does not propagate the remote exit code, and XCTest prints a
+            # "with 0 failures" line per suite — gate on the echoed status and on the
+            # whole-run summary, and refuse any non-zero failure count anywhere.
+            grep -q '^XCTEST_EXIT=0' kit-tests.log
+            grep -q "Test Suite 'All tests' passed" kit-tests.log
+            ! grep -qE 'with [1-9][0-9]* failures' kit-tests.log
+            cd android && ./gradlew :app:connectedDebugAndroidTest
 
       - name: Upload test reports
         if: always()
