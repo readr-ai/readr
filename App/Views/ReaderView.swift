@@ -296,6 +296,7 @@ struct ReaderView: View {
                         minHeight: 140, maxHeight: 420
                     )
             }
+            .overlay(alignment: .topTrailing) { appearancePopoverAnchor }
             #endif
             .inspector(isPresented: $showNotes) {
                 NotesPanel(
@@ -1214,27 +1215,56 @@ struct ReaderView: View {
 
     /// The Aa popover — text size, theme, font, spacing, layout, and the
     /// PDF pages/text switch — on both platforms.
+    ///
+    /// iOS presents it from the toolbar button. macOS presents it from an
+    /// anchor in the content (`appearancePopoverAnchor`), not from the
+    /// toolbar item: a popover bridged through a toolbar item makes SwiftUI
+    /// re-vend the toolbar during AppKit's layout pass, the popover's size
+    /// query feeds back into that, and AppKit gives up with an exception
+    /// from `_postWindowNeedsUpdateConstraints` — the app hung, then died,
+    /// on every Aa click in CI's macOS lane (crash report and thread
+    /// samples in the ci-screenshots branch). The footnote popover has
+    /// anchored to the content for the same reason.
     private var appearanceButton: some View {
-        Button { showAppearance = true } label: {
+        let button = Button { showAppearance = true } label: {
             Label("Appearance", systemImage: "textformat.size")
         }
         .accessibilityIdentifier("reader.appearance")
         .accessibilityLabel("Appearance")
         .help("Appearance — theme, text size (⌘+ / ⌘−), layout")
-        .popover(isPresented: $showAppearance) {
-            AppearancePopover(
-                themeRaw: $themeRaw,
-                layoutRaw: $layoutRaw,
-                fontSize: $fontSize,
-                fontRaw: $fontRaw,
-                lineSpacingRaw: $lineSpacingRaw,
-                isJustified: $isJustified,
-                // An image-only PDF has no Reading view to offer.
-                isPDF: model.isPDF(book) && !isImageOnlyPDF,
-                pdfShowsOriginal: $pdfShowsOriginal
-            )
-        }
+        #if os(iOS)
+        return button.popover(isPresented: $showAppearance) { appearancePopover }
+        #else
+        return button
+        #endif
     }
+
+    private var appearancePopover: some View {
+        AppearancePopover(
+            themeRaw: $themeRaw,
+            layoutRaw: $layoutRaw,
+            fontSize: $fontSize,
+            fontRaw: $fontRaw,
+            lineSpacingRaw: $lineSpacingRaw,
+            isJustified: $isJustified,
+            // An image-only PDF has no Reading view to offer.
+            isPDF: model.isPDF(book) && !isImageOnlyPDF,
+            pdfShowsOriginal: $pdfShowsOriginal
+        )
+    }
+
+    #if os(macOS)
+    /// A one-point anchor under the toolbar's Aa button, so the popover
+    /// hangs from where it was asked for without being presented by the
+    /// toolbar item itself (see `appearanceButton`).
+    private var appearancePopoverAnchor: some View {
+        Color.clear
+            .frame(width: 1, height: 1)
+            .padding(.trailing, 150)
+            .popover(isPresented: $showAppearance, arrowEdge: .top) { appearancePopover }
+            .accessibilityHidden(true)
+    }
+    #endif
 
     private var askButton: some View {
         let button = Button(action: askTheBook) {
