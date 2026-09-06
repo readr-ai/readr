@@ -437,17 +437,15 @@ struct AnnotationListView: View {
 
 // MARK: - Note editor
 
-/// Edits (or adds) the note attached to one annotation. The quote stays
-/// visible above the editor so the reader remembers what they're annotating.
+/// Edits (or adds) the note attached to one annotation, in the same
+/// `NoteEditor` card the page uses — one note editor, wherever it opens
+/// from. The draft is seeded once from the item; the editor owns the text
+/// until Save.
 private struct NoteEditSheet: View {
     let item: AnnotationItem
     var onSave: (String) -> Void
 
-    @AppStorage("readingTheme") private var themeRaw = ReadingTheme.paper.rawValue
-    private var theme: ReadingTheme { ReadingTheme(rawValue: themeRaw) ?? .paper }
-
     @State private var text: String
-    @Environment(\.dismiss) private var dismiss
 
     init(item: AnnotationItem, onSave: @escaping (String) -> Void) {
         self.item = item
@@ -456,43 +454,8 @@ private struct NoteEditSheet: View {
     }
 
     var body: some View {
-        NavigationStack {
-            VStack(alignment: .leading, spacing: 10) {
-                Text("\u{201C}\(item.quotedText)\u{201D}")
-                    .font(.system(size: 12, design: .serif))
-                    .italic()
-                    .foregroundStyle(theme.muted)
-                    .lineLimit(3)
-                    .accessibilityLabel(Text(item.quotedText))
-                TextEditor(text: $text)
-                    .font(.system(size: 12.5))
-                    .scrollContentBackground(.hidden)
-                    .foregroundStyle(theme.inkColor)
-                    .padding(6)
-                    .frame(minHeight: 120)
-                    .background(theme.paper, in: RoundedRectangle(cornerRadius: 8))
-                    .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(theme.line, lineWidth: 1))
-            }
-            .padding()
-            .background(theme.elevated)
-            .navigationTitle("Note")
-            #if os(iOS)
-            .navigationBarTitleDisplayMode(.inline)
-            #endif
-            .toolbar {
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Save") {
-                        onSave(text)
-                        dismiss()
-                    }
-                }
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
-                }
-            }
+        NoteEditor(quotedText: item.quotedText, text: $text) {
+            onSave(text)
         }
-        #if os(macOS)
-        .frame(minWidth: 380, minHeight: 280)
-        #endif
     }
 }

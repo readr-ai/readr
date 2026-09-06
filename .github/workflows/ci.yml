@@ -193,6 +193,19 @@ jobs:
           IDENTITY=$(security find-identity -v -p codesigning build.keychain \
             | awk -F'"' '/Developer ID Application/ {print $2; exit}')
           echo "Signing UI test runner as: $IDENTITY"
+          # While the test runs, sample the app's threads every ten seconds
+          # and keep any crash report: a red lane on a runner nobody can
+          # attach a debugger to is otherwise a screen recording and a
+          # guess. Published with the screenshots.
+          mkdir -p shots/macui
+          (
+            for i in $(seq 1 24); do
+              sleep 10
+              sample Readr 2 -file "shots/macui/sample-$i.txt" >/dev/null 2>&1 || true
+            done
+          ) &
+          SAMPLER=$!
+          set +e
           xcodebuild test \
             -project Readr.xcodeproj \
             -scheme Readr \
@@ -202,6 +215,11 @@ jobs:
             -resultBundlePath MacUIResults \
             CODE_SIGN_STYLE=Manual \
             CODE_SIGN_IDENTITY="$IDENTITY"
+          STATUS=$?
+          set -e
+          kill "$SAMPLER" 2>/dev/null || true
+          cp ~/Library/Logs/DiagnosticReports/Readr* shots/macui/ 2>/dev/null || true
+          exit "$STATUS"
       # -retry-tests-on-failure + -test-iterations 3: XCUITest on the
       # simulator is timing-sensitive and occasionally flakes (sheet/inspector
       # presentation races). Retrying a *failed* test up to twice rescues
@@ -214,6 +232,8 @@ jobs:
           xcparse screenshots TestResults.xcresult shots || true
           xcparse screenshots IPadResults.xcresult shots/ipad || true
           xcparse attachments MacResults.xcresult shots --uti public.png || true
+          # The macOS UI test's failure screenshots and element-tree text.
+          xcparse attachments MacUIResults.xcresult shots/macui || true
           ls -R shots || true
       - name: Publish screenshots
         if: always()

@@ -111,19 +111,31 @@ Providers) via gear in the library toolbar + macOS Settings scene.
   File > Import (⌘I).
 
 ### Reader window
-Toolbar (unifiedCompact, auto-hides in full screen):
-- **Leading**: TOC popover (chapter list, current chapter bold, click to jump);
-  Bookmarks menu (toggle bookmark ⌘D + list of bookmarks, click to jump).
+Toolbar (unifiedCompact, auto-hides in full screen) — seven controls, the
+same on every platform (the macOS bar used to carry seventeen, with the
+appearance controls inline; September 2026 UX review, F3):
+- **Leading**: Contents popover — the book's bookmarks first (chapter in
+  caps, snippet in serif, tap to jump, ✕ to remove), then the chapter list
+  (current chapter bold, a faint ribbon on a chapter that holds a bookmark);
+  the bookmark **ribbon**, a toggle (⌘D) that fills on a bookmarked page.
+  There is no bookmarks menu (F9).
 - **Center**: book title · chapter title (window title/subtitle).
 - **Trailing**: In-book search (⌘F, popover: field + result list with
   snippets, ⏎ jumps, works across chapters; PDFs use PDFKit findString);
-  Appearance popover (NOT a menu): theme tiles (Paper/Sepia/Night) with
-  live preview swatches, font size − / A / +, layout picker
-  (Scroll / Page / Two pages), PDF: Original pages ↔ Reading view toggle;
-  Ask the Book (sparkles, ⌘⇧A) — opens Ask panel with or without selection;
-  Notes panel toggle (highlighter icon, ⌘⇧N) — `.inspector`.
+  **Aa** — the Appearance popover (NOT a menu): text size, theme tiles
+  (Paper/Sepia/Dark) with live preview, typeface, line spacing,
+  justification, layout (Scroll / Single page / Two pages on macOS), and
+  for PDFs Original pages ↔ Reading view; Listen (⌘⇧L);
+  Ask the Book (✦, ⌘⇧A) — opens Ask panel with or without selection;
+  Highlights panel toggle (highlighter icon, ⌘⇧N) — `.inspector`.
+- **Sheets** share one header grammar: AI surfaces (Ask, Article) carry
+  ✦ + a caps title in the principal slot; reading surfaces carry their
+  title; Done is always on the right. One note editor (`NoteEditor`)
+  wherever a note is edited from (F4).
 - Footer (text modes): "Page x of y · ~N min left in chapter" (estimated from
   ~240 wpm until measured), page-turn arrows; ←/→ keys and trackpad swipe.
+  Scroll layout on the Mac carries previous/next-chapter arrows in its
+  footer (⌥⌘← / ⌥⌘→ everywhere), since it has no page edges to turn.
 - Position restore: exact character offset (`ReadingPosition.characterOffset`),
   not just the chapter.
 

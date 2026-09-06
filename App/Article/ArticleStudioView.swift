@@ -55,7 +55,11 @@ struct ArticleStudioView: View {
         NavigationStack {
             content
                 .background(theme.background)
-                .navigationTitle(article.markdown.isEmpty ? "Article Studio" : article.title)
+                // One title, the AI-surface grammar Ask uses: ✦ + caps in
+                // the principal slot, Done on the right. (It used to carry a
+                // nav title AND a principal "New article", with Done on the
+                // left.)
+                .navigationTitle("Article")
                 #if os(iOS)
                 .navigationBarTitleDisplayMode(.inline)
                 #endif
@@ -128,20 +132,33 @@ struct ArticleStudioView: View {
 
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
-        ToolbarItem(placement: .cancellationAction) {
-            Button("Done") { dismiss() }
-        }
         ToolbarItem(placement: .principal) {
-            HStack(spacing: 6) {
-                Text(AppTheme.aiGlyph)
-                    .foregroundStyle(theme.iris)
-                Text("New article")
-                    .foregroundStyle(theme.inkColor)
-            }
-            .font(.callout.weight(.semibold))
-            .accessibilityAddTraits(.isHeader)
+            AISheetHeader(title: "Article", theme: theme)
+        }
+        ToolbarItem(placement: .confirmationAction) {
+            // Escape closes the sheet, as Cancel used to; Return is left to
+            // the direction field.
+            Button("Done") { dismiss() }
+                .keyboardShortcut(.cancelAction)
         }
         if !article.isComposing && !article.markdown.isEmpty {
+            #if os(iOS)
+            // The iPhone bar collapses trailing items past two, and Done is
+            // one of them: the draft's actions ride one menu.
+            ToolbarItem(placement: .primaryAction) {
+                Menu {
+                    Button("Compose again", systemImage: "arrow.clockwise", action: startCompose)
+                    Button("Save as Markdown…", systemImage: "square.and.arrow.down") { showExporter = true }
+                    Button("Copy", systemImage: "doc.on.doc") { Pasteboard.copy(article.markdown) }
+                    ShareLink(item: article.markdown) {
+                        Label("Share…", systemImage: "square.and.arrow.up")
+                    }
+                } label: {
+                    Label("Article actions", systemImage: "ellipsis.circle")
+                }
+                .accessibilityIdentifier("article.actions")
+            }
+            #else
             ToolbarItemGroup(placement: .primaryAction) {
                 Button {
                     startCompose()
@@ -154,7 +171,7 @@ struct ArticleStudioView: View {
                 Button {
                     showExporter = true
                 } label: {
-                    quietAction("Markdown")
+                    quietAction("Save as Markdown…")
                 }
                 .buttonStyle(.plain)
                 .help("Save the article as a Markdown file")
@@ -170,6 +187,7 @@ struct ArticleStudioView: View {
                 }
                 .buttonStyle(.plain)
             }
+            #endif
         }
     }
 

@@ -268,7 +268,11 @@ struct PDFReaderView: View {
             .help("Table of contents")
             .accessibilityIdentifier("pdf.toc")
             .popover(isPresented: $showTOC, arrowEdge: .bottom) {
-                PDFOutlineList(controller: controller) { showTOC = false }
+                PDFOutlineList(
+                    controller: controller,
+                    bookmarks: pageBookmarks,
+                    onRemoveBookmark: { model.removeBookmark($0) }
+                ) { showTOC = false }
             }
         }
         ToolbarItem(id: "pdf.thumbnails", placement: navPlacement) {
@@ -280,7 +284,7 @@ struct PDFReaderView: View {
             .accessibilityIdentifier("pdf.thumbnails")
         }
         ToolbarItem(id: "pdf.bookmark", placement: navPlacement) {
-            bookmarkMenu
+            bookmarkToggle
         }
         ToolbarItem(id: "pdf.search", placement: searchPlacement) {
             searchButton
@@ -341,57 +345,30 @@ struct PDFReaderView: View {
             .sorted { ($0.pdfPageIndex ?? 0) < ($1.pdfPageIndex ?? 0) }
     }
 
-    /// Split control: primary click toggles the bookmark on the current page
-    /// (the icon fills when the page is bookmarked); the menu lists all page
-    /// bookmarks for jumping.
-    private var bookmarkMenu: some View {
-        Menu {
-            Button {
-                toggleBookmark()
-            } label: {
-                Label(
-                    currentBookmark == nil ? "Add Bookmark" : "Remove Bookmark",
-                    systemImage: currentBookmark == nil ? "bookmark" : "bookmark.slash"
-                )
-            }
-            .keyboardShortcut("d", modifiers: .command)
-            if !pageBookmarks.isEmpty {
-                Divider()
-                ForEach(pageBookmarks) { bookmark in
-                    Button {
-                        controller.goToPage(bookmark.pdfPageIndex ?? 0)
-                    } label: {
-                        Label(
-                            bookmark.snippet.isEmpty
-                                ? "Page \((bookmark.pdfPageIndex ?? 0) + 1)"
-                                : bookmark.snippet,
-                            systemImage: "bookmark.fill"
-                        )
-                    }
-                }
-            }
-        } label: {
-            Label(
-                "Bookmarks",
-                systemImage: currentBookmark == nil ? "bookmark" : "bookmark.fill"
-            )
-        } primaryAction: {
-            toggleBookmark()
-        }
-        .help("Bookmark this page (⌘D)")
-        .accessibilityIdentifier("pdf.bookmark")
+    /// The ribbon: filled on a bookmarked page; a tap (⌘D) adds or removes
+    /// the bookmark. The page bookmarks list in Contents, as in the text
+    /// reader.
+    private var bookmarkToggle: some View {
+        BookmarkRibbonButton(
+            isBookmarked: currentBookmark != nil,
+            identifier: "pdf.bookmark",
+            action: toggleBookmark
+        )
     }
 
     private func toggleBookmark() {
         if let existing = currentBookmark {
             model.removeBookmark(existing)
         } else {
+            // No snippet: a page bookmark's label is its page number, which
+            // every row derives from `pdfPageIndex` (storing "Page N" was a
+            // string that could go stale against its own source).
             model.addBookmark(Bookmark(
                 bookID: book.id,
                 chapterIndex: 0,
                 characterOffset: 0,
                 pdfPageIndex: controller.currentPageIndex,
-                snippet: "Page \(controller.currentPageIndex + 1)",
+                snippet: "",
                 createdAt: Date()
             ))
         }

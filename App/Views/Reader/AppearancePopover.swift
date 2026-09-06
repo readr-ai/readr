@@ -5,8 +5,8 @@ import ReadrKit
 import UIKit
 #endif
 
-/// The Aa popover (iOS keeps it; macOS shows the same controls inline in the
-/// toolbar), Marginalia style: a serif A / A font stepper, three theme dots
+/// The Aa popover, on every platform (the macOS toolbar used to show the
+/// same controls inline), Marginalia style: a serif A / A font stepper, three theme dots
 /// (paper swatches, ink ring when selected), a hairline segmented layout
 /// picker, and — for PDFs — the original-pages ↔ reading-view switch.
 ///
@@ -23,6 +23,9 @@ struct AppearancePopover: View {
     var isPDF: Bool = false
     @Binding var pdfShowsOriginal: Bool
     @Environment(\.dismiss) private var dismiss
+    /// The host's own way to close the popover, when it is not a SwiftUI
+    /// presentation (`MacPopover` on macOS); `dismiss` otherwise.
+    @Environment(\.popoverDismiss) private var popoverDismiss
     /// Content height reported by the layout, driving the sheet's detent so
     /// the sheet always fits the controls exactly — no hand-tuned heights to
     /// drift when a section is added or Dynamic Type grows the text.
@@ -320,7 +323,7 @@ struct AppearancePopover: View {
         // result immediately (and keeps popover-covered toolbar buttons
         // tappable for the UI screenshot walk). Theme/font stay open so they
         // preview live.
-        return Button { layoutRaw = value.rawValue; dismiss() } label: {
+        return Button { layoutRaw = value.rawValue; close() } label: {
             segmentLabel(label, selected: selected)
         }
         .buttonStyle(.plain)
@@ -329,10 +332,34 @@ struct AppearancePopover: View {
         .accessibilityAddTraits(selected ? .isSelected : [])
     }
 
+    private func close() {
+        if let popoverDismiss { popoverDismiss() } else { dismiss() }
+    }
+
     private func adjust(_ delta: Double) {
         fontSize = min(
             max(fontSize + delta, Double(ReaderStyle.fontSizeRange.lowerBound)),
             Double(ReaderStyle.fontSizeRange.upperBound)
         )
+    }
+}
+
+/// How a popover that is not a SwiftUI presentation asks to be closed —
+/// `MacPopover` supplies one; a SwiftUI sheet or popover leaves it nil and
+/// the content falls back to `dismiss`.
+struct PopoverDismiss {
+    let close: () -> Void
+    init(_ close: @escaping () -> Void) { self.close = close }
+    func callAsFunction() { close() }
+}
+
+private struct PopoverDismissKey: EnvironmentKey {
+    static let defaultValue: PopoverDismiss? = nil
+}
+
+extension EnvironmentValues {
+    var popoverDismiss: PopoverDismiss? {
+        get { self[PopoverDismissKey.self] }
+        set { self[PopoverDismissKey.self] = newValue }
     }
 }

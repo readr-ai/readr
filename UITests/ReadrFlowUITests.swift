@@ -230,7 +230,14 @@ final class ReadrFlowUITests: XCTestCase {
             draft.waitForExistence(timeout: 20),
             "The composed draft should stream into the Markdown editor"
         )
-        // Post-compose toolbar is the second signal composing completed.
+        // Post-compose toolbar is the second signal composing completed. On
+        // iOS the draft's actions ride one menu (the bar collapses past two
+        // trailing items); on macOS they sit inline.
+        #if canImport(UIKit)
+        let actions = app.buttons["article.actions"].firstMatch
+        XCTAssertTrue(actions.waitForExistence(timeout: 5), "The editor toolbar should offer the actions menu once a draft exists")
+        actions.tap()
+        #endif
         XCTAssertTrue(
             app.buttons["Compose again"].firstMatch.waitForExistence(timeout: 5),
             "The editor toolbar should offer Compose again once a draft exists"
@@ -277,13 +284,13 @@ final class ReadrFlowUITests: XCTestCase {
     // items past two per group, so the PDF controls ride the bottom bar there
     // (merged with the host's Ask); on regular width (iPad) they stay up top.
     // Scoped to the plain-Button controls whose ids XCUITest reliably queries
-    // (Contents, Find) plus Ask — `pdf.thumbnails` (a Toggle) and
-    // `pdf.bookmark` (a Menu) are exercised by their own dedicated tests.
+    // (Contents, the bookmark ribbon, Find) plus Ask — `pdf.thumbnails` (a
+    // Toggle) is exercised by its own test.
     func testPDFToolbarControlsAreReachable() {
         let app = launchSeeded()
         openFieldNotesPDF(app) // asserts pdf.pageIndicator — surface is mounted
 
-        for id in ["pdf.toc", "pdf.search", "reader.ask"] {
+        for id in ["pdf.toc", "pdf.bookmark", "pdf.search", "reader.ask"] {
             XCTAssertTrue(
                 app.descendants(matching: .any)[id].firstMatch.waitForExistence(timeout: 5),
                 "PDF toolbar control '\(id)' should be reachable on this idiom"
@@ -877,12 +884,67 @@ final class ReadrFlowUITests: XCTestCase {
         selectLayout(app, "Scroll")
     }
 
+    // MARK: - Bookmarks: a ribbon in the bar, the list in Contents
+
+    // The bookmark is a toggle (filled on a bookmarked page); the list of
+    // bookmarks sits at the top of Contents, where a tap jumps and ✕ removes.
+    // There is no bookmarks menu.
+    func testBookmarkRibbonListsInContents() {
+        let app = launchSeeded()
+        openSampleBook(app)
+
+        let ribbon = button(app, id: "reader.bookmarks", label: "Bookmark this page")
+        XCTAssertTrue(ribbon.waitForExistence(timeout: 5), "the bar should carry the bookmark ribbon")
+        ribbon.tap()
+
+        let toc = button(app, id: "reader.toc", label: "Table of contents")
+        XCTAssertTrue(toc.waitForExistence(timeout: 5))
+        toc.tap()
+
+        let row = app.buttons["contents.bookmark"].firstMatch
+        XCTAssertTrue(row.waitForExistence(timeout: 5), "the new bookmark should list at the top of Contents")
+        XCTAssertTrue(app.staticTexts["BOOKMARKS"].firstMatch.exists, "the bookmarks section should be labelled")
+
+        let remove = app.buttons["contents.removeBookmark"].firstMatch
+        XCTAssertTrue(remove.exists)
+        remove.tap()
+        XCTAssertTrue(
+            row.waitForNonExistence(timeout: 5),
+            "✕ on a bookmark row should remove it"
+        )
+    }
+
+    // The same ribbon and the same Contents rows in the native PDF reader:
+    // a page bookmark lists at the top of the outline popover and ✕ removes
+    // it there.
+    func testPDFBookmarkRibbonListsInContents() {
+        let app = launchSeeded()
+        openFieldNotesPDF(app)
+
+        let ribbon = app.descendants(matching: .any)["pdf.bookmark"].firstMatch
+        XCTAssertTrue(ribbon.waitForExistence(timeout: 5), "the PDF bar should carry the bookmark ribbon")
+        ribbon.tap()
+
+        let toc = app.descendants(matching: .any)["pdf.toc"].firstMatch
+        XCTAssertTrue(toc.waitForExistence(timeout: 5))
+        toc.tap()
+
+        let row = app.buttons["contents.bookmark"].firstMatch
+        XCTAssertTrue(row.waitForExistence(timeout: 5), "the page bookmark should list at the top of the PDF Contents")
+        XCTAssertTrue(app.staticTexts["BOOKMARKS"].firstMatch.exists)
+
+        let remove = app.buttons["contents.removeBookmark"].firstMatch
+        XCTAssertTrue(remove.exists)
+        remove.tap()
+        XCTAssertTrue(row.waitForNonExistence(timeout: 5), "✕ on a PDF bookmark row should remove it")
+    }
+
     // MARK: - Typography controls (Apple Books parity)
 
     // The Books-style text controls — typeface, line spacing, justification —
-    // must be reachable on BOTH platforms. iOS gathers them in the Aa popover;
-    // the macOS toolbar has no room for three more inline controls, so they
-    // live behind a `textformat` menu. Same identifiers, different container.
+    // must be reachable on BOTH platforms, and since the September 2026 UX
+    // review they live in the same Aa popover on both: the macOS toolbar's
+    // inline segments, stepper, Text menu and theme dots are gone.
     //
     // This test asserted only the iOS shape for a long time while CI ran the
     // suite on simulators alone, which is exactly how macOS shipped with no
@@ -891,53 +953,55 @@ final class ReadrFlowUITests: XCTestCase {
         let app = launchSeeded()
         openSampleBook(app)
 
-        #if canImport(UIKit)
         let opener = button(app, id: "reader.appearance", label: "Appearance")
-        #else
-        // A SwiftUI `Menu` is a pop-up button on macOS, not a plain button, so
-        // match on identifier across element types.
-        let opener = app.descendants(matching: .any)
-            .matching(identifier: "reader.typography")
-            .firstMatch
-        #endif
         XCTAssertTrue(opener.waitForExistence(timeout: 5))
+        #if os(macOS)
+        // The double-click that opens the book on the Mac lands its second
+        // click in the reader that appears underneath, selecting a word and
+        // raising the annotation popover. A transient popover swallows the
+        // next click to dismiss itself — so the tap on Aa closed the
+        // annotation bar and opened nothing (CI's screen recording). Clear
+        // it first, and tap again if the popover still does not show.
+        app.typeKey(.escape, modifierFlags: [])
+        #endif
         opener.tap()
 
-        // The macOS controls live inside a pull-down menu, so they enter the
-        // hierarchy only once it is open; give it a moment either way.
-        XCTAssertTrue(
-            waitForText(app, "New York", timeout: 5) || waitForText(app, "Font", timeout: 5),
-            "Appearance should offer the reading typeface menu"
-        )
+        // Every control is found by identifier, whatever element type the
+        // platform gives it: the typeface `Menu` is a pop-up button on macOS
+        // and a button on iOS, the section label renders as "FONT", and the
+        // popover is its own window on macOS. Matching on text ("Font",
+        // "New York") found nothing there — the macOS lane's red build.
+        let font = app.descendants(matching: .any)["appearance.font"].firstMatch
+        if !font.waitForExistence(timeout: 5) {
+            opener.tap()
+            _ = font.waitForExistence(timeout: 10)
+        }
+        XCTAssertTrue(font.exists, "Appearance should offer the reading typeface menu")
 
-        // iOS renders the presets as identified segment buttons; the macOS menu
-        // renders them as rows carrying only their display name. Accept either.
-        for (raw, display) in [("compact", "Compact"), ("normal", "Normal"), ("relaxed", "Relaxed")] {
+        for raw in ["compact", "normal", "relaxed"] {
             XCTAssertTrue(
-                app.buttons["appearance.spacing.\(raw)"].firstMatch.exists
-                    || waitForText(app, display, timeout: 2),
-                "Appearance should offer the \(display) line-spacing preset"
+                app.descendants(matching: .any)["appearance.spacing.\(raw)"].firstMatch.exists,
+                "Appearance should offer the \(raw) line-spacing preset"
+            )
+        }
+        XCTAssertTrue(
+            app.descendants(matching: .any)["appearance.justify"].firstMatch.exists,
+            "Appearance should offer the justification toggle"
+        )
+        for raw in ["scroll", "singlePage"] {
+            XCTAssertTrue(
+                app.descendants(matching: .any)["appearance.layout.\(raw)"].firstMatch.exists,
+                "Appearance should offer the \(raw) layout"
             )
         }
 
-        XCTAssertTrue(
-            app.switches["appearance.justify"].firstMatch.exists
-                || app.switches["Justify text"].firstMatch.exists
-                || app.menuItems["Justify text"].firstMatch.exists
-                || waitForText(app, "Justify text", timeout: 2),
-            "Appearance should offer the justification toggle"
-        )
-
         #if canImport(UIKit)
         // Live-preview controls: picking a spacing preset keeps the popover
-        // open and the reader intact. iOS only — selecting a row in the macOS
-        // pull-down dismisses the menu by design, so "stays open" is not the
-        // contract there.
+        // open and the reader intact. iOS only — a macOS popover closes on
+        // the click that lands outside it, which the segment tap is not, but
+        // the "stays open" contract is only asserted where it was proven.
         app.buttons["appearance.spacing.relaxed"].firstMatch.tap()
-        XCTAssertTrue(
-            button(app, id: "appearance.font", label: "Font").exists,
-            "Spacing presets should preview live"
-        )
+        XCTAssertTrue(font.exists, "Spacing presets should preview live")
         app.buttons["appearance.spacing.normal"].firstMatch.tap() // restore
         #endif
     }
