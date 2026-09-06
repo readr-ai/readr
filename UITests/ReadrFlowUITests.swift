@@ -989,8 +989,11 @@ final class ReadrFlowUITests: XCTestCase {
         // An NSPopover keeps XCUITest's idle wait busy for a minute before it
         // gives up and carries on; the timeout is generous for that.
         if !font.waitForExistence(timeout: 20) {
-            // The tree, for the next person reading a red macOS lane.
-            add(XCTAttachment(string: app.debugDescription))
+            // The tree, for the next person reading a red macOS lane — in
+            // the build log, where CI shows it, as well as the result bundle.
+            let tree = app.debugDescription
+            print("APPEARANCE TREE BEGIN\n\(tree)\nAPPEARANCE TREE END")
+            add(XCTAttachment(string: tree))
         }
         XCTAssertTrue(font.exists, "Appearance should offer the reading typeface menu")
 

@@ -214,6 +214,8 @@ jobs:
           xcparse screenshots TestResults.xcresult shots || true
           xcparse screenshots IPadResults.xcresult shots/ipad || true
           xcparse attachments MacResults.xcresult shots --uti public.png || true
+          # The macOS UI test's failure screenshots and element-tree text.
+          xcparse attachments MacUIResults.xcresult shots/macui || true
           ls -R shots || true
       - name: Publish screenshots
         if: always()
