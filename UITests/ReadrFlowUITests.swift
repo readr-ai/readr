@@ -978,6 +978,15 @@ final class ReadrFlowUITests: XCTestCase {
 
         let opener = button(app, id: "reader.appearance", label: "Appearance")
         XCTAssertTrue(opener.waitForExistence(timeout: 5))
+        #if os(macOS)
+        // The double-click that opens the book on the Mac lands its second
+        // click in the reader that appears underneath, selecting a word and
+        // raising the annotation popover. A transient popover swallows the
+        // next click to dismiss itself — so the tap on Aa closed the
+        // annotation bar and opened nothing (CI's screen recording). Clear
+        // it first, and tap again if the popover still does not show.
+        app.typeKey(.escape, modifierFlags: [])
+        #endif
         opener.tap()
 
         // Every control is found by identifier, whatever element type the
@@ -986,14 +995,9 @@ final class ReadrFlowUITests: XCTestCase {
         // popover is its own window on macOS. Matching on text ("Font",
         // "New York") found nothing there — the macOS lane's red build.
         let font = app.descendants(matching: .any)["appearance.font"].firstMatch
-        // An NSPopover keeps XCUITest's idle wait busy for a minute before it
-        // gives up and carries on; the timeout is generous for that.
-        if !font.waitForExistence(timeout: 20) {
-            // The tree, for the next person reading a red macOS lane — in
-            // the build log, where CI shows it, as well as the result bundle.
-            let tree = app.debugDescription
-            print("APPEARANCE TREE BEGIN\n\(tree)\nAPPEARANCE TREE END")
-            add(XCTAttachment(string: tree))
+        if !font.waitForExistence(timeout: 5) {
+            opener.tap()
+            _ = font.waitForExistence(timeout: 10)
         }
         XCTAssertTrue(font.exists, "Appearance should offer the reading typeface menu")
 
