@@ -118,6 +118,7 @@ tasks.register("publishSwiftKit") {
         val gradlew = File(checkout, "gradlew")
         val real = File(checkout, "gradlew.real")
         if (!real.exists()) gradlew.copyTo(real)
+        real.setExecutable(true) // File.copyTo does not carry the mode bit over
         val env = System.getenv("JAVA_HOME_25")?.let { mapOf("JAVA_HOME" to it) } ?: emptyMap()
         runProcess(real.absolutePath, "--project-dir", checkout.absolutePath, ":SwiftKitCore:build", ":SwiftKitCore:publishToMavenLocal", "--no-daemon", "-q", dir = checkout, env = env)
         if (System.getProperty("os.name").lowercase().contains("mac")) {
