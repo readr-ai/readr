@@ -297,9 +297,7 @@ struct LibraryShellView: View {
     }
 
     private var annotationCount: Int {
-        model.books.reduce(0) {
-            $0 + model.highlights(for: $1).count + model.pdfHighlights(for: $1).count
-        }
+        model.books.reduce(0) { $0 + model.annotationCount(for: $1) }
     }
 
     // MARK: Detail

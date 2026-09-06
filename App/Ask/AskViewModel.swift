@@ -71,18 +71,41 @@ final class AskViewModel: ObservableObject {
     private let providerName: () -> String
     private let providerAnswersFromBookOnly: () -> Bool
     private let book: Book
-    private let selection: Selection?
-    /// The question the panel was opened with, if any — the Recap button
-    /// opens the panel with the recap already asked. Sent once, the first
-    /// time there is a provider to send it to.
-    private let initialQuestion: String?
-    /// Whether `initialQuestion` has gone out. Set the moment it is sent, so
-    /// no number of re-appearances or provider refreshes sends it twice.
-    private var didSendInitialQuestion = false
-    /// The last question submitted and the scope it was asked under, kept so
-    /// a Retry can re-run it verbatim after an error (A5) without the reader
-    /// retyping — or re-choosing.
-    private(set) var lastRequest: (question: String, scope: ReadingScope)?
+    /// The passage the conversation is currently about, or nil for the book
+    /// at large. Set per opening (`open`): the conversation outlives the
+    /// panel, and the next ✦ Ask on a different passage points it there.
+    @Published private(set) var selection: Selection?
+    /// How far the reader has read, as of the latest opening. What a scoped
+    /// question is held to; nil (a native PDF page) means every question
+    /// is about the whole document and the scope choice is hidden.
+    @Published private(set) var frontier: ReadingFrontier?
+    /// The reader's scope choice — "Whole book" on — kept on the
+    /// conversation, with the transcript it describes: a choice made for
+    /// one question holds for the next opening rather than snapping back
+    /// while whole-book answers sit in the history the model is shown.
+    @Published var wholeBook = false
+    /// True while the latest opening was a Recap, for the panel's headline.
+    @Published private(set) var openedForRecap = false
+    /// The question an opening asked to send on the panel's behalf (Recap),
+    /// waiting for a provider and for any stream in flight to finish. Sent
+    /// once; a later opening replaces it.
+    private var pendingQuestion: String?
+    /// True once `open` has pointed the conversation somewhere — before
+    /// that it has no frontier, and the Ask tab must open it properly.
+    private(set) var hasBeenOpened = false
+    /// The stream in flight, so leaving the book or starting over cancels
+    /// it instead of letting it run to completion for nobody.
+    private var streamTask: Task<Void, Never>?
+    /// The last question submitted, the scope and the passage it was asked
+    /// under, kept so a Retry re-runs exactly it after an error (A5) — not
+    /// the passage the conversation has since been pointed at.
+    private(set) var lastRequest: (question: String, scope: ReadingScope, selection: Selection?)?
+
+    /// What the next question is allowed to see.
+    var scope: ReadingScope {
+        if let frontier, !wholeBook { return .upTo(frontier) }
+        return .wholeBook
+    }
 
     /// The scope is NOT an init argument: the panel hands it to every
     /// `ask(_:scope:)` from its toggle, so a panel opened scoped can ask the
@@ -102,11 +125,45 @@ final class AskViewModel: ObservableObject {
         self.providerAnswersFromBookOnly = answersFromBookOnly
         self.book = book
         self.selection = selection
-        self.initialQuestion = initialQuestion
+        self.pendingQuestion = initialQuestion
         let resolved = makeService()
         self.service = resolved
         self.hasProvider = resolved != nil
         self.answersFromBookOnly = answersFromBookOnly()
+    }
+
+    /// Point the conversation at a new opening: the passage (or none), how
+    /// far the reader has read, and, for a Recap, the question to send on
+    /// the panel's behalf. The transcript stays — one conversation per
+    /// book, per session. A stale error from an earlier question does not:
+    /// it was about that question, not this opening.
+    func open(_ request: AskRequest) {
+        selection = request.selection
+        frontier = request.scope.frontier
+        openedForRecap = request.initialQuestion != nil
+        pendingQuestion = request.initialQuestion
+        hasBeenOpened = true
+        errorMessage = nil
+        errorRecovery = nil
+        sendPendingIfReady()
+    }
+
+    /// Start over: cancel anything in flight, empty the transcript, keep
+    /// the passage and frontier the conversation was last pointed at.
+    func startOver() {
+        cancel()
+        exchanges = []
+        errorMessage = nil
+        errorRecovery = nil
+        lastRequest = nil
+        pendingQuestion = nil
+        openedForRecap = false
+    }
+
+    /// Stop the stream in flight, if any. The answer keeps what arrived.
+    func cancel() {
+        streamTask?.cancel()
+        streamTask = nil
     }
 
     /// Re-resolve the provider binding. Called when the providers sheet
@@ -116,38 +173,49 @@ final class AskViewModel: ObservableObject {
         service = resolved
         hasProvider = resolved != nil
         answersFromBookOnly = providerAnswersFromBookOnly()
+        sendPendingIfReady()
     }
 
-    func ask(_ question: String, scope: ReadingScope) async {
-        await run(question, scope: scope, replacingLastExchange: false)
+    /// Ask, under the current scope and about the current passage. The
+    /// stream runs as the conversation's own task, so it can be cancelled.
+    func submit(_ question: String) {
+        let scope = self.scope
+        let selection = self.selection
+        streamTask = Task { await run(question, scope: scope, selection: selection, replacingLastExchange: false) }
     }
 
-    /// Send the question the panel was opened with, if there is one and a
-    /// provider to send it to. The panel calls this on appearance and
-    /// whenever the provider binding changes; flipping the flag before the
-    /// send is the once-guard.
-    func sendInitialQuestionIfReady(scope: ReadingScope) {
-        guard let initialQuestion, !didSendInitialQuestion, hasProvider, !isStreaming else { return }
-        didSendInitialQuestion = true
-        Task { await ask(initialQuestion, scope: scope) }
+    /// Send the question an opening asked for (the Recap), once there is a
+    /// provider and no stream in flight. Called from `open`, from
+    /// `refresh`, and when a stream ends — so a Recap opened over a
+    /// running answer goes out when that answer is done, not never.
+    func sendPendingIfReady() {
+        guard let question = pendingQuestion, hasProvider, !isStreaming else { return }
+        pendingQuestion = nil
+        submit(question)
     }
 
-    /// Re-run the last question after an error (A5), under the scope it was
-    /// asked with. No-op when nothing has been asked yet.
-    func retry() async {
+    /// Re-run the last question after an error (A5), under the scope and
+    /// about the passage it was asked with. No-op when nothing has been
+    /// asked yet.
+    func retry() {
         guard let last = lastRequest else { return }
-        await run(last.question, scope: last.scope, replacingLastExchange: true)
+        streamTask = Task {
+            await run(last.question, scope: last.scope, selection: last.selection, replacingLastExchange: true)
+        }
     }
 
     // MARK: - Streaming
 
-    private func run(_ question: String, scope: ReadingScope, replacingLastExchange: Bool) async {
+    private func run(
+        _ question: String, scope: ReadingScope, selection: Selection?, replacingLastExchange: Bool
+    ) async {
         let trimmed = question.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         // Ignore re-entrant submits while a stream is already in flight.
         guard !isStreaming else { return }
-        // Keep the request so a Retry can re-run it verbatim after a failure.
-        lastRequest = (trimmed, scope)
+        // Keep the request — question, scope AND passage — so a Retry
+        // re-runs exactly it after a failure.
+        lastRequest = (trimmed, scope, selection)
         errorMessage = nil
         errorRecovery = nil
 
@@ -165,10 +233,12 @@ final class AskViewModel: ObservableObject {
         }
 
         isStreaming = true
-        let history = historyBefore(id)
+        let history = historyBefore(id, scope: scope)
         defer {
             isStreaming = false
             update(id) { $0.isStreaming = false }
+            // A Recap that arrived while this answer streamed goes now.
+            sendPendingIfReady()
         }
 
         await prepare()
@@ -185,6 +255,9 @@ final class AskViewModel: ObservableObject {
                 trimmed, about: book, selection: selection, history: history,
                 scope: scope
             ) {
+                // Cancelled (the reader left the book or started over):
+                // keep what arrived, say nothing.
+                if Task.isCancelled { return }
                 switch event {
                 case let .contextAssembled(tier):
                     update(id) { $0.tier = tier }
@@ -208,6 +281,8 @@ final class AskViewModel: ObservableObject {
                     .warning, .provider, "ask: answer came back empty (provider \(providerName()))"
                 )
             }
+        } catch is CancellationError {
+            return
         } catch {
             // Surface the mapped, actionable sentence from the error (A5):
             // `HTTPError` conforms to `LocalizedError` so timeouts, rejected
@@ -236,10 +311,13 @@ final class AskViewModel: ObservableObject {
 
     /// Completed turns before `id`, oldest first — what the model is shown of
     /// the conversation so far. A failed or empty turn carries no answer and
-    /// is left out.
-    private func historyBefore(_ id: UUID) -> [ConversationTurn] {
+    /// is left out. So is a whole-book turn when THIS question is scoped:
+    /// the no-spoilers promise covers the history the model reads, not
+    /// just the passages it is handed.
+    private func historyBefore(_ id: UUID, scope: ReadingScope) -> [ConversationTurn] {
         exchanges.prefix(while: { $0.id != id }).compactMap { exchange -> ConversationTurn? in
             guard !exchange.failed, !exchange.answerText.isEmpty else { return nil }
+            if scope.isScoped, !exchange.scope.isScoped { return nil }
             return ConversationTurn(
                 question: exchange.question,
                 answer: Answer(

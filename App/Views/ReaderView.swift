@@ -82,12 +82,17 @@ struct ReaderView: View {
     /// voice reaches it (or moves on to another sentence).
     @State private var holdsPageForSelectionStart = false
     @State private var heldSentenceStart: Int?
-    /// The Ask panel's request — selection, scope and any question to send
-    /// on open — and, by being non-nil, the fact that it is presented. One
-    /// value carries the whole presentation, so `.sheet(item:)` gives every
-    /// opening a fresh identity and nothing lingers for the next one.
+    /// The Ask sheet's opening (iPhone): non-nil presents the sheet. The
+    /// conversation itself is the book's, on the app model, already pointed
+    /// at this request by `presentAsk`.
     @State private var askRequest: AskRequest?
-    @State private var showNotes = false
+    /// The inspector column: Highlights (⌘⇧N) or ✦ Ask (⌘⇧A) — one column,
+    /// two tabs, the page readable beside either. On iPhone the inspector
+    /// is a sheet and Ask stays its own full-height sheet (owner decision,
+    /// September 2026), so the tab strip shows only where Ask lives here —
+    /// or where it already is, after an iPad narrowed with Ask open.
+    @State private var showInspector = false
+    @State private var inspectorTab: InspectorTab = .highlights
     @State private var showTOC = false
     @State private var showSearch = false
     @State private var showAppearance = false
@@ -251,9 +256,14 @@ struct ReaderView: View {
             #endif
             .background(hiddenFontShortcuts)
             .background(hiddenAnnotationShortcuts)
-            .sheet(item: $askRequest) { request in
-                AskPanelView(app: model, book: book, request: request)
-                    .environmentObject(model)
+            .sheet(item: $askRequest) { _ in
+                AskPanelView(
+                    book: book,
+                    conversation: model.askConversation(for: book),
+                    presentation: .sheet,
+                    onNewConversation: startNewConversation
+                )
+                .environmentObject(model)
             }
             .sheet(item: $editingNote) { highlight in
                 NoteEditor(
@@ -298,54 +308,8 @@ struct ReaderView: View {
             }
             .overlay(alignment: .topTrailing) { appearancePopoverAnchor }
             #endif
-            .inspector(isPresented: $showNotes) {
-                NotesPanel(
-                    book: book,
-                    onJumpHighlight: { highlight in
-                        guard let index = book.chapters.firstIndex(
-                            where: { $0.id == highlight.chapterID }
-                        ) else { return }
-                        jump(toChapter: index, offset: highlight.range.lowerBound)
-                        // iPhone: the inspector is a covering sheet — close it
-                        // so the reader sees the jump land. iPad/macOS side
-                        // columns stay open beside the page.
-                        #if os(iOS)
-                        if UIDevice.current.userInterfaceIdiom == .phone {
-                            showNotes = false
-                        }
-                        #endif
-                    },
-                    // R1: a PDF note jumps to its page through the same funnel
-                    // the on-page bookmarks/outline use — the controller's
-                    // goToPage, published up via `pdfAnnotationActions` while
-                    // the native PDF surface is mounted.
-                    onJumpPDF: { highlight in
-                        pdfAnnotationActions?.goToPage(highlight.pageIndex)
-                        // iPhone: the inspector covers the page as a sheet —
-                        // close it so the jump is visible, mirroring the text
-                        // path above. iPad/macOS side columns stay open.
-                        #if os(iOS)
-                        if UIDevice.current.userInterfaceIdiom == .phone {
-                            showNotes = false
-                        }
-                        #endif
-                    },
-                    // R2: recolor/delete of a PDF highlight from the Notes
-                    // list must reconcile the live PDFKit overlay, not just the
-                    // store — route through the controller (via the published
-                    // actions) so the on-page paint matches after the edit.
-                    onRecolorPDF: pdfAnnotationActions.map { actions in
-                        { (highlight: PDFHighlight, color: HighlightColor) in
-                            actions.recolorHighlight(highlight, color)
-                        }
-                    },
-                    onDeletePDF: pdfAnnotationActions.map { actions in
-                        { (highlight: PDFHighlight) in
-                            actions.removeHighlight(highlight)
-                        }
-                    },
-                    onClose: { showNotes = false }
-                )
+            .inspector(isPresented: $showInspector) {
+                inspectorColumn
                 .inspectorColumnWidth(min: 280, ideal: 340, max: 480)
             }
             .onAppear {
@@ -387,9 +351,12 @@ struct ReaderView: View {
                 // really leaving: a presented sheet can take this view off
                 // screen too (the same reason `restoreOnce` guards against a
                 // second `onAppear`), and asking the book about the passage it
-                // just read must not cut the narration off.
+                // just read must not cut the narration off. An answer still
+                // streaming stops too: the transcript keeps what arrived, and
+                // nothing streams for a book nobody is reading.
                 if !isPresentingOverlay {
                     narration.stop()
+                    model.askConversation(for: book).cancel()
                 }
             }
             .onChange(of: chapterIndex) { _, newValue in
@@ -452,6 +419,205 @@ struct ReaderView: View {
         welcomeBack != nil && layout == .scroll
     }
 
+    // MARK: - Inspector
+
+    enum InspectorTab { case highlights, ask }
+
+    /// Where ✦ Ask lives: the inspector column on the Mac and on a regular
+    /// iPad, its own sheet on iPhone (an iPhone in landscape reports a
+    /// regular width; the idiom, not the width, is the decision).
+    private var usesAskInspector: Bool {
+        #if os(macOS)
+        return true
+        #else
+        return UIDevice.current.userInterfaceIdiom != .phone && isRegularWidth
+        #endif
+    }
+
+    /// The Ask tab is shown where Ask lives in the inspector — and stays
+    /// shown on an iPad that narrowed to compact with Ask open, so the
+    /// conversation never vanishes behind Highlights mid-answer.
+    private var inspectorShowsAskTab: Bool {
+        usesAskInspector || inspectorTab == .ask
+    }
+
+    private var inspectorColumn: some View {
+        VStack(spacing: 0) {
+            if inspectorShowsAskTab {
+                inspectorTabs
+            }
+            if inspectorShowsAskTab, inspectorTab == .ask {
+                askColumn
+            } else {
+                highlightsPanel
+            }
+        }
+        .background(style.theme.background)
+    }
+
+    /// Highlights · ✦ Ask, the selected one underlined (ink for Highlights,
+    /// iris for the AI tab).
+    private var inspectorTabs: some View {
+        HStack(alignment: .bottom, spacing: 18) {
+            inspectorTabButton(
+                .highlights, title: "Highlights", count: model.annotationCount(for: book),
+                id: "inspector.tab.highlights", help: "Highlights and notes (⇧⌘N)"
+            )
+            inspectorTabButton(
+                .ask, title: "\(AppTheme.aiGlyph) Ask", count: nil,
+                id: "inspector.tab.ask",
+                help: isImageOnlyPDF ? ScannedPDFCopy.needsText("Ask") : "Ask the book (⇧⌘A)"
+            )
+            .disabled(isImageOnlyPDF)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 14)
+        .padding(.top, 10)
+        .overlay(alignment: .bottom) { style.theme.line.frame(height: 1) }
+    }
+
+    private func inspectorTabButton(
+        _ tab: InspectorTab, title: String, count: Int?, id: String, help: String
+    ) -> some View {
+        let selected = inspectorTab == tab
+        let tint = tab == .ask ? style.theme.iris : style.theme.inkColor
+        return Button {
+            selectInspectorTab(tab)
+        } label: {
+            HStack(alignment: .firstTextBaseline, spacing: 5) {
+                Text(title)
+                    .font(.system(size: 13, weight: selected ? .semibold : .regular))
+                    .foregroundStyle(selected ? tint : style.theme.muted)
+                if let count, count > 0 {
+                    Text("\(count)")
+                        .font(.system(size: 11))
+                        .foregroundStyle(style.theme.faint)
+                }
+            }
+            .padding(.bottom, 8)
+            .overlay(alignment: .bottom) {
+                Rectangle()
+                    .fill(selected ? tint : .clear)
+                    .frame(height: 2)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(help)
+        .accessibilityAddTraits(selected ? [.isSelected] : [])
+        .accessibilityIdentifier(id)
+    }
+
+    /// A tab tap. The Ask tab on a conversation nobody has opened yet
+    /// opens it on the book so far — a conversation has a frontier only
+    /// once it has been pointed somewhere.
+    private func selectInspectorTab(_ tab: InspectorTab) {
+        if tab == .ask, !model.askConversation(for: book).hasBeenOpened {
+            model.askConversation(for: book).open(bookRequest())
+        }
+        inspectorTab = tab
+    }
+
+    /// The Ask column: the book's conversation, in the inspector.
+    private var askColumn: some View {
+        AskPanelView(
+            book: book,
+            conversation: model.askConversation(for: book),
+            presentation: .inspector,
+            onNewConversation: startNewConversation
+        )
+        .environmentObject(model)
+    }
+
+    private var highlightsPanel: some View {
+        NotesPanel(
+            book: book,
+            onJumpHighlight: { highlight in
+                guard let index = book.chapters.firstIndex(
+                    where: { $0.id == highlight.chapterID }
+                ) else { return }
+                jump(toChapter: index, offset: highlight.range.lowerBound)
+                // iPhone: the inspector is a covering sheet — close it
+                // so the reader sees the jump land. iPad/macOS side
+                // columns stay open beside the page.
+                #if os(iOS)
+                if UIDevice.current.userInterfaceIdiom == .phone {
+                    showInspector = false
+                }
+                #endif
+            },
+            // R1: a PDF note jumps to its page through the same funnel
+            // the on-page bookmarks/outline use — the controller's
+            // goToPage, published up via `pdfAnnotationActions` while
+            // the native PDF surface is mounted.
+            onJumpPDF: { highlight in
+                pdfAnnotationActions?.goToPage(highlight.pageIndex)
+                // iPhone: the inspector covers the page as a sheet —
+                // close it so the jump is visible, mirroring the text
+                // path above. iPad/macOS side columns stay open.
+                #if os(iOS)
+                if UIDevice.current.userInterfaceIdiom == .phone {
+                    showInspector = false
+                }
+                #endif
+            },
+            // R2: recolor/delete of a PDF highlight from the Notes
+            // list must reconcile the live PDFKit overlay, not just the
+            // store — route through the controller (via the published
+            // actions) so the on-page paint matches after the edit.
+            onRecolorPDF: pdfAnnotationActions.map { actions in
+                { (highlight: PDFHighlight, color: HighlightColor) in
+                    actions.recolorHighlight(highlight, color)
+                }
+            },
+            onDeletePDF: pdfAnnotationActions.map { actions in
+                { (highlight: PDFHighlight) in
+                    actions.removeHighlight(highlight)
+                }
+            },
+            onClose: { showInspector = false }
+        )
+    }
+
+    /// Show the Ask panel for `request`: the inspector's Ask column where
+    /// that is where Ask lives — or where it already is — else the sheet.
+    /// Either way over the book's one conversation, pointed at this
+    /// request; a draft in the composer and the scope choice survive.
+    private func presentAsk(_ request: AskRequest) {
+        model.askConversation(for: book).open(request)
+        if usesAskInspector || (showInspector && inspectorTab == .ask) {
+            inspectorTab = .ask
+            showInspector = true
+        } else {
+            askRequest = request
+        }
+    }
+
+    /// A question about the book so far: no passage, scoped to what has
+    /// been read.
+    private func bookRequest() -> AskRequest {
+        AskRequest(selection: nil, scope: askScope(selection: nil), initialQuestion: nil)
+    }
+
+    /// Start over: a fresh conversation, open on the book at large.
+    private func startNewConversation() {
+        model.startNewAskConversation(for: book).open(bookRequest())
+    }
+
+    /// The Highlights button (⌘⇧N): opens the inspector on Highlights, or
+    /// switches an inspector that is showing Ask to Highlights, or closes
+    /// an inspector already showing Highlights.
+    private func toggleHighlightsPanel() {
+        if showInspector, inspectorTab == .ask {
+            inspectorTab = .highlights
+        } else if showInspector {
+            showInspector = false
+        } else {
+            inspectorTab = .highlights
+            showInspector = true
+        }
+    }
+
     // MARK: - Reading surface
 
     private var content: some View {
@@ -463,7 +629,7 @@ struct ReaderView: View {
                     onAsk: { selection in
                         // A native PDF page is not a reading position: no
                         // frontier, so the whole document is in scope.
-                        askRequest = AskRequest(selection: selection, scope: .wholeBook, initialQuestion: nil)
+                        presentAsk(AskRequest(selection: selection, scope: .wholeBook, initialQuestion: nil))
                     },
                     onListen: { anchor in listen(from: anchor) },
                     annotationActions: $pdfAnnotationActions
@@ -970,7 +1136,7 @@ struct ReaderView: View {
 
     /// True while something is presented over the reader.
     private var isPresentingOverlay: Bool {
-        askRequest != nil || showNotes || showTOC || showSearch || showAppearance
+        askRequest != nil || showInspector || showTOC || showSearch || showAppearance
             || editingNote != nil || footnotePopup != nil
     }
 
@@ -1304,19 +1470,19 @@ struct ReaderView: View {
     /// published actions.
     private func askTheBook() {
         if isPDFOriginal {
-            askRequest = AskRequest(
+            presentAsk(AskRequest(
                 selection: pdfAnnotationActions?.askSelection(), scope: .wholeBook, initialQuestion: nil
-            )
+            ))
         } else if let chapter, let selected = currentSelection.value {
-            askRequest = AskRequest(
+            presentAsk(AskRequest(
                 selection: model.makeSelection(in: chapter, range: selected),
                 scope: askScope(selection: selected),
                 initialQuestion: nil
-            )
+            ))
         } else {
             // No selection: a question about the book — scoped to what has
             // been read, with the panel's switch to widen it.
-            askRequest = AskRequest(selection: nil, scope: askScope(selection: nil), initialQuestion: nil)
+            presentAsk(bookRequest())
         }
     }
 
@@ -1331,7 +1497,7 @@ struct ReaderView: View {
         let scope = askScope(selection: nil)
         guard scope.isScoped else { return }
         welcomeBack = nil
-        askRequest = AskRequest(selection: nil, scope: scope, initialQuestion: AskPanelView.recapQuestion)
+        presentAsk(AskRequest(selection: nil, scope: scope, initialQuestion: AskPanelView.recapQuestion))
     }
 
     // MARK: - Welcome back
@@ -1416,13 +1582,13 @@ struct ReaderView: View {
     }
 
     private var notesButton: some View {
-        Button { showNotes.toggle() } label: {
+        Button(action: toggleHighlightsPanel) {
             Label("Highlights", systemImage: "highlighter")
         }
         .keyboardShortcut("n", modifiers: [.command, .shift])
         .accessibilityIdentifier("reader.notes")
         .accessibilityLabel("Highlights")
-        .help("Highlights & notes (⇧⌘N)")
+        .help("Highlights (⇧⌘N) — from the Ask tab, switches to Highlights")
     }
 
     /// Invisible buttons so ⌘+/⌘− resize text without opening the Appearance
@@ -1756,11 +1922,11 @@ struct ReaderView: View {
 
         case .ask:
             let range = self.range(for: target)
-            askRequest = AskRequest(
+            presentAsk(AskRequest(
                 selection: model.makeSelection(in: chapter, range: range),
                 scope: askScope(selection: range),
                 initialQuestion: nil
-            )
+            ))
 
         case .listen:
             // The chapter the menu was opened in, like every sibling case —

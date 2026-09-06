@@ -118,7 +118,7 @@ none); a scrubber, if chosen, is a page slider.
 Each finding: what it is, why it hurts, the proposed change, rough effort,
 and whether it touches in-flight work.
 
-### F1. Ask covers the book on every platform  `high`
+### F1. Ask covers the book on every platform  `high` — shipped in the Ask-inspector PR (Mac/iPad column; iPhone keeps the sheet by decision; conversation kept per book)
 
 `ReaderView` presents the Ask panel with `.sheet(item:)`. On macOS that is a
 window-modal sheet: the page cannot be scrolled, selected, or read while the

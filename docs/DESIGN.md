@@ -13,7 +13,7 @@ LiquidText, Yomu), and verified AppKit/PDFKit implementation patterns.
    PDFs natively, with the same annotation model as EPUBs.
 2. **Your highlights are alive, not trapped.** Apple Books has no annotation
    export at all (its own users' most-cited complaint). In Readr every
-   highlight/note streams into a Notes panel as you read, exports as clean
+   highlight/note streams into a Highlights panel as you read, exports as clean
    Markdown in one click, and can be composed into an article by the AI.
 3. **Ask the book, with receipts.** Select any passage → Ask. Answers are
    grounded in the book and cite the passages they came from.
@@ -155,10 +155,11 @@ appearance controls inline; September 2026 UX review, F3):
   per-line page-space rects + quoted text + color + note (PDF file is never
   mutated), and re-created as PDFKit annotation overlays on load. TOC from
   `PDFOutline`, search via `findString`, thumbnails sidebar, bookmark = page.
-- Every highlight (EPUB and PDF) appears in the Notes panel instantly.
+- Every highlight (EPUB and PDF) appears in the Highlights panel instantly.
 
-### Notes panel (inspector, ⌘⇧N)
-- Right-hand inspector column (min 280 / ideal 340): this book's annotations
+### Highlights panel (inspector, ⌘⇧N)
+- Right-hand inspector column (min 280 / ideal 340), the Highlights tab
+  beside Ask on the Mac and iPad: this book's annotations
   in reading order — color dot, quoted text (serif), note beneath, chapter/page
   locator. Click → jump to it in the book. Swipe/context: edit note, change
   color, delete. Filter chips by color; search field.
@@ -171,7 +172,7 @@ appearance controls inline; September 2026 UX review, F3):
   home — annotations are never trapped inside a book.
 
 ### Article studio
-- Entry: Notes panel CTA, sidebar section, book context menu.
+- Entry: Highlights panel CTA, sidebar section, book context menu.
 - Flow: pick highlights (all pre-checked, color filter) → optional guidance
   field ("what should the article emphasize?") → Compose (streams) → editable
   Markdown editor → Export `.md` (fileExporter) / Copy / Share.
@@ -179,7 +180,16 @@ appearance controls inline; September 2026 UX review, F3):
   Settings.
 
 ### Ask panel
-- Now openable with no selection (whole-book questions). Shows selection quote
+- **Lives beside the page.** On the Mac and a regular-width iPad, ✦ Ask
+  opens the reader's inspector on an **Ask** tab beside **Highlights** — one
+  column, two tabs, the page readable and scrollable next to the answer.
+  On iPhone it stays a full-height sheet (owner decision, September 2026).
+- **One conversation per book, per session.** The reader owns the
+  conversation (`AskViewModel`); closing the sheet, or switching the
+  inspector to Highlights and back, resumes it. A new ✦ Ask on another
+  passage points the same conversation at that passage. "New conversation"
+  in the column header starts over.
+- Openable with no selection (whole-book questions). Shows selection quote
   when present, streams the answer, citations as clickable disclosure rows
   (future: jump-to-passage). Tier badge stays ("whole book" / "passages").
 - Scope is a labelled two-way choice, not a switch: an "Answers from"
@@ -268,8 +278,11 @@ All new fields optional/additive so existing `library.json` files decode.
 
 ## Keyboard shortcuts
 
-⌘I import · ⌘F find in book · ⌘D toggle bookmark · ⌘⇧N notes panel ·
-⌘⇧A ask (about the selection when text is selected, else the whole book) ·
+⌘I import · ⌘F find in book · ⌘D toggle bookmark · ⌘⇧N Highlights panel
+(opens the inspector on Highlights; from the Ask tab, switches to Highlights;
+from Highlights, closes it) · ⌘⇧A ask (about the selection when text is
+selected, else the book so far — in the inspector's Ask tab on the Mac and
+iPad, a sheet on iPhone) · ⌥⌘← / ⌥⌘→ previous / next chapter ·
 ⌘⇧H highlight the selection (last-used marker color) · ⌘⇧M highlight the
 selection and open its note editor · ←/→ page turn · ⌘+/⌘− text size.
 The annotation shortcuts work in both the text reader and the native PDF
