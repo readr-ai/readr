@@ -171,14 +171,43 @@ struct ReaderView: View {
     /// opening a book sees where the controls live.
     @State private var showChrome = true
 
-    /// Regular width (iPad full screen / wide multitasking): the nav bar has
-    /// room for the full reader chrome, so the iPhone bottom bar — a
-    /// workaround for the compact nav bar collapsing trailing items past two
-    /// (see `toolbarContent`) — steps aside and everything rides up top,
-    /// macOS-style. `nil` (undetermined) falls back to the compact
-    /// arrangement, as does an iPad squeezed to compact in Split View.
+    /// Whether the reader is at least `wideChromeMinimumWidth` wide — a
+    /// measured fact, kept as the Bool rather than the width so the view
+    /// re-renders only when the answer changes, not on every frame of a
+    /// sidebar or window animation. False until measured.
+    @State private var readerIsWide = false
+
+    /// The size class alone — the right question for what to PRESENT (Ask as
+    /// an inspector column beside the page, see `usesAskInspector`), as
+    /// opposed to what the nav bar can FIT (`showsWideChrome`).
     private var isRegularWidth: Bool { horizontalSizeClass == .regular }
+
+    /// Below this width the nav bar cannot hold the full reader chrome.
+    /// Measured on iPadOS 26 with the PDF surface's nine items and an inline
+    /// title: an 11-inch iPad in portrait with the sidebar open gives the
+    /// reader ~514pt and Find and Highlights fold into a "…" menu; a 13-inch
+    /// in the same pose gives ~712pt and everything fits. The band between is
+    /// unmeasured and treated as narrow — a 13-inch Split View at 50/50
+    /// (~683pt) takes the bottom bar rather than risk the fold.
+    private static let wideChromeMinimumWidth: CGFloat = 700
     #endif
+
+    /// Whether the nav bar has room for the full reader chrome, so the iPhone
+    /// bottom bar — a workaround for a nav bar folding items it cannot fit
+    /// (see `toolbarContent`) — steps aside and everything rides up top,
+    /// macOS-style. On iOS this needs BOTH a regular size class and a measured
+    /// width clearing `wideChromeMinimumWidth`: the class alone said "room" on
+    /// an 11-inch iPad with the sidebar open, and there was none. An iPad
+    /// squeezed by the sidebar, the Highlights inspector, Split View or Stage
+    /// Manager keeps the compact arrangement; an unmeasured first frame does
+    /// too. macOS windows are never that narrow (`minWidth` 900).
+    private var showsWideChrome: Bool {
+        #if os(iOS)
+        horizontalSizeClass == .regular && readerIsWide
+        #else
+        true
+        #endif
+    }
 
     private var layout: PageLayout {
         let stored = PageLayout(rawValue: layoutRaw) ?? .singlePage
@@ -236,6 +265,14 @@ struct ReaderView: View {
 
     var body: some View {
         content
+            #if os(iOS)
+            // The chrome layout keys on this (see `showsWideChrome`). The
+            // transform yields the Bool, so the action fires only when the
+            // reader crosses the threshold, not per frame.
+            .onGeometryChange(for: Bool.self) { $0.size.width >= Self.wideChromeMinimumWidth } action: {
+                readerIsWide = $0
+            }
+            #endif
             .navigationTitle(book.metadata.title)
             #if os(macOS)
             // Toolbar center per spec: book title · chapter title.
@@ -689,7 +726,8 @@ struct ReaderView: View {
                         presentAsk(AskRequest(selection: selection, scope: .wholeBook, initialQuestion: nil))
                     },
                     onListen: { anchor in listen(from: anchor) },
-                    annotationActions: $pdfAnnotationActions
+                    annotationActions: $pdfAnnotationActions,
+                    wideChrome: showsWideChrome
                 )
             } else if isImageOnlyPDF {
                 // The retained file is gone (or was never copied), and every
@@ -950,29 +988,22 @@ struct ReaderView: View {
             // was two more controls for nothing new. iPad regular width
             // carries these up top, macOS-style; compact keeps them in the
             // bottom bar below.
-            #if os(macOS)
-            if !isPDFOriginal {
+            if showsWideChrome, !isPDFOriginal {
                 tocButton
                 bookmarkToggle
             }
-            #else
-            if isRegularWidth, !isPDFOriginal {
-                tocButton
-                bookmarkToggle
-            }
-            #endif
         }
         // Lesson from v1 (twice-observed in CI): the iPhone nav bar silently
         // collapses trailing items past TWO — and a secondaryAction group's
         // "…" button itself counts as one. So COMPACT iOS gets exactly
         // Appearance + Notes up top (UI tests tap `reader.notes` directly)
         // and everything else lives in the bottom bar, Apple-Books style.
-        // Regular width (iPad) has nav-bar room like macOS, so it drops the
-        // phone bottom bar and carries the full chrome up top — same
-        // buttons, same accessibility identifiers, different placement (the
-        // UI tests look items up by id, never by bar).
+        // A WIDE reader (see `showsWideChrome`) has nav-bar room like macOS,
+        // so it drops the phone bottom bar and carries the full chrome up top
+        // — same buttons, same accessibility identifiers, different placement
+        // (the UI tests look items up by id, never by bar).
         #if os(iOS)
-        if isRegularWidth {
+        if showsWideChrome {
             ToolbarItemGroup(placement: .primaryAction) {
                 if !isPDFOriginal {
                     searchButton

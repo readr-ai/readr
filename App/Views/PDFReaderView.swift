@@ -73,19 +73,12 @@ struct PDFReaderView: View {
     /// toolbar Ask reach the PDF selection (it lives in `controller`, private
     /// to this view).
     @Binding var annotationActions: PDFAnnotationActions?
+    /// The host's `ReaderView.showsWideChrome`: whether the nav bar has room
+    /// for this surface's four controls on top of the host's. Required, so no
+    /// host can forget it — when false the PDF chrome rides the bottom bar.
+    let wideChrome: Bool
 
     @EnvironmentObject private var model: AppModel
-    #if os(iOS)
-    /// Placement of `pdf.search` depends on width: the compact iPhone nav bar
-    /// silently collapses trailing `.primaryAction` items past TWO, and the
-    /// host reader already spends both on Appearance + Notes there — so a third
-    /// trailing item (this search button) would be hidden in an overflow "…"
-    /// menu, taking `reader.notes` with it. On compact width we route search to
-    /// the bottom bar (mirroring the ebook `searchButton`); regular width (iPad)
-    /// has nav-bar room, so it stays up top like macOS.
-    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
-    private var isRegularWidth: Bool { horizontalSizeClass == .regular }
-    #endif
     @StateObject private var controller = PDFReaderController()
     /// Strip visibility persists across books like the other reader prefs.
     @AppStorage("pdfShowsThumbnails") private var showThumbnails = false
@@ -291,16 +284,13 @@ struct PDFReaderView: View {
         }
     }
 
-    /// The iPhone nav bar silently collapses items past TWO in each of the
-    /// leading (`.navigation`) and trailing (`.primaryAction`) groups. The host
-    /// reader already fills the compact trailing group (Appearance + Notes), and
-    /// this view alone adds three leading controls (Contents, Thumbnails,
-    /// Bookmark) — over the leading budget too. So on compact iPhone all of the
-    /// PDF chrome lives in the bottom bar (Apple-Books style); regular width
-    /// (iPad) / macOS have nav-bar room and keep it up top.
+    /// A nav bar folds the items it cannot fit into a "…" menu, and this view
+    /// adds four to the host's. Unless the host says the bar is wide (see
+    /// `wideChrome`), all of the PDF chrome lives in the bottom bar,
+    /// Apple-Books style; a wide iPad and macOS keep it up top.
     private var navPlacement: ToolbarItemPlacement {
         #if os(iOS)
-        isRegularWidth ? .navigation : .bottomBar
+        wideChrome ? .navigation : .bottomBar
         #else
         .navigation
         #endif
@@ -308,7 +298,7 @@ struct PDFReaderView: View {
 
     private var searchPlacement: ToolbarItemPlacement {
         #if os(iOS)
-        isRegularWidth ? .primaryAction : .bottomBar
+        wideChrome ? .primaryAction : .bottomBar
         #else
         .primaryAction
         #endif
@@ -425,6 +415,7 @@ struct PDFReaderView: View {
     var onAsk: (Selection) -> Void
     var onListen: (ListenAnchor) -> Void
     @Binding var annotationActions: PDFAnnotationActions?
+    let wideChrome: Bool
 
     var body: some View {
         ContentUnavailableView("PDF rendering unavailable", systemImage: "doc.richtext")

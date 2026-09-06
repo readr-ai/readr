@@ -279,10 +279,51 @@ final class ReadrFlowUITests: XCTestCase {
         )
     }
 
+    // The reader's chrome must never fold into a "…" menu on an iPad, in
+    // either pose: portrait with the sidebar open narrows the reader to ~514pt
+    // (the pose that folded Find and Highlights on an 11-inch), landscape
+    // gives it room. Both bars, both branches of `showsWideChrome`, one
+    // device — so a lane on the 11-inch covers the wide arrangement too.
+    func testIPadReaderChromeNeverOverflowsInEitherPose() throws {
+        try XCTSkipUnless(isPad, "iPad only: iPhone always uses the bottom bar")
+        let app = launchSeeded()
+        openFieldNotesPDF(app)
+        assertReaderChromeIsReachable(app, pose: "portrait")
+
+        #if canImport(UIKit)
+        XCUIDevice.shared.orientation = .landscapeLeft
+        addTeardownBlock { XCUIDevice.shared.orientation = .portrait }
+        XCTAssertTrue(
+            app.staticTexts["pdf.pageIndicator"].firstMatch.waitForExistence(timeout: 10),
+            "The PDF reader should survive rotation"
+        )
+        assertReaderChromeIsReachable(app, pose: "landscape")
+        #endif
+    }
+
+    /// Every control the reader promises, by id, and no overflow menu holding
+    /// any of them: a folded item is not id-queryable, which is how the bug
+    /// surfaces, and the "More" button is how it hides.
+    private func assertReaderChromeIsReachable(
+        _ app: XCUIApplication, pose: String, file: StaticString = #filePath, line: UInt = #line
+    ) {
+        for id in ["pdf.toc", "pdf.bookmark", "pdf.search", "reader.listen", "reader.ask", "reader.notes"] {
+            XCTAssertTrue(
+                app.descendants(matching: .any)[id].firstMatch.waitForExistence(timeout: 5),
+                "'\(id)' should be reachable in \(pose)", file: file, line: line
+            )
+        }
+        XCTAssertFalse(
+            app.navigationBars.buttons["More"].firstMatch.exists,
+            "No reader control may fold into a \"More\" menu in \(pose)", file: file, line: line
+        )
+    }
+
     // The key PDF chrome and the host Ask control must be reachable by
-    // accessibility id on every idiom. On compact iPhone the nav bar collapses
-    // items past two per group, so the PDF controls ride the bottom bar there
-    // (merged with the host's Ask); on regular width (iPad) they stay up top.
+    // accessibility id on every idiom. Where the nav bar has no room (iPhone,
+    // or an iPad whose reader is narrow — sidebar open on an 11-inch) the PDF
+    // controls ride the bottom bar (merged with the host's Ask); a wide iPad
+    // keeps them up top. Either way they must never fold into a "…" menu.
     // Scoped to the plain-Button controls whose ids XCUITest reliably queries
     // (Contents, the bookmark ribbon, Find) plus Ask — `pdf.thumbnails` (a
     // Toggle) is exercised by its own test.
@@ -308,10 +349,10 @@ final class ReadrFlowUITests: XCTestCase {
         let app = launchSeeded()
         openFieldNotesPDF(app) // asserts pdf.pageIndicator — surface is mounted
 
-        // pdf.search lives in the trailing primaryAction group on regular width
-        // (iPad/macOS) but in the bottom bar on compact iPhone — the compact nav
-        // bar only has room for the host reader's Appearance + Notes up top.
-        // Either way it's reachable by id.
+        // pdf.search lives in the trailing primaryAction group when the reader
+        // is wide (a roomy iPad, macOS) but in the bottom bar when it is not
+        // (iPhone; an iPad narrowed by the sidebar). Either way it's reachable
+        // by id.
         let search = button(app, id: "pdf.search", label: "Find in PDF")
         XCTAssertTrue(search.waitForExistence(timeout: 5))
         search.tap()

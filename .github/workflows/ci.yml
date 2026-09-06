@@ -44,7 +44,11 @@ jobs:
       # M4: Xcode 26 images pre-create the M5 instance, and an M4 destination
       # fails to resolve at all ("Unable to find a device matching the provided
       # destination specifier") even though the M4 device *type* still exists.
-      IPAD_SIM: iPad Pro 13-inch (M5)
+      # The 11-inch, not the 13-inch: in portrait with the sidebar open its
+      # reader is ~500pt wide, the case where an iPad nav bar folds items into
+      # a "…" menu (and the PDF Find control went missing, September 2026).
+      # The 13-inch has room for everything and hides that class of bug.
+      IPAD_SIM: iPad Pro 11-inch (M5)
       # macOS XCUITest needs a REAL signature: the runner app is launched by
       # the system, which refuses the automation connection to an unsigned
       # bundle ("the test runner hung before establishing connection"). The
@@ -135,8 +139,11 @@ jobs:
           -resultBundlePath TestResults
           CODE_SIGNING_ALLOWED=NO
       # Same suite at iPad size: regular-width layouts (side-by-side split
-      # view, double-page reader) take different code paths than the iPhone's
-      # compact ones, so iPhone-green does not imply iPad-green.
+      # view, the reader's wide toolbar arrangement) take different code paths
+      # than the iPhone's compact ones, so iPhone-green does not imply
+      # iPad-green. The 11-inch in portrait keeps the sidebar open, which
+      # narrows the reader and exercises the compact arrangement on an iPad;
+      # the rotation test covers the wide one on the same device.
       - name: UI tests (iPad Simulator)
         run: >
           set -o pipefail &&
