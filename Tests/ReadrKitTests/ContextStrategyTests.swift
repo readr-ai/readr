@@ -344,6 +344,164 @@ final class ContextStrategyTests: XCTestCase {
             "the quoted text is found at the offset the citation gives"
         )
     }
+
+    // MARK: - The routing predicate
+
+    /// A book with real chapter text, so a scoped question has something to
+    /// measure. `estimatedTokenCount` is the whole book's; what a scoped
+    /// question sends is derived from the chapter lengths.
+    private func makeChapteredBook(tokenCount: Int) -> Book {
+        Book(
+            metadata: BookMetadata(title: "Chaptered", authors: ["A. Author"]),
+            chapters: [
+                Chapter(title: "One", order: 0, text: String(repeating: "x", count: 4_000)),
+                Chapter(title: "Two", order: 1, text: String(repeating: "y", count: 4_000)),
+            ],
+            estimatedTokenCount: tokenCount
+        )
+    }
+
+    /// Every routing case the router has, as (book, scope, provider). Both
+    /// the predicate and `assembleContext` are asked each one, and they must
+    /// answer the same — that is the whole point of factoring the rule out.
+    private var routingCases: [(name: String, book: Book, scope: ReadingScope, provider: ProviderInfo)] {
+        let short = makeChapteredBook(tokenCount: 1_000)
+        let long = makeChapteredBook(tokenCount: 5_000_000)
+        // Budget: 1_000 tokens × 0.6 = 600 tokens ≈ 2_400 characters read.
+        let tight = provider(budget: 1_000, isLocal: false)
+        let roomy = provider(budget: 200_000, isLocal: false)
+        let local = provider(budget: 200_000, isLocal: true)
+        let start = ReadingScope.upTo(ReadingFrontier(chapterIndex: 0, characterOffset: 0))
+        let underBudget = ReadingScope.upTo(ReadingFrontier(chapterIndex: 0, characterOffset: 2_000))
+        let overBudget = ReadingScope.upTo(ReadingFrontier(chapterIndex: 0, characterOffset: 3_000))
+        return [
+            ("a short book, whole", short, .wholeBook, roomy),
+            ("a long book, whole", long, .wholeBook, roomy),
+            ("a long book, barely started", long, underBudget, roomy),
+            ("scoped just inside the budget", short, underBudget, tight),
+            ("scoped just past the budget", short, overBudget, tight),
+            ("a local model, whole book", short, .wholeBook, local),
+            ("a local model, scoped past the start", short, underBudget, local),
+            ("a local model, nothing read", short, start, local),
+            ("nothing read", short, start, roomy),
+            ("nothing read, long book", long, start, roomy),
+        ]
+    }
+
+    /// The predicate and the tier `assembleContext` actually picks must agree
+    /// on every case — a caller that plans work on the predicate (skipping an
+    /// index build for a question that will never retrieve) is wrong the
+    /// moment they diverge.
+    func testTheRoutingPredicateAgreesWithTheTierAssembleContextPicks() async throws {
+        for testCase in routingCases {
+            let lengths = ReadingLengthCache()
+            let strategy = AdaptiveContextStrategy(index: StubIndex(), lengths: lengths)
+            let assembled = try await strategy.assembleContext(
+                for: "What happens?", in: testCase.book, selection: nil,
+                scope: testCase.scope, provider: testCase.provider
+            )
+            let predicted = strategy.routesWholeBook(
+                book: testCase.book, scope: testCase.scope, provider: testCase.provider
+            )
+            XCTAssertEqual(
+                predicted, assembled.tier == .wholeBook,
+                "\(testCase.name): the predicate and the router disagree"
+            )
+            XCTAssertEqual(
+                AdaptiveContextStrategy.routesWholeBook(
+                    book: testCase.book, scope: testCase.scope,
+                    provider: testCase.provider, lengths: lengths
+                ),
+                predicted,
+                "\(testCase.name): the static and the instance must answer alike"
+            )
+        }
+    }
+
+    /// The cases above are only worth running if they cover both answers.
+    func testTheRoutingCasesCoverBothTiers() async throws {
+        var tiers: Set<AssembledContext.Tier> = []
+        for testCase in routingCases {
+            let strategy = AdaptiveContextStrategy(index: StubIndex())
+            tiers.insert(
+                try await strategy.assembleContext(
+                    for: "What happens?", in: testCase.book, selection: nil,
+                    scope: testCase.scope, provider: testCase.provider
+                ).tier
+            )
+        }
+        XCTAssertEqual(tiers, [.wholeBook, .retrieval])
+    }
+
+    /// A local model never rides the whole-book tier — except when the reader
+    /// has read nothing, where there is no book text to send and every
+    /// provider takes the same empty first tier.
+    func testALocalModelRoutesWholeBookOnlyWhenNothingHasBeenRead() {
+        let book = makeChapteredBook(tokenCount: 1_000)
+        let local = provider(budget: 200_000, isLocal: true)
+        let lengths = ReadingLengthCache()
+        XCTAssertFalse(
+            AdaptiveContextStrategy.routesWholeBook(
+                book: book, scope: .wholeBook, provider: local, lengths: lengths
+            )
+        )
+        XCTAssertFalse(
+            AdaptiveContextStrategy.routesWholeBook(
+                book: book,
+                scope: .upTo(ReadingFrontier(chapterIndex: 0, characterOffset: 2_000)),
+                provider: local, lengths: lengths
+            )
+        )
+        XCTAssertTrue(
+            AdaptiveContextStrategy.routesWholeBook(
+                book: book,
+                scope: .upTo(ReadingFrontier(chapterIndex: 0, characterOffset: 0)),
+                provider: local, lengths: lengths
+            ),
+            "nothing read is the empty whole-book tier, whatever the provider"
+        )
+    }
+
+    /// The budget fraction lives in one place: a strategy built with a
+    /// different one routes by it, and so does the predicate that reads it.
+    func testThePredicateFollowsTheStrategysOwnBudgetFraction() async throws {
+        let book = makeChapteredBook(tokenCount: 1_000)
+        // 2_000 characters read ≈ 500 tokens. At 0.6 of a 1_000-token budget
+        // (600) that fits; at 0.4 (400) it does not.
+        let scope = ReadingScope.upTo(ReadingFrontier(chapterIndex: 0, characterOffset: 2_000))
+        let info = provider(budget: 1_000, isLocal: false)
+        for (fraction, expected) in [(0.6, true), (0.4, false)] {
+            let strategy = AdaptiveContextStrategy(
+                index: StubIndex(), wholeBookBudgetFraction: fraction
+            )
+            XCTAssertEqual(
+                strategy.routesWholeBook(book: book, scope: scope, provider: info), expected,
+                "fraction \(fraction)"
+            )
+            let assembled = try await strategy.assembleContext(
+                for: "q", in: book, selection: nil, scope: scope, provider: info
+            )
+            XCTAssertEqual(assembled.tier == .wholeBook, expected, "fraction \(fraction)")
+        }
+    }
+
+    /// The default the strategy uses is the one it publishes, so a caller
+    /// that must predict the tier without a strategy in hand (deciding
+    /// whether to build a retrieval index at all) names the same number
+    /// rather than keeping a copy of it.
+    func testTheStaticPredicateDefaultsToTheStrategysBudgetFraction() {
+        XCTAssertEqual(AdaptiveContextStrategy.defaultWholeBookBudgetFraction, 0.6)
+        let book = makeChapteredBook(tokenCount: 1_000)
+        let scope = ReadingScope.upTo(ReadingFrontier(chapterIndex: 0, characterOffset: 2_000))
+        let info = provider(budget: 1_000, isLocal: false)
+        XCTAssertEqual(
+            AdaptiveContextStrategy.routesWholeBook(
+                book: book, scope: scope, provider: info, lengths: ReadingLengthCache()
+            ),
+            AdaptiveContextStrategy(index: StubIndex())
+                .routesWholeBook(book: book, scope: scope, provider: info)
+        )
+    }
 }
 
 /// Minimal in-memory index for routing tests.
