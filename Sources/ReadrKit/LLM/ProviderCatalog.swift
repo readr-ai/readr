@@ -329,7 +329,7 @@ public enum ProviderCatalog {
     /// The budget is PROVISIONAL — it is set below Apple's on the assumption
     /// that Nano's window is at least as tight, and has not yet been measured
     /// on a phone. Measure it before shipping and move this figure to what
-    /// the device reports (Android track, docs/DEVELOPMENT-PLAN.md).
+    /// the device reports (docs/ROADMAP.md, the A3 line).
     public static let geminiNanoModels: [ProviderInfo] = [
         ProviderInfo(
             kind: .geminiNano,

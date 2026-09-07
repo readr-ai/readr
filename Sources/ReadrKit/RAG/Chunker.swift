@@ -97,10 +97,6 @@ public struct Chunker {
         while n > start, chars[n - 1].isWhitespace { n -= 1 }
         guard start < n else { return [] }
 
-        if n - start <= targetCharacters {
-            return [Piece(text: String(chars[start..<n]), offset: start)]
-        }
-
         var chunks: [Piece] = []
 
         while start < n {

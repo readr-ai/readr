@@ -44,11 +44,25 @@ public enum SmallModelPrompt {
         let prompt: String
         if turns.count > 1 {
             let earlier = turns.dropLast().joined(separator: "\n\n")
-            prompt = "Earlier in this conversation:\n" + earlier + "\n\n---\n\n" + (turns.last ?? "")
+            prompt = earlierTurnsHeader + earlier + earlierTurnsSeparator + (turns.last ?? "")
         } else {
             prompt = turns.last ?? ""
         }
         return (instructions.joined(separator: "\n\n"), prompt)
+    }
+
+    /// What the history is labelled with, and what divides it from the live
+    /// question. Named because `plan` has to find that divide again.
+    static let earlierTurnsHeader = "Earlier in this conversation:\n"
+    static let earlierTurnsSeparator = "\n\n---\n\n"
+
+    /// The live turn of a prompt `split` built: everything past the last
+    /// divider, or the whole thing when there is no history.
+    static func liveTurn(in prompt: String) -> String {
+        guard let divide = prompt.range(of: earlierTurnsSeparator, options: .backwards) else {
+            return prompt
+        }
+        return String(prompt[divide.upperBound...])
     }
 
     /// Whether this prompt is the retrieval tier's — a block of passages the
@@ -189,5 +203,170 @@ public enum SmallModelPrompt {
         let room = window - fixedTokens - measure(prompt)
         guard room >= minimumAnswerTokens else { throw DoesNotFit() }
         return Fitted(prompt: prompt, answerTokens: room)
+    }
+}
+
+// MARK: - The whole recipe
+
+public extension SmallModelPrompt {
+
+    /// The numbers a small on-device model is budgeted with.
+    ///
+    /// Measured against Apple's FoundationModels, which runs a little denser
+    /// than the kit's four-characters-per-token estimate on English prose,
+    /// and used as the starting point for every other small runtime until one
+    /// is measured on its own hardware.
+    struct Budget: Sendable, Equatable {
+        /// Characters per token, for estimating a prompt's cost.
+        public var charactersPerToken: Double
+        /// Headroom inside the window for the estimate's own error.
+        public var windowMargin: Int
+        /// Below this the answer is cut off mid-thought, and saying the
+        /// question was too long is the honest outcome.
+        public var minimumAnswerTokens: Int
+        /// A question's answer is a paragraph or two. Left to run on, a small
+        /// model fills the rest of the window with the passages.
+        public var maxQuestionTokens: Int
+
+        public init(
+            charactersPerToken: Double = 3.4,
+            windowMargin: Int = 200,
+            minimumAnswerTokens: Int = 150,
+            maxQuestionTokens: Int = 350
+        ) {
+            self.charactersPerToken = charactersPerToken
+            self.windowMargin = windowMargin
+            self.minimumAnswerTokens = minimumAnswerTokens
+            self.maxQuestionTokens = maxQuestionTokens
+        }
+
+        /// The default, and the only one anything uses today.
+        public static let onDevice = Budget()
+
+        /// What this text costs, in this budget's tokens.
+        public func tokens(_ text: String) -> Int {
+            TokenCounter.estimate(text, charactersPerToken: charactersPerToken)
+        }
+    }
+
+    /// Everything a small-model provider needs in order to make one call.
+    struct Plan: Equatable, Sendable {
+        /// The session's instructions.
+        public var instructions: String
+        /// The prompt, shortened to fit beside them.
+        public var prompt: String
+        /// The cap on the answer.
+        public var answerTokens: Int
+        /// True when the question turned out not to be about the book and
+        /// this is the plain-answer path — no passages, no citations.
+        public var isGeneral: Bool
+        /// What a copied sentence would have been copied FROM, for
+        /// `SnapshotAnswerStream`: the passages and the instructions, and
+        /// nothing else. Empty when there are no passages to copy out.
+        ///
+        /// Deliberately not the whole prompt. The prompt also carries the
+        /// conversation so far, and a sentence the model itself wrote a
+        /// question ago is not a passage pasted out — dropping it would
+        /// delete the answer to "say that again more simply".
+        public var copiedSentenceSource: String
+
+        public init(
+            instructions: String,
+            prompt: String,
+            answerTokens: Int,
+            isGeneral: Bool,
+            copiedSentenceSource: String
+        ) {
+            self.instructions = instructions
+            self.prompt = prompt
+            self.answerTokens = answerTokens
+            self.isGeneral = isGeneral
+            self.copiedSentenceSource = copiedSentenceSource
+        }
+    }
+
+    /// One short, passage-free call the plan makes on its way: the model is
+    /// handed instructions and a prompt and answers in one word. The reply is
+    /// returned raw; anything unreadable (including a failure, as an empty
+    /// string) is read back as "unsure", which means "about the book".
+    typealias Classifier = @Sendable (_ instructions: String, _ prompt: String) async -> String
+
+    /// The whole recipe for asking a small on-device model a question, from a
+    /// `ChatRequest` to the two strings and the token cap a runtime needs.
+    ///
+    /// Every step here exists because a ~3B model did something a reader
+    /// complained about, and none of it depends on which runtime generates:
+    /// Apple's FoundationModels, Android's Gemini Nano, a bundled MLX model.
+    /// Each provider supplies the model calls — the classifier closure, and
+    /// the generation itself — and nothing else.
+    ///
+    /// - Throws: `DoesNotFit` when even the shortest prompt leaves no room
+    ///   for an answer.
+    static func plan(
+        request: ChatRequest,
+        window: Int,
+        budget: Budget = .onDevice,
+        classify: Classifier
+    ) async throws -> Plan {
+        var (instructions, prompt) = split(request)
+        // The tier is a property of THIS turn, read off the live question
+        // alone. Read off the whole prompt it was the history's: one
+        // retrieval turn made every later question in the conversation look
+        // like a retrieval one, so a whole-book follow-up was answered under
+        // the passage rules with no passages in front of it.
+        var isQuestion = isRetrievalTier(liveTurn(in: prompt))
+        var isGeneral = false
+
+        if isQuestion, let question = question(in: liveTurn(in: prompt)) {
+            // A small model handed eight passages answers from the passages
+            // whatever was asked — "can I be a rabbit?" came back "Yes,
+            // Alice can become a rabbit." Asked first whether the question
+            // is about the book at all, it can tell; if not, it answers
+            // plainly, with one line tying back to the book.
+            let reply = await classify(classifierInstructions, classifierPrompt(question: question))
+            if classification(from: reply) == false {
+                let anchor = anchor(in: liveTurn(in: prompt))
+                instructions = generalInstructions
+                prompt = generalPrompt(question: question, bookAnchor: anchor)
+                isQuestion = false
+                isGeneral = true
+            }
+        }
+
+        if isQuestion {
+            // A 3B model given eight passages will copy them out at length
+            // unless told plainly not to; a reader asked "can I be a rabbit?"
+            // and got two pages of dialogue.
+            instructions += "\n\n" + questionStyle
+            // Small models answer what they read last: restate the task after
+            // the question, not only in the instructions.
+            prompt += answerCue
+        }
+
+        // The strategy already budgeted the passages to the catalog's figure;
+        // this drops whole passages if a denser tokeniser still overshoots.
+        // Prose is never cut.
+        let fitted = try fit(
+            rawPrompt: prompt,
+            window: window,
+            fixedTokens: budget.tokens(instructions) + budget.windowMargin,
+            minimumAnswerTokens: budget.minimumAnswerTokens,
+            measure: budget.tokens
+        )
+        // An article gets the whole remaining window; a question is answered
+        // in a few sentences.
+        let answerTokens = min(
+            request.maxOutputTokens, fitted.answerTokens,
+            isQuestion ? budget.maxQuestionTokens : .max
+        )
+        return Plan(
+            instructions: instructions,
+            prompt: fitted.prompt,
+            answerTokens: answerTokens,
+            isGeneral: isGeneral,
+            copiedSentenceSource: isQuestion
+                ? instructions + "\n\n" + liveTurn(in: fitted.prompt)
+                : ""
+        )
     }
 }

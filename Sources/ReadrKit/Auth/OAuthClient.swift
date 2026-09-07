@@ -78,12 +78,16 @@ public struct OAuthProviderConfig: Sendable, Equatable {
     /// connect some other way (API key, local). Single source of truth —
     /// Settings' sign-in buttons and the token refresher both derive from it.
     public static func config(for kind: ProviderInfo.Kind) -> OAuthProviderConfig? {
+        // On-device kinds need no credentials at all, so they are refused by
+        // what they are rather than by name.
+        guard !kind.isOnDevice else { return nil }
         switch kind {
         case .chatGPT: return .openAI
         case .openRouter: return .openRouter
-        // Anthropic: prohibited by ToS (docs/AUTH.md); openAI kind is
-        // API-key-only by design; on-device kinds need no credentials.
-        case .anthropic, .openAI, .local, .appleIntelligence, .geminiNano: return nil
+        // Anthropic: prohibited by ToS (docs/AUTH.md); the openAI kind is
+        // API-key-only by design. A new kind lands here too, which is the
+        // safe direction: no sign-in until one is deliberately wired.
+        default: return nil
         }
     }
 

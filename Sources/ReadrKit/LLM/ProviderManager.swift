@@ -124,6 +124,12 @@ public final class ProviderManager: @unchecked Sendable {
     private let tokenRefresher: TokenRefresher?
     private let now: @Sendable () -> Date
     private let defaults: UserDefaults?
+    /// The connection methods this build actually has. A `Kind` is a method,
+    /// not a platform: `.geminiNano` exists in the enum on an iPhone and
+    /// `.appleIntelligence` exists on an Android phone, and neither can ever
+    /// answer a question there. The build says which ones it has once, here,
+    /// so no screen has to hold its own copy of the list and drift from it.
+    private let supportedKinds: Set<ProviderInfo.Kind>
     private var _selection: ProviderSelection?
     /// In-flight refresh per kind so concurrent callers share one exchange —
     /// refresh tokens are often single-use, so a duplicate POST could revoke
@@ -174,6 +180,10 @@ public final class ProviderManager: @unchecked Sendable {
     ///     anything persisted in `defaults`.
     ///   - defaults: when non-nil, the active selection is restored from and
     ///     persisted to this store, so it survives relaunch.
+    ///   - supportedKinds: the connection methods this build has. Anything
+    ///     outside it is never configured, never available, and cannot be
+    ///     activated — the default is every kind, for tests and for a build
+    ///     that has them all.
     public init(
         store: CredentialStore,
         factory: @escaping ProviderFactory,
@@ -181,7 +191,8 @@ public final class ProviderManager: @unchecked Sendable {
         persistingIn defaults: UserDefaults? = nil,
         tokenRefresher: TokenRefresher? = nil,
         now: @escaping @Sendable () -> Date = { Date() },
-        defaultSelection: DefaultSelection? = nil
+        defaultSelection: DefaultSelection? = nil,
+        supportedKinds: Set<ProviderInfo.Kind> = Set(ProviderInfo.Kind.allCases)
     ) {
         self.store = store
         self.factory = factory
@@ -189,7 +200,14 @@ public final class ProviderManager: @unchecked Sendable {
         self.tokenRefresher = tokenRefresher
         self.now = now
         self.defaultSelection = defaultSelection
+        self.supportedKinds = supportedKinds
         self._selection = selection ?? Self.loadSelection(from: defaults)
+    }
+
+    /// Whether this build has this connection method at all. False is not a
+    /// state the reader can fix: the method does not exist here.
+    public func supports(_ kind: ProviderInfo.Kind) -> Bool {
+        supportedKinds.contains(kind)
     }
 
     // MARK: - Selection
@@ -232,6 +250,10 @@ public final class ProviderManager: @unchecked Sendable {
     /// Returns `true` when `kind` is (now) the active selection.
     @discardableResult
     public func requestActivation(of kind: ProviderInfo.Kind) -> Bool {
+        // A method this build doesn't have cannot become the selection, so a
+        // stored credential for one — synced from another platform, restored
+        // from a backup — can't strand Ask on a provider that isn't here.
+        guard supports(kind) else { return false }
         if let current = explicitSelection {
             if current.kind == kind { return true }
             if isConfigured(current.kind) { return false }
@@ -261,6 +283,9 @@ public final class ProviderManager: @unchecked Sendable {
     /// recent explicit choice.
     @discardableResult
     public func validateAndActivate(_ kind: ProviderInfo.Kind) async -> ValidationState? {
+        // Nothing to validate and nothing to activate: this build has no such
+        // method. Nil, the same "this one stood down" every other caller gets.
+        guard supports(kind) else { return nil }
         let selectionAtRequest = selection
         await validate(kind)
         guard let settled = validationState(kind) else { return nil }
@@ -580,6 +605,10 @@ public final class ProviderManager: @unchecked Sendable {
     /// Callers that need a verified-usable signal should prefer
     /// `isValidated(_:)`, which is only true after a successful `validate(_:)`.
     public func isConfigured(_ kind: ProviderInfo.Kind) -> Bool {
+        // A method this build doesn't have is never configured — not even an
+        // on-device one, which needs no credential and would otherwise report
+        // itself ready on a device that cannot run it.
+        guard supports(kind) else { return false }
         if let state = validationState(kind) {
             return state == .active
         }
@@ -603,6 +632,11 @@ public final class ProviderManager: @unchecked Sendable {
     /// until a check says otherwise.
     public func availableKinds() -> [ProviderInfo.Kind] {
         ProviderInfo.Kind.allCases.filter { isConfigured($0) }
+    }
+
+    /// The kinds this build has, in the enum's own order.
+    public func platformKinds() -> [ProviderInfo.Kind] {
+        ProviderInfo.Kind.allCases.filter(supports)
     }
 
     // MARK: - Resolution

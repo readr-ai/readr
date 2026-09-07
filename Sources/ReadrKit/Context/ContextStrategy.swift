@@ -208,16 +208,18 @@ public struct AdaptiveContextStrategy: ContextStrategy {
             // through the first chapter, say. The end of what they've read is
             // the best available grounding, so the passage block is never
             // empty: the last budget's worth of it, as one passage.
-            let tailCharacters = budget * 4
-            let tail = book.textRead(upTo: frontier, lastCharacters: tailCharacters)
-            if !tail.isEmpty {
+            //
+            // Where the passage points is the tail's own start, which the
+            // walk reports: a long tail read from just inside a chapter
+            // begins in the one before it, and the citation has to open the
+            // book there rather than at the frontier.
+            let tail = book.readTail(upTo: frontier, lastCharacters: budget * 4)
+            if !tail.text.isEmpty {
                 passages = [
                     RetrievedPassage(
-                        text: tail, locator: Self.readSoFarLocator, score: 0,
-                        chapterIndex: frontier.chapterIndex,
-                        characterOffset: book.readTailOffset(
-                            upTo: frontier, lastCharacters: tailCharacters
-                        )
+                        text: tail.text, locator: Self.readSoFarLocator, score: 0,
+                        chapterIndex: tail.chapterIndex,
+                        characterOffset: tail.characterOffset
                     ),
                 ]
             }

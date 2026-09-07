@@ -115,7 +115,12 @@ final class AppModel: ObservableObject {
                 }
                 return try await OAuthClient(config: config).refresh(stored)
             },
-            defaultSelection: onDeviceDefault
+            defaultSelection: onDeviceDefault,
+            // The kinds THIS build has. Everything downstream — Settings'
+            // cards, the picker, what Ask is allowed to resolve — derives
+            // from this one list, so Android's on-device model can never
+            // surface on an Apple device (and the reverse over there).
+            supportedKinds: Set(SettingsModel.allKinds)
         )
 
         // All stored properties are initialized above — only now may init

@@ -74,21 +74,50 @@ final class ProviderVendorTests: XCTestCase {
         XCTAssertEqual(ProviderVendor.all.prefix(2).map(\.id), ["apple", "android"])
     }
 
-    /// The one that matters for shipping: the Apple builds pass their own
-    /// kinds, and the Android card must not appear on any of them. Both sets
-    /// come from `SettingsModel.allKinds` — macOS's, then iOS's.
-    func testTheAppleBuildsNeverShowTheAndroidVendor() {
-        for kinds in [
-            [.appleIntelligence, .chatGPT, .openRouter, .anthropic, .openAI, .local],
-            [.appleIntelligence, .openRouter, .anthropic, .openAI],
-        ] as [[ProviderInfo.Kind]] {
-            let displayed = ProviderVendor.displayed(forKinds: kinds)
-            XCTAssertFalse(
-                displayed.contains { $0.id == "android" },
-                "the Android card leaked into an Apple build"
-            )
-            XCTAssertFalse(displayed.flatMap(\.methods).contains(.geminiNano))
-        }
+    /// The one that matters for shipping, and it is the MANAGER that decides
+    /// it: a build hands its kinds to `ProviderManager` once, and everything
+    /// downstream — what is configured, what is available, what Settings
+    /// renders — comes from that. This used to be a copy of the app's list
+    /// pasted into the test, which would have gone on passing while the app's
+    /// own list grew Nano.
+    func testAManagerGivenApplesKindsNeverOffersGeminiNano() {
+        let manager = ProviderManager(
+            store: FakeCredentialStore(),
+            factory: { info, _ in MockLLMProvider(info: info) },
+            supportedKinds: [.appleIntelligence, .chatGPT, .openRouter, .anthropic, .openAI, .local]
+        )
+
+        XCTAssertFalse(manager.supports(.geminiNano))
+        XCTAssertFalse(
+            manager.isConfigured(.geminiNano),
+            "an on-device kind this build doesn't have needs no credential and is still not configured"
+        )
+        XCTAssertFalse(manager.availableKinds().contains(.geminiNano))
+        XCTAssertFalse(manager.requestActivation(of: .geminiNano))
+        XCTAssertNil(manager.explicitSelection, "and a refused activation chose nothing")
+
+        let displayed = ProviderVendor.displayed(forKinds: manager.platformKinds())
+        XCTAssertFalse(
+            displayed.contains { $0.id == "android" },
+            "the Android card leaked into an Apple build"
+        )
+        XCTAssertFalse(displayed.flatMap(\.methods).contains(.geminiNano))
+        XCTAssertTrue(manager.isConfigured(.appleIntelligence), "its own on-device model still is")
+    }
+
+    /// And the mirror: an Android build's manager offers Nano and not Apple's.
+    func testAManagerGivenAndroidsKindsNeverOffersAppleIntelligence() async {
+        let manager = ProviderManager(
+            store: FakeCredentialStore(),
+            factory: { info, _ in MockLLMProvider(info: info) },
+            supportedKinds: [.geminiNano, .openRouter, .anthropic, .openAI]
+        )
+
+        XCTAssertTrue(manager.isConfigured(.geminiNano))
+        XCTAssertFalse(manager.isConfigured(.appleIntelligence))
+        let settled = await manager.validateAndActivate(.appleIntelligence)
+        XCTAssertNil(settled, "there is nothing here to validate")
+        XCTAssertNil(manager.explicitSelection)
     }
 
     /// And the mirror image: an Android build offers Nano and not Apple's.

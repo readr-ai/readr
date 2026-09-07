@@ -113,6 +113,76 @@ final class ReadingFrontierTests: XCTestCase {
         XCTAssertEqual(book.textRead(upTo: frontier, lastCharacters: 0), "")
     }
 
+    /// The tail is a passage the app has to be able to open, so it reports
+    /// where it starts — and when it reaches back across a chapter break,
+    /// that is a position in the EARLIER chapter. Saying "chapter three,
+    /// offset minus 1,950" opened the book nowhere.
+    func testTheTailReportsWhereItStartsWhenItCrossesBackAChapter() {
+        let book = makeBook()
+        let tail = book.readTail(
+            upTo: ReadingFrontier(chapterIndex: 1, characterOffset: 5), lastCharacters: 12
+        )
+
+        XCTAssertEqual(tail.text, " alpha.\n\nBravo")
+        XCTAssertEqual(tail.chapterIndex, 0, "the tail begins in the chapter before the frontier's")
+        let chapter = book.chaptersInReadingOrder[0].text
+        XCTAssertEqual(tail.characterOffset, 11)
+        XCTAssertTrue(
+            chapter.dropFirst(tail.characterOffset).hasPrefix(" alpha."),
+            "the offset is where the tail's first piece really sits"
+        )
+    }
+
+    /// A tail that stays inside the frontier chapter is located in it.
+    func testATailInsideOneChapterIsLocatedInThatChapter() {
+        let book = makeBook()
+        let tail = book.readTail(
+            upTo: ReadingFrontier(chapterIndex: 1, characterOffset: 5), lastCharacters: 3
+        )
+
+        XCTAssertEqual(tail.text, "avo")
+        XCTAssertEqual(tail.chapterIndex, 1)
+        XCTAssertEqual(tail.characterOffset, 2)
+    }
+
+    /// A frontier past the end of the book means the whole book has been
+    /// read. The tail is then the end of the LAST chapter — not a position in
+    /// a chapter that isn't there.
+    func testATailPastTheLastChapterIsClampedToTheLastChapter() {
+        let book = makeBook()
+        let ordered = book.chaptersInReadingOrder
+        let tail = book.readTail(
+            upTo: ReadingFrontier(chapterIndex: 99, characterOffset: 0), lastCharacters: 8
+        )
+
+        XCTAssertEqual(tail.text, "charlie.")
+        XCTAssertEqual(tail.chapterIndex, ordered.count - 1)
+        XCTAssertEqual(tail.characterOffset, ordered[2].text.count - tail.text.count)
+        XCTAssertTrue(
+            ordered[2].text.dropFirst(tail.characterOffset).hasPrefix(tail.text)
+        )
+    }
+
+    /// Nothing read at all is still a position: the start of the book.
+    func testAnEmptyTailStillReportsAPosition() {
+        let book = makeBook()
+
+        let start = book.readTail(
+            upTo: ReadingFrontier(chapterIndex: 0, characterOffset: 0), lastCharacters: 100
+        )
+        XCTAssertEqual(start.text, "")
+        XCTAssertEqual(start.chapterIndex, 0)
+        XCTAssertEqual(start.characterOffset, 0)
+
+        // And a tail nobody asked for is located at the frontier itself.
+        let none = book.readTail(
+            upTo: ReadingFrontier(chapterIndex: 2, characterOffset: 4), lastCharacters: 0
+        )
+        XCTAssertEqual(none.text, "")
+        XCTAssertEqual(none.chapterIndex, 2)
+        XCTAssertEqual(none.characterOffset, 4)
+    }
+
     // MARK: - A selection is in front of the reader
 
     func testExtendingTheFrontierToASelectionNeverMovesItBackwards() {

@@ -162,36 +162,28 @@ final class FoundationModelsProvider: LLMProvider, OnDeviceReadinessReporting, @
     private let model: SystemLanguageModel
 
     /// Apple's tokeniser runs a little denser than the kit's four-characters-
-    /// per-token estimate on English prose; budget on the safe side.
-    static let charactersPerToken = 3.4
-    /// Headroom for the estimate's error, inside the window.
-    static let windowMargin = 200
-    /// Below this the answer would be cut off mid-thought; better to say the
-    /// question was too long.
-    static let minimumAnswerTokens = 150
-    /// A question's answer: a paragraph or two. Articles are not capped here.
-    static let maxQuestionTokens = 350
+    /// per-token estimate on English prose, so the on-device budget is set on
+    /// the safe side. The figures themselves are the kit's — every small model
+    /// starts from them.
+    static let budget = SmallModelPrompt.Budget.onDevice
 
     // MARK: Routing off-topic questions
 
-    /// One short, passage-free call: is this about the book? Small models are
-    /// good at this yes/no and bad at answering while eight passages compete
-    /// for attention. Unsure or failing → treated as about the book, the
-    /// path with citations. Only the call is here; the wording it makes and
-    /// the reading of its answer are `SmallModelPrompt`'s, shared with every
-    /// other small model Readr talks to.
-    static func isAboutTheBook(_ question: String, model: SystemLanguageModel) async -> Bool? {
-        let session = LanguageModelSession(
-            model: model, instructions: SmallModelPrompt.classifierInstructions
-        )
+    /// The classifier's one short, passage-free call. What it asks and how its
+    /// answer is read are `SmallModelPrompt`'s, shared with every other small
+    /// model Readr talks to; only the call is here. A failure comes back as an
+    /// empty reply, which the kit reads as "unsure" — the path with citations.
+    static func classifierReply(
+        instructions: String, prompt: String, model: SystemLanguageModel
+    ) async -> String {
+        let session = LanguageModelSession(model: model, instructions: instructions)
         do {
-            let reply = try await session.respond(
-                to: SmallModelPrompt.classifierPrompt(question: question),
+            return try await session.respond(
+                to: prompt,
                 options: GenerationOptions(sampling: .greedy, maximumResponseTokens: 3)
             ).content
-            return SmallModelPrompt.classification(from: reply)
         } catch {
-            return nil
+            return ""
         }
     }
 
@@ -206,10 +198,6 @@ final class FoundationModelsProvider: LLMProvider, OnDeviceReadinessReporting, @
 
     func countTokens(_ text: String) throws -> Int {
         TokenCounter.estimate(text)
-    }
-
-    static func tokens(_ text: String) -> Int {
-        TokenCounter.estimate(text, charactersPerToken: charactersPerToken)
     }
 
     /// The window in tokens. `contextSize` arrived in the 26.4 SDK
@@ -228,67 +216,42 @@ final class FoundationModelsProvider: LLMProvider, OnDeviceReadinessReporting, @
         AsyncThrowingStream { continuation in
             let task = Task { [model] in
                 do {
-                    var (instructions, rawPrompt) = SmallModelPrompt.split(request)
-                    var isQuestion = SmallModelPrompt.isRetrievalTier(rawPrompt)
-                    if isQuestion, let question = SmallModelPrompt.question(in: rawPrompt),
-                       await Self.isAboutTheBook(question, model: model) == false {
-                        // A small model handed eight passages answers from the
-                        // passages whatever was asked — "can I be a rabbit?"
-                        // came back "Yes, Alice can become a rabbit." Asked
-                        // first whether the question is about the book at
-                        // all, it can tell; if not, it answers plainly from
-                        // common sense, with one line tying back to the book.
-                        DiagnosticsLog.shared.record(
-                            .info, .provider, "on-device: question judged not about the book; answering without passages"
-                        )
-                        instructions = SmallModelPrompt.generalInstructions
-                        rawPrompt = SmallModelPrompt.generalPrompt(
-                            question: question, bookAnchor: SmallModelPrompt.anchor(in: rawPrompt)
-                        )
-                        isQuestion = false
-                    }
-                    if isQuestion {
-                        // A 3B model given eight passages will copy them out at
-                        // length unless told plainly not to; a reader asked
-                        // "can I be a rabbit?" and got two pages of dialogue.
-                        instructions += "\n\n" + SmallModelPrompt.questionStyle
-                        // Small models answer what they read last: restate the
-                        // task after the question, not only in the instructions.
-                        rawPrompt += SmallModelPrompt.answerCue
-                    }
-                    // The strategy already budgeted passages to the catalog's
-                    // figure; this drops whole passages if Apple's denser
-                    // tokeniser still overshoots. Prose is never cut.
-                    let fitted = try SmallModelPrompt.fit(
-                        rawPrompt: rawPrompt,
+                    // The whole recipe — the tier, the off-topic routing, the
+                    // wording, the window arithmetic — is the kit's. This
+                    // provider supplies the two model calls and nothing else.
+                    let plan = try await SmallModelPrompt.plan(
+                        request: request,
                         window: Self.contextWindow(of: model),
-                        fixedTokens: Self.tokens(instructions) + Self.windowMargin,
-                        minimumAnswerTokens: Self.minimumAnswerTokens,
-                        measure: Self.tokens
-                    )
-                    let prompt = fitted.prompt
-                    // An article gets the whole remaining window; a question
-                    // is answered in a few sentences, and a small model left
-                    // to run on will fill the rest with the passages.
-                    let answer = min(
-                        request.maxOutputTokens, fitted.answerTokens,
-                        isQuestion ? Self.maxQuestionTokens : .max
-                    )
-                    let session = LanguageModelSession(model: model, instructions: instructions)
+                        budget: Self.budget
+                    ) { instructions, prompt in
+                        await Self.classifierReply(
+                            instructions: instructions, prompt: prompt, model: model
+                        )
+                    }
+                    if plan.isGeneral {
+                        DiagnosticsLog.shared.record(
+                            .info, .provider,
+                            "on-device: question judged not about the book; answering without passages"
+                        )
+                    }
+                    try Task.checkCancellation()
+                    let session = LanguageModelSession(model: model, instructions: plan.instructions)
                     // Nucleus sampling with some warmth: greedy-ish decoding is
                     // what sends a small model round the same sentence.
                     let options = GenerationOptions(
                         sampling: .random(probabilityThreshold: 0.9),
                         temperature: 0.5,
-                        maximumResponseTokens: answer
+                        maximumResponseTokens: plan.answerTokens
                     )
 
                     // Snapshots are cumulative; the kit's chunks are deltas.
                     // `SnapshotAnswerStream` is the converter, and it decides
                     // what a reader sees — settled sentences only, no repeats,
                     // nothing pasted out of the passages.
-                    var shown = SnapshotAnswerStream(source: isQuestion ? prompt : "")
-                    streaming: for try await snapshot in session.streamResponse(to: prompt, options: options) {
+                    var shown = SnapshotAnswerStream(source: plan.copiedSentenceSource)
+                    streaming: for try await snapshot in session.streamResponse(
+                        to: plan.prompt, options: options
+                    ) {
                         try Task.checkCancellation()
                         let step = shown.advance(to: snapshot.content)
                         Self.emit(step, into: continuation)

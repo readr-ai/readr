@@ -266,12 +266,38 @@ extension HTTPError: LocalizedError, DiagnosticallyDescribable {
     }
 }
 
+/// How much of a rejected request's body is kept, and the one place that
+/// decides it.
+///
+/// The useful part of a provider's error body is its first sentence; past
+/// that it is an HTML error page, a stack trace, or a gateway's apology. All
+/// of it would otherwise sit in memory until the stream ends and then be
+/// written into a diagnostics file, so both streaming paths stop at the same
+/// ceiling.
+enum HTTPErrorBody {
+    /// Generous for a JSON error envelope, harmless for anything else.
+    static let maximumBytes = 8 * 1024
+
+    /// Append what still fits, and drop the rest on the floor.
+    static func append(_ data: Data, to body: inout Data) {
+        let room = maximumBytes - body.count
+        guard room > 0 else { return }
+        body.append(data.count <= room ? data : data.prefix(room))
+    }
+}
+
 /// `URLSession`-backed transport.
 public struct URLSessionHTTPClient: HTTPClient {
     private let session: URLSession
+    /// The one delegate-owning session this client streams through — built on
+    /// the first stream, kept for the client's life. Only the
+    /// swift-corelibs-foundation path uses it; it is held (and compiled)
+    /// everywhere so the two transports never drift apart unnoticed.
+    private let streaming: StreamingSession
 
     public init(session: URLSession = .shared) {
         self.session = session
+        self.streaming = StreamingSession(configuration: session.configuration)
     }
 
     public func send(_ request: HTTPRequest) async throws -> HTTPResponse {
@@ -295,9 +321,9 @@ public struct URLSessionHTTPClient: HTTPClient {
         // swift-corelibs-foundation (Linux, and therefore Android) has no
         // `URLSession.bytes`; its data delegate is the only incremental-bytes
         // API, so the lines are assembled by hand (`LineSplitter`). A delegate
-        // can only be attached when a session is built, so this borrows the
-        // injected session's CONFIGURATION rather than the session itself —
-        // timeouts and any test protocol still apply.
+        // can only be attached when a session is built, so `StreamingSession`
+        // builds ONE from the injected session's CONFIGURATION — timeouts and
+        // any test protocol still apply — and every request rides it.
         //
         // Unlike the Darwin path the status is not known before the stream is
         // handed back (it arrives in a callback), so a non-2xx surfaces as the
@@ -305,22 +331,33 @@ public struct URLSessionHTTPClient: HTTPClient {
         // Every caller is a `for try await` inside a `do`, so both reach the
         // reader the same way — and this one carries the body with it.
         return AsyncThrowingStream { continuation in
-            let delegate = StreamingLineDelegate(continuation: continuation)
-            let streaming = URLSession(
-                configuration: session.configuration, delegate: delegate, delegateQueue: nil
+            let task = streaming.dataTask(
+                for: request.urlRequest,
+                delegate: StreamingLineDelegate(continuation: continuation)
             )
-            let task = streaming.dataTask(with: request.urlRequest)
             continuation.onTermination = { _ in task.cancel() }
             task.resume()
-            // Releases the session, and the delegate it retains, once this
-            // task ends; no further task is ever created on it.
-            streaming.finishTasksAndInvalidate()
         }
         #else
         let (bytes, response) = try await session.bytes(for: request.urlRequest)
         guard let http = response as? HTTPURLResponse else { throw HTTPError.nonHTTPResponse }
         guard (200..<300).contains(http.statusCode) else {
-            throw HTTPError.status(http.statusCode, body: "")
+            // The body is the only place a provider says WHICH key it
+            // rejected and why; throwing the status without it left the
+            // reader with a bare "the provider couldn't handle that". Read
+            // to the shared ceiling and no further — an error page is not
+            // worth streaming to its end.
+            var body = Data()
+            var truncated = false
+            for try await byte in bytes {
+                guard body.count < HTTPErrorBody.maximumBytes else {
+                    truncated = true
+                    break
+                }
+                body.append(byte)
+            }
+            if truncated { bytes.task.cancel() }
+            throw HTTPError.status(http.statusCode, body: String(decoding: body, as: UTF8.self))
         }
         return AsyncThrowingStream { continuation in
             let task = Task {

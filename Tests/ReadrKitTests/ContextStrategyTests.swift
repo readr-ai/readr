@@ -302,6 +302,48 @@ final class ContextStrategyTests: XCTestCase {
         // budget — 60% of the provider's, as the strategy computes it.
         XCTAssertEqual(citation.characterOffset, chapter.text.count - Int(200 * 0.6) * 4)
     }
+
+    /// The same passage on a real book: a reader fifty characters into the
+    /// third chapter, with a tail long enough to reach back into the second,
+    /// is cited in the SECOND — at an offset the second chapter's own text
+    /// answers to. The frontier's chapter with the frontier's arithmetic gave
+    /// a negative offset in a chapter the passage does not start in.
+    func testTheReadSoFarPassageCitesTheChapterTheTailBeginsIn() async throws {
+        let chapters = (0..<3).map { index in
+            Chapter(
+                title: "Chapter \(index + 1)", order: index,
+                text: String(repeating: "Chapter \(index + 1) sentence. ", count: 200)
+            )
+        }
+        let book = Book(
+            metadata: BookMetadata(title: "Test Book", authors: ["A. Author"]),
+            chapters: chapters,
+            estimatedTokenCount: 5_000_000
+        )
+        // 834 * 0.6 = 500 tokens of whole-book budget, and the tail is four
+        // characters a token: 2,000 characters, against 50 read in chapter 3.
+        let strategy = AdaptiveContextStrategy(index: StubRAGIndex(passages: []))
+
+        let result = try await strategy.assembleContext(
+            for: "Recap what I've read.",
+            in: book,
+            selection: nil,
+            scope: .upTo(ReadingFrontier(chapterIndex: 2, characterOffset: 50)),
+            provider: provider(budget: 834, isLocal: true)
+        )
+
+        let citation = try XCTUnwrap(result.citations.first)
+        XCTAssertEqual(citation.locator, "Read so far")
+        XCTAssertEqual(citation.chapterIndex, 1, "the tail opens in the second chapter")
+        let second = chapters[1].text
+        XCTAssertEqual(citation.characterOffset, second.count - (2_000 - 50))
+        let quoted = try XCTUnwrap(citation.quotedText)
+        let offset = try XCTUnwrap(citation.characterOffset)
+        XCTAssertTrue(
+            second.dropFirst(offset).hasPrefix(quoted.dropLast()),
+            "the quoted text is found at the offset the citation gives"
+        )
+    }
 }
 
 /// Minimal in-memory index for routing tests.

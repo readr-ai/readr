@@ -16,11 +16,15 @@ import FoundationNetworking
 /// A non-2xx body is accumulated rather than streamed: the provider's error
 /// JSON is the one useful thing in it, and `HTTPError.status` carries it
 /// through to the reader's error sentence.
+///
+/// One task's callbacks are delivered one at a time, in order, on the
+/// session's delegate queue — so this state needs no lock. The only flag that
+/// outlives a single callback is `isFinished`, and it is there to keep the
+/// FIRST reason a stream ended, not to make the state thread-safe.
 final class StreamingLineDelegate: NSObject, URLSessionDataDelegate, @unchecked Sendable {
     typealias Continuation = AsyncThrowingStream<Data, Error>.Continuation
 
     private let continuation: Continuation
-    private let lock = NSLock()
     private var splitter = LineSplitter()
     private var status: Int?
     private var errorBody = Data()
@@ -59,53 +63,47 @@ final class StreamingLineDelegate: NSObject, URLSessionDataDelegate, @unchecked 
             finish(throwing: HTTPError.nonHTTPResponse)
             return false
         }
-        lock.lock()
         status = http.statusCode
-        lock.unlock()
         return true
     }
 
     /// Yield whatever lines these bytes complete — or hold them as the error
     /// body when the status already said this is not an answer.
     func receive(_ data: Data) {
-        lock.lock()
-        guard !isFinished else {
-            lock.unlock()
-            return
-        }
         if let status, !(200..<300).contains(status) {
-            errorBody.append(data)
-            lock.unlock()
+            HTTPErrorBody.append(data, to: &errorBody)
             return
         }
-        let lines = splitter.lines(from: data)
-        lock.unlock()
-        for line in lines { continuation.yield(line) }
+        do {
+            for line in try splitter.lines(from: data) { continuation.yield(line) }
+        } catch {
+            // A line that never ends: the body is not the event stream it
+            // claimed to be, which is a bad reply and not a reader's problem.
+            finish(throwing: HTTPError.transport(.badServerResponse))
+        }
     }
 
-    /// End the stream: a transport failure, the accumulated non-2xx body, or
-    /// the final partial line of a body that ended without a newline.
+    /// End the stream: the status the provider gave, a transport failure, or
+    /// the final partial line of a body that ended without a terminator.
     func complete(with error: Error?) {
+        // A rejected request often has its connection dropped right after the
+        // error body. The status is why the stream ended; the drop that
+        // followed it is a symptom, and reporting it instead cost the reader
+        // the one sentence saying their key was refused.
+        if let status, !(200..<300).contains(status) {
+            finish(throwing: HTTPError.status(status, body: String(decoding: errorBody, as: UTF8.self)))
+            return
+        }
         if let error {
             finish(throwing: HTTPError.transport((error as? URLError)?.code ?? .unknown))
             return
         }
-        lock.lock()
-        let status = self.status
-        let body = errorBody
-        let tail = splitter.flush()
-        lock.unlock()
-        if let status {
-            guard (200..<300).contains(status) else {
-                finish(throwing: HTTPError.status(status, body: String(decoding: body, as: UTF8.self)))
-                return
-            }
-        } else {
-            // The task ended without ever reporting a response.
+        // The task ended without ever reporting a response.
+        guard status != nil else {
             finish(throwing: HTTPError.nonHTTPResponse)
             return
         }
-        if let tail { continuation.yield(tail) }
+        if let tail = splitter.flush() { continuation.yield(tail) }
         finish(throwing: nil)
     }
 
@@ -114,13 +112,8 @@ final class StreamingLineDelegate: NSObject, URLSessionDataDelegate, @unchecked 
     /// stream ended (a non-HTTP response cancels the task, which then
     /// reports a cancellation).
     private func finish(throwing error: Error?) {
-        lock.lock()
-        guard !isFinished else {
-            lock.unlock()
-            return
-        }
+        guard !isFinished else { return }
         isFinished = true
-        lock.unlock()
         continuation.finish(throwing: error)
     }
 }

@@ -1,6 +1,6 @@
 # Authentication & LLM Access
 
-Readr connects to an LLM in one of **four** ways. All four sit behind the
+Readr connects to an LLM in one of **five** ways. All five sit behind the
 `LLMProvider` protocol, so the rest of the app never knows which is active.
 
 | Mode | What the user does | Where credentials live | Network |
@@ -8,7 +8,15 @@ Readr connects to an LLM in one of **four** ways. All four sit behind the
 | **Sign in (OAuth)** | "Sign in with ChatGPT" / "Sign in with OpenRouter" in a browser | Tokens/key in **Keychain** | provider API |
 | **Bring your own key** | Pastes an Anthropic / OpenAI / OpenRouter key | API key in **Keychain** | provider API |
 | **On this device** | Nothing — Apple's on-device model (iOS/macOS 26, Apple Intelligence hardware) is offered where it can run | none | **none (on-device)** |
+| **On this phone** | Nothing — Android's Gemini Nano (AICore, through ML Kit's GenAI APIs) is offered where it can run | none | **none (on-device)** |
 | **Local** | Picks a local model (Ollama on a Mac) | none | **none (loopback)** |
+
+The two system models are one row each because they are separate provider
+kinds (`.appleIntelligence`, `.geminiNano`) with different runtimes — but a
+phone has one of them, never both. Each build passes the kinds it has to
+`ProviderManager(supportedKinds:)`, and everything downstream (what is
+configured, what Settings renders, what Ask may resolve) comes from that, so
+the other platform's card can never appear.
 
 ## OAuth design (modeled on Muesli)
 

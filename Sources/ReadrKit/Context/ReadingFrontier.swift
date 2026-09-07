@@ -36,6 +36,28 @@ public struct ReadingFrontier: Sendable, Hashable, Codable {
     }
 }
 
+/// The end of what a reader has read, and where in the book it begins.
+///
+/// The "read so far" fallback sends this to the model as one passage, and the
+/// citation beside the answer has to point somewhere the app can open — so
+/// the text and its position are produced together, by the walk that knows
+/// which chapter the tail actually reached back into.
+public struct ReadTail: Sendable, Equatable {
+    /// The text itself; chapter pieces joined the way `textRead(upTo:)`
+    /// joins them.
+    public var text: String
+    /// Reading-order index of the chapter `text` begins in.
+    public var chapterIndex: Int
+    /// Character offset into that chapter's text where `text` begins.
+    public var characterOffset: Int
+
+    public init(text: String, chapterIndex: Int, characterOffset: Int) {
+        self.text = text
+        self.chapterIndex = chapterIndex
+        self.characterOffset = characterOffset
+    }
+}
+
 /// What a question may draw on: the whole book, or only what the reader has
 /// read. A named choice, made at every call site — there is no default, so
 /// no path can drift into sending the whole book by omission.
@@ -85,42 +107,56 @@ public extension Book {
     /// so the rest of what was read is never materialized. Chapter pieces
     /// are joined the way `textRead(upTo:)` joins them.
     func textRead(upTo frontier: ReadingFrontier, lastCharacters maxCharacters: Int) -> String {
-        guard maxCharacters > 0 else { return "" }
+        readTail(upTo: frontier, lastCharacters: maxCharacters).text
+    }
+
+    /// The same tail, and where in the book it starts.
+    ///
+    /// The location is the tail's OWN start, not the frontier's: a 2,000
+    /// character tail read from fifty characters into chapter three begins in
+    /// chapter two, and a citation that says chapter three at offset −1,950
+    /// opens the book in the wrong place. A frontier past the last chapter
+    /// means the whole book has been read, and is located at the end of the
+    /// last chapter rather than in a chapter that isn't there.
+    func readTail(upTo frontier: ReadingFrontier, lastCharacters maxCharacters: Int) -> ReadTail {
         let ordered = chaptersInReadingOrder
-        let index = min(max(0, frontier.chapterIndex), ordered.count)
+        guard !ordered.isEmpty else { return ReadTail(text: "", chapterIndex: 0, characterOffset: 0) }
+        let index = min(max(0, frontier.chapterIndex), ordered.count - 1)
+        let current = ordered[index].text
+        let cut = frontier.chapterIndex >= ordered.count
+            ? current.count
+            : max(0, min(frontier.characterOffset, current.count))
+        guard maxCharacters > 0 else {
+            return ReadTail(text: "", chapterIndex: index, characterOffset: cut)
+        }
+
         var pieces: [String] = []
         var remaining = maxCharacters
-        if index < ordered.count {
-            let current = ordered[index].text
-            let cut = max(0, min(frontier.characterOffset, current.count))
-            let piece = String(current.prefix(cut).suffix(min(cut, remaining)))
-            if !piece.isEmpty {
-                pieces.append(piece)
-                remaining -= piece.count
-            }
+        // Where the earliest piece so far begins. Each step back rewrites it,
+        // so what survives is the start of the chapter the tail opens in.
+        var start = (chapterIndex: index, characterOffset: cut)
+        let piece = String(current.prefix(cut).suffix(min(cut, remaining)))
+        if !piece.isEmpty {
+            pieces.append(piece)
+            remaining -= piece.count
+            start.characterOffset = cut - piece.count
         }
         var earlier = index - 1
         while remaining > 0, earlier >= 0 {
-            let piece = String(ordered[earlier].text.suffix(remaining))
+            let text = ordered[earlier].text
+            let piece = String(text.suffix(remaining))
             if !piece.isEmpty {
                 pieces.append(piece)
                 remaining -= piece.count
+                start = (earlier, text.count - piece.count)
             }
             earlier -= 1
         }
-        return pieces.reversed().joined(separator: "\n\n")
-    }
-
-    /// Where the frontier chapter's share of `textRead(upTo:lastCharacters:)`
-    /// begins inside that chapter. Zero once the tail reaches back past the
-    /// chapter's own start — from there the passage begins in an earlier
-    /// chapter, and the frontier chapter contributes all of itself.
-    func readTailOffset(upTo frontier: ReadingFrontier, lastCharacters maxCharacters: Int) -> Int {
-        let ordered = chaptersInReadingOrder
-        let index = min(max(0, frontier.chapterIndex), ordered.count)
-        guard index < ordered.count, maxCharacters > 0 else { return 0 }
-        let cut = max(0, min(frontier.characterOffset, ordered[index].text.count))
-        return max(0, cut - maxCharacters)
+        return ReadTail(
+            text: pieces.reversed().joined(separator: "\n\n"),
+            chapterIndex: start.chapterIndex,
+            characterOffset: start.characterOffset
+        )
     }
 
     /// Whether the frontier sits at or past the end of its chapter — i.e. the
