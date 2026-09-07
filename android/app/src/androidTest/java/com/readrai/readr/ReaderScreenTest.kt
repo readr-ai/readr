@@ -10,7 +10,6 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.SemanticsNodeInteraction
 import androidx.compose.ui.test.assertIsDisplayed
@@ -24,7 +23,6 @@ import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.swipeLeft
 import androidx.compose.ui.test.swipeUp
-import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.Dp
@@ -174,46 +172,6 @@ class ReaderScreenTest {
         compose.onNodeWithTag("reader.page").performTouchInput { click(Offset(width * fraction, height * 0.1f)) }
     }
 
-    /**
-     * A point over the middle of a word on the drawn page — taken from the
-     * page's own text layout, which semantics hands out, rather than guessed
-     * as a fraction of the page's box.
-     *
-     * A fraction is a guess about pagination, and the press and the tap do
-     * not resolve a pixel the same way: a long press takes the word at the
-     * nearest CARET, a tap takes the glyph the finger is actually ON (so that
-     * a tap in a margin follows nothing). They disagree by one offset
-     * wherever the finger is in the right half of a glyph — which on the
-     * emulator CI uses, a 320×640 screen, is where the centre of this book's
-     * first page falls: the press there took the comma after "Light", and the
-     * tap that should have reopened it landed on the "t" before it. A
-     * one-character mark three pixels wide, and a test that came down to the
-     * screen it ran on.
-     *
-     * A letter with letters either side of it is a point both resolve inside
-     * the same word. It is chosen from the middle of the page and kept in the
-     * middle half of the line, clear of the page-turn zones the outer
-     * quarters of the surface are.
-     */
-    private fun wordPoint(): Offset {
-        val node = compose.onNodeWithTag("reader.page").fetchSemanticsNode()
-        val layouts = mutableListOf<TextLayoutResult>()
-        node.config[SemanticsActions.GetTextLayoutResult].action?.invoke(layouts)
-        val layout = layouts.firstOrNull() ?: error("the page has no text layout to aim at")
-        val text = layout.layoutInput.text.text
-        fun insideAWord(index: Int) = text[index].isLetter() &&
-            index > 0 && text[index - 1].isLetter() &&
-            index + 1 < text.length && text[index + 1].isLetter()
-        val width = node.size.width
-        val aimed = (text.indices.drop(text.length / 2) + text.indices).firstOrNull { index ->
-            insideAWord(index) && layout.getBoundingBox(index).center.x in width * 0.35f..width * 0.65f
-        } ?: error("no word in the middle of the page to aim at")
-        val box = layout.getBoundingBox(aimed)
-        // Into the glyph rather than on its edge, so the caret the press
-        // rounds to and the glyph the tap lands on are the same character.
-        return Offset(box.left + box.width * 0.4f, box.center.y)
-    }
-
     private fun nodes(tag: String) = compose.onAllNodes(androidx.compose.ui.test.hasTestTag(tag)).fetchSemanticsNodes()
     private fun awaitTag(tag: String) = compose.waitUntil(10_000) { nodes(tag).isNotEmpty() }
     private fun awaitNoTag(tag: String) = compose.waitUntil(10_000) { nodes(tag).isEmpty() }
@@ -317,8 +275,8 @@ class ReaderScreenTest {
     fun aLongPressHighlightsAWordAndTappingItAgainRemovesIt() {
         val model = open()
         // The same point for both gestures, and a point the page's own layout
-        // says is inside a word — see `wordPoint`.
-        val word = wordPoint()
+        // says is inside a word — see `wordOnThePage`.
+        val word = compose.wordOnThePage().first
         compose.onNodeWithTag("reader.page").performTouchInput { longClick(word) }
         awaitTag("annotation.capsule")
 

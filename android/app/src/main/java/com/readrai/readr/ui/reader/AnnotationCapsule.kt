@@ -27,6 +27,7 @@ import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
@@ -42,6 +43,8 @@ import com.readrai.readr.data.HighlightColor
 import com.readrai.readr.ui.theme.LocalReadingPalette
 import com.readrai.readr.ui.theme.Marginalia
 import com.readrai.readr.ui.theme.ReadingPalette
+import com.readrai.readr.ui.theme.SpeakerGlyph
+import com.readrai.readr.ui.theme.touchTarget
 
 /** What the capsule is acting on: a fresh selection, or a highlight the reader tapped. */
 sealed interface AnnotationTarget {
@@ -67,8 +70,6 @@ sealed interface AnnotationTarget {
     }
 }
 
-/** Apple's minimum, and Material's: nothing here is smaller than a fingertip. */
-private val touchTarget = 44.dp
 
 /** Neither worded button grows past this; the row scrolls before it does. */
 private val labelledButtonWidth = 72.dp
@@ -131,6 +132,8 @@ fun AnnotationCapsule(
     onNote: ((AnnotationTarget) -> Unit)? = null,
     /** Opens Ask on this passage — the ✦ of the iOS selection menu. */
     onAsk: ((AnnotationTarget) -> Unit)? = null,
+    /** Reads aloud from here — "Listen from here" on the iOS selection menu. */
+    onListen: ((AnnotationTarget) -> Unit)? = null,
 ) {
     val editing = target as? AnnotationTarget.Existing
     Row(
@@ -189,6 +192,35 @@ fun AnnotationCapsule(
                 if (LocalDensity.current.fontScale <= 1.25f) {
                     Text(
                         "Ask",
+                        fontSize = 13.sp,
+                        color = palette.ink,
+                        maxLines = 1,
+                        softWrap = false,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+        }
+        if (onListen != null) {
+            // "Listen from here" starts on the sentence the reader's finger is
+            // in, never the next one — the page rule would skip the very words
+            // they pointed at.
+            Row(
+                Modifier
+                    .height(touchTarget)
+                    .widthIn(min = touchTarget, max = labelledButtonWidth)
+                    .clip(RoundedCornerShape(50))
+                    .clickable { onListen(target) }
+                    .padding(horizontal = 6.dp)
+                    .testTag("annotation.listen")
+                    .semantics { contentDescription = "Listen from here" },
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(3.dp, Alignment.CenterHorizontally),
+            ) {
+                SpeakerGlyph(palette.muted, Modifier.size(14.dp))
+                if (LocalDensity.current.fontScale <= 1.25f) {
+                    Text(
+                        "Listen",
                         fontSize = 13.sp,
                         color = palette.ink,
                         maxLines = 1,

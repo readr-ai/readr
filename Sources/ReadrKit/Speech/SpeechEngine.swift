@@ -146,10 +146,14 @@ public protocol SpeechRateAdjusting: AnyObject {
 public protocol SpeechEngine: AnyObject {
     var delegate: (any SpeechEngineDelegate)? { get set }
     var state: SpeechEngineState { get }
+    /// Whether `pause()` really holds the utterance where it is, to be picked
+    /// back up by `resume()`. See the default in the extension below.
+    var pausesInPlace: Bool { get }
 
     /// Speak `request`, replacing anything currently being spoken.
     func speak(_ request: SpeechRequest)
-    /// Hold the current utterance where it is, resumable by `resume()`.
+    /// Hold the current utterance where it is, resumable by `resume()`. Only
+    /// ever called on an engine that `pausesInPlace`.
     func pause()
     func resume()
     /// Stop and discard the current utterance. No `didFinish` follows. An
@@ -157,4 +161,24 @@ public protocol SpeechEngine: AnyObject {
     /// and discard the last prefetch list; one unavoidable synthesis already
     /// in flight may finish, but it must not schedule more work from that list.
     func stop()
+}
+
+public extension SpeechEngine {
+    /// Most synthesizers — `AVSpeechSynthesizer` among them — hold an
+    /// utterance where it is and pick it back up, so the default is true.
+    ///
+    /// An engine with no native pause answers **false**: Android's
+    /// `TextToSpeech` has no pause at all. The controller then stops it on
+    /// `pause()` and re-speaks the sentence from the last word boundary on
+    /// `play()`, which is the same path a sleep-timer stop already resumes by
+    /// — one rule, in the kit, rather than every such backend faking a pause
+    /// it does not have and rebasing the word offsets to hide the seam.
+    /// `pause()` and `resume()` are never called on such an engine.
+    var pausesInPlace: Bool { true }
+
+    /// Nothing, for an engine that answers `pausesInPlace` false and is
+    /// stopped rather than paused. Any engine that pauses in place implements
+    /// both of these itself.
+    func pause() {}
+    func resume() {}
 }

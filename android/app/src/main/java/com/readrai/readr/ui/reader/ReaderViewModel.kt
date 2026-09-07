@@ -155,6 +155,26 @@ class ReaderViewModel(private val library: suspend () -> LibraryRepository, val 
     /** The place last written (or read) from the store; a save is skipped when nothing moved. */
     private var persisted: Pair<Int, Int>? = null
 
+    /**
+     * The chapter and the start of the sentence the voice is reading, while
+     * one is. That offset — not the page top — is what gets written down: the
+     * kit's rule, because pressing Listen again has to pick the book back up
+     * on the sentence the reader last actually heard. Cleared by anything the
+     * reader does.
+     *
+     * The *chapter* is half of it because an offset means nothing without one.
+     * A voice reading chapter seven and a reader who has since crossed back
+     * into chapter six used to save six's index with seven's offset — a place
+     * some way into a chapter the reader had walked back out of, or past its
+     * end entirely.
+     */
+    private var narrationResumeAnchor: Pair<Int, Int>? = null
+
+    /** The chapter and offset a save would write. */
+    private val place: Pair<Int, Int>
+        get() = chapterIndex to
+            (narrationResumeAnchor?.takeIf { it.first == chapterIndex }?.second ?: anchor)
+
     /** Set by a backward chapter crossing: the anchor becomes the chapter's end once its length is known. */
     private var wantsChapterEnd = false
 
@@ -222,6 +242,7 @@ class ReaderViewModel(private val library: suspend () -> LibraryRepository, val 
         val ready = state as? State.Ready ?: return
         if (index !in ready.chapters.indices) return
         wantsChapterEnd = false
+        narrationResumeAnchor = null
         anchor = maxOf(0, utf16Offset)
         visible = null
         if (index != chapterIndex) {
@@ -233,8 +254,55 @@ class ReaderViewModel(private val library: suspend () -> LibraryRepository, val 
 
     /** A page turn within the chapter: the new page's range start becomes the anchor. */
     fun turned(toOffset: Int) {
+        // The reader moved, so the voice's sentence is no longer where they
+        // are — their page is the place again.
+        narrationResumeAnchor = null
         anchor = maxOf(0, toOffset)
         scheduleSave()
+    }
+
+    /**
+     * The voice moved on: put the page under it. `utf16Offset` is where the
+     * voice actually is (to the word), so a long sentence spanning a page
+     * break turns the page partway through rather than at its end;
+     * `utf16SentenceStart` is what gets written down, because that is where
+     * pressing Listen again would pick the book back up.
+     *
+     * The ordinary page-turn debounce applies, and reaches the store between
+     * sentences: a sentence takes several seconds to say and the debounce is
+     * one, so a reader who puts the phone down mid-chapter has their place.
+     */
+    fun followVoice(utf16Offset: Int, utf16SentenceStart: Int) {
+        narrationResumeAnchor = chapterIndex to maxOf(0, utf16SentenceStart)
+        anchor = maxOf(0, utf16Offset)
+        scheduleSave()
+    }
+
+    /**
+     * The voice is reading a sentence the page is deliberately *not* following
+     * — "Listen from here" on a selection that began on the page before, which
+     * the screen holds until the voice catches up. The page stays put; the
+     * place to save is still the sentence being read, so a reader who leaves
+     * mid-hold picks the book back up on it rather than a page ahead.
+     */
+    fun holdNarrationResumeAnchor(utf16SentenceStart: Int) {
+        narrationResumeAnchor = chapterIndex to maxOf(0, utf16SentenceStart)
+        scheduleSave()
+    }
+
+    /**
+     * The scroll settling where [followVoice] put it. It looks like a page
+     * turn — the same layout echo carries both — but it is the voice's own
+     * move coming back, so unlike [turned] it leaves the resume anchor alone.
+     */
+    fun settledOnVoice(toOffset: Int) {
+        anchor = maxOf(0, toOffset)
+        scheduleSave()
+    }
+
+    /** Narration stopped: the reader's own page is the place again. */
+    fun stopFollowingVoice() {
+        narrationResumeAnchor = null
     }
 
     /**
@@ -251,6 +319,9 @@ class ReaderViewModel(private val library: suspend () -> LibraryRepository, val 
             jump(index, 0)
         } else {
             wantsChapterEnd = true
+            // The reader walked out of the chapter the voice was reading: its
+            // sentence is not the place any more, whatever happens next.
+            narrationResumeAnchor = null
             chapterIndex = index
             loadChapter()
         }
@@ -583,7 +654,7 @@ class ReaderViewModel(private val library: suspend () -> LibraryRepository, val 
 
     private suspend fun persist() {
         val repo = repository ?: return
-        val place = chapterIndex to anchor
+        val place = place
         if (chapterIndex < 0 || wantsChapterEnd || place == persisted) return
         try {
             repo.savePosition(bookId, place.first, place.second)
@@ -599,7 +670,7 @@ class ReaderViewModel(private val library: suspend () -> LibraryRepository, val 
     fun flush() {
         saveJob?.cancel()
         val repo = repository ?: return
-        val place = chapterIndex to anchor
+        val place = place
         if (chapterIndex < 0 || wantsChapterEnd || place == persisted) return
         persisted = place
         repo.savePositionLater(bookId, place.first, place.second)

@@ -184,8 +184,12 @@ public final class NarrationController {
             if mustRespeakToResume, let segment = currentSegment {
                 speak(segment, from: spokenOffset)
             } else {
-                engine.resume()
+                // Status before the engine, as `speak` does: a `resume()` that
+                // fails synchronously reports through `didFail`, and that has
+                // to be the last word — set afterwards, `.speaking` would
+                // overwrite the pause the failure just made.
                 setStatus(.speaking)
+                engine.resume()
             }
         case .idle:
             if let segment = currentSegment ?? playlist.current {
@@ -203,7 +207,17 @@ public final class NarrationController {
 
     public func pause() {
         guard isUnderway else { return }
-        engine.pause()
+        if engine.pausesInPlace {
+            engine.pause()
+        } else {
+            // No native pause (Android): stop, and let `play()` re-speak the
+            // rest of the sentence from the last word boundary — the same
+            // path a sleep-timer stop resumes by. `spokenOffset` is already
+            // the boundary, so nothing else has to be remembered.
+            engine.stop()
+            activeRequestID = nil
+            mustRespeakToResume = true
+        }
         holdReason = nil
         setStatus(.paused)
     }

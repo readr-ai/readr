@@ -315,6 +315,120 @@ from a `ServerSocket` on the device without a key or a network. One shared
 `URLSession` sits behind every provider the factory builds, redirected or not,
 so resolving a provider per question does not throw away a connection pool.
 
+## Listen
+
+`ui/listen/` is the book read aloud: the ✦-less half of the AI story, and the
+one place the phone's own hardware does the work. Every playback rule is the
+kit's — `NarrationController` decides which sentence is next, what a skip does
+to a completion that was already in flight, how a speed change picks a sentence
+back up mid-word, and when the sleep timer burns. The Android half is three
+pieces around it.
+
+`Narration.swift` is the facade. `AndroidNarration` builds the controller for a
+book and answers one `stateJSON()` the card draws from — status, hold, the
+sentence, the chapter's progress, the sleep timer, the speed. Offsets cross in
+UTF-16 like everything else (`TextOffsets.swift`), including the word
+boundaries. `NarrationObserver` is the Kotlin-implemented protocol it pushes
+changes to, reporting only what actually changed: the card is redrawn from
+these, and a once-a-second tick that republished the same sentence would be a
+recomposition a second for as long as the book is read. Everything is called
+from the **main thread** — the controller is main-thread-confined and there is
+no queue on the Swift side to hop with, since Swift's main thread here *is* the
+Android main looper.
+
+Two things the facade names for itself. **The failure sentence:** an utterance
+the phone's voice refuses is not one of the kit's `NarrationHoldReason` cases
+(on Apple it is a Retry the bar offers, not a state), so `BridgedSpeechEngine`
+keeps the engine's last failure and `state()` turns a pause nobody pressed into
+`holdReason: "engineFailed"` with the words the card shows. Kotlin reports an
+engine code to the log and no further, as everywhere else. **The voice:** the
+phone cannot say which voices it has until its engine has started up, which is
+after the session is built — so the kit's choice (`VoiceSelector`, the book's
+language over the device's) is made lazily, retried on every control and on the
+tick, and settled for good once `NarrationEvents.voicesReady` arrives. Resolved
+once in `init` against the empty list it always found there, it read every book
+in whatever the device's default was. `AndroidNarration.optionsJSON()` is
+static and answers the kit's own fixed lists — the speed steps and their
+labels, the sleep durations and theirs — so Kotlin draws the controls from
+`SpeechSettings.rateSteps` and `SleepTimer.minuteOptions` rather than from a
+copy of them that goes quietly stale.
+
+`kit/PlatformSpeechBackend` is `android.speech.tts.TextToSpeech` behind the
+kit's engine protocol. **There is no pause**, on the phone or in here.
+`TextToSpeech` cannot pause, so `BridgedSpeechEngine` answers the kit's
+`SpeechEngine.pausesInPlace` with `false`, and `NarrationController` stops the
+backend on a pause and re-speaks the sentence from the last word boundary — as
+a *fresh request* — on play. That is the same path a sleep-timer stop already
+resumes by, it is unit-tested in the kit against a mock engine, and it is the
+reason this class no longer fakes a pause of its own: it used to stop the
+utterance, remember the boundary, re-speak the tail under the same request id
+and add the cut back into every boundary it reported afterwards, so the kit was
+never told the text had been shortened. Now word boundaries are plain offsets
+into the string handed over, `state()` never answers `paused`, and the platform
+is given the request id itself — the controller never speaks one request twice,
+so an id is enough to tell a late report from a stopped utterance apart from the
+one in flight.
+
+Two other rules live here. An engine that **fails to start** kills the backend:
+it is shut down, and every later request is refused on the spot rather than
+parked waiting for a readiness that is not coming (the card then holds with the
+facade's explanation, instead of sitting on Pause with a sentence and no word
+about why). And the **resolved voice is cached** per (voice, language):
+resolving walks `tts.voices`, which is every voice installed on the phone, and
+the answer cannot change between two sentences of one book — while an engine
+left with no language it has data for refuses the sentence rather than taking it
+and saying nothing. Network voices are never offered — reading is a zero-egress
+promise (PRIVACY.md), and a voice that needs a connection would send the
+sentence to a server. The speed reaches the engine on the platform's own scale:
+Android documents that scale as proportional, and the facade's ceiling constant
+is a calibration chosen so the kit's AVFoundation-shaped curve comes back out
+straight — a 1.5× label really is 1.5×.
+
+`ui/listen/ListenCard` is the post-#101 now-reading card, insetting the reading
+surface from the bottom rather than floating over it — the page turns itself to
+follow the voice, so nothing may cover the words. Chapter in caps, the sentence
+in serif italic, a 2 dp progress hairline, and one row: speed, ◀ ● ▶, sleep,
+with ✕ in the corner. Its measured height goes back into the surface as an
+inset, which is a second page geometry and therefore another `PaginationCache`
+slot.
+
+In the reader, the bar's Listen button starts at the top of the visible page
+(`nextSentenceStart`) and the capsule's Listen starts on the sentence the
+reader's finger is in (`sentenceContaining`) — the page rule would skip the very
+words they pointed at. A selection start that lies on the page *before* the one
+in view holds the page until the voice reaches it, so a control that promised to
+read from here cannot throw the reader back a spread; the held page still saves
+the sentence being read.
+
+Every jump the reader makes — Contents, search, a bookmark, a highlight, "Show
+in book" on a citation — goes through one `jumpTaking`, which takes the voice
+into a *different* chapter (re-pausing it if it was paused) and leaves it alone
+inside the chapter it is already reading: looking something up two pages on is
+not a request to start again, and restarting would re-arm the sleep timer.
+Opening Ask pauses narration and dismissing it resumes — only if it was Ask that
+paused it — and a question with no selection while the voice reads is about the
+sentence being read.
+
+What gets written down as the reading position is the **sentence start**, not
+the page top: that is where pressing Listen again picks the book back up. It is
+kept with the chapter it belongs to, so a reader who crosses back out of the
+chapter the voice is in saves their own page rather than an offset from a
+chapter they have left. In the scroll layout the list echoes the line at the top
+of its viewport on every frame, and that echo is *not* a page turn when it is
+the voice's own move coming back.
+
+Narration outlives the composition on purpose — a rotation, or the trip to the
+provider settings Ask's empty state offers, must not cut the voice off
+mid-sentence — so it is released by a `NarrationLease`, a `ViewModel` on the
+reader's `NavBackStackEntry`, rather than in an `onDispose`. Leaving the book
+stops the voice and hands the synthesizer back.
+
+Not yet: a media session and lock-screen controls (A4b), a voice picker, and the
+read-along underline. A follow-up worth doing: `NarrationModel` both is pushed
+to (`NarrationObserver`) and pulls (`refresh()` after every control, and once a
+second), so the same state arrives twice by two routes — one push path would be
+less to reason about.
+
 ## Layout on device
 
 `filesDir/library.json` (FileLibraryStore), `filesDir/Books/<uuid>.epub|txt`
