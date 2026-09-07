@@ -66,7 +66,40 @@ class KeystoreSecretStoreTest {
         assertFalse(store.has("credentials.anthropic"))
     }
 
+    /**
+     * Ciphertext no key of this store's can read is not a stored credential:
+     * it is dropped where it is found, so [KeystoreSecretStore.has] and
+     * [KeystoreSecretStore.read] cannot disagree. This is what an invalidated
+     * Keystore key looks like from the outside — the entry is there, and
+     * nothing will ever decrypt it.
+     */
+    @Test
+    fun anEntryThatWillNotDecryptIsRemovedRatherThanKeptForever() {
+        context.deleteSharedPreferences(KeystoreSecretStore.fileName(TEST_ALIAS))
+        context.deleteSharedPreferences(KeystoreSecretStore.fileName(OTHER_ALIAS))
+
+        KeystoreSecretStore(context, alias = TEST_ALIAS).write("credentials.openAI", "sk-written-under-the-other-key")
+        val foreign = context
+            .getSharedPreferences(KeystoreSecretStore.fileName(TEST_ALIAS), 0)
+            .getString("credentials.openAI", null)!!
+        // The same ciphertext, in the file a store under the OTHER alias
+        // reads — which is a key that cannot decrypt it.
+        context.getSharedPreferences(KeystoreSecretStore.fileName(OTHER_ALIAS), 0)
+            .edit().putString("credentials.openAI", foreign).commit()
+
+        val store = KeystoreSecretStore(context, alias = OTHER_ALIAS)
+        assertTrue("the entry is there to begin with", store.has("credentials.openAI"))
+        assertEquals("", store.read("credentials.openAI"))
+        assertFalse("an unreadable entry must not go on claiming to be a key", store.has("credentials.openAI"))
+
+        context.deleteSharedPreferences(KeystoreSecretStore.fileName(TEST_ALIAS))
+        context.deleteSharedPreferences(KeystoreSecretStore.fileName(OTHER_ALIAS))
+    }
+
     private companion object {
         const val TEST_ALIAS = "readr.secrets.test"
+
+        /** A second Keystore key, so "written under another alias" is real. */
+        const val OTHER_ALIAS = "readr.secrets.test.other"
     }
 }

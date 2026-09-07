@@ -64,7 +64,10 @@ import com.readrai.readr.data.AskTier
 import com.readrai.readr.ui.theme.LocalReadingPalette
 import com.readrai.readr.ui.theme.Marginalia
 import com.readrai.readr.ui.theme.ReadingPalette
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.conflate
 
 /**
@@ -196,14 +199,29 @@ private fun Transcript(
     val listState = rememberLazyListState()
     // A list, not a column in a scroller: a long conversation would otherwise
     // measure and lay out every answer in it on every streamed token.
-    // Followed down as it grows — once per new turn, and on the answer's
-    // length through a CONFLATED flow, so a fast stream produces one scroll
-    // per frame rather than one per delta.
-    LaunchedEffect(model.exchanges.size) { listState.scrollToEnd() }
+    //
+    // Followed down as it grows, by ONE driver: a new turn and the answer
+    // growing inside it are the same event as far as the transcript is
+    // concerned, and two effects racing for the scroll mutex meant the loser
+    // was cancelled — which, on the effect keyed by the turn count, took the
+    // scroll for that turn with it. Conflated, so a fast stream produces one
+    // scroll per frame rather than one per delta.
     LaunchedEffect(listState) {
-        snapshotFlow { model.exchanges.lastOrNull()?.answerText?.length ?: 0 }
+        snapshotFlow { model.exchanges.size to (model.exchanges.lastOrNull()?.answerText?.length ?: 0) }
             .conflate()
-            .collect { listState.scrollToEnd() }
+            .collect {
+                try {
+                    listState.scrollToEnd()
+                } catch (e: CancellationException) {
+                    // A scroll interrupted by another one — a drag, or the
+                    // next delta — is reported as MutationInterruptedException,
+                    // a CancellationException that would otherwise end this
+                    // collector and leave the transcript stuck where it was.
+                    // The collector's own cancellation still ends it: that
+                    // one is on the coroutine.
+                    currentCoroutineContext().ensureActive()
+                }
+            }
     }
     LazyColumn(
         modifier.fillMaxWidth().padding(horizontal = 20.dp).testTag("ask.transcript"),
@@ -215,7 +233,7 @@ private fun Transcript(
         // Keyed by the turn's own id, so a re-composition moves nothing: the
         // answer growing in the last one must not re-key the ones above it.
         items(model.exchanges, key = { it.id }) { exchange ->
-            ExchangeView(exchange, palette, model::blocks, onShowInBook)
+            ExchangeView(exchange, palette, onShowInBook)
         }
         if (model.isStreaming && model.exchanges.lastOrNull()?.answerText.isNullOrEmpty()) {
             item(key = "thinking") { ThinkingDots(palette.iris) }
@@ -315,18 +333,25 @@ private fun ScopePicker(model: AskViewModel, palette: ReadingPalette) {
     }
 }
 
+/**
+ * One turn of the conversation. Everything it draws is ON the exchange —
+ * which is `@Immutable` — so a state write anywhere else in the sheet skips
+ * it, and nothing it draws costs a call across the bridge.
+ */
 @Composable
 private fun ExchangeView(
     exchange: AskExchange,
     palette: ReadingPalette,
-    blocks: (String) -> List<AnswerBlock>,
     onShowInBook: (Int, Int) -> Unit,
 ) {
-    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+    Column(
+        Modifier.testTag("ask.exchange.${exchange.id}"),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
         SentQuestion(exchange.question, palette)
         val failure = exchange.failure
         if (exchange.answerText.isNotBlank()) {
-            Answer(exchange.answerText, palette, blocks)
+            Answer(exchange, palette)
         }
         if (failure != null) {
             // Under the question it belongs to, and for good: the composer's
@@ -381,16 +406,30 @@ private fun SentQuestion(text: String, palette: ReadingPalette) {
     }
 }
 
+/**
+ * The answer as it stands. While it streams there are no blocks yet — the
+ * kit's parser is a bridge call, and composition is the last place to make
+ * one — so the text is drawn as paragraphs with their inline bold; the
+ * finished answer's real structure arrives on the exchange a moment later
+ * and replaces it.
+ */
 @Composable
-private fun Answer(markdown: String, palette: ReadingPalette, blocks: (String) -> List<AnswerBlock>) {
-    // Parsed once per distinct answer text rather than once per composition:
-    // the kit does the splitting, and the call crosses the bridge.
-    val parsed = remember(markdown) { blocks(markdown) }
+private fun Answer(exchange: AskExchange, palette: ReadingPalette) {
     Column(
         Modifier.fillMaxWidth().testTag("ask.answer"),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        for (block in parsed) {
+        if (exchange.blocks.isEmpty) {
+            for (paragraph in AnswerMarkdown.paragraphs(exchange.answerText)) {
+                Text(
+                    AnswerMarkdown.inline(paragraph),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = palette.ink,
+                    lineHeight = 21.sp,
+                )
+            }
+        }
+        for (block in exchange.blocks.items) {
             when (block) {
                 is AnswerBlock.Paragraph -> Text(
                     AnswerMarkdown.inline(block.text),

@@ -22,7 +22,9 @@ import javax.crypto.spec.GCMParameterSpec
  * ciphertext is not backed up either.
  *
  * Failures are logged by exception class (never by value) so a bug report can
- * tell "no credential stored" from "the key was invalidated".
+ * tell "no credential stored" from "the key was invalidated" — and an entry
+ * that cannot be decrypted is dropped as it is found, so `has` never claims a
+ * key `read` cannot produce.
  */
 class KeystoreSecretStore(context: Context, private val alias: String = DEFAULT_ALIAS) : SecretStore {
     // One file per Keystore key. The alias is what the ciphertext can be read
@@ -43,7 +45,19 @@ class KeystoreSecretStore(context: Context, private val alias: String = DEFAULT_
         false
     }
 
-    /** The stored value, or "" when absent or unreadable (the bridge cannot return an optional). */
+    /**
+     * The stored value, or "" when absent or unreadable (the bridge cannot
+     * return an optional).
+     *
+     * An entry that will not decrypt is REMOVED. A Keystore key invalidated
+     * by a lock-screen change (or ciphertext written under another alias)
+     * leaves a value nothing can ever read, and leaving it there makes [has]
+     * and [read] disagree for good: the settings screen would show a key on
+     * the card, the reader would be told to remove one that is not there, and
+     * every ask would fail on a credential the app insists it holds. The
+     * exception class is logged — never the value — so a bug report can still
+     * tell "the key was invalidated" from "nothing was stored".
+     */
     override fun read(key: String): String {
         val encoded = prefs.getString(key, null) ?: return ""
         return try {
@@ -52,7 +66,8 @@ class KeystoreSecretStore(context: Context, private val alias: String = DEFAULT_
             cipher.init(Cipher.DECRYPT_MODE, secretKey(), GCMParameterSpec(128, iv))
             String(cipher.doFinal(ciphertext), Charsets.UTF_8)
         } catch (e: Exception) {
-            Log.w(TAG, "read failed for $key: ${e::class.java.simpleName} (stored value unreadable, not absent)")
+            Log.w(TAG, "read failed for $key: ${e::class.java.simpleName} (unreadable entry dropped)")
+            remove(key)
             ""
         }
     }

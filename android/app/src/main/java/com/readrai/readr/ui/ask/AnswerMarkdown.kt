@@ -92,6 +92,21 @@ object AnswerMarkdown {
     }
 
     /**
+     * The renderer used WHILE an answer streams: blank-line-separated
+     * paragraphs, and nothing else.
+     *
+     * [blocks] is the real one, but the JSON it decodes comes from a bridge
+     * call, and an answer arrives a few characters at a time — parsing the
+     * structure on every delta means crossing into Swift dozens of times a
+     * second on the thread that is also laying the sheet out. Paragraphs and
+     * inline bold are what a half-written answer has to show anyway; the kit
+     * cuts the finished one into its real blocks once, off the main thread,
+     * and they replace this.
+     */
+    fun paragraphs(text: String): List<String> =
+        text.split(PARAGRAPH_BREAK).map { it.trim() }.filter { it.isNotEmpty() }
+
+    /**
      * `**bold**` as a span, everything else as written. An unclosed `**` is
      * the half-streamed case and stays literal until its partner arrives.
      */
@@ -121,4 +136,7 @@ object AnswerMarkdown {
     }
 
     private const val MARK = "**"
+
+    /** A blank line, however much whitespace is on it. */
+    private val PARAGRAPH_BREAK = Regex("\n[ \t]*\n")
 }

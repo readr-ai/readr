@@ -159,7 +159,10 @@ are reading up top (back, title, ✦ Ask, Aa, highlights) and what you do with
 the book along the bottom, under the thumb (contents, the bookmark ribbon,
 find in book). Seven controls in one bar left the title nothing and put the
 two most used at the far end of a reach. Both bars come and go together with
-a tap on the page.
+a tap on the page. A reader-facing message (a link Readr cannot open, an
+annotation that would not save) sits above the bottom bar while the chrome is
+up and at the foot of the window when it is down, and over the bar either
+way — a message the bar covers is a message nobody reads.
 
 The bar is chrome over the window, not over the page: while it is shown the
 surface sits below the top bar and above the bottom one, so the page is
@@ -236,7 +239,16 @@ detached task, and a question asked before it lands waits on that same task
 rather than starting a second one. Neither builds it at all when the book
 would route whole-book anyway — decided on `AdaptiveContextStrategy`'s own
 numbers (a non-local provider, and a text inside 60% of its context budget),
-because that tier never asks for a passage.
+because that tier never asks for a passage. That rule is *copied* from the
+strategy, so a test pins the two together (`KIT FOLLOW-UP` in `Ask.swift`)
+until the kit exposes the decision itself.
+
+An index and the build filling it are **one entry** in that LRU: evicting
+drops both, and a question always takes the index from the same entry it
+takes the build from. Kept apart, a third book opening could drop the index
+while its build ran on — and the question that then waited for that build
+would be answered from an empty index, grounded in nothing, with no error to
+show for it.
 
 Streaming crosses the bridge the way the spike found works: a Swift protocol
 Kotlin implements (`AskSink`), called from the streaming task — `indexing`
@@ -275,11 +287,25 @@ chapter and an offset offers "Show in book", which jumps and dismisses.
 `AnswerMarkdown.kt` is the answer renderer, and the *structure* is the kit's:
 `AndroidLibrary.answerBlocksJSON` wraps `AnswerMarkdown.blocks(from:)`, so
 paragraphs, headings, quotes, code and ordered/unordered lists are cut by the
-same parser the Apple panel uses (tolerant of half-streamed input, because it
-runs on every token). Inline `**bold**` stays here, which is the half the kit
-deliberately leaves to the platform. The transcript is a keyed `LazyColumn`
-over `@Immutable` exchanges, and streamed deltas are coalesced into at most
-one state write per 50 ms.
+same parser the Apple panel uses. Inline `**bold**` stays here, which is the
+half the kit deliberately leaves to the platform.
+
+That parse is **off the hot path**: a streaming answer is drawn as
+paragraphs by the Kotlin half alone, and the kit's blocks are cut once, on
+`Dispatchers.Default`, when the answer is finished (and for turns restored
+into a reopened sheet) and stored on the exchange. Composition therefore
+never crosses the bridge — a bridge call per delta, on the thread laying the
+sheet out, is what a streamed answer used to cost. The transcript is a keyed
+`LazyColumn` over `@Immutable` exchanges — everything drawn comes off the
+exchange, so nothing unstable is handed to a turn and a state write elsewhere
+skips it — streamed deltas are coalesced into at most one state write per
+50 ms, and one conflated `snapshotFlow` (new turns and the answer's length
+together) follows the newest answer down.
+
+The empty state's guidance is the facade's sentence, which names only the
+doors this phone has; it starts on "Add an API key to ask questions." and is
+replaced only by a sentence that says something, so the heading is never over
+a blank line.
 
 `AndroidProviders.overrideEndpoint` is a debug and test hook: it swaps the
 origin of a vendor's requests for a **loopback** one — `127.0.0.1`,

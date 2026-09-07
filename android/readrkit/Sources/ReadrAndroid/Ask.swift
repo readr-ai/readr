@@ -261,63 +261,115 @@ final class AskRunRegistry: @unchecked Sendable {
 /// again. Building is the expensive part (chunk, embed, count terms) and a
 /// third book's index is memory nobody is asking questions of.
 final class AskIndexes: @unchecked Sendable {
+
+  /// A book's index and the build filling it, as ONE entry.
+  ///
+  /// Kept together because they are only ever true of each other: an
+  /// eviction that dropped the index and left the build behind would leave a
+  /// question awaiting work that fills an index nobody can reach any more,
+  /// and the answer would be assembled from an empty one — an ungrounded
+  /// answer, with no error to show for it.
+  private struct Entry {
+    var index: HybridRAGIndex
+    var task: Task<Void, Error>?
+    /// Which build `task` is, so a task that finishes after its entry was
+    /// evicted and remade cannot clear the new entry's build.
+    var buildID: Int64 = 0
+  }
+
   private let lock = NSLock()
-  private var indexes: [UUID: HybridRAGIndex] = [:]
+  private var entries: [UUID: Entry] = [:]
   private var order: [UUID] = []
-  /// The build running for a book, so a question asked while the reader was
-  /// still on page one waits on that work rather than starting it again.
-  private var builds: [UUID: Task<Void, Error>] = [:]
+  private var nextBuildID: Int64 = 1
   private let capacity = 2
 
   func index(for bookID: UUID) -> HybridRAGIndex {
-    lock.lock(); defer { lock.unlock() }
-    return locked(bookID)
+    lock.lock()
+    let index = locked(bookID).index
+    let evicted = evict()
+    lock.unlock()
+    evicted.forEach { $0.cancel() }
+    return index
   }
 
-  /// The build for `book`, started if none is running. One task per book: the
-  /// reader opening a book starts it off the critical path, and a question a
-  /// moment later awaits the same task.
+  /// The book's index and the build filling it, started if none is running.
+  ///
+  /// Both come from the same entry under the same lock, so the caller can
+  /// await the build and then read the index it filled. One task per book:
+  /// the reader opening a book starts it off the critical path, and a
+  /// question a moment later awaits the same task.
   @discardableResult
-  func build(for book: Book) -> Task<Void, Error> {
+  func build(for book: Book) -> (index: HybridRAGIndex, task: Task<Void, Error>) {
     lock.lock()
-    if let running = builds[book.id] { lock.unlock(); return running }
-    let index = locked(book.id)
+    var entry = locked(book.id)
+    if let running = entry.task {
+      let evicted = evict()
+      lock.unlock()
+      evicted.forEach { $0.cancel() }
+      return (entry.index, running)
+    }
+    let index = entry.index
+    let buildID = nextBuildID
+    nextBuildID += 1
     let task = Task<Void, Error>.detached(priority: .utility) { [weak self] in
-      defer { self?.finished(book.id) }
+      // The lock is held until the task below is registered, so this cannot
+      // run ahead of its own registration.
+      defer { self?.finished(book.id, buildID: buildID) }
       if await index.isBuilt(bookID: book.id) { return }
       try await index.build(for: book, embeddings: LocalEmbeddingProvider())
     }
-    builds[book.id] = task
+    entry.task = task
+    entry.buildID = buildID
+    entries[book.id] = entry
+    let evicted = evict()
     lock.unlock()
-    return task
+    evicted.forEach { $0.cancel() }
+    return (index, task)
   }
 
+  /// Drop a book's index and stop the build filling it — its own build and no
+  /// other: a task started for an entry that has since been replaced belongs
+  /// to that replacement.
   func forget(_ bookID: UUID) {
     lock.lock()
     order.removeAll { $0 == bookID }
-    indexes[bookID] = nil
-    let build = builds.removeValue(forKey: bookID)
+    let entry = entries.removeValue(forKey: bookID)
     lock.unlock()
-    build?.cancel()
+    entry?.task?.cancel()
   }
 
-  private func finished(_ bookID: UUID) {
+  /// A build that ended. It clears the entry's task only while it is still
+  /// the registered one — an evicted (or forgotten, or re-started) build
+  /// says nothing about the build running now.
+  private func finished(_ bookID: UUID, buildID: Int64) {
     lock.lock(); defer { lock.unlock() }
-    builds[bookID] = nil
+    guard var entry = entries[bookID], entry.buildID == buildID else { return }
+    entry.task = nil
+    entry.buildID = 0
+    entries[bookID] = entry
   }
 
-  /// The index for a book, made if there is none — the caller holds the lock.
-  private func locked(_ bookID: UUID) -> HybridRAGIndex {
+  /// The entry for a book, made if there is none, and most-recently-used
+  /// either way — the caller holds the lock.
+  private func locked(_ bookID: UUID) -> Entry {
     order.removeAll { $0 == bookID }
     order.append(bookID)
-    if let index = indexes[bookID] { return index }
-    let index = HybridRAGIndex()
-    indexes[bookID] = index
+    if let entry = entries[bookID] { return entry }
+    let entry = Entry(index: HybridRAGIndex())
+    entries[bookID] = entry
+    return entry
+  }
+
+  /// Everything past the capacity, dropped whole — index and build together.
+  /// The caller holds the lock and cancels what comes back once it has let
+  /// go of it, since cancelling runs other people's code.
+  private func evict() -> [Task<Void, Error>] {
+    var dropped: [Task<Void, Error>] = []
     while order.count > capacity, let oldest = order.first {
       order.removeFirst()
-      indexes[oldest] = nil
+      if let task = entries.removeValue(forKey: oldest)?.task { dropped.append(task) }
     }
-    return index
+    return dropped
   }
 }
 
@@ -399,7 +451,7 @@ extension AndroidLibrary {
     let task = Task { [book, scope, selection, history] in
       defer { registry.finish(handle) }
       do {
-        let index = indexes.index(for: book.id)
+        var index = indexes.index(for: book.id)
         // The index is only worth having for the tier that reads it. A book
         // that fits the provider's whole-book budget rides along entire, and
         // the router never asks for a passage — chunking and embedding it
@@ -412,7 +464,12 @@ extension AndroidLibrary {
           // have started this work when the book opened; then this waits on
           // that task rather than doing it twice.
           box.indexing()
-          try await indexes.build(for: book).value
+          // The index the build is filling, not the one looked up a moment
+          // ago: two other books opening in between would have evicted that
+          // one, and the strategy would then read an index nothing filled.
+          let building = indexes.build(for: book)
+          index = building.index
+          try await building.task.value
         }
         let service = AskService(
           strategy: AdaptiveContextStrategy(index: index, lengths: lengths),
@@ -461,7 +518,7 @@ extension AndroidLibrary {
     guard let book = try? self.book(bookID) else { return }
     guard let provider = (try? providers.manager.activeProvider()) ?? nil else { return }
     guard !routesWholeBook(book, scope: .wholeBook, provider: provider.info) else { return }
-    askIndexes.build(for: book)
+    _ = askIndexes.build(for: book)
   }
 
   /// Whether `AdaptiveContextStrategy` would send the text itself rather than
@@ -469,6 +526,14 @@ extension AndroidLibrary {
   /// provider, and a text that fits `wholeBookBudgetFraction` of the model's
   /// context budget. A scoped question measures only what has been read, and
   /// a reader who has read nothing routes whole-book with nothing in it.
+  ///
+  /// KIT FOLLOW-UP: this is a *copy* of the strategy's own rule, and a change
+  /// to `AdaptiveContextStrategy` that this does not follow shows up as an
+  /// index built for a question that never reads it — or a question that
+  /// waits for no index at all and is answered from an empty one.
+  /// `KitBridgeTest.theRoutingRuleDecidesWhetherTheBookIsIndexed` pins the
+  /// two together from the outside until the kit exposes the decision
+  /// itself, at which point this should call it rather than restate it.
   func routesWholeBook(_ book: Book, scope: ReadingScope, provider: ProviderInfo) -> Bool {
     guard !provider.isLocal else { return false }
     let budget = Int(Double(provider.contextBudget) * Self.wholeBookBudgetFraction)

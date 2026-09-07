@@ -148,9 +148,11 @@ class ProvidersRepository(private val kit: Kit) {
     }
 
     /**
-     * The kit's sentence for an empty state — "Add an API key or use the
-     * model built into this phone to ask questions." — naming only the doors
-     * this build has, on this phone.
+     * The kit's sentence for an empty state: the ways this build can be
+     * connected on THIS phone — an API key, and the phone's own model where
+     * it is one this phone can actually run — joined into one line ending in
+     * [toDo]. It names no door that is not there, so what it says differs
+     * from phone to phone.
      */
     suspend fun setupGuidance(toDo: String): String = withContext(Dispatchers.IO) {
         kit.providers.setupGuidance(toDo)

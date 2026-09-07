@@ -933,11 +933,11 @@ class KitBridgeTest {
      * characters each; this is comfortably past it. Generated rather than
      * bundled — no sample in the repo is that long.
      */
-    private suspend fun longBook(): BookSummary {
+    private suspend fun longBook(paragraphsPerChapter: Int = 140): BookSummary {
         val text = buildString {
             for (chapter in 1..8) {
                 append("# Chapter $chapter\n\n")
-                for (paragraph in 1..140) append("$chapter.$paragraph $WONDERLAND\n\n")
+                for (paragraph in 1..paragraphsPerChapter) append("$chapter.$paragraph $WONDERLAND\n\n")
             }
         }
         val file = File(root, "long.txt").apply { writeText(text) }
@@ -945,6 +945,21 @@ class KitBridgeTest {
             kit.library.importPlainText(file.absolutePath, "Down the Rabbit-Hole").await()
         )
         assertTrue("the test book must not fit the whole-book tier", book.estimatedTokenCount > 120_000)
+        return book
+    }
+
+    /**
+     * A book comfortably inside a provider's whole-book budget, so a question
+     * about it rides the whole text along and never asks for a passage.
+     */
+    private suspend fun shortBook(title: String): BookSummary {
+        val file = File(root, "$title.txt").apply {
+            writeText("# One\n\n$WONDERLAND\n\n# Two\n\n$WONDERLAND\n")
+        }
+        val book = kitJson.decodeFromString<BookSummary>(
+            kit.library.importPlainText(file.absolutePath, title).await()
+        )
+        assertTrue("the short fixture must fit the whole-book tier", book.estimatedTokenCount < 120_000)
         return book
     }
 
@@ -1055,6 +1070,113 @@ class KitBridgeTest {
             withContext(Dispatchers.Default) { delay(5.seconds) }
             assertTrue("a cancelled ask must not complete: $sink", sink.of(RecordingAskSink.COMPLETED).isEmpty())
             assertTrue("a cancelled ask is not a failure: $sink", sink.of(RecordingAskSink.FAILED).isEmpty())
+        }
+    }
+
+    /**
+     * A book indexed ahead of time, pushed out of the index cache, and then
+     * asked about: it is indexed AGAIN rather than answered from an index
+     * nothing filled.
+     *
+     * The cache holds two books. An index and the build filling it are one
+     * entry, so being pushed out takes both; kept apart, the question below
+     * would have awaited the evicted book's build — work that fills an index
+     * no longer reachable — and then assembled its answer from the empty one
+     * that replaced it. An ungrounded answer, with nothing to show that
+     * anything went wrong, which is why the citations are what this asserts.
+     */
+    @Test
+    fun aBookPushedOutOfTheIndexCacheIsIndexedAgainRatherThanAwaitingItsStaleBuild() =
+        runTest(timeout = 5.minutes) {
+            FakeChatServer().use { server ->
+                connect(server)
+                // Long enough that its index takes a moment to build: the
+                // whole point is what happens to a book pushed out WHILE that
+                // build is running.
+                val long = longBook(paragraphsPerChapter = 400)
+                val others = listOf(shortBook("Second"), shortBook("Third"))
+                // The build the reader pays for while they are on page one.
+                kit.library.prepareAsk(long.id, kit.providers)
+
+                // Two more books asked about is two more entries in a cache
+                // that holds two. Short ones, and stopped the moment the
+                // router has reported — the cache entry is all this needs,
+                // and waiting for two whole answers would let the build the
+                // test is racing finish first.
+                for (other in others) {
+                    val sink = RecordingAskSink()
+                    val handle = kit.library.ask(
+                        other.id, "What is this about?",
+                        WHOLE_BOOK_SCOPE, "", "", kit.providers, sink,
+                    )
+                    assertTrue("${other.title} never routed: $sink", sink.await(RecordingAskSink.TIER))
+                    kit.library.cancelAsk(handle)
+                }
+
+                val sink = RecordingAskSink()
+                kit.library.ask(
+                    long.id, "What does Alice follow down the hole?",
+                    WHOLE_BOOK_SCOPE, "", "", kit.providers, sink,
+                )
+                assertTrue("no answer arrived: $sink", sink.await(RecordingAskSink.COMPLETED, timeout = 5.minutes))
+                val citations = kitJson.decodeFromString<List<AskCitation>>(
+                    sink.of(RecordingAskSink.CITATIONS).lastOrNull()?.text ?: "[]"
+                )
+                assertTrue(
+                    "the answer was assembled from an index nothing had filled: $sink",
+                    citations.isNotEmpty(),
+                )
+            }
+        }
+
+    /**
+     * Whether the book is indexed at all follows the routing rule: a text
+     * that fits the provider's whole-book budget rides along entire and is
+     * never chunked, and one that does not is indexed first and says so.
+     *
+     * KIT FOLLOW-UP: `AndroidLibrary.routesWholeBook` is a *copy* of
+     * `AdaptiveContextStrategy`'s rule, and nothing in the kit fails when the
+     * two drift apart — the symptom is an index built for a question that
+     * never reads it, or a question answered from an index nobody built. This
+     * pins the copy from the outside until the kit exposes the decision.
+     *
+     * The two fixtures straddle the ceiling (60% of the budget) rather than
+     * the providers straddling the book: every provider this build offers —
+     * OpenAI, OpenRouter, Anthropic — carries the same 200,000-token router
+     * budget, so the book is the only side of that comparison a test on this
+     * platform can move.
+     */
+    @Test
+    fun theRoutingRuleDecidesWhetherTheBookIsIndexed() = runTest(timeout = TEST_TIMEOUT) {
+        FakeChatServer().use { server ->
+            connect(server)
+            val short = shortBook("Whole")
+            val whole = RecordingAskSink()
+            kit.library.ask(
+                short.id, "What is this about?", WHOLE_BOOK_SCOPE, "", "", kit.providers, whole,
+            )
+            assertTrue("no answer arrived: $whole", whole.await(RecordingAskSink.COMPLETED))
+            assertTrue(
+                "a book that rides along whole routed to retrieval: ${whole.lastTierJSON()}",
+                whole.lastTierJSON().contains("\"tier\":\"wholeBook\""),
+            )
+            assertTrue(
+                "a book the router never retrieves from must not be indexed: $whole",
+                whole.of(RecordingAskSink.INDEXING).isEmpty(),
+            )
+
+            val long = longBook()
+            val retrieved = RecordingAskSink()
+            kit.library.ask(
+                long.id, "What does Alice follow down the hole?",
+                WHOLE_BOOK_SCOPE, "", "", kit.providers, retrieved,
+            )
+            assertTrue("the reader was never told about the wait: $retrieved", retrieved.await(RecordingAskSink.INDEXING))
+            assertTrue("no answer arrived: $retrieved", retrieved.await(RecordingAskSink.COMPLETED))
+            assertTrue(
+                "a book past the budget routed whole: ${retrieved.lastTierJSON()}",
+                retrieved.lastTierJSON().contains("\"tier\":\"retrieval\""),
+            )
         }
     }
 

@@ -208,16 +208,21 @@ class AskRepository(private val kit: Kit) {
 
     /**
      * The answer's Markdown cut into blocks by the kit's own parser, as JSON.
-     * Not suspending: it is called from the composition as an answer streams,
-     * memoised per distinct text, and it neither touches the disk nor the
-     * network — it is a parse.
+     *
+     * Not suspending, because there is nothing to wait for: it touches
+     * neither the disk nor the network — it is a parse, and the only cost is
+     * CPU. It is still a call across the bridge, so the caller makes it once
+     * per finished answer on a worker thread ([AskViewModel] does), never
+     * from a composition and never per streamed delta.
      */
     fun answerBlocksJSON(markdown: String): String = kit.library.answerBlocksJSON(markdown)
 
     /**
-     * The kit's empty-state sentence — "Add an API key or use the model built
-     * into this phone to ask questions." — naming only the doors this build
-     * has, on this phone.
+     * The kit's empty-state sentence: the ways this build can be connected on
+     * THIS phone — an API key, and the phone's own model where it is one this
+     * phone can actually run — joined into one line ending in [toDo]. What it
+     * names therefore differs from phone to phone, which is the point of
+     * asking the facade rather than writing it here.
      */
     suspend fun setupGuidance(toDo: String): String = withContext(Dispatchers.IO) {
         kit.providers.setupGuidance(toDo)

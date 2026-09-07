@@ -137,6 +137,10 @@ class AskSheetTest {
         compose.onNodeWithTag("ask.openProviders").assertIsDisplayed().performClick()
         compose.waitUntil(10_000) { opened }
         assertTrue("nothing to type into until a provider is connected", nodes("ask.field").isEmpty())
+        // The guidance is the facade's sentence, and which doors it names
+        // depends on the phone — but "No AI provider connected" over a blank
+        // line is never one of the answers.
+        assertTrue("the empty state told the reader nothing", textOf("ask.setupGuidance").isNotBlank())
     }
 
     /**
@@ -315,7 +319,13 @@ class AskSheetTest {
             compose.waitUntil(180_000) {
                 compose.onAllNodes(hasText("She falls.", substring = true)).fetchSemanticsNodes().isNotEmpty()
             }
+            // The markers are the kit parser's, and that parse now happens
+            // once the answer is finished rather than on every delta — so the
+            // numbers arrive a moment after the words they belong to.
             for (marker in listOf("1.", "2.")) {
+                compose.waitUntil(60_000) {
+                    compose.onAllNodes(hasText(marker)).fetchSemanticsNodes().isNotEmpty()
+                }
                 assertTrue(
                     "the list lost its $marker marker",
                     compose.onAllNodes(hasText(marker)).fetchSemanticsNodes().isNotEmpty(),
@@ -324,8 +334,50 @@ class AskSheetTest {
         }
     }
 
+    /**
+     * The transcript keeps following the stream after a second question.
+     *
+     * Two effects used to drive that scroll — one on the turn count, one on
+     * the answer's length — and they could race for the list's scroll mutex:
+     * the loser is cancelled with a `MutationInterruptedException`, which
+     * ended the collector for good and left the transcript wherever it
+     * happened to be. One driver now, and a cancelled scroll does not end it.
+     *
+     * The race itself is a matter of which frame two scrolls land in and this
+     * does not force it; what it holds is the behaviour the fix is for — the
+     * newest turn is where the reader is looking, question after question.
+     */
+    @Test
+    fun theTranscriptFollowsTheStreamAfterASecondQuestion() {
+        FakeChatServer(deltas = LONG_DELTAS, gapMillis = 20).use { server ->
+            connect(server)
+            val model = askModel()
+            openSheet(model)
+            awaitTag("ask.suggestion.0")
+            compose.onNodeWithTag("ask.suggestion.0").performClick()
+            // The turn's own flag, not the model's: the model is not streaming
+            // yet in the moment between the question being shown as sent and
+            // the stream starting.
+            compose.waitUntil(180_000) { model.exchanges.size == 1 && !model.exchanges[0].isStreaming }
+
+            compose.onNodeWithTag("ask.field").performTextInput("And then what?")
+            compose.onNodeWithTag("ask.send").performClick()
+            compose.waitUntil(180_000) { model.exchanges.size == 2 && !model.exchanges[1].isStreaming }
+
+            // Not scrolled to: the newest turn has to BE where the reader is
+            // looking, which is the whole point of following the stream down.
+            compose.onNodeWithTag("ask.exchange.2").assertIsDisplayed()
+        }
+    }
+
     private companion object {
         /** This suite's Keystore key, and its own secrets file. */
         const val TEST_ALIAS = "readr.secrets.test"
+
+        /**
+         * An answer taller than the sheet, so a transcript that stopped
+         * following it would leave the newest turn below the fold.
+         */
+        val LONG_DELTAS = (1..30).map { "Sentence $it: she went on falling, and falling, and falling. " }
     }
 }

@@ -20,8 +20,10 @@ import com.readrai.readr.data.AskSelection
 import com.readrai.readr.data.AskTier
 import com.readrai.readr.data.AskTurn
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * The book's Ask conversation, as a view model bound to this composition —
@@ -48,6 +50,22 @@ data class AskCitations(val items: List<AskCitation> = emptyList()) {
     val isEmpty: Boolean get() = items.isEmpty()
 }
 
+/**
+ * One answer's structure, as the kit's Markdown parser cut it — wrapped for
+ * the same reason [AskCitations] is: a bare `List` is not a stable type to
+ * Compose, and an exchange holding one is re-composed on every state write in
+ * the sheet.
+ *
+ * Empty while the answer is still streaming. The parse is a bridge call, so
+ * it happens ONCE, off the main thread, when the answer is finished — until
+ * then the sheet draws the text as paragraphs, which is all a half-written
+ * answer has to show anyway.
+ */
+@Immutable
+data class AnswerBlocks(val items: List<AnswerBlock> = emptyList()) {
+    val isEmpty: Boolean get() = items.isEmpty()
+}
+
 /** One question and the answer streaming into it. */
 @Immutable
 data class AskExchange(
@@ -65,6 +83,11 @@ data class AskExchange(
     /** What the routed tier promises, in the kit's own words. */
     val providesCitations: Boolean? = null,
     val citations: AskCitations = AskCitations(),
+    /**
+     * The finished answer's blocks. Empty while it streams — the sheet draws
+     * paragraphs then — and filled once, off the main thread, when it lands.
+     */
+    val blocks: AnswerBlocks = AnswerBlocks(),
     /**
      * Why this turn has no answer — the kit's sentence, kept ON the exchange
      * so it stays under the question it belongs to. The composer's error card
@@ -187,8 +210,14 @@ class AskViewModel(
     var answersFromBookOnly by mutableStateOf(false)
         private set
 
-    /** The kit's "what to do about it" sentence for the empty state. */
-    var setupGuidance by mutableStateOf("")
+    /**
+     * What to do about having nothing connected. The facade's sentence names
+     * only the doors THIS phone has — a key, and the phone's own model where
+     * it can run one — but the empty state must never be a heading over a
+     * blank line, so it starts on the one door every build has and is
+     * replaced only by a sentence that actually says something.
+     */
+    var setupGuidance by mutableStateOf(DEFAULT_SETUP_GUIDANCE)
         private set
 
     /** The passage this opening pointed the conversation at, or null. */
@@ -244,6 +273,7 @@ class AskViewModel(
         isOpen = true
         refresh()
         loadPosition()
+        parseMissingBlocks()
     }
 
     /**
@@ -261,7 +291,10 @@ class AskViewModel(
             val repo = repository() ?: return@launch
             hasProvider = runCatching { repo.hasProvider() }.getOrDefault(false)
             answersFromBookOnly = runCatching { repo.answersFromBookOnly() }.getOrDefault(false)
-            setupGuidance = runCatching { repo.setupGuidance("ask questions") }.getOrDefault("")
+            runCatching { repo.setupGuidance("ask questions") }
+                .getOrNull()
+                ?.takeIf { it.isNotBlank() }
+                ?.let { setupGuidance = it }
         }
     }
 
@@ -281,6 +314,8 @@ class AskViewModel(
         streamJob = null
         isStreaming = false
         indexing = false
+        // What arrived before the stop is the answer now; the stream's own
+        // `finally` gets the last word on it, including its blocks.
         update(exchanges.lastOrNull()?.id) { it.copy(isStreaming = false) }
     }
 
@@ -295,16 +330,6 @@ class AskViewModel(
         val request = lastRequest ?: return
         val question = lastQuestion ?: return
         streamJob = viewModelScope.launch { run(question, request, replacingLast = true) }
-    }
-
-    /**
-     * The answer's blocks, cut by the kit's own Markdown parser. Memoised by
-     * the caller against the text it was given, so a streamed answer is parsed
-     * once per state write rather than once per composition.
-     */
-    fun blocks(markdown: String): List<AnswerBlock> {
-        val repo = repository ?: return listOf(AnswerBlock.Paragraph(markdown))
-        return AnswerMarkdown.blocks(repo.answerBlocksJSON(markdown), fallback = markdown)
     }
 
     /** Static starters, worded for the scope and the passage. */
@@ -407,6 +432,10 @@ class AskViewModel(
             isStreaming = false
             indexing = false
             update(id) { it.copy(isStreaming = false) }
+            // The answer is whatever arrived — completed, failed part-way, or
+            // stopped by the reader. Whatever it is, it is finished, so it is
+            // parsed now rather than by the composition drawing it.
+            parseBlocks(id)
         }
     }
 
@@ -451,6 +480,46 @@ class AskViewModel(
         }
     }
 
+    /**
+     * Cut a finished answer into the kit's blocks and hang them on the
+     * exchange it belongs to.
+     *
+     * Once, and off the main thread: the parse is a JNI call and a JSON
+     * decode, and the sheet used to make it from composition — on every
+     * delta, on the thread that then had to lay the result out. Composition
+     * now reads what is already on the exchange and never crosses the bridge
+     * at all. The text is checked again on the way back, so an answer that
+     * moved on meanwhile keeps its own blocks.
+     */
+    private fun parseBlocks(id: Long) {
+        val text = conversation.exchanges.firstOrNull { it.id == id }?.answerText ?: return
+        if (text.isBlank()) return
+        viewModelScope.launch {
+            val repo = repository() ?: return@launch
+            // `Default`, not `IO`: the bridge call is a parse — CPU, no disk
+            // and no socket — and it must not sit behind a provider request.
+            val parsed = runCatching {
+                withContext(Dispatchers.Default) {
+                    AnswerMarkdown.blocks(repo.answerBlocksJSON(text), fallback = text)
+                }
+            }.getOrElse { listOf(AnswerBlock.Paragraph(text)) }
+            update(id) { if (it.answerText == text) it.copy(blocks = AnswerBlocks(parsed)) else it }
+        }
+    }
+
+    /**
+     * Blocks for answers that are already in the transcript without them — a
+     * conversation restored on a later opening of the sheet, and an answer
+     * whose stream was cancelled rather than completed.
+     */
+    private fun parseMissingBlocks() {
+        for (exchange in conversation.exchanges) {
+            if (exchange.blocks.isEmpty && !exchange.isStreaming && exchange.answerText.isNotBlank()) {
+                parseBlocks(exchange.id)
+            }
+        }
+    }
+
     private fun update(id: Long?, change: (AskExchange) -> AskExchange) {
         if (id == null) return
         conversation.exchanges = conversation.exchanges.map { if (it.id == id) change(it) else it }
@@ -475,5 +544,13 @@ class AskViewModel(
 
         /** One state write per frame or two, however fast the tokens come. */
         private const val COALESCE_MILLIS = 50L
+
+        /**
+         * The empty state's opening sentence, before the facade has said what
+         * this phone offers. Every build of this app has the key path, so it
+         * is true of all of them; the facade's own sentence replaces it as
+         * soon as it arrives.
+         */
+        const val DEFAULT_SETUP_GUIDANCE = "Add an API key to ask questions."
     }
 }

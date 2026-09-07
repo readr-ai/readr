@@ -14,10 +14,13 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
@@ -231,8 +234,20 @@ fun ReaderScreen(
             if (model.message != null) { delay(MESSAGE_MILLIS); model.clearMessage() }
         }
         if (message != null) {
+            // Above the bottom bar while the chrome is up, and at the foot of
+            // the window when it is down: a message the bar covers is a
+            // message nobody reads. The bar's own height plus the navigation
+            // inset it pads itself by, since the two together are what it
+            // occupies. Over the bar either way, so the fade of one never
+            // draws on top of the other.
+            val navigationInset = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
             Snackbar(
-                Modifier.align(Alignment.BottomCenter).padding(16.dp).testTag("reader.message"),
+                Modifier
+                    .align(Alignment.BottomCenter)
+                    .zIndex(2f)
+                    .padding(16.dp)
+                    .padding(bottom = if (showChrome) bottomBarHeight + navigationInset else 0.dp)
+                    .testTag("reader.message"),
                 containerColor = palette.elevated,
                 contentColor = palette.ink,
             ) { Text(message, style = MaterialTheme.typography.bodyMedium) }
