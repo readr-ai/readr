@@ -8,8 +8,10 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.text.InlineTextContent
 import androidx.compose.material3.Text
+import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.AnnotatedString
@@ -39,6 +41,15 @@ import com.readrai.readr.data.LayoutSpan
 import com.readrai.readr.ui.theme.LocalReadingPalette
 import com.readrai.readr.ui.theme.ReadingPalette
 
+/**
+ * The pictures that have arrived so far, by placeholder id. Deliberately a
+ * composition local and not part of [StyledChapter]: a bitmap landing must
+ * change nothing that was measured — the box on the page is already the size
+ * the header said, and only what is drawn inside it changes — so this must
+ * never reach a [PageKey].
+ */
+val LocalInlineBitmaps = compositionLocalOf<Map<String, ImageBitmap>> { emptyMap() }
+
 /** The appearance fields that change layout. Colour is applied at draw time and never re-paginates. */
 data class LayoutKey(val fontSize: Int, val font: ReaderFont, val spacing: LineSpacing, val justified: Boolean) {
     val lineHeightMultiplier: Float get() = 1.2f + spacing.extraLeading
@@ -55,14 +66,17 @@ data class LayoutKey(val fontSize: Int, val font: ReaderFont, val spacing: LineS
  * `placeholders` and `inlineContent` are the chapter's inline images, and are
  * two halves of one fact: the placeholders are what the text is *measured*
  * with and the map is what fills them when it is *drawn*, so a page can only
- * be the page that was measured if both are used. `links` are the link spans,
- * in chapter offsets, which the page hit-tests a tap against.
+ * be the page that was measured if both are used. `images` are those same
+ * pictures as they were placed, kept so the surface can go and fetch their
+ * bytes once the pages exist. `links` are the link spans, in chapter offsets,
+ * which the page hit-tests a tap against.
  */
 class StyledChapter(
     val text: AnnotatedString,
     val paragraphStarts: IntArray,
     val placeholders: List<AnnotatedString.Range<Placeholder>> = emptyList(),
     val inlineContent: Map<String, InlineTextContent> = emptyMap(),
+    val images: List<InlineImage> = emptyList(),
     val links: List<ChapterLink> = emptyList(),
 ) {
     /** Whether `offset` begins a paragraph. */
@@ -272,6 +286,7 @@ object ChapterStyling {
             paragraphStarts = paragraphStarts,
             placeholders = placed.map { AnnotatedString.Range(it.placeholder, it.utf16Offset, it.utf16Offset + 1) },
             inlineContent = placed.associate { it.id to inlineContent(it) },
+            images = placed,
             links = links,
         )
     }
@@ -282,10 +297,16 @@ object ChapterStyling {
      * a muted serif — a line of the book saying what is missing rather than a
      * blank. An image with neither bytes nor alt text leaves a hairline, so
      * the gap on the page is legible as a gap.
+     *
+     * The bitmap is read from [LocalInlineBitmaps] at draw time, not held on
+     * the image: the box was sized from the archive's header long before the
+     * pixels were decoded, and it does not move when they land. Until they do,
+     * a picture that is coming leaves its box empty rather than flashing the
+     * alt text at it.
      */
     private fun inlineContent(image: InlineImage): InlineTextContent = InlineTextContent(image.placeholder) {
         val palette = LocalReadingPalette.current
-        val bitmap = image.bitmap
+        val bitmap = LocalInlineBitmaps.current[image.id]
         when {
             bitmap != null -> Image(
                 bitmap = bitmap,
@@ -293,6 +314,7 @@ object ChapterStyling {
                 contentScale = ContentScale.Fit,
                 modifier = Modifier.fillMaxSize().testTag("reader.image.${image.utf16Offset}"),
             )
+            image.hasPicture -> Box(Modifier.fillMaxSize().testTag("reader.imagePending.${image.utf16Offset}"))
             image.alt.isNotBlank() -> Box(
                 Modifier.fillMaxSize().testTag("reader.imageAlt.${image.utf16Offset}"),
                 contentAlignment = Alignment.Center,

@@ -98,13 +98,23 @@ class LibraryRepository(private val context: Context, private val kit: Kit) {
     /**
      * The book's retained original, where an inline image's bytes live. Null
      * for a book with no archive behind it (plain text) or one whose original
-     * has gone — the reader draws alt text rather than failing to open.
+     * has gone — the reader draws alt text rather than failing to open. The
+     * path is the facade's, existence-checked there; nothing here knows how
+     * the library lays its directories out.
      */
     suspend fun archive(bookId: String): File? {
-        val name = book(bookId)?.sourceFilename ?: return null
-        return withContext(Dispatchers.IO) {
-            File(File(kit.root, "Books"), name).takeIf { it.isFile }
-        }
+        val path = book(bookId)?.archivePath ?: return null
+        return withContext(Dispatchers.IO) { File(path).takeIf { it.isFile } }
+    }
+
+    /**
+     * The UTF-16 offset a link's fragment names in a chapter, or null when
+     * that chapter lifts no such anchor. One question, one answer: reading it
+     * out of [chapterLayout] would ship every format span in the document
+     * across the bridge to resolve a single id.
+     */
+    suspend fun anchorOffset(bookId: String, index: Int, fragment: String): Int? = withContext(Dispatchers.IO) {
+        kit.library.anchorOffset(bookId, index.toLong(), fragment).takeIf { it >= 0 }?.toInt()
     }
 
     /** The Contents rows: the real table of contents, or the spine when there is none. */

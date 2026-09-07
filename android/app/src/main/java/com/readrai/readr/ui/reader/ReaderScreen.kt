@@ -1,13 +1,11 @@
 package com.readrai.readr.ui.reader
 
-import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.net.Uri
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -24,8 +22,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.List
@@ -41,11 +39,12 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
@@ -57,9 +56,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
@@ -80,11 +79,13 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.zIndex
 import com.readrai.readr.data.ChapterImages
 import com.readrai.readr.data.Footnote
-import com.readrai.readr.data.InlineImage
+import com.readrai.readr.data.Highlight
 import com.readrai.readr.ui.theme.LocalReadingPalette
 import com.readrai.readr.ui.theme.ReadingPalette
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.filterNotNull
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
 import kotlin.math.abs
 
@@ -318,6 +319,50 @@ private class PageGeometry(
     val textOriginPx: (Int) -> Float,
 )
 
+/**
+ * The live selections, one per drawn column: the two pages of a spread, or
+ * the chunks a scroll is drawn in. A selection belongs to the glyphs it was
+ * made on and dies with them, so each column keeps its own — and only ever one
+ * of them is live, because the capsule belongs over the words that were
+ * actually tapped and nowhere else.
+ *
+ * Every slot exists from the start rather than being made when a column first
+ * asks for one: [active] is read while the surface composes, and a slot that
+ * did not exist yet would be a state nothing was watching — the capsule would
+ * never appear, because nothing would recompose when the selection arrived.
+ */
+private class PageSelections(slots: Int) {
+    private val states = List(maxOf(1, slots)) { PageSelectionState() }
+
+    fun of(slot: Int): PageSelectionState = states[slot.coerceIn(states.indices)]
+
+    /** The slot whose selection is live, or null when none is. */
+    val active: Int? get() = states.indexOfFirst { it.isActive }.takeIf { it >= 0 }
+
+    fun clear() = states.forEach { it.clear() }
+}
+
+/**
+ * What the capsule is for: the highlight being edited, or the passage
+ * selected — in chapter offsets, through the page's own `textStart` (never
+ * `rangeStart`; see [Page]). The quote is the kit's own text, so a copied
+ * passage keeps the paragraph breaks the styled string draws as spaces.
+ */
+private fun annotationTarget(
+    page: Page,
+    chapterIndex: Int,
+    chapterText: String?,
+    selection: PageSelectionState,
+    edited: Highlight?,
+): AnnotationTarget? {
+    if (edited != null) return AnnotationTarget.Existing(edited)
+    val range = selection.range?.takeIf { !it.collapsed } ?: return null
+    if (chapterText == null) return null
+    val start = (page.textStart + range.min).coerceIn(0, chapterText.length)
+    val end = (page.textStart + range.max).coerceIn(start, chapterText.length)
+    return AnnotationTarget.Selected(chapterIndex, start, end, chapterText.substring(start, end))
+}
+
 @Composable
 private fun PageSurface(
     model: ReaderViewModel,
@@ -347,6 +392,7 @@ private fun PageSurface(
         // preference itself is left alone (see `PageLayout.on`).
         val layout = appearance.layout.on(wide)
         val columns = layout.pagesPerSpread
+        val scrolling = layout == PageLayout.Scroll
         val layoutKey = LayoutKey(appearance)
         val textStyle = remember(layoutKey, palette) { ChapterStyling.pageTextStyle(layoutKey, palette) }
 
@@ -367,7 +413,7 @@ private fun PageSurface(
                 pageHeightPx = maxOf(
                     1,
                     maxHeight.roundToPx() - insets.top.roundToPx() - insets.bottom.roundToPx() -
-                        labelBand.roundToPx() - kickerBand.roundToPx() - 4.dp.roundToPx(),
+                        labelBand.roundToPx() - kickerBand.roundToPx() - ChapterImages.pageMargin.roundToPx(),
                 ),
                 columnWidth = columnWidth,
                 blockWidth = blockPx.toDp(),
@@ -377,63 +423,98 @@ private fun PageSurface(
         val textWidthPx = geometry.textWidthPx
         val pageHeightPx = geometry.pageHeightPx
         val surfaceWidthPx = with(density) { maxWidth.toPx() }
+        // How tall a picture may be drawn. On a cut page that is the page; in
+        // a scroll it is the surface with the chrome *down*, so showing and
+        // hiding the bar cannot resize a plate — and so cannot re-measure a
+        // chapter that has one.
+        val imageCeilingPx = if (scrolling) pageHeightPx + with(density) { chromeInset.roundToPx() } else pageHeightPx
+        val fallbackLineHeightPx = with(density) { (appearance.fontSize * layoutKey.lineHeightMultiplier).sp.toPx() }
 
-        // The chapter's pictures, read and sized before anything is measured:
-        // an image changes where the lines fall, so a pagination computed
-        // without them would be thrown away the moment they arrived. Null
-        // means "not resolved yet", which is what holds the pagination back.
-        val artwork by produceState<List<InlineImage>?>(null, chapter, textWidthPx, pageHeightPx, density) {
-            val loaded = chapter
-            if (loaded == null) { value = null; return@produceState }
-            value = if (loaded.images.isEmpty()) emptyList() else ChapterImages.place(
-                archive = model.archive,
-                bookId = model.bookId,
-                images = loaded.images,
-                density = density,
-                textWidthPx = textWidthPx,
-                pageHeightPx = pageHeightPx,
-                fallbackLineHeightPx = with(density) { (appearance.fontSize * layoutKey.lineHeightMultiplier).sp.toPx() },
+        // One producer for the whole shape of the chapter: the pictures are
+        // placed and the text is measured together, off the main thread,
+        // because an image decides where the lines fall — a pagination built
+        // without them would be thrown away the moment they arrived, and a
+        // pagination cached under a key that did not name them could come back
+        // beside a different set of pictures. Everything it depends on is in
+        // the key; null means "not resolved yet", and nothing is drawn from a
+        // set that was measured for a window that has gone.
+        val pageKey = chapter?.let {
+            PageKey(
+                chapterIndex = it.index,
+                widthPx = textWidthPx,
+                // A scroll fills no page, so its shape must not name a page
+                // height: the bar comes and goes all day and re-measuring a
+                // chapter each time it does would be the cost of a tap.
+                heightPx = if (scrolling) 0 else pageHeightPx,
+                imageCeilingPx = imageCeilingPx,
+                density = density.density,
+                fontScale = density.fontScale,
+                layout = layoutKey,
             )
         }
-
-        val pageKey = chapter?.let { PageKey(it.index, textWidthPx, pageHeightPx, density.density, density.fontScale, layoutKey) }
-        val pageSet by produceState<PageSet?>(initialValue = null, chapter, pageKey, artwork) {
+        val pageSet by produceState<PageSet?>(initialValue = null, chapter, pageKey) {
             val loaded = chapter
             val key = pageKey
-            val images = artwork
-            if (loaded == null || key == null || images == null) { value = null; return@produceState }
+            value = null
+            if (loaded == null || key == null) return@produceState
             // Measurement ignores colour, so the theme is not part of the key.
             val measureStyle = textStyle
             value = withContext(Dispatchers.Default) {
                 model.pageSet(key) {
+                    val images = ChapterImages.place(
+                        archive = model.archive,
+                        bookId = model.bookId,
+                        images = loaded.images,
+                        density = density,
+                        textWidthPx = key.widthPx,
+                        pageHeightPx = key.imageCeilingPx,
+                        fallbackLineHeightPx = fallbackLineHeightPx,
+                    )
                     val styled = ChapterStyling.styled(loaded.text, loaded.layout.spans, layoutKey, images)
-                    val measurer = TextMeasurer(fontFamilyResolver, density, layoutDirection, cacheSize = 0)
-                    PageSet(loaded.index, styled, Pagination(LayoutPaginator.paginate(styled, measureStyle, textWidthPx, pageHeightPx, measurer)))
+                    val pages = if (key.heightPx <= 0) {
+                        // A scroll cuts no pages: the chapter is drawn in
+                        // measurement-sized chunks and nothing is laid out
+                        // twice to find out where a page would have ended.
+                        LayoutPaginator.chunks(styled)
+                    } else {
+                        val measurer = TextMeasurer(fontFamilyResolver, density, layoutDirection, cacheSize = 0)
+                        LayoutPaginator.paginate(styled, measureStyle, key.widthPx, key.heightPx, measurer)
+                    }
+                    PageSet(loaded.index, styled, Pagination(pages))
                 }
             }
         }
         val set = pageSet
-        LaunchedEffect(set) { if (set != null) model.settle(set.pagination) }
+        LaunchedEffect(set, scrolling) {
+            val laid = set ?: return@LaunchedEffect
+            if (scrolling) model.settleAtChapterEnd() else model.settle(laid.pagination)
+        }
 
+        // The pictures themselves, decoded after the pages were measured and
+        // drawn, and kept out of the key on purpose: a bitmap landing fills a
+        // box that is already exactly the size the archive's header said it
+        // would be, so no line moves and nothing re-measures.
+        val artwork = remember(set) { mutableStateMapOf<String, ImageBitmap>() }
+        LaunchedEffect(set) {
+            val styled = set?.styled ?: return@LaunchedEffect
+            ChapterImages.load(model.archive, model.bookId, styled.images, textWidthPx) { id, bitmap ->
+                artwork[id] = bitmap
+            }
+        }
+
+        // In a paged layout these are the cut pages; in a scroll they are the
+        // chunks it is drawn in. Either way every offset on one is a chapter
+        // offset through its own `textStart`.
         val pages = set?.pagination?.pages ?: emptyList()
         // The place is the anchor; the page it falls on is derived here, every
         // time, so a re-pagination (an appearance change, the chrome, a
         // rotation) never moves the reader. A spread starts on an even index,
         // as `Paginator.spreadStart` does.
         val pageIndex = set?.pagination?.pageIndex(model.anchor) ?: 0
-        val spreadStart = if (layout == PageLayout.DoublePage) pageIndex - pageIndex % 2 else pageIndex
-        val scrolling = layout == PageLayout.Scroll
-
-        // The scroll layout is one page: the whole chapter, at the same column
-        // width and in the same styled string, so every offset on it is a
-        // chapter offset (textStart is 0) and highlights, links and the
-        // capsule work exactly as they do on a cut page.
-        val scroll = rememberScrollState()
-        val wholeChapter = remember(set) {
-            val styled = set?.styled ?: return@remember null
-            val length = styled.text.length
-            if (length == 0) null
-            else Page(0, length, 0, length, set.pagination.wordsRemaining.firstOrNull() ?: 0)
+        val spreadStart = when {
+            scrolling -> 0
+            layout == PageLayout.DoublePage -> pageIndex - pageIndex % 2
+            else -> pageIndex
         }
 
         // The bar bookmarks what is on screen, so it has to know which pages
@@ -463,343 +544,385 @@ private fun PageSurface(
         // Selecting on the page: the selection and the capsule belong to the
         // glyphs on screen, so a turn or a re-pagination drops them. Each
         // column has its own — two pages are two texts, each with its own
-        // layout — and only one of them is ever live.
-        val selections = remember { List(2) { PageSelectionState() } }
-        var editedId by remember { mutableStateOf<String?>(null) }
+        // layout, and a scroll's chunks are as many again — and only one of
+        // them is ever live.
+        val slotCount = maxOf(2, if (scrolling) pages.size else columns)
+        val selections = remember(slotCount) { PageSelections(slotCount) }
+        // Which column the capsule was opened in, and on what: a highlight
+        // tapped on the left-hand page is not a highlight on the right-hand
+        // one, even where the same passage runs across both.
+        var edited by remember { mutableStateOf<Pair<Int, String>?>(null) }
         // A tapped link: a note shown in place, or a question before the book
         // hands the reader to another app. Both belong to the page, not to the
         // book, so a turn or a jump leaves them behind.
         var footnote by remember { mutableStateOf<Footnote?>(null) }
-        var externalLink by remember { mutableStateOf<String?>(null) }
-        LaunchedEffect(set, spreadStart) { selections.forEach { it.clear() }; editedId = null }
-        val annotating = { selections.any { it.isActive } || editedId != null }
-        val dismiss = { selections.forEach { it.clear() }; editedId = null }
+        var externalLink by remember { mutableStateOf<Pair<ExternalLinkPrompt, String>?>(null) }
+        // A scroll has no turns to drop a selection on, and its anchor moves
+        // with every finger: only a new set clears one there.
+        LaunchedEffect(set, spreadStart) { selections.clear(); edited = null }
+        val annotating = { selections.active != null || edited != null }
+        val dismiss = { selections.clear(); edited = null }
+        val annotatedSlot = edited?.first ?: selections.active
 
         // MARK: the scroll layout's place. The anchor is the offset of the
-        // first fully visible line, and a jump (Contents, search, a bookmark)
-        // is the same thing read the other way round: scroll so that line is
-        // at the top. `reported` keeps the two apart — an anchor this surface
-        // put there is not a jump to obey.
+        // first line wholly on screen, and a jump (Contents, search, a
+        // bookmark) is the same thing read the other way round: scroll until
+        // that line is at the top. `reported` keeps the two apart — an anchor
+        // this surface put there is not a jump to obey.
+        val lazyScroll = rememberLazyListState()
         var reported by remember(set) { mutableStateOf<Int?>(null) }
+        var shown by remember(set) { mutableStateOf<Page?>(null) }
         var restored by remember(set) { mutableStateOf(false) }
-        // How far into the scrolling content the chapter text begins: the
-        // "Previous chapter" button sits above it, so the line the reader
-        // asked for is that much further down.
-        var textTopPx by remember(set) { mutableIntStateOf(0) }
-        // Read only in a scroll: on a cut page the layout is the selection's
-        // business alone, and reading it here would recompose the surface
-        // every time a page is drawn.
-        val scrollLayout = if (scrolling) selections[0].layout else null
-        // What the scroll is showing, told to the bar (which bookmarks it) and
-        // answered back as the offset the place should now be.
-        val reportScrollPlace = { result: TextLayoutResult, chapterIndex: Int ->
-            val top = (scroll.value - textTopPx).toFloat()
-            val first = firstLineFrom(result, top)
-            val last = firstLineFrom(result, top + scroll.viewportSize).coerceAtLeast(first)
-            val start = result.getLineStart(first)
-            val end = maxOf(start, result.getLineEnd(last, visibleEnd = false))
-            model.showing(chapterIndex, Page(start, end, start, end, 0))
-            start
+        // The "Previous chapter" button is a row of the list too, so the chunk
+        // at list index n is chunk n − this.
+        val chunkOffset = if (model.neighbour(-1) != null) 1 else 0
+
+        LaunchedEffect(set, scrolling) {
+            val laid = set ?: return@LaunchedEffect
+            if (!scrolling || laid.pagination.pages.isEmpty()) return@LaunchedEffect
+            snapshotFlow { model.anchor }.collect { anchor ->
+                if (anchor == reported) return@collect
+                val index = laid.pagination.pageIndex(anchor)
+                val chunk = laid.pagination.pages[index]
+                lazyScroll.scrollToItem(chunkOffset + index)
+                // A chunk has no layout until it has been composed, and it is
+                // the layout that says which line the anchor is on.
+                val result = snapshotFlow { selections.of(index).layout }.filterNotNull().first()
+                val length = result.layoutInput.text.length
+                val local = (anchor - chunk.textStart).coerceIn(0, maxOf(0, length - 1))
+                reported = anchor
+                restored = true
+                lazyScroll.scrollToItem(chunkOffset + index, result.getLineTop(result.getLineForOffset(local)).toInt())
+            }
         }
-        LaunchedEffect(scrollLayout, textTopPx, model.anchor) {
-            val result = scrollLayout ?: return@LaunchedEffect
-            val chapterIndex = set?.chapterIndex ?: return@LaunchedEffect
-            if (model.anchor == reported) return@LaunchedEffect
-            val length = result.layoutInput.text.length
-            val line = result.getLineForOffset(model.anchor.coerceIn(0, maxOf(0, length - 1)))
-            reported = model.anchor
-            restored = true
-            scroll.scrollTo(textTopPx + result.getLineTop(line).toInt())
-            reportScrollPlace(result, chapterIndex)
-        }
-        LaunchedEffect(scrollLayout, textTopPx, set) {
-            val result = scrollLayout ?: return@LaunchedEffect
-            val chapterIndex = set?.chapterIndex ?: return@LaunchedEffect
-            snapshotFlow { scroll.value }.collect {
-                // Nothing is read from the scroll until the saved place has been
-                // scrolled to: the position it starts at is not where the reader is.
+
+        LaunchedEffect(set, scrolling) {
+            val laid = set ?: return@LaunchedEffect
+            if (!scrolling || laid.pagination.pages.isEmpty()) return@LaunchedEffect
+            snapshotFlow { lazyScroll.layoutInfo }.collect { info ->
+                // Nothing is read from the scroll until the saved place has
+                // been scrolled to: where it opens is not where the reader is.
                 if (!restored) return@collect
-                val offset = reportScrollPlace(result, chapterIndex)
-                if (offset != model.anchor) {
-                    reported = offset
-                    model.turned(offset)
+                val visible = info.visibleItemsInfo.firstOrNull { it.key is Int } ?: return@collect
+                val index = visible.key as Int
+                val chunk = laid.pagination.pages.getOrNull(index) ?: return@collect
+                val result = selections.of(index).layout ?: return@collect
+                val top = maxOf(0f, (info.viewportStartOffset - visible.offset).toFloat())
+                val firstLine = firstLineFrom(result, top)
+                val lastLine = firstLineFrom(result, top + (info.viewportEndOffset - info.viewportStartOffset))
+                    .coerceAtLeast(firstLine)
+                val start = chunk.textStart + result.getLineStart(firstLine)
+                val end = chunk.textStart + maxOf(result.getLineStart(firstLine), result.getLineEnd(lastLine, visibleEnd = false))
+                val page = Page(start, end, start, end, 0)
+                // This fires on every frame of a scroll, and both the bar and
+                // the saved place recompose on a report: only a change is one.
+                if (page != shown) {
+                    shown = page
+                    model.showing(laid.chapterIndex, page)
+                }
+                if (start != model.anchor) {
+                    reported = start
+                    model.turned(start)
                 }
             }
         }
 
-        Box(
-            Modifier
-                .fillMaxSize()
-                .testTag("reader.surface")
-                .pointerInput(set, scrolling) {
-                    detectTapGestures { offset ->
+        // One drawn stretch of chapter text — a cut page, or a chunk of the
+        // scroll. Both are `Page`s in chapter offsets, so everything written
+        // here works either way: selection, highlights, links and the capsule.
+        val readingText: @Composable (PageSet, Page, Int, Int) -> Unit = { laid, page, slot, column ->
+            // Everything below belongs to the chapter the *pages* came from;
+            // `model.chapterIndex` may already be the next one.
+            val chapterIndex = laid.chapterIndex
+            val selection = selections.of(slot)
+            val onPage = model.highlights.filter {
+                it.chapterIndex == chapterIndex && it.utf16Start < page.textEnd && it.utf16End > page.textStart
+            }
+            val content = remember(laid, page, palette, onPage) {
+                ChapterStyling.pageText(laid.styled, page.textStart, page.textEnd, palette, onPage)
+            }
+            val textOriginPx = geometry.textOriginPx(column)
+            Text(
+                text = content,
+                style = textStyle,
+                softWrap = true,
+                overflow = TextOverflow.Clip,
+                // What was measured is what is drawn: the same pictures, at
+                // the same sizes, in the same places.
+                inlineContent = laid.styled.inlineContent,
+                onTextLayout = { selection.layout = it },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag(if (column == 0) "reader.page" else "reader.page.facing")
+                    .pageSelection(
+                        key = listOf(laid, page, palette, onPage),
+                        state = selection,
+                        palette = palette,
+                    ) { pageOffset, position ->
+                        // A tap follows the link under the finger, puts the capsule away, or
+                        // opens it on the highlight under the finger; anything else is left to
+                        // the page-turn zones behind. A link claims the whole surface — it is a
+                        // control the author put there, and a reader who aims at one means it —
+                        // while a highlight only claims the middle half of the *surface*: in its
+                        // outer quarters the reader is turning the page, whatever happens to be
+                        // marked there. (A scroll has no turn zones, so a mark is a mark
+                        // wherever it lies.) A tap that landed on no glyph claims nothing at all.
+                        val offset = if (pageOffset == NO_CHARACTER) NO_CHARACTER else page.textStart + pageOffset
+                        val link = if (offset == NO_CHARACTER) null else laid.styled.linkAt(offset)
                         when {
-                            // While the capsule is up, a tap anywhere else puts it away.
-                            annotating() -> dismiss()
-                            // A scroll has no page edges: every clean tap is the chrome.
-                            scrolling -> onChromeToggle()
-                            offset.x < size.width * 0.25f -> turn(-1)
-                            offset.x > size.width * 0.75f -> turn(1)
-                            else -> onChromeToggle()
-                        }
-                    }
-                }
-                .pointerInput(set, scrolling) {
-                    if (scrolling) return@pointerInput
-                    var dragged = 0f
-                    detectHorizontalDragGestures(
-                        onDragStart = { dragged = 0f },
-                        onDragEnd = {
-                            // A swipe with a selection or a capsule up puts it away
-                            // rather than turning the page out from under it.
-                            if (abs(dragged) > swipeDistancePx) {
-                                if (annotating()) dismiss() else turn(if (dragged < 0) 1 else -1)
+                            link != null -> {
+                                dismiss()
+                                val url = link.url
+                                if (url != null) {
+                                    val prompt = externalLinkPrompt(url)
+                                    if (prompt == null) model.report(UNOPENABLE_LINK_MESSAGE)
+                                    else externalLink = prompt to url
+                                } else {
+                                    model.followLink(link.path, link.fragment) { note -> footnote = note }
+                                }
+                                true
                             }
-                        },
-                        onDragCancel = { dragged = 0f },
-                    ) { _, amount -> dragged += amount }
-                },
-        ) {
-            Row(Modifier.width(geometry.blockWidth).fillMaxHeight().align(Alignment.TopCenter)) {
-                for (column in 0 until columns) {
-                    if (column > 0) {
-                        // The gutter, and — when the last spread has one page —
-                        // an empty facing page behind it, so the spine stays
-                        // where the book's spine is: in the middle.
-                        Box(Modifier.width(spineWidth).fillMaxHeight().background(palette.line.copy(alpha = 0.5f)))
-                    }
-                    Column(
-                        Modifier
-                            .width(geometry.columnWidth)
-                            .fillMaxHeight()
-                            .padding(
-                                top = insets.top,
-                                bottom = insets.bottom + labelBand,
-                                start = insets.leading,
-                                end = insets.trailing,
-                            ),
-                    ) {
-                        val chapterTitle = ready.chapters.getOrNull(model.chapterIndex)?.title ?: ""
-                        Box(Modifier.height(kickerBand).fillMaxWidth(), contentAlignment = Alignment.CenterStart) {
-                            // The band is reserved on every page — it is in the
-                            // measured height — but the running head is drawn
-                            // once per spread, on the page it opens on.
-                            if (column == 0) {
-                                Text(
-                                    chapterTitle.uppercase(),
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = palette.muted,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                    modifier = Modifier.testTag("reader.kicker").semantics { contentDescription = chapterTitle },
-                                )
+                            annotating() -> { dismiss(); true }
+                            offset == NO_CHARACTER -> false
+                            !scrolling &&
+                                abs(textOriginPx + position.x - surfaceWidthPx / 2f) >= surfaceWidthPx * 0.25f -> false
+                            else -> {
+                                val hit = onPage.firstOrNull { offset >= it.utf16Start && offset < it.utf16End }
+                                if (hit != null) { edited = slot to hit.id; true } else false
                             }
                         }
-                        Box(Modifier.weight(1f).fillMaxWidth()) {
-                            val error = model.chapterError
-                            val page = if (scrolling) wholeChapter else pages.getOrNull(spreadStart + column)
+                    },
+            )
+        }
+
+        CompositionLocalProvider(LocalInlineBitmaps provides artwork) {
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .testTag("reader.surface")
+                    .pointerInput(set, scrolling) {
+                        detectTapGestures { offset ->
                             when {
-                                error != null -> if (column == 0) {
-                                    Text(error, style = MaterialTheme.typography.bodyMedium, color = palette.ink, modifier = Modifier.testTag("reader.error"))
+                                // While the capsule is up, a tap anywhere else puts it away.
+                                annotating() -> dismiss()
+                                // A scroll has no page edges: every clean tap is the chrome.
+                                scrolling -> onChromeToggle()
+                                offset.x < size.width * 0.25f -> turn(-1)
+                                offset.x > size.width * 0.75f -> turn(1)
+                                else -> onChromeToggle()
+                            }
+                        }
+                    }
+                    .pointerInput(set, scrolling) {
+                        if (scrolling) return@pointerInput
+                        var dragged = 0f
+                        detectHorizontalDragGestures(
+                            onDragStart = { dragged = 0f },
+                            onDragEnd = {
+                                // A swipe with a selection or a capsule up puts it away
+                                // rather than turning the page out from under it.
+                                if (abs(dragged) > swipeDistancePx) {
+                                    if (annotating()) dismiss() else turn(if (dragged < 0) 1 else -1)
                                 }
-                                set == null -> if (column == 0) {
-                                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator(color = palette.muted) }
+                            },
+                            onDragCancel = { dragged = 0f },
+                        ) { _, amount -> dragged += amount }
+                    },
+            ) {
+                Row(Modifier.width(geometry.blockWidth).fillMaxHeight().align(Alignment.TopCenter)) {
+                    for (column in 0 until columns) {
+                        if (column > 0) {
+                            // The gutter, and — when the last spread has one page —
+                            // an empty facing page behind it, so the spine stays
+                            // where the book's spine is: in the middle.
+                            Box(Modifier.width(spineWidth).fillMaxHeight().background(palette.line.copy(alpha = 0.5f)))
+                        }
+                        Column(
+                            Modifier
+                                .width(geometry.columnWidth)
+                                .fillMaxHeight()
+                                .padding(
+                                    top = insets.top,
+                                    bottom = insets.bottom + labelBand,
+                                    start = insets.leading,
+                                    end = insets.trailing,
+                                ),
+                        ) {
+                            val chapterTitle = ready.chapters.getOrNull(model.chapterIndex)?.title ?: ""
+                            Box(Modifier.height(kickerBand).fillMaxWidth(), contentAlignment = Alignment.CenterStart) {
+                                // The band is reserved on every page — it is in the
+                                // measured height — but the running head is drawn
+                                // once per spread, on the page it opens on.
+                                if (column == 0) {
+                                    Text(
+                                        chapterTitle.uppercase(),
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = palette.muted,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier.testTag("reader.kicker").semantics { contentDescription = chapterTitle },
+                                    )
                                 }
-                                page != null -> {
-                                    // Everything below belongs to the chapter the *pages* came
-                                    // from; `model.chapterIndex` may already be the next one.
-                                    val chapterIndex = set.chapterIndex
-                                    val selection = selections[column]
-                                    val onPage = model.highlights.filter {
-                                        it.chapterIndex == chapterIndex && it.utf16Start < page.textEnd && it.utf16End > page.textStart
+                            }
+                            Box(Modifier.weight(1f).fillMaxWidth()) {
+                                val error = model.chapterError
+                                val page = if (scrolling) null else pages.getOrNull(spreadStart + column)
+                                when {
+                                    error != null -> if (column == 0) {
+                                        Text(error, style = MaterialTheme.typography.bodyMedium, color = palette.ink, modifier = Modifier.testTag("reader.error"))
                                     }
-                                    val content = remember(set, page, palette, onPage) {
-                                        ChapterStyling.pageText(set.styled, page.textStart, page.textEnd, palette, onPage)
+                                    set == null -> if (column == 0) {
+                                        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator(color = palette.muted) }
                                     }
-                                    // The quote is the kit's own text: the styled string draws
-                                    // every newline as a space, and a copied passage keeps its
-                                    // paragraph breaks.
-                                    val chapterText = chapter?.takeIf { it.index == chapterIndex }?.text
-                                    // A noteref opens in place only when the note it names was
-                                    // lifted out of *this* chapter; anything else is navigation.
-                                    val chapterFootnotes = chapter?.takeIf { it.index == chapterIndex }?.footnotes.orEmpty()
-                                    val edited = editedId?.let { id -> onPage.firstOrNull { it.id == id } }
-                                    val range = selection.range
-                                    val target: AnnotationTarget? = when {
-                                        edited != null -> AnnotationTarget.Existing(edited)
-                                        range != null && !range.collapsed && chapterText != null -> {
-                                            val start = (page.textStart + range.min).coerceIn(0, chapterText.length)
-                                            val end = (page.textStart + range.max).coerceIn(start, chapterText.length)
-                                            AnnotationTarget.Selected(
-                                                chapterIndex = chapterIndex,
-                                                utf16Start = start,
-                                                utf16End = end,
-                                                quotedText = chapterText.substring(start, end),
-                                            )
-                                        }
-                                        else -> null
-                                    }
-                                    val textOriginPx = geometry.textOriginPx(column)
-                                    val reading: @Composable () -> Unit = {
-                                        Text(
-                                            text = content,
-                                            style = textStyle,
-                                            softWrap = true,
-                                            overflow = TextOverflow.Clip,
-                                            // What was measured is what is drawn: the same
-                                            // pictures, at the same sizes, in the same places.
-                                            inlineContent = set.styled.inlineContent,
-                                            onTextLayout = { selection.layout = it },
-                                            modifier = Modifier
-                                                .fillMaxWidth()
-                                                .testTag(if (column == 0) "reader.page" else "reader.page.facing")
-                                                .pageSelection(
-                                                    key = listOf(set, page, palette, onPage),
-                                                    state = selection,
-                                                    palette = palette,
-                                                ) { pageOffset, position ->
-                                                    // A tap follows the link under the finger, puts the capsule away, or
-                                                    // opens it on the highlight under the finger; anything else is left to
-                                                    // the page-turn zones behind. A link claims the whole surface — it is a
-                                                    // control the author put there, and a reader who aims at one means it —
-                                                    // while a highlight only claims the middle half of the *surface*: in its
-                                                    // outer quarters the reader is turning the page, whatever happens to be
-                                                    // marked there. (A scroll has no turn zones, so a mark is a mark
-                                                    // wherever it lies.)
-                                                    val offset = page.textStart + pageOffset
-                                                    val link = set.styled.linkAt(offset)
-                                                    if (link != null) {
-                                                        dismiss()
-                                                        when {
-                                                            link.url != null -> externalLink = link.url
-                                                            link.path != null -> {
-                                                                val note = link.fragment?.let { id ->
-                                                                    chapterFootnotes.firstOrNull { it.id == id }
-                                                                }
-                                                                if (note != null) footnote = note
-                                                                else model.followInternalLink(link.path, link.fragment)
-                                                            }
-                                                        }
-                                                        true
-                                                    } else if (target != null) {
-                                                        dismiss()
-                                                        true
-                                                    } else if (!scrolling &&
-                                                        abs(textOriginPx + position.x - surfaceWidthPx / 2f) >= surfaceWidthPx * 0.25f
-                                                    ) {
-                                                        false
-                                                    } else {
-                                                        val hit = onPage.firstOrNull { offset >= it.utf16Start && offset < it.utf16End }
-                                                        if (hit != null) { editedId = hit.id; true } else false
-                                                    }
-                                                },
-                                        )
-                                    }
-                                    if (scrolling) {
-                                        Column(Modifier.fillMaxSize().verticalScroll(scroll).testTag("reader.scroll")) {
-                                            // The chapter's ends are where the book carries on:
-                                            // the previous chapter above the first line, the next
-                                            // one below the last.
-                                            Box(Modifier.fillMaxWidth().onSizeChanged { textTopPx = it.height }) {
-                                                if (model.neighbour(-1) != null) {
-                                                    ChapterStep("Previous chapter", palette, tag = "reader.previousChapter") { model.overflow(-1) }
-                                                }
+                                    // A scroll is one column of chunks, each drawn by
+                                    // the same composable a cut page is drawn by. The
+                                    // chapter's ends are where the book carries on:
+                                    // the previous chapter above the first line, the
+                                    // next one below the last.
+                                    scrolling -> LazyColumn(
+                                        state = lazyScroll,
+                                        modifier = Modifier.fillMaxSize().testTag("reader.scroll"),
+                                    ) {
+                                        if (chunkOffset > 0) {
+                                            item(key = "previous") {
+                                                ChapterStep("Previous chapter", palette, tag = "reader.previousChapter") { model.overflow(-1) }
                                             }
-                                            reading()
-                                            if (model.neighbour(1) != null) {
+                                        }
+                                        items(pages.size, key = { it }) { index ->
+                                            readingText(set, pages[index], index, 0)
+                                        }
+                                        if (model.neighbour(1) != null) {
+                                            item(key = "next") {
                                                 ChapterStep("Next chapter", palette, tag = "reader.nextChapter") { model.overflow(1) }
                                             }
                                         }
-                                    } else {
-                                        reading()
                                     }
-                                    if (target != null) {
-                                        AnnotationCapsule(
-                                            target = target,
-                                            palette = palette,
-                                            onHighlight = { color ->
-                                                when (target) {
-                                                    is AnnotationTarget.Existing -> model.recolor(target.highlight.id, color)
-                                                    is AnnotationTarget.Selected -> {
-                                                        model.addHighlight(target.chapterIndex, target.utf16Start, target.utf16End, color)
-                                                        dismiss()
-                                                    }
+                                    page != null -> readingText(set, page, column, column)
+                                }
+
+                                // The capsule belongs over the column the annotation was
+                                // made in — one capsule per tap, however many columns are
+                                // drawn — and at the bottom of what the reader can see,
+                                // which in a scroll is this box rather than any one chunk.
+                                val capsulePage = if (set == null || annotatedSlot == null) null else if (scrolling) {
+                                    pages.getOrNull(annotatedSlot).takeIf { column == 0 }
+                                } else if (annotatedSlot == column) {
+                                    pages.getOrNull(spreadStart + column)
+                                } else {
+                                    null
+                                }
+                                val target = if (set == null || annotatedSlot == null || capsulePage == null) null else {
+                                    annotationTarget(
+                                        page = capsulePage,
+                                        chapterIndex = set.chapterIndex,
+                                        chapterText = chapter?.takeIf { it.index == set.chapterIndex }?.text,
+                                        selection = selections.of(annotatedSlot),
+                                        edited = edited?.let { (_, id) -> model.highlights.firstOrNull { it.id == id } },
+                                    )
+                                }
+                                if (target != null) {
+                                    AnnotationCapsule(
+                                        target = target,
+                                        palette = palette,
+                                        onHighlight = { color ->
+                                            when (target) {
+                                                is AnnotationTarget.Existing -> model.recolor(target.highlight.id, color)
+                                                is AnnotationTarget.Selected -> {
+                                                    model.addHighlight(target.chapterIndex, target.utf16Start, target.utf16End, color)
+                                                    dismiss()
                                                 }
-                                                settings.rememberHighlightColor(color)
-                                            },
-                                            onCopy = { clipboard.setText(AnnotatedString(target.quotedText)); dismiss() },
-                                            onNote = { noted ->
-                                                when (noted) {
-                                                    // A note needs a highlight to live on: make one in the
-                                                    // colour last used, and the editor opens on it.
-                                                    is AnnotationTarget.Selected ->
-                                                        model.noteOnSelection(noted.chapterIndex, noted.utf16Start, noted.utf16End, lastColor)
-                                                    is AnnotationTarget.Existing -> model.noteOnHighlight(noted.highlight)
-                                                }
-                                                dismiss()
-                                            },
-                                            modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 4.dp),
-                                            onRemove = (target as? AnnotationTarget.Existing)?.let { existing ->
-                                                { model.removeHighlight(existing.highlight.id) ; dismiss() }
-                                            },
-                                        )
-                                    }
+                                            }
+                                            settings.rememberHighlightColor(color)
+                                        },
+                                        onCopy = { clipboard.setText(AnnotatedString(target.quotedText)); dismiss() },
+                                        onNote = { noted ->
+                                            when (noted) {
+                                                // A note needs a highlight to live on: make one in the
+                                                // colour last used, and the editor opens on it.
+                                                is AnnotationTarget.Selected ->
+                                                    model.noteOnSelection(noted.chapterIndex, noted.utf16Start, noted.utf16End, lastColor)
+                                                is AnnotationTarget.Existing -> model.noteOnHighlight(noted.highlight)
+                                            }
+                                            dismiss()
+                                        },
+                                        modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 4.dp),
+                                        onRemove = (target as? AnnotationTarget.Existing)?.let { existing ->
+                                            { model.removeHighlight(existing.highlight.id) ; dismiss() }
+                                        },
+                                    )
                                 }
                             }
                         }
                     }
                 }
-            }
 
-            // The band below the columns: the spread's page label, or — in a
-            // scroll, which has no pages to number — how far through the book
-            // this chapter is and what is left of it.
-            Box(
-                Modifier
-                    .align(Alignment.BottomCenter)
-                    .padding(bottom = insets.bottom, start = insets.leading, end = insets.trailing)
-                    .width(geometry.blockWidth - insets.leading - insets.trailing)
-                    .height(labelBand),
-                contentAlignment = Alignment.Center,
-            ) {
-                when {
-                    scrolling && set != null && wholeChapter != null -> ScrollFooter(
-                        scroll = scroll,
-                        words = wholeChapter.wordCount,
-                        fraction = readFraction(ready, model.chapterIndex),
-                        palette = palette,
-                    )
-                    !scrolling && set != null && pages.isNotEmpty() -> {
-                        val last = minOf(spreadStart + columns, pages.size)
-                        val minutes = LayoutPaginator.minutes(set.pagination.wordsRemaining[spreadStart])
-                        val pageText = if (last - spreadStart > 1) {
-                            "Pages ${spreadStart + 1}–$last of ${pages.size}"
-                        } else {
-                            "Page ${spreadStart + 1} of ${pages.size}"
+                // The band below the columns: the spread's page label, or — in a
+                // scroll, which has no pages to number — how far through the book
+                // this chapter is and what is left of it.
+                Box(
+                    Modifier
+                        .align(Alignment.BottomCenter)
+                        .padding(bottom = insets.bottom, start = insets.leading, end = insets.trailing)
+                        .width(geometry.blockWidth - insets.leading - insets.trailing)
+                        .height(labelBand),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    when {
+                        scrolling && set != null && pages.isNotEmpty() -> {
+                            // What is left of the chapter, from where the reader
+                            // has actually scrolled to: the words after the anchor,
+                            // which is the chunks below it plus the tail of the one
+                            // it is in. No pagination is involved, and none is run.
+                            val words = remember(set, pageIndex, model.anchor) {
+                                val chunk = pages[pageIndex]
+                                val raw = set.styled.text.text
+                                val read = LayoutPaginator.wordCount(
+                                    raw, chunk.textStart, model.anchor.coerceIn(chunk.textStart, chunk.textEnd),
+                                )
+                                (set.pagination.wordsRemaining[pageIndex] - read).coerceAtLeast(0)
+                            }
+                            ScrollFooter(
+                                words = words,
+                                fraction = readFraction(ready, model.chapterIndex),
+                                palette = palette,
+                            )
                         }
-                        val suffix = if (compact) "min left" else "min left in chapter"
-                        Text(
-                            if (minutes > 0) "$pageText · ~$minutes $suffix" else pageText,
-                            fontSize = 11.sp,
-                            color = palette.muted,
-                            fontFamily = FontFamily.SansSerif,
-                            maxLines = 1,
-                            modifier = Modifier.testTag("reader.pageLabel"),
-                        )
+                        !scrolling && set != null && pages.isNotEmpty() -> {
+                            val last = minOf(spreadStart + columns, pages.size)
+                            val minutes = LayoutPaginator.minutes(set.pagination.wordsRemaining[spreadStart])
+                            val pageText = if (last - spreadStart > 1) {
+                                "Pages ${spreadStart + 1}–$last of ${pages.size}"
+                            } else {
+                                "Page ${spreadStart + 1} of ${pages.size}"
+                            }
+                            val suffix = if (compact) "min left" else "min left in chapter"
+                            Text(
+                                if (minutes > 0) "$pageText · ~$minutes $suffix" else pageText,
+                                fontSize = 11.sp,
+                                color = palette.muted,
+                                fontFamily = FontFamily.SansSerif,
+                                maxLines = 1,
+                                modifier = Modifier.testTag("reader.pageLabel"),
+                            )
+                        }
                     }
                 }
             }
         }
 
         footnote?.let { note -> FootnoteSheet(note, onDismiss = { footnote = null }) }
-        externalLink?.let { url ->
+        externalLink?.let { (prompt, url) ->
             ExternalLinkDialog(
-                url = url,
+                prompt = prompt,
                 onOpen = {
                     externalLink = null
                     try {
                         context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-                    } catch (e: ActivityNotFoundException) {
+                    } catch (e: RuntimeException) {
+                        // Whatever the system objects to — no app for the
+                        // scheme, a uri it will not let out of the process, a
+                        // permission it will not grant — the reader is told the
+                        // same thing, because there is one thing to say.
                         model.report("No app on this device can open that link.")
                     }
                 },
@@ -830,13 +953,12 @@ private fun readFraction(ready: ReaderViewModel.State.Ready, chapterIndex: Int):
 
 /**
  * The scroll layout's footer: a hairline progress track for the book, and
- * what is left of this chapter from where the reader has scrolled to — the
- * words below the fold, taken as the fraction still to come.
+ * what is left of this chapter from the line the reader has scrolled to —
+ * the words still below the anchor, at the kit's own reading speed.
  */
 @Composable
-private fun ScrollFooter(scroll: ScrollState, words: Int, fraction: Float, palette: ReadingPalette) {
-    val scrolled = if (scroll.maxValue > 0) scroll.value.toFloat() / scroll.maxValue else 1f
-    val minutes = LayoutPaginator.minutes((words * (1f - scrolled)).toInt())
+private fun ScrollFooter(words: Int, fraction: Float, palette: ReadingPalette) {
+    val minutes = LayoutPaginator.minutes(words)
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
         Box(Modifier.weight(1f).height(2.dp).background(palette.line).testTag("reader.progress")) {
             Box(Modifier.fillMaxWidth(fraction).height(2.dp).background(palette.ink))

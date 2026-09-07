@@ -23,8 +23,6 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.ensureActive
-import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
 /**
@@ -137,7 +135,22 @@ class ReaderViewModel(private val library: suspend () -> LibraryRepository, val 
     private val cache = PaginationCache()
     private var saveJob: Job? = null
     private var loadJob: Job? = null
-    private var searchJob: Job? = null
+
+    /** The query waiting to be scanned, and the one worker allowed to scan — see [search]. */
+    private var pendingQuery: String? = null
+    private var debounceJob: Job? = null
+    private var searchWorker: Job? = null
+
+    /**
+     * Footnotes of chapters other than the one being read, kept because a
+     * noteref into another document has to ask whether that document lifts the
+     * id before it can decide between a popup and a jump — and a reader
+     * following a run of endnote markers asks the same question of the same
+     * document over and over.
+     */
+    private val otherChapterFootnotes = object : LinkedHashMap<Int, List<Footnote>>(4, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Int, List<Footnote>>?): Boolean = size > 4
+    }
 
     /** The place last written (or read) from the store; a save is skipped when nothing moved. */
     private var persisted: Pair<Int, Int>? = null
@@ -258,42 +271,69 @@ class ReaderViewModel(private val library: suspend () -> LibraryRepository, val 
         saveNow()
     }
 
+    /**
+     * A backward crossing in a scroll, which has no last page to land on: the
+     * end of the text — where [loadChapter] has already put the anchor — is
+     * the place, and now that the chapter is drawn it is worth saving.
+     */
+    fun settleAtChapterEnd() {
+        if (!wantsChapterEnd) return
+        wantsChapterEnd = false
+        saveNow()
+    }
+
     // MARK: Search — the whole book, a fifth of a second after the typing
-    // stops. Every keystroke cancels the scan before it: the kit checks for
-    // cancellation between chapters, and a cancelled scan's partial results
-    // belong to a query that is no longer on screen, so they are dropped.
+    // stops. The scan itself runs inside the kit, across the JNI boundary,
+    // where a cancelled coroutine cannot reach it: cancelling the Kotlin side
+    // would only orphan a scan that keeps running, and a reader typing quickly
+    // would have several of them competing for the bridge at once. So exactly
+    // one scan is allowed at a time. The debounce leaves the latest query in
+    // [pendingQuery]; a single worker takes whatever is there, scans, publishes
+    // if it is still the latest, and goes round again.
 
     fun search(query: String) {
         searchQuery = query
-        searchJob?.cancel()
         val needle = query.trim()
+        debounceJob?.cancel()
         if (needle.isEmpty()) {
+            // Nothing typed: whatever is queued is no longer wanted, and the
+            // scan in flight (if any) will find its answer out of date.
+            pendingQuery = null
             searchResults = emptyList()
             searching = false
             return
         }
         searching = true
-        searchJob = viewModelScope.launch {
-            try {
-                delay(SEARCH_DEBOUNCE_MS)
-                val repo = repository ?: return@launch
-                val found = repo.search(bookId, needle)
-                // The scan outlived its query if a keystroke cancelled it
-                // while the bridge was busy; what came back is not an answer
-                // to what is typed now.
-                ensureActive()
-                searchResults = found
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                Log.w(TAG, "search failed: ${e.message}")
-                searchResults = emptyList()
-                say("Couldn't search this book.")
-            } finally {
-                // Only the search still standing says the searching is over;
-                // a superseded one leaves the newer scan's spinner alone.
-                if (isActive) searching = false
+        debounceJob = viewModelScope.launch {
+            delay(SEARCH_DEBOUNCE_MS)
+            pendingQuery = needle
+            scanPending()
+        }
+    }
+
+    /** Starts the one search worker, unless it is already running — it will pick the query up. */
+    private fun scanPending() {
+        if (searchWorker?.isActive == true) return
+        searchWorker = viewModelScope.launch {
+            while (true) {
+                val needle = pendingQuery ?: break
+                pendingQuery = null
+                val repo = repository ?: break
+                val found = try {
+                    repo.search(bookId, needle)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    Log.w(TAG, "search failed: ${e.javaClass.simpleName}")
+                    say("Couldn't search this book.")
+                    emptyList()
+                }
+                // Typing carried on while the bridge was busy: what came back
+                // is not an answer to what is on screen, so it is dropped and
+                // the newer query goes round the loop instead.
+                if (pendingQuery == null && needle == searchQuery.trim()) searchResults = found
             }
+            searching = pendingQuery != null
         }
     }
 
@@ -330,28 +370,84 @@ class ReaderViewModel(private val library: suspend () -> LibraryRepository, val 
 
     // MARK: Links. A tap on a link into the book resolves its archive path
     // against the chapter list already in hand, and its fragment against the
-    // *target* chapter's anchors — which is the one thing that has to be
-    // fetched, and only when there is a fragment to resolve.
+    // *target* chapter's anchors — one id, asked for on its own, which is the
+    // only thing that has to be fetched and only when there is one to resolve.
+
+    /**
+     * A tapped link that stays inside the book: a noteref answered in place,
+     * or a jump. The fragment is looked for in the footnotes of the chapter
+     * the *path* names — the current one when the path names none — and only
+     * there; a target that lifts no such note is navigation, never a same-id
+     * note out of the chapter in hand ([noterefChapter] says why). `onNote` is
+     * the page's, because a note shown in place belongs to the page it was
+     * tapped on and dies with it.
+     */
+    fun followLink(path: String?, fragment: String?, onNote: (Footnote) -> Unit) {
+        val ready = state as? State.Ready ?: return
+        if (fragment == null) {
+            if (path != null) followInternalLink(path, null) else say(NOWHERE)
+            return
+        }
+        val target = noterefChapter(ready.chapters, path, chapterIndex)
+        val loaded = chapter?.takeIf { it.index == target }?.footnotes
+        if (loaded != null) {
+            answerNoteref(loaded, path, fragment, onNote)
+            return
+        }
+        viewModelScope.launch {
+            answerNoteref(footnotes(target), path, fragment, onNote)
+        }
+    }
+
+    private fun answerNoteref(notes: List<Footnote>, path: String?, fragment: String, onNote: (Footnote) -> Unit) {
+        val note = notes.firstOrNull { it.id == fragment }
+        when {
+            note != null -> onNote(note)
+            path != null -> followInternalLink(path, fragment)
+            else -> say(NOWHERE)
+        }
+    }
+
+    /** A chapter's lifted footnotes, remembered; an unreadable chapter simply lifts none. */
+    private suspend fun footnotes(index: Int): List<Footnote> {
+        val ready = state as? State.Ready ?: return emptyList()
+        if (index !in ready.chapters.indices) return emptyList()
+        otherChapterFootnotes[index]?.let { return it }
+        val repo = repository ?: return emptyList()
+        return try {
+            repo.chapterFootnotes(bookId, index).also { otherChapterFootnotes[index] = it }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "footnotes failed: ${e.javaClass.simpleName}")
+            emptyList()
+        }
+    }
 
     fun followInternalLink(path: String, fragment: String?) {
         val ready = state as? State.Ready ?: return
         val repo = repository ?: return
+        val target = chapterIndexForPath(ready.chapters, path)
+        if (target == null) {
+            say(NOWHERE)
+            return
+        }
+        if (fragment == null) {
+            jump(target, 0)
+            return
+        }
         viewModelScope.launch {
-            val target = resolveInternalLink(ready.chapters, path, fragment = null, anchors = emptyMap())
-            if (target == null) {
-                say("That link doesn't lead anywhere in this book.")
-                return@launch
-            }
-            val anchors = if (fragment == null) emptyMap() else try {
-                repo.chapterLayout(bookId, target.chapterIndex).anchors
+            val offset = try {
+                repo.anchorOffset(bookId, target, fragment)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                Log.w(TAG, "link anchors failed: ${e.message}")
-                emptyMap()
+                Log.w(TAG, "link anchors failed: ${e.javaClass.simpleName}")
+                null
             }
-            val destination = resolveInternalLink(ready.chapters, path, fragment, anchors) ?: return@launch
-            jump(destination.chapterIndex, destination.utf16Offset)
+            // A fragment that names no anchor lands at the chapter's start,
+            // as a TOC row with an unresolvable fragment does.
+            jump(target, offset ?: 0)
         }
     }
 
@@ -455,12 +551,15 @@ class ReaderViewModel(private val library: suspend () -> LibraryRepository, val 
         }
     }
 
-    /** Pages for `key`, computed once; `compute` runs on the caller's thread. */
-    fun pageSet(key: PageKey, compute: () -> PageSet): PageSet =
+    /**
+     * The styled chapter and its pages for `key`, built once. `compute` places
+     * the chapter's images and measures it, and runs on the caller's coroutine
+     * — the surface calls this off the main thread. Everything that shape
+     * depends on is in the key (see [PageKey]), so a set that comes back from
+     * the cache can only be the set that would have been built again.
+     */
+    suspend fun pageSet(key: PageKey, compute: suspend () -> PageSet): PageSet =
         cache.get(key) ?: compute().also { cache.put(key, it) }
-
-    /** How many paginations came out of the cache instead of the measurer — see [PaginationCache]. */
-    val paginationHits: Int get() = cache.hits
 
     private fun scheduleSave() {
         saveJob?.cancel()
@@ -509,6 +608,9 @@ class ReaderViewModel(private val library: suspend () -> LibraryRepository, val 
         /** How long the typing rests before the book is scanned. */
         const val SEARCH_DEBOUNCE_MS = 200L
         private const val TAG = "Readr.Reader"
+
+        /** What a link that names no document in this book is answered with. */
+        private const val NOWHERE = "That link doesn't lead anywhere in this book."
     }
 }
 

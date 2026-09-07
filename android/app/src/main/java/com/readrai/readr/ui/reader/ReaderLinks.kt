@@ -1,5 +1,6 @@
 package com.readrai.readr.ui.reader
 
+import android.net.Uri
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -38,34 +39,16 @@ data class ChapterLink(
     val isExternal: Boolean get() = url != null
 }
 
-/** Where an internal link lands: a chapter, and a place in it. */
-data class LinkDestination(val chapterIndex: Int, val utf16Offset: Int)
-
 /**
- * The chapter an internal link's archive path names, and the place in it its
- * fragment names. Matching follows the Apple reader: the exact `sourcePath`
- * first, then case-insensitively (hrefs and archive paths drift in case), and
- * only then on the file name — a link written relative to a directory the
- * spine spells differently still finds its document. A suffix match must fall
- * on a path separator, so `notes.xhtml` never claims `endnotes.xhtml`.
- *
- * `anchors` are the *target* chapter's, which the caller loads once the
- * chapter is known; a fragment that names none lands at the chapter's start,
- * as a TOC row with an unresolvable fragment does. Null when no chapter in
- * the book answers to the path.
+ * The chapter an internal link's archive path names. Matching follows the
+ * Apple reader (`ReaderView.spineIndex`): the exact `sourcePath` first, then
+ * case-insensitively (hrefs and archive paths drift in case), and only then on
+ * the file name — a link written relative to a directory the spine spells
+ * differently still finds its document. A suffix match must fall on a path
+ * separator, so `notes.xhtml` never claims `endnotes.xhtml`. Null when no
+ * chapter in the book answers to the path.
  */
-fun resolveInternalLink(
-    chapters: List<ChapterSummary>,
-    path: String,
-    fragment: String?,
-    anchors: Map<String, Int>,
-): LinkDestination? {
-    val index = chapterIndexForPath(chapters, path) ?: return null
-    val offset = fragment?.let { anchors[it] } ?: 0
-    return LinkDestination(index, maxOf(0, offset))
-}
-
-private fun chapterIndexForPath(chapters: List<ChapterSummary>, path: String): Int? {
+fun chapterIndexForPath(chapters: List<ChapterSummary>, path: String): Int? {
     if (path.isEmpty()) return null
     chapters.firstOrNull { it.sourcePath == path }?.let { return it.index }
     val lowered = path.lowercase()
@@ -74,6 +57,61 @@ private fun chapterIndexForPath(chapters: List<ChapterSummary>, path: String): I
         val source = chapter.sourcePath?.lowercase() ?: return@firstOrNull false
         source.endsWith("/$lowered") || lowered.endsWith("/$source")
     }?.index
+}
+
+/**
+ * Which chapter's footnotes a tapped noteref is answered from: the *target*
+ * document when the path names a spine entry, and the chapter being read when
+ * it names none, names this one, or there is no path at all (a same-document
+ * ref).
+ *
+ * This is the Apple reader's `resolveFootnote` rule, and the whole of it: note
+ * ids (`fn1`, `fn2`…) recur document by document, so a link that resolves
+ * somewhere *else* must never be answered by a same-id note out of the chapter
+ * in hand. When the target lifts no such note, the tap is navigation.
+ */
+fun noterefChapter(chapters: List<ChapterSummary>, path: String?, currentChapter: Int): Int =
+    path?.let { chapterIndexForPath(chapters, it) } ?: currentChapter
+
+/**
+ * The question asked before a link leaves the book: what the reader is about
+ * to do, and the one part of the link they can judge — the host for the web,
+ * the address or the number for the rest.
+ */
+data class ExternalLinkPrompt(val title: String, val detail: String)
+
+/** What is said about a link Readr will not hand to another app. */
+const val UNOPENABLE_LINK_MESSAGE = "Readr can't open that kind of link."
+
+/** Longer than any honest link in a book; a URL past this is not asked about. */
+private const val MAX_LINK_LENGTH = 2_048
+
+/**
+ * Whether a link may leave the app, and what to ask about it. Only the web
+ * (`http`, `https`), mail and the telephone are ever handed on: `file`,
+ * `content`, `intent`, `javascript`, `data`, `market` and everything unknown
+ * are refused before an `Intent` is built, because an author's markup is not
+ * a reason to open a device's own scheme, and an implicit `ACTION_VIEW` is not
+ * a thing to point at an arbitrary one.
+ *
+ * A URL holding a backslash, whitespace or a control character is refused
+ * outright: those are how one parser is made to read a different host than the
+ * next, and nothing in a book needs them. What is left is parsed with
+ * `android.net.Uri` — the same parser the `Intent` will use, so what the reader
+ * is shown is what the system will act on — and a web link whose host that
+ * parser cannot name is refused too. Null means "do not open this".
+ */
+fun externalLinkPrompt(url: String): ExternalLinkPrompt? {
+    if (url.isEmpty() || url.length > MAX_LINK_LENGTH) return null
+    if (url.any { it == '\\' || it.isWhitespace() || it.isISOControl() }) return null
+    val parsed = runCatching { Uri.parse(url) }.getOrNull() ?: return null
+    val target = parsed.schemeSpecificPart?.substringBefore('?').orEmpty().trim()
+    return when (parsed.scheme?.lowercase()) {
+        "http", "https" -> parsed.host?.takeIf { it.isNotBlank() }?.let { ExternalLinkPrompt("Open link?", it) }
+        "mailto" -> target.takeIf { it.isNotBlank() }?.let { ExternalLinkPrompt("Send an email to…", it) }
+        "tel" -> target.takeIf { it.isNotBlank() }?.let { ExternalLinkPrompt("Call…", it) }
+        else -> null
+    }
 }
 
 /**
@@ -111,19 +149,20 @@ fun FootnoteSheet(footnote: Footnote, onDismiss: () -> Unit) {
 }
 
 /**
- * A link out of the book asks first, and says where it goes: the host is the
- * one part of a URL a reader can judge, so it is what the question shows.
+ * A link out of the book asks first, and says where it goes: the host (or the
+ * address, or the number) is the one part of a link a reader can judge, so it
+ * is what the question shows.
  */
 @Composable
-fun ExternalLinkDialog(url: String, onOpen: () -> Unit, onDismiss: () -> Unit) {
+fun ExternalLinkDialog(prompt: ExternalLinkPrompt, onOpen: () -> Unit, onDismiss: () -> Unit) {
     val palette = LocalReadingPalette.current
     AlertDialog(
         onDismissRequest = onDismiss,
         containerColor = palette.elevated,
-        title = { Text("Open link?", color = palette.ink) },
+        title = { Text(prompt.title, color = palette.ink) },
         text = {
             Text(
-                linkHost(url),
+                prompt.detail,
                 style = MaterialTheme.typography.bodyMedium,
                 color = palette.muted,
                 modifier = Modifier.testTag("link.host"),
@@ -133,17 +172,4 @@ fun ExternalLinkDialog(url: String, onOpen: () -> Unit, onDismiss: () -> Unit) {
         dismissButton = { TextButton(onClick = onDismiss, modifier = Modifier.testTag("link.cancel")) { Text("Cancel") } },
         modifier = Modifier.testTag("link.dialog"),
     )
-}
-
-/**
- * What to show for a link: its host, or the whole thing when it has none
- * (`mailto:`, and anything malformed). Parsed without `android.net.Uri` so
- * the rule is the same under a unit test as on a device.
- */
-fun linkHost(url: String): String {
-    val afterScheme = url.substringAfter("://", missingDelimiterValue = "")
-    if (afterScheme.isEmpty()) return url.take(120)
-    val authority = afterScheme.substringBefore('/').substringBefore('?').substringBefore('#')
-    val host = authority.substringAfterLast('@').substringBefore(':')
-    return host.ifBlank { url.take(120) }
 }

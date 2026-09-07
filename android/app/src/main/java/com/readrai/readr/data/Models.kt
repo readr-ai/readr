@@ -15,6 +15,12 @@ data class BookSummary(
     val isImageOnly: Boolean = false,
     val isFixedLayout: Boolean = false,
     val coverPath: String? = null,
+    /**
+     * Absolute path of the book's retained original, where an inline image's
+     * bytes live — null when there is none on disk. The facade checks it
+     * exists, so this side never rebuilds it out of a file name.
+     */
+    val archivePath: String? = null,
     val sourceFilename: String? = null,
 )
 

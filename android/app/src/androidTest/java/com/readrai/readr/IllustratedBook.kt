@@ -41,6 +41,18 @@ object IllustratedBook {
     const val NOTE_ID = "fn5"
     const val NOTE_TEXT = "Carroll told the story on a river outing in July 1862."
 
+    /**
+     * The trap for cross-document notes: chapter six lifts a note of its own
+     * called `fn1` *and* is one long link to `notes.xhtml#fn1`. Note ids recur
+     * document by document, so a reader that answered the link from the notes
+     * in hand would show the wrong note and never travel.
+     */
+    const val CROSS_NOTE_CHAPTER = 5
+    const val NOTES_CHAPTER = 6
+    const val CROSS_NOTE_ID = "fn1"
+    const val CROSS_NOTE_TEXT = "The note of chapter six, which is not the one the link points at."
+    const val NOTES_SENTENCE = "The note the link actually points at."
+
     private val paragraph = "It was the best of times, it was the worst of times, it was the age of wisdom, it was the " +
         "age of foolishness, it was the epoch of belief, it was the epoch of incredulity, it was the season of Light."
 
@@ -56,6 +68,8 @@ object IllustratedBook {
             zip.put("OEBPS/ch3.xhtml", allOneLink("Chapter Three", EXTERNAL_URL, "the notes online"))
             zip.put("OEBPS/ch4.xhtml", allOneLink("Chapter Four", "ch2.xhtml#$ANCHOR", "the second part"))
             zip.put("OEBPS/ch5.xhtml", noteChapter().toByteArray())
+            zip.put("OEBPS/ch6.xhtml", crossNoteChapter().toByteArray())
+            zip.put("OEBPS/notes.xhtml", notesDocument().toByteArray())
             zip.put(IMAGE_PATH, png(FIGURE_WIDTH, FIGURE_HEIGHT))
         }
         return file
@@ -135,6 +149,36 @@ object IllustratedBook {
         </html>
     """.trimIndent()
 
+    /**
+     * One long link into another document, over a note of this chapter that
+     * answers to the very id the link names — so a tap anywhere on it is a
+     * cross-document link that must travel rather than open what is here.
+     */
+    private fun crossNoteChapter(): String = """
+        <?xml version="1.0" encoding="utf-8"?>
+        <html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" xml:lang="en" lang="en">
+          <head><title>Chapter Six</title><meta charset="utf-8"/></head>
+          <body>
+            <p><a href="notes.xhtml#$CROSS_NOTE_ID">${(1..90).joinToString(" ") { "read the note $it," }}</a></p>
+            <aside epub:type="footnote" id="$CROSS_NOTE_ID"><p>$CROSS_NOTE_TEXT</p></aside>
+          </body>
+        </html>
+    """.trimIndent()
+
+    /** The document those links point into: a plain anchor, not a lifted note. */
+    private fun notesDocument(): String = """
+        <?xml version="1.0" encoding="utf-8"?>
+        <html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en">
+          <head><title>Notes</title><meta charset="utf-8"/></head>
+          <body>
+            <h1>Notes</h1>
+            <p>A line before the note, so landing on it means something.</p>
+            <p id="$CROSS_NOTE_ID">$NOTES_SENTENCE</p>
+            ${(1..6).joinToString("\n") { "<p>N.$it $paragraph</p>" }}
+          </body>
+        </html>
+    """.trimIndent()
+
     private const val CONTAINER = """<?xml version="1.0" encoding="utf-8"?>
 <container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
   <rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles>
@@ -155,6 +199,8 @@ object IllustratedBook {
     <item id="ch3" href="ch3.xhtml" media-type="application/xhtml+xml"/>
     <item id="ch4" href="ch4.xhtml" media-type="application/xhtml+xml"/>
     <item id="ch5" href="ch5.xhtml" media-type="application/xhtml+xml"/>
+    <item id="ch6" href="ch6.xhtml" media-type="application/xhtml+xml"/>
+    <item id="notes" href="notes.xhtml" media-type="application/xhtml+xml"/>
     <item id="fig1" href="images/fig1.png" media-type="image/png"/>
   </manifest>
   <spine>
@@ -163,6 +209,8 @@ object IllustratedBook {
     <itemref idref="ch3"/>
     <itemref idref="ch4"/>
     <itemref idref="ch5"/>
+    <itemref idref="ch6"/>
+    <itemref idref="notes"/>
   </spine>
 </package>"""
 }

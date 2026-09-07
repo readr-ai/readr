@@ -78,27 +78,53 @@ Contents sheet lists bookmarks above the table of contents, marking the rows
 whose stretch of the book holds one.
 
 An inline image is a U+FFFC in the chapter text and an entry path into the
-book's own `.epub` under `Books/` — the bytes never cross the bridge.
-`ChapterImages` opens that archive itself (`ZipFile`, on the IO dispatcher,
-under the kit's per-entry ceiling), down-samples the decode to at most twice
-the text width and keeps ~24 MB of decoded bitmaps. It then *sizes* each
-picture for the page — the markup's stated width or the image's own, never
-wider than the column, and scaled down by its own aspect ratio until its line
-fits one page — and hands `ChapterStyling` a `Placeholder` per image. Those
-placeholders go to `TextMeasurer` and the matching `InlineTextContent` map
-goes to the page's `Text`, so what was measured is what is drawn; the
-paragraph holding an image declares that picture's height as its line height,
-since Compose forces a line to the height its paragraph names. An entry that
-cannot be read takes a one-line placeholder holding its alt text.
+book's own `.epub` (the facade reports its absolute path on `BookSummary`,
+existence-checked there) — the bytes never cross the bridge. `ChapterImages`
+does the work in two halves. `place()` opens the archive **once** and reads
+nothing but each entry's *header* (`inJustDecodeBounds` over the zip stream),
+which is what fixes the placeholder sizes and therefore the pagination; a path
+that names no entry is remembered as missing, so a broken chapter does not
+re-open the archive on every geometry change. `load()` then decodes the
+bitmaps afterwards, a few at a time behind a `Semaphore`, into a
+`LocalInlineBitmaps` map the page draws from — deliberately not part of the
+`PageKey`, so a picture landing fills a box that is already the right size and
+no line moves.
+
+A decode targets the column width and no more: the sample is the largest power
+of two leaving at least the column across (so the bitmap lands in
+`[column, 2·column)`), doubled again if the pixels would take more than a
+quarter of the ~24 MB cache. Eviction recycles nothing — Compose may still be
+drawing the bitmap. Sizing follows the Apple reader's `fittedBounds`: both
+dimensions declared means the markup states the shape, one declared means the
+other comes back through the source's aspect, neither means the image's own
+pixels as dp; then the column, then the page ceiling (a 4 dp margin shared with
+the surface as `ChapterImages.pageMargin`). The paragraph holding an image
+declares that picture's height as its line height, since Compose forces a line
+to the height its paragraph names. An entry that cannot be read takes a
+one-line placeholder holding its alt text.
 
 A tap on a link beats a highlight and the page-turn zones both — a link is a
-control the author put on the page. One into the book resolves its archive
-path against `ChapterSummary.sourcePath` (exact, then case-insensitively, then
-on the file name) and its fragment against the target chapter's anchors; a
-fragment naming a footnote of the chapter being read opens that note on a
-sheet in place instead. One out of the book asks first, naming the host, and
-only then hands it to the system. Internal links are iris; external ones are
-iris and underlined.
+control the author put on the page — but only when it lands on an actual
+glyph: a tap on the white past a short line falls through to the turn zones.
+One into the book resolves its archive path against `ChapterSummary.sourcePath`
+(exact, then case-insensitively, then on the file name) and its fragment
+through the facade's `anchorOffset` (one id, so a tap does not ship every
+format span in the target document across the bridge). A noteref is answered
+from the footnotes of the document its *path* names — the current chapter when
+it names none — and only there, as `ReaderView.resolveFootnote` does: note ids
+recur document by document, so a cross-document link is never hijacked into a
+same-id note from the chapter in hand.
+
+A link out of the book is asked about first, and only three kinds are ever
+handed on: `http`/`https` (named by their host, which `android.net.Uri` — the
+parser the intent will use — has to be able to give), `mailto:` ("Send an email
+to…") and `tel:` ("Call…"). `file`, `content`, `intent`, `javascript`, `data`,
+`market` and everything unknown say "Readr can't open that kind of link." and
+never reach `startActivity`, as does any URL carrying a backslash, whitespace
+or a control character. `startActivity` itself is wrapped against
+`RuntimeException`, so a missing app, an exposed-file refusal or a permission
+denial is one sentence rather than a crash. Internal links are iris; external
+ones are iris and underlined.
 
 Offsets cross the bridge as **UTF-16** (what Kotlin and Compose index); the
 Swift facade converts to and from the kit's character offsets with the
@@ -115,10 +141,18 @@ column is its own `Text` with its own layout, so selection, links and the
 capsule work on both. Two pages are offered only from 600 dp of width — the
 same test that picks the regular insets — and on a narrower window a stored
 `doublePage` *reads* as a single page without the preference being rewritten.
-The scroll draws the whole chapter in one `Text` at the same column width:
-no page label, a 2 dp progress track for the book and what is left of the
-chapter, chapter buttons at either end, and the anchor is the first fully
-visible line.
+The scroll runs no paginator at all: the chapter is cut into the paginator's
+own paragraph-aligned chunks (`LayoutPaginator.chunks`) and drawn as the rows
+of a `LazyColumn`, each row by the same composable a cut page is drawn by, so
+selection, highlights, links and the capsule work per chunk exactly as they do
+on a page. Its `PageKey` names no page height — the bar comes and goes all day
+and must not re-measure a chapter — and the picture ceiling it does name is the
+surface with the chrome down. There is no page label: a 2 dp progress track for
+the book, and what is left of the chapter counted with
+`LayoutPaginator.wordCount` from the anchor down, with chapter buttons at
+either end. The anchor is the first visible chunk's first fully visible line,
+reported only when it actually changes; nothing clears a selection there but a
+new chapter.
 
 The bar is chrome over the window, not over the page: while it is shown the
 surface sits below it, so the page is shorter than with the chrome hidden.

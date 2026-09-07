@@ -40,6 +40,8 @@ import com.readrai.readr.ui.reader.PageLayout
 import com.readrai.readr.ui.reader.ReaderScreen
 import com.readrai.readr.ui.reader.ReaderSettings
 import com.readrai.readr.ui.reader.ReaderViewModel
+import com.readrai.readr.ui.reader.UNOPENABLE_LINK_MESSAGE
+import com.readrai.readr.ui.reader.externalLinkPrompt
 import com.readrai.readr.ui.theme.Marginalia
 import com.readrai.readr.ui.theme.ReadrTheme
 import java.io.File
@@ -47,6 +49,7 @@ import kotlinx.coroutines.future.await
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Rule
@@ -543,6 +546,71 @@ class ReaderScreenTest {
         assertEquals("a note is read in place, not somewhere else", chapter, model.chapterIndex)
     }
 
+    /**
+     * A noteref into *another* document travels; it is not answered by a note
+     * of the same id lifted out of the chapter in hand. Note ids recur
+     * document by document, so this is the difference between reading the note
+     * the author pointed at and reading a different one entirely.
+     */
+    @Test
+    fun aNoterefIntoAnotherDocumentTravelsRatherThanOpeningTheLocalNote() {
+        val illustrated = illustrated()
+        val titles = runBlocking { repository.chapters(illustrated.id) }.map { it.title }
+        val local = runBlocking { repository.chapterFootnotes(illustrated.id, IllustratedBook.CROSS_NOTE_CHAPTER) }
+        assertEquals(
+            "the chapter really does lift a note of the id the link names",
+            listOf(IllustratedBook.CROSS_NOTE_ID),
+            local.map { it.id },
+        )
+
+        val model = open(illustrated.id)
+        compose.runOnIdle { model.jump(IllustratedBook.CROSS_NOTE_CHAPTER, 0) }
+        waitForPages()
+        compose.waitUntil(10_000) { kickerOrEmpty() == titles[IllustratedBook.CROSS_NOTE_CHAPTER] }
+
+        tapPage(0.5f)
+        compose.waitUntil(10_000) { kickerOrEmpty() == titles[IllustratedBook.NOTES_CHAPTER] }
+        assertTrue("nothing opened in place", nodes("footnote.sheet").isEmpty())
+        assertEquals(IllustratedBook.NOTES_CHAPTER, model.chapterIndex)
+    }
+
+    /**
+     * A link Readr will not hand on says so and goes nowhere: the allow list
+     * is the web, mail and the telephone, and a book's markup does not get to
+     * point an implicit intent at anything else.
+     */
+    @Test
+    fun aLinkWithAnUnopenableSchemeIsRefusedInPlainLanguage() {
+        val illustrated = illustrated()
+        val model = open(illustrated.id)
+        compose.runOnIdle { model.report(UNOPENABLE_LINK_MESSAGE) }
+        awaitTag("reader.message")
+        assertEquals(UNOPENABLE_LINK_MESSAGE, model.message)
+        assertNull("and nothing was asked about", externalLinkPrompt("intent://scan/#Intent;scheme=zxing;end"))
+    }
+
+    /**
+     * The bridge cannot be interrupted mid-scan, so only one search runs at a
+     * time and the reader gets the answer to the last thing they typed —
+     * never a stale one, and never a spinner left running.
+     */
+    @Test
+    fun rapidSearchesAnswerTheLastQueryAndStop() {
+        val model = open()
+        compose.runOnIdle {
+            model.search("it was")
+            model.search("3.")
+            model.search("3.17")
+        }
+        compose.waitUntil(20_000) { !model.searching && model.searchResults.isNotEmpty() }
+        assertEquals("3.17", model.searchQuery)
+        assertEquals("the only chapter that says it", 1, model.searchResults.size)
+        assertEquals(2, model.searchResults.first().chapterIndex)
+        val chapterText = runBlocking { repository.chapterText(book.id, 2) }
+        val hit = model.searchResults.first()
+        assertEquals("3.17", chapterText.substring(hit.utf16Offset, hit.utf16Offset + 4))
+    }
+
     /** A link into the book takes the reader to the place its fragment names. */
     @Test
     fun anInternalLinkJumpsToItsAnchor() {
@@ -578,11 +646,12 @@ class ReaderScreenTest {
     /**
      * The bar is not an overlay: the page is shorter while the chrome is up,
      * so hiding it re-paginates the chapter. The reading place is the anchor,
-     * not a page number, so showing the chrome again lands on the same page —
-     * and on a pagination that came out of the cache, not the measurer.
+     * not a page number, so showing the chrome again lands on the same page.
+     * (That the second pagination is served from the cache rather than
+     * measured again is [PaginationCacheTest]'s business, on the cache itself.)
      */
     @Test
-    fun togglingTheChromeTwiceKeepsThePlaceAndMeasuresNothingAgain() {
+    fun togglingTheChromeTwiceKeepsThePlace() {
         val model = open()
         // Off the first page, where a jump would show.
         tapPage(0.9f)
@@ -594,13 +663,11 @@ class ReaderScreenTest {
         tapPage(0.5f) // the chrome away: a taller page, and a chapter of fewer of them
         compose.waitUntil(10_000) { pageCount() != pages }
         assertTrue("a page without the bar over it holds more", pageCount() < pages)
-        val measured = model.paginationHits
 
         tapPage(0.5f) // and back to the geometry it started in
         compose.waitUntil(10_000) { pageCount() == pages }
         assertEquals("the reader is where it was", anchor, model.anchor)
         assertEquals(page, pageNumber())
-        assertTrue("the first pagination came back from the cache", model.paginationHits > measured)
     }
 
     /**
