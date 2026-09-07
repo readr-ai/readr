@@ -238,6 +238,21 @@ enum OnDeviceStep: Sendable {
 /// rather than a wire string, asked about readiness at most once every few
 /// seconds, and generating into an async sequence.
 ///
+/// **The readiness invariant: reading never asks the phone.** `readiness`
+/// answers out of the cache and makes no call into Kotlin; only
+/// `refreshReadiness()` does. `ProviderManager` invokes the facade's
+/// `defaultSelection` closure WITH ITS OWN LOCK HELD, and that closure asks
+/// whether this phone can run its model — so a probe on the read path would
+/// put a JNI upcall into ML Kit (`checkStatus`, on a five-second leash)
+/// inside the manager's mutex, where one wedged AICore would hold every
+/// reader of the selection behind it, on whatever thread happened to ask.
+///
+/// The cache is filled instead by the paths that legitimately touch the
+/// model — the settings payload, a credential check, "Check again", and the
+/// ask — each of them off that lock and before it reads the selection. They
+/// all go through `AndroidProviders.refreshOnDeviceReadiness`, which is the
+/// only door to `refreshReadiness()` and says which callers use it.
+///
 /// `@unchecked`: the Kotlin object behind it is thread-safe by construction
 /// (a stateless readiness read, and a handle map for generations); the same
 /// bargain `SecretCredentialStore` makes.
@@ -263,10 +278,10 @@ final class OnDeviceModelBox: @unchecked Sendable {
   private var sinks: [Int64: OnDeviceSink] = [:]
   private var nextGeneration: Int64 = 1
 
-  /// How long an answer stands. The selection is resolved through the model on
-  /// every read — building one settings payload asks several times — and each
-  /// ask is a JNI hop into ML Kit. Short enough that a model finishing its
-  /// download shows up on the next glance at the screen.
+  /// How long an answer stands before a refresh asks again. One settings
+  /// payload reads the readiness several times, and each real ask is a JNI
+  /// hop into ML Kit. Short enough that a model finishing its download shows
+  /// up on the next glance at the screen.
   private let maxAge: TimeInterval = 5
 
   init(_ model: any OnDeviceModel, now: @escaping () -> Date = { Date() }) {
@@ -274,19 +289,44 @@ final class OnDeviceModelBox: @unchecked Sendable {
     self.now = now
   }
 
+  /// What the phone last said about its own model. Read, never asked — see
+  /// the invariant on this type.
+  ///
+  /// A cache with nothing in it yet reads as `unsupported`: until the phone
+  /// has actually been asked, the reader sits on "nothing chosen" rather than
+  /// on a model that may not exist. An answer older than `maxAge` is still
+  /// returned as it stands — staleness decides whether the next REFRESH asks
+  /// again, never what a reader is told in the meantime.
   var readiness: OnDeviceReadiness {
-    if let fresh = cachedReadiness { return fresh }
-    // Asked outside the lock: it is a call into Kotlin, and a mutex held
-    // across it would serialise every reader of the selection behind it.
-    let answer = model.readiness()
-    let readiness = Self.parse(answer)
+    lock.lock(); defer { lock.unlock() }
+    return cached?.readiness ?? Self.unasked
+  }
+
+  /// What a phone nobody has asked yet counts as. The sentence is the kit's,
+  /// so an unasked phone and an unsupported one read alike to the reader —
+  /// and a refresh is one call away on every path that would show it.
+  static var unasked: OnDeviceReadiness {
+    .unsupported(reason: NanoError.notAvailableHere)
+  }
+
+  var isReady: Bool { readiness == .ready }
+
+  /// Ask the phone about its own model, unless the last answer is still
+  /// fresh. The one place `OnDeviceModel.readiness()` is called from.
+  ///
+  /// Blocking, on the caller's thread and outside every lock this facade
+  /// holds: `checkStatus` binds to AICore and a broken one can sit in that
+  /// bind for the full five seconds of its leash. Every caller is a facade
+  /// function Kotlin runs on `Dispatchers.IO`.
+  @discardableResult
+  func refreshReadiness() -> OnDeviceReadiness {
+    if let fresh = freshReadiness { return fresh }
+    let readiness = Self.parse(model.readiness())
     lock.lock()
     cached = (readiness, now())
     lock.unlock()
     return readiness
   }
-
-  var isReady: Bool { readiness == .ready }
 
   /// The model's real context window, in tokens.
   ///
@@ -318,17 +358,20 @@ final class OnDeviceModelBox: @unchecked Sendable {
   /// only costs passages, while one set too large costs a failed answer.
   static let fallbackWindow = 4_096
 
-  /// Forget the cached answers, so the next read really asks the phone. What
-  /// "Check again" is for: a reader who has just installed the model is
+  /// Forget the cached answers, so the next *refresh* really asks the phone.
+  /// What "Check again" is for: a reader who has just installed the model is
   /// telling us the last answer is out of date — and a model that was not
-  /// there a moment ago could not report a window either.
+  /// there a moment ago could not report a window either. It is always
+  /// followed by a refresh, since a cache emptied and not refilled reads as
+  /// a phone that cannot run the model at all.
   func invalidate() {
     lock.lock(); defer { lock.unlock() }
     cached = nil
     cachedWindow = nil
   }
 
-  private var cachedReadiness: OnDeviceReadiness? {
+  /// The cached answer while it is young enough to stand in for a new one.
+  private var freshReadiness: OnDeviceReadiness? {
     lock.lock(); defer { lock.unlock() }
     guard let cached, now().timeIntervalSince(cached.at) < maxAge else { return nil }
     return cached.readiness

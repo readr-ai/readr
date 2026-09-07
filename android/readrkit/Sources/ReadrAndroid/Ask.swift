@@ -411,6 +411,13 @@ extension AndroidLibrary {
   ) -> Int64 {
     let box = AskSinkBox(sink)
 
+    // The active provider may BE the phone's own model, and whether it is is
+    // decided by an answer the manager reads under its own lock without ever
+    // asking for it. Asked here instead, on the caller's thread (Kotlin runs
+    // this on `Dispatchers.IO`) and only where the reader has chosen nothing
+    // themselves.
+    providers.refreshOnDeviceReadinessBeforeSelection()
+
     // Nothing is started without something to answer with: the panel's empty
     // state is a reader-facing sentence, not a stream that fails a second
     // later.
@@ -516,6 +523,11 @@ extension AndroidLibrary {
   /// index.
   public func prepareAsk(_ bookID: String, providers: AndroidProviders) {
     guard let book = try? self.book(bookID) else { return }
+    // Which provider a question would go to decides whether there is
+    // anything to index at all, and on this phone that can be the phone's
+    // own model — whose readiness is only ever read, never asked for, inside
+    // the manager.
+    providers.refreshOnDeviceReadinessBeforeSelection()
     guard let provider = (try? providers.manager.activeProvider()) ?? nil else { return }
     guard !routesWholeBook(book, scope: .wholeBook, provider: provider.info) else { return }
     _ = askIndexes.build(for: book)
@@ -722,7 +734,8 @@ extension AndroidProviders {
   /// passages and nothing else, so promising "the model's wider knowledge"
   /// would promise what a 3B model on a handset cannot do.
   public func isActiveOnDevice() -> Bool {
-    manager.selection?.kind.isOnDevice ?? false
+    refreshOnDeviceReadinessBeforeSelection()
+    return manager.selection?.kind.isOnDevice ?? false
   }
 
   /// DEBUG AND TEST ONLY. Sends every request for `kind` to `url`'s origin

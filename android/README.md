@@ -225,11 +225,27 @@ an optional reason code after a colon — `unavailable:downloading`) or
 The *sentence* a reader sees is written on the Swift side — the kit's
 `ProviderManager.ProviderError.notConfigured(.geminiNano)` for a phone that
 cannot run it, `OnDevice.swift`'s own line for one still downloading — so
-Kotlin writes no reader-facing copy. It is asked on every read of the
-selection, cached for five seconds since one settings payload asks several
-times, so the phone's own model is the default *while* the phone can run it and
-the reader is back to "nothing chosen" the moment it cannot. "Check again"
-throws the cached answer away first, so it really asks the phone.
+Kotlin writes no reader-facing copy. The phone's own model is the default
+*while* the phone can run it, and the reader is back to "nothing chosen" the
+moment it cannot.
+
+**Reading that readiness never asks the phone.** `ProviderManager` calls the
+facade's `defaultSelection` closure with its own lock held, and asking is a JNI
+upcall into ML Kit (`checkStatus`, on a five-second leash) — so a probe from
+inside that closure would hold every reader of the selection behind a wedged
+AICore, on whatever thread happened to ask. `OnDeviceModelBox.readiness`
+therefore answers out of a cache and calls nothing; `refreshReadiness()` is the
+only caller of the model, and the facade runs it — off that lock, and before
+the selection is read — from the paths that legitimately touch the model: the
+settings payload, the empty-state sentence, a credential check, "Check again",
+and the ask (`prepareAsk`, `ask`, `hasAnyProvider`, `isActiveOnDevice`). The
+cached answer stands for five seconds, since one settings payload reads it
+several times. On the ask paths a reader who has chosen a provider for
+themselves is not asked at all: the default closure is not consulted then, so
+the phone has no say in the answer and there is nothing to refresh. A cache
+nobody has filled yet reads as `unsupported` — until the phone has been asked,
+"nothing chosen" is the honest answer. "Check again" throws the cached answer
+away and fetches another on the spot.
 
 A phone whose model is `DOWNLOADABLE` — offered, but not on the device — is
 one `download()` away from ready, and ML Kit fetches nothing until an app asks.

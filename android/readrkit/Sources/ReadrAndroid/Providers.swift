@@ -179,6 +179,13 @@ public final class AndroidProviders {
       // nothing — but only while the phone can actually run it. Resolved on
       // every read, never written down: the day AICore goes away the reader
       // is back to "nothing chosen" rather than pinned to a dead selection.
+      //
+      // `isReady` READS THE CACHE AND ASKS NOTHING. The manager calls this
+      // closure with its own lock held, and the phone is asked through ML
+      // Kit on a five-second leash: a probe from in here would hold every
+      // reader of the selection behind a wedged AICore. The facade refreshes
+      // that cache on its way in instead — see
+      // `refreshOnDeviceReadiness()`.
       defaultSelection: {
         model.isReady
           ? ProviderSelection(
@@ -189,11 +196,45 @@ public final class AndroidProviders {
       supportedKinds: Set(Self.supportedKinds))
   }
 
+  // MARK: Keeping the phone's answer current
+
+  /// Ask the phone about its own model again, unless the last answer is
+  /// still fresh — then let go, before anything reads the selection.
+  ///
+  /// `OnDeviceModelBox.readiness` never asks (the reason is written on the
+  /// type: the manager holds its lock across `defaultSelection`), so every
+  /// entry point that is about to draw a card, run a check, or resolve the
+  /// active provider brings the cache up to date here first. It costs one
+  /// JNI upcall per cache window at most, on the caller's own thread, with
+  /// no lock of ours held — and every caller is a facade function Kotlin
+  /// runs on `Dispatchers.IO`.
+  func refreshOnDeviceReadiness() {
+    onDevice.refreshReadiness()
+  }
+
+  /// The same refresh, skipped when the reader has chosen a provider for
+  /// themselves.
+  ///
+  /// An explicit selection means `defaultSelection` is never consulted, so
+  /// the phone's own model has no say in what `selection` answers and there
+  /// is nothing to bring up to date. What that saves is real: without it a
+  /// reader who uses a cloud key would pay for a check of a model they are
+  /// not using — up to five seconds of it on a phone with a broken AICore —
+  /// on the way into every single question.
+  func refreshOnDeviceReadinessBeforeSelection() {
+    guard manager.explicitSelection == nil else { return }
+    onDevice.refreshReadiness()
+  }
+
   // MARK: Reading
 
   /// Everything the settings screen draws, in one answer: the line naming
   /// what Ask uses, the active selection, and a card per vendor.
   public func providersJSON() -> String {
+    // The card states what the phone says about its own model, so the phone
+    // is asked — here, before the selection is read, and not from inside the
+    // manager's lock where `defaultSelection` runs.
+    refreshOnDeviceReadiness()
     // Every card in the payload asks the same three questions about a kind,
     // and two of them reach the Keystore. Asked once here and carried down.
     let facts = Facts(manager: manager, credentials: credentialStore, model: onDevice)
@@ -211,7 +252,8 @@ public final class AndroidProviders {
   /// provider has actually rejected (or a selection with nothing behind it)
   /// counts as nothing to ask with.
   public func hasAnyProvider() -> Bool {
-    ((try? manager.activeProvider()) ?? nil) != nil
+    refreshOnDeviceReadinessBeforeSelection()
+    return ((try? manager.activeProvider()) ?? nil) != nil
   }
 
   /// An honest empty-state sentence for a panel with nothing connected —
@@ -219,7 +261,10 @@ public final class AndroidProviders {
   /// questions." Mirrors `SettingsModel.setupGuidance(toDo:)`, and names the
   /// phone's own model only where the phone can actually run it.
   public func setupGuidance(_ action: String) -> String {
-    "\(Self.joined(setupPaths)) to \(action)."
+    // The sentence names the phone's own model only where the phone can run
+    // one, so the phone is asked before it is written.
+    refreshOnDeviceReadiness()
+    return "\(Self.joined(setupPaths)) to \(action)."
   }
 
   /// The ways a reader can connect something in *this* build. Derived from
@@ -271,6 +316,9 @@ public final class AndroidProviders {
   public func connect(_ kind: String) async throws -> String {
     try await readerFacing {
       let k = try self.kind(kind)
+      // Both steps read the selection to decide whether this kind may take
+      // the slot, so the phone's answer has to be current before they do.
+      refreshOnDeviceReadiness()
       persistingSelection { manager.requestActivation(of: k) }
       await persistingSelection { await manager.validateAndActivate(k) }
       return self.statusJSON(manager.validationState(k))
@@ -284,6 +332,7 @@ public final class AndroidProviders {
   public func validateIfStale(_ kind: String, maxAgeSeconds: Int64) async throws -> String {
     try await readerFacing {
       let k = try self.kind(kind)
+      refreshOnDeviceReadiness()
       await persistingSelection {
         await manager.validateIfStale(k, maxAge: TimeInterval(maxAgeSeconds))
       }
@@ -317,7 +366,13 @@ public final class AndroidProviders {
   public func validate(_ kind: String) async throws -> String {
     try await readerFacing {
       let k = try self.kind(kind)
+      // "Check again" on the phone's own card: throw the last answer away
+      // and go and get another one, here, before the manager reads either
+      // the selection or `NanoProvider.readiness()` — both of which now read
+      // only what this leaves behind. Emptying the cache without refilling it
+      // would read as a phone that cannot run the model at all.
       if k.isOnDevice { onDevice.invalidate() }
+      refreshOnDeviceReadiness()
       _ = await persistingSelection { await manager.validate(k) }
       // Re-read rather than trust the return value: a key saved mid-flight
       // discards this run's result, and the manager holds the fresh state.

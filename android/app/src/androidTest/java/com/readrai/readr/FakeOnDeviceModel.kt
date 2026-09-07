@@ -23,13 +23,26 @@ import java.util.concurrent.atomic.AtomicLong
  */
 class FakeOnDeviceModel(
     private val answer: String = DEFAULT_ANSWER,
-    private val state: String = READY,
+    /**
+     * What this "phone" says about itself — a `var`, because a phone changes
+     * its mind: a model finishes downloading, AICore is updated out from
+     * under the app. Writing it is how a test moves the answer the facade's
+     * cache is standing in front of.
+     */
+    @Volatile var state: String = READY,
     /** Milliseconds between words; large enough to cancel in the middle of. */
     private val gapMillis: Long = 40,
     /** What the kit's one-word classifier call comes back with. */
     private val classification: String = "BOOK",
     /** The window this "phone" reports, in tokens. `0` is "cannot say". */
     private val window: Long = DEFAULT_WINDOW,
+    /**
+     * How long a readiness check takes. Zero on a healthy phone; on a real
+     * one it is a bind to AICore, which a broken or half-installed AICore can
+     * sit inside for the whole five seconds of `NanoModel`'s leash. What that
+     * models here is where the facade may make the call from.
+     */
+    private val readinessDelayMillis: Long = 0,
 ) : OnDeviceModel {
 
     /** Every instruction string the kit sent, in order. */
@@ -53,12 +66,32 @@ class FakeOnDeviceModel(
     /** How many generations ran to their own end — a separate fact entirely. */
     val generationsEnded = AtomicInteger(0)
 
+    /**
+     * How many times the phone has actually been asked about its own model.
+     *
+     * On a real phone every one of these is a JNI upcall into ML Kit's
+     * `checkStatus`, which binds to AICore and may sit there for five
+     * seconds — so where the facade asks, and where it merely reads what it
+     * was last told, is a fact worth counting rather than assuming.
+     */
+    val readinessCalls = AtomicInteger(0)
+
     private val handles = AtomicLong(1)
     private val threads = ConcurrentHashMap<Long, Thread>()
     private val generating = ConcurrentHashMap.newKeySet<Long>()
     private val stopped = ConcurrentHashMap.newKeySet<Long>()
 
-    override fun readiness(): String = state
+    override fun readiness(): String {
+        readinessCalls.incrementAndGet()
+        if (readinessDelayMillis > 0) {
+            try {
+                Thread.sleep(readinessDelayMillis)
+            } catch (e: InterruptedException) {
+                Thread.currentThread().interrupt()
+            }
+        }
+        return state
+    }
 
     override fun windowTokens(): Long = window
 

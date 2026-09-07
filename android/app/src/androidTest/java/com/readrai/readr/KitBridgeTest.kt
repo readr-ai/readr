@@ -112,6 +112,14 @@ class KitBridgeTest {
         val TEST_TIMEOUT = 3.minutes
 
         /**
+         * How long a phone that cannot answer promptly takes to say whether
+         * it can run its own model. Three seconds: shorter than `NanoModel`'s
+         * five-second leash, and long enough that a second thread blocked
+         * behind it is unmistakable rather than a slow emulator.
+         */
+        const val SLOW_READINESS_MS = 3_000L
+
+        /**
          * `ProviderCatalog.geminiNanoModels`' budget: how much of the book
          * `AdaptiveContextStrategy` may gather for the phone's own model. It
          * is not, and must not be used as, the model's context window.
@@ -786,9 +794,9 @@ class KitBridgeTest {
 
     /**
      * The phone's own model is the answer while the reader has chosen
-     * nothing — but only on a phone that can actually run it. The probe is
-     * asked on every read, so one library says different things on two
-     * different phones.
+     * nothing — but only on a phone that can actually run it. The phone is
+     * asked on the way into the payload, so one library says different things
+     * on two different phones.
      */
     @Test
     fun aPhoneThatCanRunNanoStartsWithIt() {
@@ -805,6 +813,112 @@ class KitBridgeTest {
         val without = providerSettings(from = cannot)
         assertNull(without.selection)
         assertEquals("Ask uses no model yet — connect one below.", without.askUsesLine)
+    }
+
+    /**
+     * A phone that changes its mind is followed — after a refresh, and only
+     * after one.
+     *
+     * The readiness the default selection is decided from is a CACHED answer:
+     * the manager calls that closure holding its own lock, and asking the
+     * phone from in there would put a five-second ML Kit bind inside a mutex
+     * every reader of the selection waits on. So a model that goes away is
+     * still reported as ready while the cache stands, and "Check again" —
+     * which empties the cache and asks again — is what moves it.
+     */
+    @Test
+    fun theCardFollowsThePhoneAfterARefresh() = runTest(timeout = TEST_TIMEOUT) {
+        val phone = FakeOnDeviceModel()
+        val nano = reopen(phone)
+        assertEquals("geminiNano", providerSettings(from = nano).selection?.kind)
+
+        // Back to back with the payload above, and a cached answer stands for
+        // five seconds: what is being read here is the cache, not the phone.
+        phone.state = FakeOnDeviceModel.UNSUPPORTED
+        assertEquals(
+            "the answer in hand stands until something asks for a new one",
+            "geminiNano",
+            providerSettings(from = nano).selection?.kind,
+        )
+
+        // "Check again": the cached answer is thrown away and the phone is
+        // asked on the spot, off the manager's lock.
+        val status = kitJson.decodeFromString<ValidationStatus>(nano.providers.validate("geminiNano").await())
+        assertEquals(ValidationStatus.INVALID, status.state)
+        val after = providerSettings(from = nano)
+        assertNull("one refresh is all it takes", after.selection)
+        assertEquals("Ask uses no model yet — connect one below.", after.askUsesLine)
+        assertFalse(nano.providers.hasAnyProvider())
+    }
+
+    /**
+     * Reading the selection asks the phone nothing at all.
+     *
+     * `ProviderManager` resolves the default selection under its own lock, so
+     * every probe made from that closure is an ML Kit bind held inside a
+     * mutex — and on a phone whose AICore is broken, five seconds of one. The
+     * facade asks on the way IN and reads the answer from there, which is
+     * what this counts: repeated payloads and repeated "is there anything to
+     * ask with" inside one cache window ask the phone exactly nothing more.
+     */
+    @Test
+    fun readingTheSelectionNeverAsksThePhone() {
+        val phone = FakeOnDeviceModel()
+        val nano = reopen(phone)
+
+        providerSettings(from = nano)
+        val asked = phone.readinessCalls.get()
+        assertTrue("the first payload did ask the phone", asked >= 1)
+
+        // Well inside the five seconds a cached answer stands for: every one
+        // of these reads the selection, and none of them may reach the model.
+        repeat(3) {
+            providerSettings(from = nano)
+            assertTrue(nano.providers.hasAnyProvider())
+        }
+        assertEquals(
+            "nothing under the manager's lock asked the phone again",
+            asked,
+            phone.readinessCalls.get(),
+        )
+    }
+
+    /**
+     * A slow phone never holds the manager's lock.
+     *
+     * This is the bug the cache is for. `ProviderManager.selection` resolves
+     * the default WITH ITS LOCK HELD, so a readiness probe made from that
+     * closure runs an ML Kit bind — up to five seconds of one on a phone
+     * whose AICore is broken — inside the mutex every other provider
+     * operation needs. Choosing a provider, saving a key, reading a
+     * validation state: all of them queue behind a check none of them asked
+     * for, on whatever thread they happened to run on.
+     *
+     * So: one thread asks whether there is anything to ask with, against a
+     * phone that takes [SLOW_READINESS_MS] to answer, and the other thread
+     * chooses a provider while that is in flight. The choice must not wait
+     * for the phone.
+     */
+    @Test
+    fun aSlowPhoneNeverHoldsTheManagersLock() {
+        val phone = FakeOnDeviceModel(readinessDelayMillis = SLOW_READINESS_MS)
+        val nano = reopen(phone)
+        val asking = Thread { nano.providers.hasAnyProvider() }
+        asking.start()
+        // Long enough that the probe is under way, and a small fraction of it.
+        Thread.sleep(SLOW_READINESS_MS / 6)
+        assertTrue("the phone is being asked right now", phone.readinessCalls.get() >= 1)
+
+        val started = System.nanoTime()
+        nano.providers.setActive("anthropic", "claude-opus-5")
+        val waited = (System.nanoTime() - started) / 1_000_000
+
+        asking.join(SLOW_READINESS_MS * 2)
+        assertFalse("the asking thread finished", asking.isAlive)
+        assertTrue(
+            "choosing a provider waited ${waited}ms on a check of a model it does not use",
+            waited < SLOW_READINESS_MS / 3,
+        )
     }
 
     /**
