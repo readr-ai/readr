@@ -36,6 +36,11 @@ struct ChapterSummary: Codable {
   /// False for spine documents marked `linear="no"`; continuous reading
   /// skips them.
   var isLinear: Bool
+  /// The chapter's entry path inside the EPUB, or nil for a book that has no
+  /// archive behind it (plain text, Markdown). An internal link's archive
+  /// path is matched against these, so Kotlin resolves a tapped link to a
+  /// chapter from the list it already holds rather than asking again.
+  var sourcePath: String?
 }
 
 /// A `FormatSpan` with UTF-16 offsets, flattened for Kotlin. `kind` is one
@@ -238,7 +243,8 @@ public final class AndroidLibrary {
         ChapterSummary(
           index: index, title: book.chapterDisplayTitle(index),
           characterCount: book.chapters[index].text.count,
-          isLinear: book.chapters[index].isLinear ?? true)
+          isLinear: book.chapters[index].isLinear ?? true,
+          sourcePath: book.chapters[index].sourcePath)
       }
       return String(decoding: try Self.encoder().encode(chapters), as: UTF8.self)
     }

@@ -18,8 +18,39 @@ data class BookSummary(
     val sourceFilename: String? = null,
 )
 
+/**
+ * Mirrors ReadrAndroid's `ChapterSummary`. `sourcePath` is the chapter's entry
+ * path inside the EPUB — null for a book with no archive behind it — and is
+ * what an internal link's archive path is matched against.
+ */
 @Serializable
-data class ChapterSummary(val index: Int, val title: String, val characterCount: Int, val isLinear: Boolean = true)
+data class ChapterSummary(
+    val index: Int,
+    val title: String,
+    val characterCount: Int,
+    val isLinear: Boolean = true,
+    val sourcePath: String? = null,
+)
+
+/**
+ * Mirrors ReadrAndroid's `ChapterImageSummary`: an inline image anchored to
+ * the U+FFFC placeholder at `utf16Offset` in the chapter text. The bytes stay
+ * in the book's retained original at `archivePath`; the reader reads them
+ * itself (see `ChapterImages`). `displayWidth`/`displayHeight` are the source
+ * markup's CSS-pixel intent, absent far more often than not.
+ */
+@Serializable
+data class ChapterImage(
+    val utf16Offset: Int,
+    val archivePath: String,
+    val alt: String? = null,
+    val displayWidth: Double? = null,
+    val displayHeight: Double? = null,
+)
+
+/** Mirrors ReadrAndroid's `FootnoteSummary`: a note lifted out of the reading flow. */
+@Serializable
+data class Footnote(val id: String, val text: String)
 
 /**
  * The saved place as the facade reports it: `utf16Offset` is the coordinate

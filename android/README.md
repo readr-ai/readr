@@ -77,6 +77,29 @@ bookmark whose offset falls in the page's range is "the" one), and the
 Contents sheet lists bookmarks above the table of contents, marking the rows
 whose stretch of the book holds one.
 
+An inline image is a U+FFFC in the chapter text and an entry path into the
+book's own `.epub` under `Books/` — the bytes never cross the bridge.
+`ChapterImages` opens that archive itself (`ZipFile`, on the IO dispatcher,
+under the kit's per-entry ceiling), down-samples the decode to at most twice
+the text width and keeps ~24 MB of decoded bitmaps. It then *sizes* each
+picture for the page — the markup's stated width or the image's own, never
+wider than the column, and scaled down by its own aspect ratio until its line
+fits one page — and hands `ChapterStyling` a `Placeholder` per image. Those
+placeholders go to `TextMeasurer` and the matching `InlineTextContent` map
+goes to the page's `Text`, so what was measured is what is drawn; the
+paragraph holding an image declares that picture's height as its line height,
+since Compose forces a line to the height its paragraph names. An entry that
+cannot be read takes a one-line placeholder holding its alt text.
+
+A tap on a link beats a highlight and the page-turn zones both — a link is a
+control the author put on the page. One into the book resolves its archive
+path against `ChapterSummary.sourcePath` (exact, then case-insensitively, then
+on the file name) and its fragment against the target chapter's anchors; a
+fragment naming a footnote of the chapter being read opens that note on a
+sheet in place instead. One out of the book asks first, naming the host, and
+only then hands it to the system. Internal links are iris; external ones are
+iris and underlined.
+
 Offsets cross the bridge as **UTF-16** (what Kotlin and Compose index); the
 Swift facade converts to and from the kit's character offsets with the
 chapter text in hand (`TextOffsets.swift`). Positions, contents rows,

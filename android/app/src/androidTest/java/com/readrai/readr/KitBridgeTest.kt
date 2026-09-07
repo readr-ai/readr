@@ -4,10 +4,12 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.readrai.readr.data.BookSummary
 import com.readrai.readr.data.Bookmark
+import com.readrai.readr.data.ChapterImage
 import com.readrai.readr.data.ChapterLayout
 import com.readrai.readr.data.ChapterSummary
 import com.readrai.readr.data.Contents
 import com.readrai.readr.data.EpubExtractor
+import com.readrai.readr.data.Footnote
 import com.readrai.readr.data.Highlight
 import com.readrai.readr.data.HighlightColor
 import com.readrai.readr.data.ReadingPosition
@@ -144,6 +146,131 @@ class KitBridgeTest {
         assertTrue(contents.rows.any { it.title.contains("Rabbit-Hole") })
         assertEquals(contents.rows.indices.toList(), contents.rows.map { it.id })
         for (row in contents.rows) assertTrue(row.chapterIndex in 0 until book.chapterCount)
+    }
+
+    /** Imports an EPUB from bytes on disk, the way the picker path does. */
+    private suspend fun importEpub(file: File, name: String): BookSummary {
+        val extracted = File(root, "$name-extracted")
+        EpubExtractor.extract(file.inputStream(), extracted)
+        return kitJson.decodeFromString(kit.library.importEPUB(extracted.absolutePath, file.absolutePath, name).await())
+    }
+
+    private suspend fun aliceBook(): BookSummary {
+        val original = File(root, "alice.epub")
+        context.assets.open("alice-in-wonderland.epub").use { i -> original.outputStream().use { i.copyTo(it) } }
+        return importEpub(original, "alice")
+    }
+
+    /**
+     * A picture is a U+FFFC in the chapter text and an entry path into the
+     * book's own archive — never bytes across the bridge. The offset has to
+     * index that placeholder in the string *Kotlin* holds, which is the whole
+     * point of converting it.
+     */
+    @Test
+    fun inlineImagesPointAtTheirPlaceholdersInUTF16() = runTest {
+        val book = importEpub(IllustratedBook.write(File(root, "illustrated.epub")), "illustrated")
+        assertEquals(IllustratedBook.TITLE, book.title)
+        var found = 0
+        for (index in 0 until book.chapterCount) {
+            val text = kit.library.chapterText(book.id, index.toLong())
+            val images = kitJson.decodeFromString<List<ChapterImage>>(kit.library.chapterImagesJSON(book.id, index.toLong()))
+            for (image in images) {
+                found++
+                assertTrue("offset ${image.utf16Offset} is inside the chapter", image.utf16Offset in text.indices)
+                assertEquals("the offset indexes the placeholder", '￼', text[image.utf16Offset])
+                assertEquals(IllustratedBook.IMAGE_PATH, image.archivePath)
+            }
+            assertEquals("in reading order", images.map { it.utf16Offset }.sorted(), images.map { it.utf16Offset })
+        }
+        assertTrue("the fixture carries pictures", found >= 2)
+
+        // Chapter one states a size in the markup; chapter two states none.
+        val first = kitJson.decodeFromString<List<ChapterImage>>(kit.library.chapterImagesJSON(book.id, 0L)).single()
+        assertEquals(IllustratedBook.ALT, first.alt)
+        assertEquals(IllustratedBook.FIGURE_WIDTH.toDouble(), first.displayWidth!!, 0.01)
+        assertEquals(IllustratedBook.FIGURE_HEIGHT.toDouble(), first.displayHeight!!, 0.01)
+        val second = kitJson.decodeFromString<List<ChapterImage>>(kit.library.chapterImagesJSON(book.id, 1L)).single()
+        assertNull("no stated width is no width, not a guess", second.displayWidth)
+        assertNull(second.displayHeight)
+    }
+
+    /**
+     * A chapter knows which document it came from, so a tapped link can be
+     * resolved on the Kotlin side from the chapter list already in hand. A
+     * book with no archive behind it says so with a null rather than a "".
+     */
+    @Test
+    fun chaptersCarryTheirSourcePathWhenTheyHaveOne() = runTest {
+        val alice = aliceBook()
+        val chapters = kitJson.decodeFromString<List<ChapterSummary>>(kit.library.chaptersJSON(alice.id))
+        assertEquals("OEBPS/ch1.xhtml", chapters[0].sourcePath)
+        assertEquals("OEBPS/ch12.xhtml", chapters.last().sourcePath)
+
+        val file = File(root, "plain.txt").apply { writeText("One chapter of prose and no archive at all.") }
+        val plain = kitJson.decodeFromString<BookSummary>(kit.library.importPlainText(file.absolutePath, "Plain").await())
+        val plainChapters = kitJson.decodeFromString<List<ChapterSummary>>(kit.library.chaptersJSON(plain.id))
+        assertTrue(plainChapters.isNotEmpty())
+        for (chapter in plainChapters) assertNull("plain text has no source document", chapter.sourcePath)
+    }
+
+    /**
+     * The sample has neither pictures nor lifted notes, and both answers are
+     * an empty list rather than a failure — the reader asks for them on every
+     * chapter it opens.
+     */
+    @Test
+    fun aBookWithNoPicturesOrNotesAnswersWithEmptyLists() = runTest {
+        val alice = aliceBook()
+        for (index in 0 until alice.chapterCount) {
+            assertTrue(kitJson.decodeFromString<List<ChapterImage>>(kit.library.chapterImagesJSON(alice.id, index.toLong())).isEmpty())
+            assertTrue(kitJson.decodeFromString<List<Footnote>>(kit.library.chapterFootnotesJSON(alice.id, index.toLong())).isEmpty())
+        }
+        try {
+            kit.library.chapterImagesJSON(alice.id, 99L)
+            assertTrue("expected a refusal", false)
+        } catch (e: Exception) {
+            assertEquals("That chapter doesn't exist in this book.", e.message)
+        }
+        try {
+            kit.library.chapterFootnotesJSON("not-a-book", 0L)
+            assertTrue("expected a refusal", false)
+        } catch (e: Exception) {
+            assertEquals("This book is no longer in your library.", e.message)
+        }
+    }
+
+    /** Both kinds of link cross the bridge whole: a URL out, a path and fragment in. */
+    @Test
+    fun linkSpansCarryWhereTheyPoint() = runTest {
+        val book = importEpub(IllustratedBook.write(File(root, "linked.epub")), "linked")
+        val layout = kitJson.decodeFromString<ChapterLayout>(kit.library.chapterLayoutJSON(book.id, 0L))
+        val links = layout.spans.filter { it.kind == "link" }
+        assertEquals("one link in, one out", 2, links.size)
+        val internal = links.single { it.url == null }
+        assertEquals(IllustratedBook.SECOND_PATH, internal.linkPath)
+        assertEquals(IllustratedBook.ANCHOR, internal.linkFragment)
+        val external = links.single { it.url != null }
+        assertEquals(IllustratedBook.EXTERNAL_URL, external.url)
+        assertNull(external.linkPath)
+
+        // A note lifted out of the flow comes back under the fragment its
+        // noteref names, and only for the chapter that holds it.
+        val notes = kitJson.decodeFromString<List<Footnote>>(
+            kit.library.chapterFootnotesJSON(book.id, IllustratedBook.NOTE_CHAPTER.toLong())
+        )
+        assertEquals(listOf(IllustratedBook.NOTE_ID), notes.map { it.id })
+        assertTrue(notes.single().text, notes.single().text.contains(IllustratedBook.NOTE_TEXT))
+        assertEquals("[]", kit.library.chapterFootnotesJSON(book.id, 0L))
+
+        // And the anchor it points at is a real place in the target chapter.
+        val target = kitJson.decodeFromString<ChapterLayout>(kit.library.chapterLayoutJSON(book.id, 1L))
+        val offset = target.anchors[IllustratedBook.ANCHOR]!!
+        val text = kit.library.chapterText(book.id, 1L)
+        assertTrue(
+            "the anchor opens the sentence it names: '${text.substring(offset, minOf(text.length, offset + 20))}'",
+            text.startsWith(IllustratedBook.ANCHORED_SENTENCE, offset),
+        )
     }
 
     @Test

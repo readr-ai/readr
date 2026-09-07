@@ -70,6 +70,12 @@ object LayoutPaginator {
                 style = style,
                 overflow = TextOverflow.Clip,
                 softWrap = true,
+                // The chapter's inline images, rebased to this chunk. A page is
+                // drawn from the same styled text with the same pictures in it,
+                // so a line holding one is as tall when it is shown as it was
+                // when it was measured — and, being a whole line, is never cut
+                // away from the picture it holds.
+                placeholders = chapter.placeholdersIn(chunkStart, chunkEnd),
                 constraints = Constraints(maxWidth = widthPx),
             )
             for (i in 0 until result.lineCount) {

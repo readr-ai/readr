@@ -1,5 +1,6 @@
 package com.readrai.readr
 
+import android.net.Uri
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.SemanticsNodeInteraction
@@ -11,6 +12,7 @@ import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.performTouchInput
+import androidx.compose.ui.test.swipeLeft
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
@@ -80,11 +82,18 @@ class ReaderScreenTest {
         root.deleteRecursively()
     }
 
-    private fun open(): ReaderViewModel {
-        val model = ReaderViewModel({ repository }, book.id)
+    private fun open(): ReaderViewModel = open(book.id)
+
+    private fun open(id: String): ReaderViewModel {
+        val model = ReaderViewModel({ repository }, id)
         compose.setContent { ReadrTheme { ReaderScreen(model, settings, onBack = {}) } }
         waitForPages()
         return model
+    }
+
+    /** The illustrated fixture, imported the way a picker would import it. */
+    private fun illustrated(): BookSummary = runBlocking {
+        repository.import(Uri.fromFile(IllustratedBook.write(File(root, "illustrated.epub"))))
     }
 
     private fun waitForPages() {
@@ -407,6 +416,115 @@ class ReaderScreenTest {
         compose.onNodeWithTag("reader.search").performClick()
         awaitTag("reader.search.result.0")
         assertEquals("3.17", model.searchQuery)
+    }
+
+    /**
+     * A chapter with a picture in it pages like any other: the label keeps
+     * counting from the first page to the last, the page holding the figure is
+     * one of them, and nothing throws on the way.
+     */
+    @Test
+    fun aChapterWithAnIllustrationPagesThrough() {
+        val illustrated = illustrated()
+        val images = runBlocking { repository.chapterImages(illustrated.id, 0) }
+        assertTrue("the fixture has a figure in its first chapter", images.isNotEmpty())
+        val model = open(illustrated.id)
+
+        assertEquals(1, pageNumber())
+        assertTrue("the running head names the chapter", kicker().isNotBlank())
+        val pages = pageCount()
+        assertTrue("a chapter with a plate still spans pages", pages > 1)
+        // Swiped, not tapped: this chapter carries links, and a link under the
+        // finger is followed rather than turned past, in any zone (which is the
+        // point of `anExternalLinkAsksBeforeItLeavesTheBook`).
+        for (n in 1 until pages) {
+            compose.onNodeWithTag("reader.page").performTouchInput { swipeLeft() }
+            compose.waitUntil(10_000) { pageNumber() == n + 1 }
+        }
+        assertEquals(pages, pageNumber())
+        compose.onNodeWithTag("reader.page").assertIsDisplayed()
+
+        // And the picture sat on exactly one of those pages.
+        val offset = images.first().utf16Offset
+        compose.runOnIdle { model.jump(0, offset) }
+        compose.waitUntil(10_000) { model.visible?.page?.let { offset in it } == true }
+        compose.onNodeWithTag("reader.page").assertIsDisplayed()
+        assertTrue("no error surfaced", nodes("reader.error").isEmpty())
+    }
+
+    /**
+     * A link out of the book asks first, and names the host it would open —
+     * and asks wherever the finger lands, including the page-turn zones: a
+     * link is a control the author put on the page.
+     */
+    @Test
+    fun anExternalLinkAsksBeforeItLeavesTheBook() {
+        val illustrated = illustrated()
+        val model = open(illustrated.id)
+        compose.runOnIdle { model.jump(IllustratedBook.EXTERNAL_LINK_CHAPTER, 0) }
+        waitForPages()
+        val page = pageNumber()
+
+        // The chapter is nothing but the link, so the turn zone holds it too.
+        tapPage(0.9f)
+        awaitTag("link.dialog")
+        assertEquals("example.org", compose.onNodeWithTag("link.host").text())
+        assertEquals("the page did not turn under the question", page, pageNumber())
+
+        compose.onNodeWithTag("link.cancel").performClick()
+        awaitNoTag("link.dialog")
+    }
+
+    /** A noteref whose fragment names a note of this chapter opens it in place. */
+    @Test
+    fun aNoterefOpensTheNoteInPlace() {
+        val illustrated = illustrated()
+        val notes = runBlocking { repository.chapterFootnotes(illustrated.id, IllustratedBook.NOTE_CHAPTER) }
+        assertEquals(listOf(IllustratedBook.NOTE_ID), notes.map { it.id })
+        val model = open(illustrated.id)
+        compose.runOnIdle { model.jump(IllustratedBook.NOTE_CHAPTER, 0) }
+        waitForPages()
+        val chapter = model.chapterIndex
+
+        tapPage(0.5f)
+        awaitTag("footnote.sheet")
+        assertTrue(
+            "the note says what it says",
+            compose.onNodeWithTag("footnote.text").text().contains(IllustratedBook.NOTE_TEXT),
+        )
+        assertEquals("a note is read in place, not somewhere else", chapter, model.chapterIndex)
+    }
+
+    /** A link into the book takes the reader to the place its fragment names. */
+    @Test
+    fun anInternalLinkJumpsToItsAnchor() {
+        val illustrated = illustrated()
+        val titles = runBlocking { repository.chapters(illustrated.id) }.map { it.title }
+        val anchored = IllustratedBook.ANCHOR_CHAPTER
+        val target = runBlocking { repository.chapterLayout(illustrated.id, anchored) }.anchors[IllustratedBook.ANCHOR]!!
+        assertTrue("the anchor is past the chapter's opening", target > 0)
+
+        val model = open(illustrated.id)
+        compose.runOnIdle { model.jump(IllustratedBook.INTERNAL_LINK_CHAPTER, 0) }
+        waitForPages()
+        compose.waitUntil(10_000) { kickerOrEmpty() == titles[IllustratedBook.INTERNAL_LINK_CHAPTER] }
+
+        tapPage(0.5f)
+        compose.waitUntil(10_000) { kickerOrEmpty() == titles[anchored] }
+        compose.waitUntil(5_000) { model.anchor == target }
+        compose.waitUntil(5_000) { runBlocking { repository.position(illustrated.id)?.chapterIndex } == anchored }
+    }
+
+    /** A link to a document this book does not have says so, and stays put. */
+    @Test
+    fun anInternalLinkThatLeadsNowhereSaysSoInPlainLanguage() {
+        val illustrated = illustrated()
+        val titles = runBlocking { repository.chapters(illustrated.id) }.map { it.title }
+        val model = open(illustrated.id)
+        compose.runOnIdle { model.followInternalLink("OEBPS/nowhere.xhtml", null) }
+        awaitTag("reader.message")
+        assertEquals("That link doesn't lead anywhere in this book.", model.message)
+        assertEquals("and the reader has not moved", titles[0], kicker())
     }
 
     @Test

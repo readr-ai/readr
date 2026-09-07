@@ -8,13 +8,16 @@ import androidx.compose.runtime.setValue
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.readrai.readr.data.Bookmark
+import com.readrai.readr.data.ChapterImage
 import com.readrai.readr.data.ChapterLayout
 import com.readrai.readr.data.ChapterSummary
 import com.readrai.readr.data.Contents
+import com.readrai.readr.data.Footnote
 import com.readrai.readr.data.Highlight
 import com.readrai.readr.data.HighlightColor
 import com.readrai.readr.data.LibraryRepository
 import com.readrai.readr.data.SearchResult
+import java.io.File
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
@@ -39,7 +42,19 @@ class ReaderViewModel(private val library: suspend () -> LibraryRepository, val 
         data class Ready(val title: String, val chapters: List<ChapterSummary>, val contents: Contents) : State
     }
 
-    class LoadedChapter(val index: Int, val text: String, val layout: ChapterLayout)
+    /**
+     * A chapter as the page needs it: its text, its layout, the inline images
+     * anchored in it, and the footnotes lifted out of it. All four arrive
+     * together — pagination depends on the pictures, so a chapter that is half
+     * loaded is a chapter that would have to be laid out twice.
+     */
+    class LoadedChapter(
+        val index: Int,
+        val text: String,
+        val layout: ChapterLayout,
+        val images: List<ChapterImage> = emptyList(),
+        val footnotes: List<Footnote> = emptyList(),
+    )
 
     /** A drawn page and the chapter it came from — the pair, never the page alone. */
     data class VisiblePage(val chapterIndex: Int, val page: Page)
@@ -110,6 +125,14 @@ class ReaderViewModel(private val library: suspend () -> LibraryRepository, val 
     var messageCount by mutableIntStateOf(0)
         private set
 
+    /**
+     * The book's retained original, where an inline image's bytes live. Null
+     * until the book is open, and for a book with no archive behind it — the
+     * page then draws alt text where a picture would have been.
+     */
+    var archive by mutableStateOf<File?>(null)
+        private set
+
     private var repository: LibraryRepository? = null
     private val cache = PaginationCache()
     private var saveJob: Job? = null
@@ -134,6 +157,7 @@ class ReaderViewModel(private val library: suspend () -> LibraryRepository, val 
             val chapters = repo.chapters(bookId)
             if (chapters.isEmpty()) throw IllegalStateException("This book has no readable text.")
             val contents = repo.contents(bookId)
+            archive = repo.archive(bookId)
             val position = repo.position(bookId)
             chapterIndex = position?.chapterIndex?.coerceIn(0, chapters.size - 1) ?: 0
             anchor = maxOf(0, position?.utf16Offset ?: 0)
@@ -157,7 +181,9 @@ class ReaderViewModel(private val library: suspend () -> LibraryRepository, val 
                 val loaded = coroutineScope {
                     val text = async { repo.chapterText(bookId, index) }
                     val layout = async { repo.chapterLayout(bookId, index) }
-                    LoadedChapter(index, text.await(), layout.await())
+                    val images = async { repo.chapterImages(bookId, index) }
+                    val footnotes = async { repo.chapterFootnotes(bookId, index) }
+                    LoadedChapter(index, text.await(), layout.await(), images.await(), footnotes.await())
                 }
                 if (chapterIndex != index) return@launch
                 // Going back: show the last page now; the exact anchor settles with the pages.
@@ -288,6 +314,36 @@ class ReaderViewModel(private val library: suspend () -> LibraryRepository, val 
     }
 
     fun clearMessage() { message = null }
+
+    /** Says something to the reader on the page's behalf — a link that leads nowhere, a browser that isn't there. */
+    fun report(text: String) = say(text)
+
+    // MARK: Links. A tap on a link into the book resolves its archive path
+    // against the chapter list already in hand, and its fragment against the
+    // *target* chapter's anchors — which is the one thing that has to be
+    // fetched, and only when there is a fragment to resolve.
+
+    fun followInternalLink(path: String, fragment: String?) {
+        val ready = state as? State.Ready ?: return
+        val repo = repository ?: return
+        viewModelScope.launch {
+            val target = resolveInternalLink(ready.chapters, path, fragment = null, anchors = emptyMap())
+            if (target == null) {
+                say("That link doesn't lead anywhere in this book.")
+                return@launch
+            }
+            val anchors = if (fragment == null) emptyMap() else try {
+                repo.chapterLayout(bookId, target.chapterIndex).anchors
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w(TAG, "link anchors failed: ${e.message}")
+                emptyMap()
+            }
+            val destination = resolveInternalLink(ready.chapters, path, fragment, anchors) ?: return@launch
+            jump(destination.chapterIndex, destination.utf16Offset)
+        }
+    }
 
     /** Says something to the reader; every saying is its own, however it reads. */
     private fun say(text: String) {

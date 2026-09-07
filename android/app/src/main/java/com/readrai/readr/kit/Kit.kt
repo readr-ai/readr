@@ -14,6 +14,14 @@ import org.swift.swiftkit.core.SwiftArena
  */
 class Kit private constructor(
     @Suppress("unused") private val arena: SwiftArena,
+    /**
+     * The directory the library is rooted at — the app's `filesDir` in the
+     * app, a scratch directory under a test. Retained because the reader has
+     * to open a book's retained original itself for inline images: the layout
+     * under it (`Books/<uuid>.epub`, `Covers/`) is the facade's, so no caller
+     * has to guess where the app happened to put it.
+     */
+    val root: File,
     val library: AndroidLibrary,
     val credentials: AndroidCredentials,
 ) {
@@ -22,7 +30,7 @@ class Kit private constructor(
             val arena = SwiftArena.ofAuto()
             val library = AndroidLibrary.init(root.absolutePath, arena)
             val credentials = AndroidCredentials.init(secrets, arena)
-            return Kit(arena, library, credentials)
+            return Kit(arena, root, library, credentials)
         }
     }
 }

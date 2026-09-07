@@ -85,6 +85,28 @@ class LibraryRepository(private val context: Context, private val kit: Kit) {
         kitJson.decodeFromString(kit.library.chapterLayoutJSON(bookId, index.toLong()))
     }
 
+    /** The chapter's inline images, in reading order; offsets in UTF-16. */
+    suspend fun chapterImages(bookId: String, index: Int): List<ChapterImage> = withContext(Dispatchers.IO) {
+        kitJson.decodeFromString(kit.library.chapterImagesJSON(bookId, index.toLong()))
+    }
+
+    /** The chapter's lifted footnotes — empty for most books. */
+    suspend fun chapterFootnotes(bookId: String, index: Int): List<Footnote> = withContext(Dispatchers.IO) {
+        kitJson.decodeFromString(kit.library.chapterFootnotesJSON(bookId, index.toLong()))
+    }
+
+    /**
+     * The book's retained original, where an inline image's bytes live. Null
+     * for a book with no archive behind it (plain text) or one whose original
+     * has gone — the reader draws alt text rather than failing to open.
+     */
+    suspend fun archive(bookId: String): File? {
+        val name = book(bookId)?.sourceFilename ?: return null
+        return withContext(Dispatchers.IO) {
+            File(File(kit.root, "Books"), name).takeIf { it.isFile }
+        }
+    }
+
     /** The Contents rows: the real table of contents, or the spine when there is none. */
     suspend fun contents(bookId: String): Contents = withContext(Dispatchers.IO) {
         kitJson.decodeFromString(kit.library.contentsJSON(bookId))

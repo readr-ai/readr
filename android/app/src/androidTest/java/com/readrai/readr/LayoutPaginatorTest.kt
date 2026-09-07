@@ -1,6 +1,8 @@
 package com.readrai.readr
 
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.Placeholder
+import androidx.compose.ui.text.PlaceholderVerticalAlign
 import androidx.compose.ui.text.TextMeasurer
 import androidx.compose.ui.text.font.createFontFamilyResolver
 import androidx.compose.ui.text.style.TextOverflow
@@ -8,8 +10,10 @@ import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import com.readrai.readr.data.InlineImage
 import com.readrai.readr.data.LayoutSpan
 import com.readrai.readr.ui.reader.ChapterStyling
 import com.readrai.readr.ui.reader.LayoutKey
@@ -48,9 +52,16 @@ class LayoutPaginatorTest {
         return styled to LayoutPaginator.paginate(styled, style, width, height, measurer)
     }
 
+    /**
+     * A page as it is actually drawn — the same styled slice, at the same
+     * width, with the same inline images in it. Measuring it without the
+     * placeholders would be measuring a different page.
+     */
     private fun drawn(styled: StyledChapter, page: Page) = measurer.measure(
         ChapterStyling.pageText(styled, page.textStart, page.textEnd, palette),
-        style, TextOverflow.Clip, softWrap = true, constraints = Constraints(maxWidth = width),
+        style, TextOverflow.Clip, softWrap = true,
+        placeholders = styled.placeholdersIn(page.textStart, page.textEnd),
+        constraints = Constraints(maxWidth = width),
     )
 
     private fun assertEveryPageFits(styled: StyledChapter, pages: List<Page>) {
@@ -155,6 +166,53 @@ class LayoutPaginatorTest {
         // Whereas a page that opens on a paragraph keeps the book indent.
         val fresh = pages.first { it.textStart == 0 || styled.startsParagraph(it.textStart) }
         assertTrue("a paragraph start is indented", drawn(styled, fresh).getHorizontalPosition(0, usePrimaryDirection = true) > 0f)
+    }
+
+    /**
+     * A chapter with a picture in it. The placeholder is a whole number of
+     * lines tall, so a paginator that ignored it would happily fill a page to
+     * the brim and then overflow it by exactly that much when the page was
+     * drawn — which is the failure this guards.
+     */
+    @Test
+    fun aChapterWithAnInlineImageStillTilesAndStillFits() {
+        val lineHeightPx = with(density) { (layout.fontSize * layout.lineHeightMultiplier).sp.toPx() }
+        val imageHeightPx = lineHeightPx * 5
+        val head = chapter(6)
+        val text = "$head\n￼\n${chapter(6)}"
+        val offset = head.length + 1
+        assertEquals('￼', text[offset])
+        val image = with(density) {
+            InlineImage(
+                id = "image-$offset",
+                utf16Offset = offset,
+                placeholder = Placeholder(width.toFloat().toSp(), imageHeightPx.toSp(), PlaceholderVerticalAlign.Center),
+                lineHeight = (imageHeightPx + 4.dp.toPx()).toSp(),
+                bitmap = null,
+                alt = "A figure",
+            )
+        }
+        val styled = ChapterStyling.styled(text, emptyList(), layout, listOf(image))
+        val pages = LayoutPaginator.paginate(styled, style, width, height, measurer)
+
+        assertTrue("several pages", pages.size > 2)
+        assertEquals(0, pages.first().rangeStart)
+        assertEquals(text.length, pages.last().rangeEnd)
+        pages.zipWithNext().forEach { (a, b) -> assertEquals("ranges must tile", a.rangeEnd, b.rangeStart) }
+        assertEveryPageFits(styled, pages)
+
+        // The picture belongs to exactly one page, and its line belongs to that
+        // page whole: the placeholder is never cut away from the line it is on.
+        val holding = pages.filter { offset >= it.textStart && offset < it.textEnd }
+        assertEquals("one page holds the picture", 1, holding.size)
+        val page = holding.single()
+        val result = drawn(styled, page)
+        val line = result.getLineForOffset(offset - page.textStart)
+        assertTrue("its line starts on the page", result.getLineStart(line) >= 0)
+        assertTrue("and ends on it", result.getLineEnd(line, visibleEnd = false) <= page.textEnd - page.textStart)
+        assertTrue("the picture's line is as tall as the picture",
+            result.getLineBottom(line) - result.getLineTop(line) >= imageHeightPx - 1f)
+        assertEquals("one placeholder on that page", 1, styled.placeholdersIn(page.textStart, page.textEnd).size)
     }
 
     @Test

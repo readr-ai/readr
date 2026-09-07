@@ -1,11 +1,25 @@
 package com.readrai.readr.ui.reader
 
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.text.InlineTextContent
+import androidx.compose.material3.Text
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.ParagraphStyle
+import androidx.compose.ui.text.Placeholder
 import androidx.compose.ui.text.PlatformTextStyle
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.BaselineShift
@@ -15,10 +29,14 @@ import androidx.compose.ui.text.style.LineHeightStyle
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextIndent
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.em
 import androidx.compose.ui.unit.sp
 import com.readrai.readr.data.Highlight
+import com.readrai.readr.data.InlineImage
 import com.readrai.readr.data.LayoutSpan
+import com.readrai.readr.ui.theme.LocalReadingPalette
 import com.readrai.readr.ui.theme.ReadingPalette
 
 /** The appearance fields that change layout. Colour is applied at draw time and never re-paginates. */
@@ -33,8 +51,20 @@ data class LayoutKey(val fontSize: Int, val font: ReaderFont, val spacing: LineS
  * where the kit's paragraphs begin (ascending, starting at 0) — the one
  * source of paragraph boundaries for chunking, page slicing and indents,
  * since the string itself no longer carries newlines (see [ChapterStyling]).
+ *
+ * `placeholders` and `inlineContent` are the chapter's inline images, and are
+ * two halves of one fact: the placeholders are what the text is *measured*
+ * with and the map is what fills them when it is *drawn*, so a page can only
+ * be the page that was measured if both are used. `links` are the link spans,
+ * in chapter offsets, which the page hit-tests a tap against.
  */
-class StyledChapter(val text: AnnotatedString, val paragraphStarts: IntArray) {
+class StyledChapter(
+    val text: AnnotatedString,
+    val paragraphStarts: IntArray,
+    val placeholders: List<AnnotatedString.Range<Placeholder>> = emptyList(),
+    val inlineContent: Map<String, InlineTextContent> = emptyMap(),
+    val links: List<ChapterLink> = emptyList(),
+) {
     /** Whether `offset` begins a paragraph. */
     fun startsParagraph(offset: Int): Boolean = paragraphStarts.binarySearch(offset) >= 0
 
@@ -43,6 +73,22 @@ class StyledChapter(val text: AnnotatedString, val paragraphStarts: IntArray) {
         val i = paragraphStarts.binarySearch(atOrBefore)
         return if (i >= 0) paragraphStarts[i] else paragraphStarts[(-i - 1) - 1]
     }
+
+    /**
+     * The placeholders lying wholly inside `[start, end)`, rebased to that
+     * slice — what a measurement of `text.subSequence(start, end)` needs. A
+     * placeholder is one character wide and a slice never cuts a character,
+     * so no image is ever half-measured.
+     */
+    fun placeholdersIn(start: Int, end: Int): List<AnnotatedString.Range<Placeholder>> {
+        if (placeholders.isEmpty()) return emptyList()
+        return placeholders
+            .filter { it.start >= start && it.end <= end }
+            .map { AnnotatedString.Range(it.item, it.start - start, it.end - start) }
+    }
+
+    /** The link under a chapter offset, or null where there is none. */
+    fun linkAt(offset: Int): ChapterLink? = links.firstOrNull { offset >= it.start && offset < it.end }
 }
 
 /**
@@ -57,7 +103,15 @@ class StyledChapter(val text: AnnotatedString, val paragraphStarts: IntArray) {
  * what it means in the kit's text.
  */
 object ChapterStyling {
-    private const val LINK_TAG = "link"
+    /**
+     * The tag Compose's own inline-content mechanism reads. `Text` resolves a
+     * string annotation under this tag against the `inlineContent` map it is
+     * given, and draws the entry it finds in place of the annotated
+     * characters — here, the single U+FFFC the kit left where the image was.
+     * It is spelled out rather than imported because the constant Compose
+     * uses for it is internal to that library.
+     */
+    const val INLINE_CONTENT_TAG = "androidx.compose.foundation.text.inlineContent"
 
     /** Heading scale by level, as on iOS (`Theme.swift`): h1 1.6, h2 1.35, h3 1.2, else 1.05. */
     fun headingScale(level: Int?): Float = when (level) {
@@ -90,7 +144,19 @@ object ChapterStyling {
         var align: TextAlign? = null
     }
 
-    fun styled(text: String, spans: List<LayoutSpan>, layout: LayoutKey): StyledChapter {
+    /**
+     * `images` are the chapter's inline pictures, already sized for this
+     * page's geometry ([com.readrai.readr.data.ChapterImages.place]). Each one
+     * covers the single U+FFFC the kit left in the text at its offset, so the
+     * string keeps its length and every offset still means what it means to
+     * the kit — a picture, like a highlight, never moves a line break.
+     */
+    fun styled(
+        text: String,
+        spans: List<LayoutSpan>,
+        layout: LayoutKey,
+        images: List<InlineImage> = emptyList(),
+    ): StyledChapter {
         val length = text.length
         val starts = ArrayList<Int>().apply {
             add(0)
@@ -110,6 +176,19 @@ object ChapterStyling {
         val attributes = HashMap<Int, ParagraphAttributes>()
         fun forEachParagraph(start: Int, end: Int, block: (ParagraphAttributes) -> Unit) {
             for (p in paragraphIndex(start)..paragraphIndex(end - 1)) block(attributes.getOrPut(p) { ParagraphAttributes() })
+        }
+
+        // An image whose placeholder is no longer in the text belongs to a
+        // chapter that has since changed; it is dropped rather than drawn over
+        // a character that means something else.
+        val placed = images.filter { it.utf16Offset in 0 until length }.sortedBy { it.utf16Offset }
+        // Compose forces a line to the height its paragraph declares, so the
+        // paragraph an image sits in declares the picture's own height. The
+        // tallest image in a paragraph wins it.
+        val imageLineHeights = HashMap<Int, Float>()
+        for (image in placed) {
+            val p = paragraphIndex(image.utf16Offset)
+            imageLineHeights[p] = maxOf(imageLineHeights[p] ?: 0f, image.lineHeight.value)
         }
 
         val clamped = spans.mapNotNull { span ->
@@ -134,6 +213,7 @@ object ChapterStyling {
         }
 
         val bodyAlign = if (layout.justified) TextAlign.Justify else TextAlign.Start
+        val links = ArrayList<ChapterLink>()
         val annotated = buildAnnotatedString {
             append(text.replace('\n', ' '))
             for (p in paragraphStarts.indices) {
@@ -142,15 +222,24 @@ object ChapterStyling {
                 if (start >= end) continue
                 val attrs = attributes[p]
                 val heading = attrs?.headingLevel
+                val picture = imageLineHeights[p]
                 addStyle(
                     ParagraphStyle(
-                        textAlign = attrs?.align ?: if (heading != null) TextAlign.Start else bodyAlign,
+                        textAlign = attrs?.align ?: when {
+                            heading != null -> TextAlign.Start
+                            picture != null -> TextAlign.Center
+                            else -> bodyAlign
+                        },
                         textIndent = when {
-                            heading != null || attrs?.align == TextAlign.Center -> TextIndent.None
+                            heading != null || picture != null || attrs?.align == TextAlign.Center -> TextIndent.None
                             attrs?.quote == true -> TextIndent(firstLine = 1.5.em, restLine = 1.5.em)
                             else -> TextIndent(firstLine = 1.5.em)
                         },
-                        lineHeight = if (heading != null) (fontSize * headingScale(heading) * layout.lineHeightMultiplier).sp else lineHeight.sp,
+                        lineHeight = when {
+                            picture != null -> maxOf(picture, lineHeight).sp
+                            heading != null -> (fontSize * headingScale(heading) * layout.lineHeightMultiplier).sp
+                            else -> lineHeight.sp
+                        },
                     ),
                     start, end,
                 )
@@ -163,13 +252,65 @@ object ChapterStyling {
                     "superscript" -> SpanStyle(baselineShift = BaselineShift.Superscript, fontSize = (fontSize * 0.7f).sp)
                     "subscript" -> SpanStyle(baselineShift = BaselineShift.Subscript, fontSize = (fontSize * 0.7f).sp)
                     "smallCaps" -> SpanStyle(fontFeatureSettings = "smcp")
-                    "link" -> { addStringAnnotation(LINK_TAG, span.url ?: "", span.start, span.end); null }
+                    "link" -> {
+                        links.add(ChapterLink(span.start, span.end, span.url, span.linkPath, span.linkFragment))
+                        null
+                    }
                     else -> null
                 }
                 if (style != null) addStyle(style, span.start, span.end)
             }
+            // The annotation Compose's inline content reads; the placeholder
+            // below is the same range, and the two are handed to the same
+            // measurement and the same draw.
+            for (image in placed) {
+                addStringAnnotation(INLINE_CONTENT_TAG, image.id, image.utf16Offset, image.utf16Offset + 1)
+            }
         }
-        return StyledChapter(annotated, paragraphStarts)
+        return StyledChapter(
+            text = annotated,
+            paragraphStarts = paragraphStarts,
+            placeholders = placed.map { AnnotatedString.Range(it.placeholder, it.utf16Offset, it.utf16Offset + 1) },
+            inlineContent = placed.associate { it.id to inlineContent(it) },
+            links = links,
+        )
+    }
+
+    /**
+     * What fills an image's placeholder: the picture, scaled to fit the box
+     * that was measured; or, when the entry could not be read, its alt text in
+     * a muted serif — a line of the book saying what is missing rather than a
+     * blank. An image with neither bytes nor alt text leaves a hairline, so
+     * the gap on the page is legible as a gap.
+     */
+    private fun inlineContent(image: InlineImage): InlineTextContent = InlineTextContent(image.placeholder) {
+        val palette = LocalReadingPalette.current
+        val bitmap = image.bitmap
+        when {
+            bitmap != null -> Image(
+                bitmap = bitmap,
+                contentDescription = image.alt.ifBlank { null },
+                contentScale = ContentScale.Fit,
+                modifier = Modifier.fillMaxSize().testTag("reader.image.${image.utf16Offset}"),
+            )
+            image.alt.isNotBlank() -> Box(
+                Modifier.fillMaxSize().testTag("reader.imageAlt.${image.utf16Offset}"),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    image.alt,
+                    fontFamily = FontFamily.Serif,
+                    fontStyle = FontStyle.Italic,
+                    color = palette.muted,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            else -> Box(
+                Modifier.fillMaxSize().testTag("reader.imageAlt.${image.utf16Offset}"),
+                contentAlignment = Alignment.Center,
+            ) { Box(Modifier.fillMaxWidth().height(1.dp).background(palette.line)) }
+        }
     }
 
     /**
@@ -205,7 +346,25 @@ object ChapterStyling {
                 } else it.item
                 addStyle(item, it.start, it.end)
             }
-            slice.getStringAnnotations(LINK_TAG, 0, slice.length).forEach { addStyle(SpanStyle(color = palette.iris), it.start, it.end) }
+            // The inline-image annotations travel with the slice: they are what
+            // makes the page draw the picture that the page was measured with.
+            slice.getStringAnnotations(INLINE_CONTENT_TAG, 0, slice.length).forEach {
+                addStringAnnotation(INLINE_CONTENT_TAG, it.item, it.start, it.end)
+            }
+            // Links are iris in either direction; only one that leaves the book
+            // is underlined, so "this goes somewhere else" is visible before the tap.
+            for (link in chapter.links) {
+                val start = maxOf(link.start, textStart)
+                val end = minOf(link.end, textEnd)
+                if (start >= end) continue
+                addStyle(
+                    SpanStyle(
+                        color = palette.iris,
+                        textDecoration = if (link.isExternal) TextDecoration.Underline else null,
+                    ),
+                    start - textStart, end - textStart,
+                )
+            }
             for (highlight in highlights) {
                 val start = maxOf(highlight.utf16Start, textStart)
                 val end = minOf(highlight.utf16End, textEnd)

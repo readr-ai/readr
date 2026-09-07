@@ -1,5 +1,8 @@
 package com.readrai.readr.ui.reader
 
+import android.content.ActivityNotFoundException
+import android.content.Intent
+import android.net.Uri
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -50,6 +53,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFontFamilyResolver
 import androidx.compose.ui.platform.LocalLayoutDirection
@@ -65,6 +69,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.zIndex
+import com.readrai.readr.data.ChapterImages
+import com.readrai.readr.data.Footnote
+import com.readrai.readr.data.InlineImage
 import com.readrai.readr.ui.theme.LocalReadingPalette
 import com.readrai.readr.ui.theme.ReadingPalette
 import kotlinx.coroutines.Dispatchers
@@ -260,6 +267,7 @@ private fun PageSurface(
     val fontFamilyResolver = LocalFontFamilyResolver.current
     val layoutDirection = LocalLayoutDirection.current
     val clipboard = LocalClipboardManager.current
+    val context = LocalContext.current
     val lastColor by settings.lastHighlightColor.collectAsState()
 
     BoxWithConstraints(Modifier.fillMaxSize().safeDrawingPadding()) {
@@ -287,16 +295,35 @@ private fun PageSurface(
         // page-turn zones are measured in.
         val surfaceWidthPx = with(density) { maxWidth.toPx() }
 
+        // The chapter's pictures, read and sized before anything is measured:
+        // an image changes where the lines fall, so a pagination computed
+        // without them would be thrown away the moment they arrived. Null
+        // means "not resolved yet", which is what holds the pagination back.
+        val artwork by produceState<List<InlineImage>?>(null, chapter, textWidthPx, pageHeightPx, density) {
+            val loaded = chapter
+            if (loaded == null) { value = null; return@produceState }
+            value = if (loaded.images.isEmpty()) emptyList() else ChapterImages.place(
+                archive = model.archive,
+                bookId = model.bookId,
+                images = loaded.images,
+                density = density,
+                textWidthPx = textWidthPx,
+                pageHeightPx = pageHeightPx,
+                fallbackLineHeightPx = with(density) { (appearance.fontSize * layoutKey.lineHeightMultiplier).sp.toPx() },
+            )
+        }
+
         val pageKey = chapter?.let { PageKey(it.index, textWidthPx, pageHeightPx, density.density, density.fontScale, layoutKey) }
-        val pageSet by produceState<PageSet?>(initialValue = null, chapter, pageKey) {
+        val pageSet by produceState<PageSet?>(initialValue = null, chapter, pageKey, artwork) {
             val loaded = chapter
             val key = pageKey
-            if (loaded == null || key == null) { value = null; return@produceState }
+            val images = artwork
+            if (loaded == null || key == null || images == null) { value = null; return@produceState }
             // Measurement ignores colour, so the theme is not part of the key.
             val measureStyle = textStyle
             value = withContext(Dispatchers.Default) {
                 model.pageSet(key) {
-                    val styled = ChapterStyling.styled(loaded.text, loaded.layout.spans, layoutKey)
+                    val styled = ChapterStyling.styled(loaded.text, loaded.layout.spans, layoutKey, images)
                     val measurer = TextMeasurer(fontFamilyResolver, density, layoutDirection, cacheSize = 0)
                     PageSet(loaded.index, styled, Pagination(LayoutPaginator.paginate(styled, measureStyle, textWidthPx, pageHeightPx, measurer)))
                 }
@@ -326,6 +353,11 @@ private fun PageSurface(
         // glyphs on screen, so a turn or a re-pagination drops them.
         val selection = remember { PageSelectionState() }
         var editedId by remember { mutableStateOf<String?>(null) }
+        // A tapped link: a note shown in place, or a question before the book
+        // hands the reader to another app. Both belong to the page, not to the
+        // book, so a turn or a jump leaves them behind.
+        var footnote by remember { mutableStateOf<Footnote?>(null) }
+        var externalLink by remember { mutableStateOf<String?>(null) }
         LaunchedEffect(set, pageIndex) { selection.clear(); editedId = null }
         val annotating = { selection.isActive || editedId != null }
         val dismiss = { selection.clear(); editedId = null }
@@ -397,6 +429,9 @@ private fun PageSurface(
                             // every newline as a space, and a copied passage keeps its
                             // paragraph breaks.
                             val chapterText = chapter?.takeIf { it.index == chapterIndex }?.text
+                            // A noteref opens in place only when the note it names was
+                            // lifted out of *this* chapter; anything else is navigation.
+                            val chapterFootnotes = chapter?.takeIf { it.index == chapterIndex }?.footnotes.orEmpty()
                             val edited = editedId?.let { id -> onPage.firstOrNull { it.id == id } }
                             val range = selection.range
                             val target: AnnotationTarget? = when {
@@ -418,6 +453,9 @@ private fun PageSurface(
                                 style = textStyle,
                                 softWrap = true,
                                 overflow = TextOverflow.Clip,
+                                // What was measured is what is drawn: the same
+                                // pictures, at the same sizes, in the same places.
+                                inlineContent = set.styled.inlineContent,
                                 onTextLayout = { selection.layout = it },
                                 modifier = Modifier
                                     .fillMaxWidth()
@@ -427,17 +465,33 @@ private fun PageSurface(
                                         state = selection,
                                         palette = palette,
                                     ) { pageOffset, position ->
-                                        // A tap puts the capsule away, or opens it on the highlight under the finger;
-                                        // anything else is left to the page-turn zones behind. A highlight only
-                                        // claims the middle half of the surface: in the outer quarters the reader
-                                        // is turning the page, whatever happens to be marked under the finger.
-                                        if (target != null) {
+                                        // A tap follows the link under the finger, puts the capsule away, or
+                                        // opens it on the highlight under the finger; anything else is left to
+                                        // the page-turn zones behind. A link claims the whole surface — it is a
+                                        // control the author put there, and a reader who aims at one means it —
+                                        // while a highlight only claims the middle half: in the outer quarters
+                                        // the reader is turning the page, whatever happens to be marked there.
+                                        val offset = page.textStart + pageOffset
+                                        val link = set.styled.linkAt(offset)
+                                        if (link != null) {
+                                            dismiss()
+                                            when {
+                                                link.url != null -> externalLink = link.url
+                                                link.path != null -> {
+                                                    val note = link.fragment?.let { id ->
+                                                        chapterFootnotes.firstOrNull { it.id == id }
+                                                    }
+                                                    if (note != null) footnote = note
+                                                    else model.followInternalLink(link.path, link.fragment)
+                                                }
+                                            }
+                                            true
+                                        } else if (target != null) {
                                             dismiss()
                                             true
                                         } else if (abs(position.x - textWidthPx / 2f) >= surfaceWidthPx * 0.25f) {
                                             false
                                         } else {
-                                            val offset = page.textStart + pageOffset
                                             val hit = onPage.firstOrNull { offset >= it.utf16Start && offset < it.utf16End }
                                             if (hit != null) { editedId = hit.id; true } else false
                                         }
@@ -493,6 +547,22 @@ private fun PageSurface(
                     }
                 }
             }
+        }
+
+        footnote?.let { note -> FootnoteSheet(note, onDismiss = { footnote = null }) }
+        externalLink?.let { url ->
+            ExternalLinkDialog(
+                url = url,
+                onOpen = {
+                    externalLink = null
+                    try {
+                        context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                    } catch (e: ActivityNotFoundException) {
+                        model.report("No app on this device can open that link.")
+                    }
+                },
+                onDismiss = { externalLink = null },
+            )
         }
     }
 }
