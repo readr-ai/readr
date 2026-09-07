@@ -3,7 +3,9 @@ package com.readrai.readr
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.readrai.readr.data.BookSummary
+import com.readrai.readr.data.ChapterLayout
 import com.readrai.readr.data.ChapterSummary
+import com.readrai.readr.data.Contents
 import com.readrai.readr.data.EpubExtractor
 import com.readrai.readr.data.ReadingPosition
 import com.readrai.readr.data.kitJson
@@ -83,6 +85,64 @@ class KitBridgeTest {
         assertEquals(12, chapters.size)
         assertTrue(chapters[0].title.contains("Rabbit-Hole"))
         assertTrue(kit.library.chapterText(book.id, 0).contains("Alice was beginning to get very tired"))
+    }
+
+    @Test
+    fun positionsCrossTheBridgeInUTF16() = runTest {
+        // "Café 👍": the kit counts 6 characters, Kotlin 7 code units.
+        val file = File(root, "cafe.txt").apply { writeText("Café 👍 ok, then more words follow here.") }
+        val book = kitJson.decodeFromString<BookSummary>(kit.library.importPlainText(file.absolutePath, "Café").await())
+        kit.library.savePosition(book.id, 0L, 7L)
+        val after = kitJson.decodeFromString<ReadingPosition>(kit.library.positionJSON(book.id))
+        assertEquals(6, after.characterOffset)
+        assertEquals(7, after.utf16Offset)
+        // A code unit inside the emoji rounds down to the character holding it.
+        kit.library.savePosition(book.id, 0L, 6L)
+        val inside = kitJson.decodeFromString<ReadingPosition>(kit.library.positionJSON(book.id))
+        assertEquals(5, inside.characterOffset)
+        assertEquals(5, inside.utf16Offset)
+        // Past the end clamps to the text.
+        kit.library.savePosition(book.id, 0L, 10_000L)
+        val text = kit.library.chapterText(book.id, 0)
+        assertEquals(text.length, kitJson.decodeFromString<ReadingPosition>(kit.library.positionJSON(book.id)).utf16Offset)
+    }
+
+    @Test
+    fun chapterLayoutAndContentsSpeakUTF16() = runTest {
+        val original = File(root, "alice.epub")
+        context.assets.open("alice-in-wonderland.epub").use { i -> original.outputStream().use { i.copyTo(it) } }
+        val extracted = File(root, "alice")
+        EpubExtractor.extract(original.inputStream(), extracted)
+        val book = kitJson.decodeFromString<BookSummary>(kit.library.importEPUB(extracted.absolutePath, original.absolutePath, "fallback").await())
+        var spans = 0
+        for (index in 0 until book.chapterCount) {
+            val text = kit.library.chapterText(book.id, index.toLong())
+            val layout = kitJson.decodeFromString<ChapterLayout>(kit.library.chapterLayoutJSON(book.id, index.toLong()))
+            assertEquals("utf16Length is the Kotlin length", text.length, layout.utf16Length)
+            assertEquals(index, layout.index)
+            for (span in layout.spans) {
+                assertTrue("span within the text: $span", span.start in 0 until span.end && span.end <= text.length)
+                spans++
+            }
+            for ((_, offset) in layout.anchors) assertTrue(offset in 0..text.length)
+        }
+        assertTrue("the sample carries formatting", spans > 0)
+        val contents = kitJson.decodeFromString<Contents>(kit.library.contentsJSON(book.id))
+        assertFalse("the EPUB has a real table of contents", contents.isFallback)
+        assertTrue(contents.rows.isNotEmpty())
+        assertTrue(contents.rows.any { it.title.contains("Rabbit-Hole") })
+        assertEquals(contents.rows.indices.toList(), contents.rows.map { it.id })
+        for (row in contents.rows) assertTrue(row.chapterIndex in 0 until book.chapterCount)
+    }
+
+    @Test
+    fun contentsFallBackToTheSpineWithoutATableOfContents() = runTest {
+        val file = File(root, "plain.txt").apply { writeText("Just one long chapter of prose with no headings at all.") }
+        val book = kitJson.decodeFromString<BookSummary>(kit.library.importPlainText(file.absolutePath, "Plain").await())
+        val contents = kitJson.decodeFromString<Contents>(kit.library.contentsJSON(book.id))
+        assertTrue(contents.isFallback)
+        assertEquals(book.chapterCount, contents.rows.size)
+        assertEquals(0, contents.rows[0].utf16Offset)
     }
 
     @Test
