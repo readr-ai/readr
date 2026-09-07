@@ -26,6 +26,13 @@ you can ask the book questions and turn highlights into articles).
 - Keep app-only code (anything needing Apple frameworks) out of `Sources/ReadrKit`
   so the package keeps building on CI. Mirror existing patterns
   (`PDFKitBookParser`, `ZipEPUBContainer`) under `App/`.
+- **Android** lives in `android/` (Kotlin + Jetpack Compose). It links the
+  same `ReadrKit`, cross-compiled with the Swift SDK for Android and reached
+  through swift-java's generated JNI bindings; the Swift facade is
+  `android/readrkit/Sources/ReadrAndroid` and must stay small (JSON/String
+  boundary — see the rules in its `Package.swift`). Kotlin implements the
+  kit's platform protocols (`SecretStore` over the Android Keystore today).
+  Nothing Android-specific goes into `Sources/ReadrKit`.
 - Secrets only in the Keychain — never `UserDefaults`, plists, or logs. Don't add
   network calls to the local-LLM path.
 
@@ -39,6 +46,9 @@ xcodegen generate && open Readr.xcodeproj   # full app (build env: macOS only)
 CI (`.github/workflows/ci.yml`) runs `swift build` + `swift test`, the macOS
 app build + snapshot tests, an iOS device-SDK build, and the XCUITest suite on
 iPhone **and iPad** simulators, on PRs and on `main`.
+`.github/workflows/android.yml` cross-compiles the kit, runs its XCTest suite
+on an Android emulator, and runs the app's instrumented tests. Android setup
+and build commands: `android/README.md`.
 
 ## Releases
 

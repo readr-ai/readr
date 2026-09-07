@@ -309,6 +309,32 @@ empirical AVFoundation rate calibration in `SpeechSettings` stops being
 needed on that path.
 
 
+## A1–A8 — Android (in progress)
+
+Scope, measurements and the decision record are in the private Android
+scoping note (2026-09-06; `docs/research/` is untracked by design). Same kit, Kotlin + Compose UI, swift-java
+bridge; `android/README.md` has the build recipe.
+
+### A1 — Foundation
+- [x] `android/` Gradle project; `:readrkit` cross-compiles `ReadrKit` + the
+  `ReadrAndroid` facade for arm64/x86_64 and packages the Swift runtime
+- [x] Keystore-backed `SecretStore` implementing the kit's `CredentialStore`
+  (AES-GCM, key in the Android Keystore, never plaintext on disk)
+- [x] Library: import EPUB (Kotlin unzips with the kit's caps, kit parses) and
+  plain text, sample book seeded on first launch, covers, reading position
+- [x] Marginalia theme in Compose; shelf; a scrolling chapter view as the
+  phase-1 reading surface
+- [x] CI lane: kit XCTest suite on an x86_64 emulator + instrumented tests
+- [ ] Play Console account, closed-test track
+
+### Next
+- A2 Reading: paginated surface over `Chapter.text` (selection, highlights,
+  notes, bookmarks, TOC, search, appearance)
+- A3 Ask: provider settings, streamed Ask with citations, Gemini Nano tier
+- A4 Listen: platform `TextToSpeech` engine, media session, Listen card
+- A5 PDF, A6 Readr Voice (research: CPU Kokoro measured marginal), A7 article
+  studio + bug report, A8 Play production
+
 ## Open questions / decisions to revisit
 - OAuth feasibility for "log in with Claude / ChatGPT" vs. API keys only.
 - SwiftData vs. GRDB for persistence.

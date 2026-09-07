@@ -1,0 +1,10 @@
+# Gradle / Android Studio
+.gradle/
+build/
+local.properties
+.idea/
+*.iml
+.kotlin/
+# SwiftPM build of the bridge package
+readrkit/.build/
+readrkit/Package.resolved
