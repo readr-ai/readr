@@ -7,6 +7,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.readrai.readr.data.Bookmark
 import com.readrai.readr.data.ChapterLayout
 import com.readrai.readr.data.ChapterSummary
 import com.readrai.readr.data.Contents
@@ -52,6 +53,23 @@ class ReaderViewModel(private val library: suspend () -> LibraryRepository, val 
     var highlights by mutableStateOf<List<Highlight>>(emptyList())
         private set
 
+    /** The book's bookmarks, in reading order. Reloaded after every change. */
+    var bookmarks by mutableStateOf<List<Bookmark>>(emptyList())
+        private set
+
+    /**
+     * The page on screen. The reader's bar bookmarks *the page*, not the
+     * anchor, so the page it is looking at has to be visible up there; the
+     * page surface reports it as it renders, and clears it while a chapter
+     * is being laid out.
+     */
+    var visiblePage by mutableStateOf<Page?>(null)
+        private set
+
+    /** The note being written, or null when no editor is open. */
+    var noteDraft by mutableStateOf<NoteDraft?>(null)
+        private set
+
     /** A short-lived reader-facing message — an annotation that would not save. */
     var message by mutableStateOf<String?>(null)
         private set
@@ -86,6 +104,7 @@ class ReaderViewModel(private val library: suspend () -> LibraryRepository, val 
             state = State.Ready(book.title, chapters, contents)
             loadChapter()
             reloadHighlights(repo)
+            reloadBookmarks(repo)
         } catch (e: Exception) {
             state = State.Failed(e.message ?: "Couldn't open this book.")
         }
@@ -187,12 +206,79 @@ class ReaderViewModel(private val library: suspend () -> LibraryRepository, val 
 
     fun clearMessage() { message = null }
 
-    private fun annotate(failure: String, work: suspend (LibraryRepository) -> Unit) {
+    // MARK: Notes. A note always belongs to a highlight, so "Note" on a plain
+    // selection highlights it first, in the colour last used, and remembers
+    // that it did: cancelling then takes that highlight away again, while
+    // cancelling a note on a highlight the reader already had keeps it.
+
+    /** "Note" on a selection: highlight it, then open the editor on what was created. */
+    fun noteOnSelection(chapterIndex: Int, utf16Start: Int, utf16End: Int, color: HighlightColor) {
+        val repo = repository ?: return
+        viewModelScope.launch {
+            try {
+                val created = repo.addHighlight(bookId, chapterIndex, utf16Start, utf16End, color, note = null)
+                reloadHighlights(repo)
+                noteDraft = NoteDraft(created.id, created.quotedText, created.note.orEmpty(), createdForNote = true)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w(TAG, "note highlight failed: ${e.message}")
+                message = "Couldn't save that highlight."
+            }
+        }
+    }
+
+    /** "Edit note" on a highlight the reader already has: the editor opens on its note. */
+    fun noteOnHighlight(highlight: Highlight) {
+        noteDraft = NoteDraft(highlight.id, highlight.quotedText, highlight.note.orEmpty(), createdForNote = false)
+    }
+
+    /** Saves the note; an empty or blank one stores no note at all rather than "". */
+    fun saveNote(text: String) {
+        val draft = noteDraft ?: return
+        noteDraft = null
+        val color = highlights.firstOrNull { it.id == draft.highlightId }?.markerColor ?: HighlightColor.YELLOW
+        annotate("Couldn't save that note.") { repo ->
+            repo.updateHighlight(draft.highlightId, color, text.trim().ifBlank { null })
+        }
+    }
+
+    /** Cancels the note; a highlight made only to carry it goes with it. */
+    fun cancelNote() {
+        val draft = noteDraft ?: return
+        noteDraft = null
+        if (draft.createdForNote) removeHighlight(draft.highlightId)
+    }
+
+    // MARK: Bookmarks — a place in the book, kept as a chapter and an offset.
+
+    fun addBookmark(chapterIndex: Int, utf16Offset: Int) {
+        bookmark("Couldn't save that bookmark.") { repo -> repo.addBookmark(bookId, chapterIndex, utf16Offset) }
+    }
+
+    fun removeBookmark(id: String) {
+        bookmark("Couldn't remove that bookmark.") { repo -> repo.removeBookmark(id) }
+    }
+
+    /** The page surface reporting what it is drawing, so the bar can bookmark it. */
+    fun showing(page: Page?) { visiblePage = page }
+
+    private fun annotate(failure: String, work: suspend (LibraryRepository) -> Unit) =
+        mutate(failure, work) { repo -> reloadHighlights(repo) }
+
+    private fun bookmark(failure: String, work: suspend (LibraryRepository) -> Unit) =
+        mutate(failure, work) { repo -> reloadBookmarks(repo) }
+
+    private fun mutate(
+        failure: String,
+        work: suspend (LibraryRepository) -> Unit,
+        reload: suspend (LibraryRepository) -> Unit,
+    ) {
         val repo = repository ?: return
         viewModelScope.launch {
             try {
                 work(repo)
-                reloadHighlights(repo)
+                reload(repo)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -209,6 +295,16 @@ class ReaderViewModel(private val library: suspend () -> LibraryRepository, val 
             throw e
         } catch (e: Exception) {
             Log.w(TAG, "highlights load failed: ${e.message}")
+        }
+    }
+
+    private suspend fun reloadBookmarks(repo: LibraryRepository) {
+        try {
+            bookmarks = repo.bookmarks(bookId)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "bookmarks load failed: ${e.message}")
         }
     }
 

@@ -9,7 +9,9 @@ import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.longClick
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.performTouchInput
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.readrai.readr.data.BookSummary
@@ -18,9 +20,12 @@ import com.readrai.readr.data.LibraryRepository
 import com.readrai.readr.data.kitJson
 import com.readrai.readr.kit.KeystoreSecretStore
 import com.readrai.readr.kit.Kit
+import com.readrai.readr.ui.reader.ChapterStyling
+import com.readrai.readr.ui.reader.LayoutKey
 import com.readrai.readr.ui.reader.ReaderScreen
 import com.readrai.readr.ui.reader.ReaderSettings
 import com.readrai.readr.ui.reader.ReaderViewModel
+import com.readrai.readr.ui.theme.Marginalia
 import com.readrai.readr.ui.theme.ReadrTheme
 import java.io.File
 import kotlinx.coroutines.future.await
@@ -104,6 +109,15 @@ class ReaderScreenTest {
     private fun awaitTag(tag: String) = compose.waitUntil(10_000) { nodes(tag).isNotEmpty() }
     private fun awaitNoTag(tag: String) = compose.waitUntil(10_000) { nodes(tag).isEmpty() }
     private fun highlights() = runBlocking { repository.highlights(book.id) }
+    private fun bookmarks() = runBlocking { repository.bookmarks(book.id) }
+
+    /** The kicker, or "" while a chapter is loading — safe to poll from `waitUntil`. */
+    private fun kickerOrEmpty(): String =
+        nodes("reader.kicker").firstOrNull()?.config?.getOrElseNullable(SemanticsProperties.ContentDescription) { null }?.firstOrNull() ?: ""
+
+    /** What the ribbon in the bar says it will do, or "" when it is not there. */
+    private fun bookmarkLabel(): String =
+        nodes("reader.bookmarks").firstOrNull()?.config?.getOrElseNullable(SemanticsProperties.ContentDescription) { null }?.firstOrNull() ?: ""
 
     @Test
     fun opensOnTheFirstPageAndTurnsWithTaps() {
@@ -204,6 +218,97 @@ class ReaderScreenTest {
         compose.onNodeWithTag("annotation.remove").performClick()
         compose.waitUntil(10_000) { highlights().isEmpty() }
         awaitNoTag("annotation.capsule")
+    }
+
+    @Test
+    fun aNoteIsWrittenOnTheHighlightTheNoteFlowMakes() {
+        open()
+        compose.onNodeWithTag("reader.page").performTouchInput { longClick(center) }
+        awaitTag("annotation.capsule")
+        compose.onNodeWithTag("annotation.note").performClick()
+
+        // "Note" highlights the passage first — a note has to live on a highlight.
+        awaitTag("note.editor")
+        compose.waitUntil(10_000) { highlights().size == 1 }
+        compose.onNodeWithTag("note.field").performTextInput("Marginal thought")
+        compose.onNodeWithTag("note.save").performClick()
+
+        compose.waitUntil(10_000) { highlights().singleOrNull()?.note == "Marginal thought" }
+        awaitNoTag("note.editor")
+        val noted = highlights().single()
+        assertEquals(HighlightColor.YELLOW, noted.markerColor)
+
+        // And a highlight that carries a note is drawn underlined.
+        val text = runBlocking { repository.chapterText(book.id, noted.chapterIndex) }
+        val layout = runBlocking { repository.chapterLayout(book.id, noted.chapterIndex) }
+        val styled = ChapterStyling.styled(text, layout.spans, LayoutKey(settings.appearance.value))
+        val page = ChapterStyling.pageText(styled, 0, text.length, Marginalia.paper, listOf(noted))
+        assertTrue(
+            "the noted passage is underlined on the page",
+            page.spanStyles.any { it.item.textDecoration == TextDecoration.Underline && it.start == noted.utf16Start },
+        )
+    }
+
+    @Test
+    fun cancellingANewNoteTakesItsHighlightWithIt() {
+        open()
+        compose.onNodeWithTag("reader.page").performTouchInput { longClick(center) }
+        awaitTag("annotation.capsule")
+        compose.onNodeWithTag("annotation.note").performClick()
+        awaitTag("note.editor")
+        compose.waitUntil(10_000) { highlights().size == 1 }
+
+        compose.onNodeWithTag("note.cancel").performClick()
+        compose.waitUntil(10_000) { highlights().isEmpty() }
+        awaitNoTag("note.editor")
+    }
+
+    @Test
+    fun theRibbonBookmarksThePageAndTakesItBack() {
+        open()
+        assertEquals("Bookmark this page", bookmarkLabel())
+        compose.onNodeWithTag("reader.bookmarks").performClick()
+
+        compose.waitUntil(10_000) { bookmarks().isNotEmpty() }
+        val saved = bookmarks().single()
+        assertEquals(0, saved.chapterIndex)
+        assertTrue("the bookmark quotes the page it was made on", saved.snippet.isNotBlank())
+        compose.waitUntil(5_000) { bookmarkLabel() == "Remove bookmark" }
+
+        compose.onNodeWithTag("reader.bookmarks").performClick()
+        compose.waitUntil(10_000) { bookmarks().isEmpty() }
+        compose.waitUntil(5_000) { bookmarkLabel() == "Bookmark this page" }
+    }
+
+    @Test
+    fun contentsListsABookmarkJumpsToItAndRemovesIt() {
+        val bookmark = runBlocking { repository.addBookmark(book.id, 2, 0) }
+        open()
+        compose.onNodeWithTag("reader.toc").performClick()
+        awaitTag("contents.bookmark.${bookmark.id}")
+
+        compose.onNodeWithTag("contents.bookmark.${bookmark.id}").performClick()
+        compose.waitUntil(10_000) { kickerOrEmpty() == "Chapter 3" }
+        awaitNoTag("contents.list")
+
+        compose.onNodeWithTag("reader.toc").performClick()
+        awaitTag("contents.removeBookmark.${bookmark.id}")
+        compose.onNodeWithTag("contents.removeBookmark.${bookmark.id}").performClick()
+        compose.waitUntil(10_000) { bookmarks().isEmpty() }
+        awaitNoTag("contents.bookmark.${bookmark.id}")
+    }
+
+    @Test
+    fun theHighlightsSheetListsAHighlightAndJumpsToIt() {
+        val marked = runBlocking { repository.addHighlight(book.id, 2, 40, 60, HighlightColor.BLUE) }
+        open()
+        assertEquals("Chapter 1", kicker())
+
+        compose.onNodeWithTag("reader.notes").performClick()
+        awaitTag("notes.card.${marked.id}")
+        compose.onNodeWithTag("notes.card.${marked.id}").performClick()
+        compose.waitUntil(10_000) { kickerOrEmpty() == "Chapter 3" }
+        compose.waitUntil(5_000) { runBlocking { repository.position(book.id)?.chapterIndex } == 2 }
     }
 
     @Test

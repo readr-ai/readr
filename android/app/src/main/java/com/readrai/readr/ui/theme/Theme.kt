@@ -47,6 +47,9 @@ object Marginalia {
     val irisOnDark = Color(0xFF938EE9)
     const val aiGlyph = "✦"
 
+    /** The mark a note wears, wherever one is shown — `AppTheme.noteGlyph` on iOS. */
+    const val noteGlyph = "❋"
+
     /**
      * Highlight fields, the "muted literary" palette of `App/Design/Theme.swift`.
      * Paper and sepia use opaque fields; night washes the same hues over the

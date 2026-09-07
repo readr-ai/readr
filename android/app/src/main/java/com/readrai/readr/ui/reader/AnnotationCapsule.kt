@@ -77,7 +77,7 @@ fun AnnotationCapsule(
     onCopy: () -> Unit,
     modifier: Modifier = Modifier,
     onRemove: (() -> Unit)? = null,
-    /** The note editor is slice B3; until it is wired the capsule offers no Note button. */
+    /** Opens the note editor: "Note" on a selection, "Edit note" on a highlight that has one. */
     onNote: ((AnnotationTarget) -> Unit)? = null,
 ) {
     val editing = target as? AnnotationTarget.Existing
@@ -130,8 +130,8 @@ fun AnnotationCapsule(
                 modifier = Modifier
                     .height(touchTarget)
                     .testTag("annotation.note")
-                    .semantics { contentDescription = if (target.hasNote) "Edit Note" else "Note" },
-            ) { Text(if (target.hasNote) "Edit Note" else "Note", fontSize = 13.sp, color = palette.ink) }
+                    .semantics { contentDescription = if (target.hasNote) "Edit note" else "Note" },
+            ) { Text(if (target.hasNote) "Edit note" else "Note", fontSize = 13.sp, color = palette.ink) }
         }
         IconButton(
             onClick = onCopy,

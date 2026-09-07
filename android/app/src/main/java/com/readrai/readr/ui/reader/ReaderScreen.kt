@@ -3,6 +3,7 @@ package com.readrai.readr.ui.reader
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -15,6 +16,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -42,6 +44,10 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFontFamilyResolver
@@ -65,7 +71,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import kotlin.math.abs
 
-private enum class ReaderSheet { Contents, Appearance }
+private enum class ReaderSheet { Contents, Appearance, Highlights }
 
 /** How long a reader-facing message stays up before it fades of its own accord. */
 private const val MESSAGE_MILLIS = 4_000L
@@ -136,6 +142,10 @@ fun ReaderScreen(model: ReaderViewModel, settings: ReaderSettings, onBack: () ->
                         IconButton(onClick = { sheet = ReaderSheet.Contents }, modifier = Modifier.testTag("reader.toc")) {
                             Icon(Icons.AutoMirrored.Filled.List, contentDescription = "Table of contents")
                         }
+                        BookmarkAction(model, palette)
+                        IconButton(onClick = { sheet = ReaderSheet.Highlights }, modifier = Modifier.testTag("reader.notes").semantics { contentDescription = "Highlights" }) {
+                            MarkerGlyph(palette.ink)
+                        }
                         IconButton(onClick = { sheet = ReaderSheet.Appearance }, modifier = Modifier.testTag("reader.appearance").semantics { contentDescription = "Appearance" }) {
                             Text("Aa", fontFamily = FontFamily.Serif, fontSize = 17.sp, color = palette.ink)
                         }
@@ -149,13 +159,72 @@ fun ReaderScreen(model: ReaderViewModel, settings: ReaderSettings, onBack: () ->
         when (sheet) {
             ReaderSheet.Contents -> if (ready != null) ContentsSheet(
                 contents = ready.contents,
+                chapters = ready.chapters,
+                bookmarks = model.bookmarks,
                 currentChapter = model.chapterIndex,
                 onPick = { row -> sheet = null; model.jump(row.chapterIndex, row.utf16Offset) },
+                onPickBookmark = { bookmark -> sheet = null; model.jump(bookmark.chapterIndex, bookmark.utf16Offset) },
+                onRemoveBookmark = { bookmark -> model.removeBookmark(bookmark.id) },
                 onDismiss = { sheet = null },
             )
             ReaderSheet.Appearance -> AppearanceSheet(appearance = appearance, onChange = settings::update, onDismiss = { sheet = null })
+            ReaderSheet.Highlights -> if (ready != null) HighlightsSheet(
+                highlights = model.highlights,
+                chapters = ready.chapters,
+                onJump = { highlight -> sheet = null; model.jump(highlight.chapterIndex, highlight.utf16Start) },
+                onEditNote = { highlight -> sheet = null; model.noteOnHighlight(highlight) },
+                onDelete = { highlight -> model.removeHighlight(highlight.id) },
+                onDismiss = { sheet = null },
+            )
             null -> Unit
         }
+
+        // The note editor opens over whatever asked for it — the page's capsule
+        // or a card in the Highlights sheet — and closes by dropping the draft.
+        model.noteDraft?.let { draft ->
+            NoteEditor(draft = draft, onSave = model::saveNote, onCancel = model::cancelNote)
+        }
+    }
+}
+
+/**
+ * The ribbon in the bar. "The current bookmark" is the first one in this
+ * chapter whose place lies on the visible page; tapping adds one at the page's
+ * first drawn character, or takes that one away.
+ */
+@Composable
+private fun BookmarkAction(model: ReaderViewModel, palette: ReadingPalette) {
+    val page = model.visiblePage
+    val chapterIndex = model.chapterIndex
+    val current = page?.let { p ->
+        model.bookmarks.firstOrNull { it.chapterIndex == chapterIndex && it.utf16Offset >= p.rangeStart && it.utf16Offset < p.rangeEnd }
+    }
+    IconButton(
+        onClick = {
+            if (current != null) model.removeBookmark(current.id) else page?.let { model.addBookmark(chapterIndex, it.textStart) }
+        },
+        enabled = page != null,
+        modifier = Modifier
+            .testTag("reader.bookmarks")
+            .semantics { contentDescription = if (current != null) "Remove bookmark" else "Bookmark this page" },
+    ) { BookmarkRibbon(filled = current != null, color = palette.ink) }
+}
+
+/** A highlighter's slanted nib over its mark — the Highlights sheet's button. */
+@Composable
+private fun MarkerGlyph(color: Color) {
+    Canvas(Modifier.size(18.dp)) {
+        val w = size.width
+        val h = size.height
+        val nib = Path().apply {
+            moveTo(w * 0.14f, h * 0.58f)
+            lineTo(w * 0.58f, h * 0.14f)
+            lineTo(w * 0.84f, h * 0.40f)
+            lineTo(w * 0.40f, h * 0.84f)
+            close()
+        }
+        drawPath(nib, color, style = Stroke(width = 1.4.dp.toPx()))
+        drawLine(color, Offset(w * 0.10f, h * 0.95f), Offset(w * 0.90f, h * 0.95f), strokeWidth = 2.dp.toPx())
     }
 }
 
@@ -173,6 +242,7 @@ private fun PageSurface(
     val fontFamilyResolver = LocalFontFamilyResolver.current
     val layoutDirection = LocalLayoutDirection.current
     val clipboard = LocalClipboardManager.current
+    val lastColor by settings.lastHighlightColor.collectAsState()
 
     BoxWithConstraints(Modifier.fillMaxSize().safeDrawingPadding()) {
         val compact = maxWidth < 600.dp
@@ -215,6 +285,8 @@ private fun PageSurface(
 
         val pages = set?.pagination?.pages ?: emptyList()
         val pageIndex = set?.pagination?.pageIndex(model.anchor) ?: 0
+        // The bar bookmarks the page, so it has to know which page is on screen.
+        LaunchedEffect(pages, pageIndex) { model.showing(pages.getOrNull(pageIndex)) }
         // The gesture handlers below are keyed on the page set, which a turn
         // does not change, so they read the turn through updated state rather
         // than closing over this composition's page index.
@@ -336,6 +408,16 @@ private fun PageSurface(
                                         settings.rememberHighlightColor(color)
                                     },
                                     onCopy = { clipboard.setText(AnnotatedString(target.quotedText)); dismiss() },
+                                    onNote = { noted ->
+                                        when (noted) {
+                                            // A note needs a highlight to live on: make one in the
+                                            // colour last used, and the editor opens on it.
+                                            is AnnotationTarget.Selected ->
+                                                model.noteOnSelection(noted.chapterIndex, noted.utf16Start, noted.utf16End, lastColor)
+                                            is AnnotationTarget.Existing -> model.noteOnHighlight(noted.highlight)
+                                        }
+                                        dismiss()
+                                    },
                                     modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 4.dp),
                                     onRemove = (target as? AnnotationTarget.Existing)?.let { existing ->
                                         { model.removeHighlight(existing.highlight.id); dismiss() }

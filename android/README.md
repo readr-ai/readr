@@ -64,6 +64,15 @@ four colour dots and copy that float over the bottom of the text area, and a
 highlight is drawn as a background span (underlined when it carries a note),
 never an inserted glyph, so marking a passage cannot move a line break.
 
+A note lives on a highlight: "Note" on a plain selection highlights it in the
+colour last used and opens `NoteEditor`, and cancelling there takes that
+highlight away again. `HighlightsSheet` is the book's highlights in reading
+order — colour chips, a search over quote and note, and a card that jumps to
+the passage. The ribbon in the bar bookmarks *the visible page* (the first
+bookmark whose offset falls in the page's range is "the" one), and the
+Contents sheet lists bookmarks above the table of contents, marking the rows
+whose stretch of the book holds one.
+
 Offsets cross the bridge as **UTF-16** (what Kotlin and Compose index); the
 Swift facade converts to and from the kit's character offsets with the
 chapter text in hand (`TextOffsets.swift`). Positions, contents rows,
