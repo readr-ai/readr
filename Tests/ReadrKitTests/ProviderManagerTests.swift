@@ -580,4 +580,115 @@ final class ProviderManagerTests: XCTestCase {
         )
         XCTAssertNil(manager.selection)
     }
+
+    // MARK: - Clearing the selection
+
+    func testClearSelectionReturnsToTheDefault() {
+        let fallback = ProviderSelection(kind: .appleIntelligence, modelID: "on-device")
+        let manager = ProviderManager(
+            store: FakeCredentialStore(),
+            factory: CapturingFactory().make,
+            defaultSelection: { fallback }
+        )
+        manager.setActive(kind: .anthropic, modelID: "claude-x")
+        XCTAssertEqual(manager.explicitSelection?.kind, .anthropic)
+
+        manager.clearSelection()
+        XCTAssertNil(manager.explicitSelection, "the reader has chosen nothing again")
+        XCTAssertEqual(manager.selection, fallback, "the default applies once more")
+    }
+
+    /// With no default behind it, un-choosing leaves Ask with nothing — the
+    /// onboarding state, not a selection that fails every question.
+    func testClearSelectionWithNoDefaultLeavesNoProvider() throws {
+        let store = FakeCredentialStore()
+        try store.save(.apiKey("sk-x"), for: .anthropic)
+        let manager = makeManager(store: store, factory: CapturingFactory())
+        manager.setActive(kind: .anthropic)
+        XCTAssertNotNil(try manager.activeProvider())
+
+        manager.clearSelection()
+        XCTAssertNil(manager.selection)
+        XCTAssertNil(try manager.activeProvider())
+    }
+
+    func testClearSelectionRemovesThePersistedSelection() throws {
+        let defaults = try makeDefaults()
+        let store = FakeCredentialStore()
+        let factory = CapturingFactory()
+
+        let first = ProviderManager(
+            store: store, factory: factory.make, persistingIn: defaults
+        )
+        first.setActive(kind: .anthropic, modelID: "claude-x")
+        XCTAssertNotNil(defaults.data(forKey: ProviderManager.selectionDefaultsKey))
+
+        first.clearSelection()
+        XCTAssertNil(
+            defaults.data(forKey: ProviderManager.selectionDefaultsKey),
+            "the key is removed, not left naming a provider nobody chose"
+        )
+
+        // A relaunch over the same defaults finds nothing chosen.
+        let second = ProviderManager(
+            store: store, factory: factory.make, persistingIn: defaults
+        )
+        XCTAssertNil(second.selection)
+    }
+
+    func testClearSelectionWithNothingChosenIsANoOp() throws {
+        let defaults = try makeDefaults()
+        let manager = ProviderManager(
+            store: FakeCredentialStore(),
+            factory: CapturingFactory().make,
+            persistingIn: defaults
+        )
+        manager.clearSelection()
+        XCTAssertNil(manager.explicitSelection)
+        XCTAssertNil(defaults.data(forKey: ProviderManager.selectionDefaultsKey))
+    }
+
+    /// Un-choosing changes no credential, so nothing proven this session is
+    /// forgotten — the settings sheet must not re-probe (and re-bill) every
+    /// other card because the reader disconnected one of them.
+    func testClearSelectionKeepsOtherKindsValidationAndFreshness() async throws {
+        let store = FakeCredentialStore()
+        try store.save(.apiKey("sk-x"), for: .openAI)
+        let provider = CountingValidator()
+        let clock = MutableClock(Date(timeIntervalSince1970: 1_000_000))
+        let manager = makeClockedManager(store: store, provider: provider, now: clock.read)
+
+        await manager.validateIfStale(.openAI, maxAge: 300)
+        XCTAssertEqual(manager.validationState(.openAI), .active)
+        XCTAssertEqual(provider.checks, 1)
+
+        // The reader un-chooses a *different* kind.
+        manager.setActive(kind: .anthropic)
+        manager.clearSelection()
+
+        XCTAssertEqual(manager.validationState(.openAI), .active, "another kind's verdict stands")
+        await manager.validateIfStale(.openAI, maxAge: 300)
+        XCTAssertEqual(provider.checks, 1, "and so does its freshness stamp")
+    }
+
+    /// The same holds for the kind that *was* selected: its credential is
+    /// untouched, so its settled verdict and its stamp survive being
+    /// un-chosen. (`setActive` forgets both, because a new model makes the
+    /// old verdict describe something else; nothing changes here.)
+    func testClearSelectionKeepsTheDroppedKindsOwnVerdict() async throws {
+        let store = FakeCredentialStore()
+        try store.save(.apiKey("sk-x"), for: .openAI)
+        let provider = CountingValidator()
+        let clock = MutableClock(Date(timeIntervalSince1970: 1_000_000))
+        let manager = makeClockedManager(store: store, provider: provider, now: clock.read)
+
+        manager.setActive(kind: .openAI)
+        await manager.validateIfStale(.openAI, maxAge: 300)
+        XCTAssertEqual(manager.validationState(.openAI), .active)
+
+        manager.clearSelection()
+        XCTAssertEqual(manager.validationState(.openAI), .active)
+        await manager.validateIfStale(.openAI, maxAge: 300)
+        XCTAssertEqual(provider.checks, 1, "nothing about the key changed")
+    }
 }

@@ -234,6 +234,38 @@ public final class ProviderManager: @unchecked Sendable {
         Self.save(selection, to: defaults)
     }
 
+    /// Un-choose: drop the reader's explicit selection, so the app's default
+    /// (where it supplies one) applies again and `explicitSelection` reads
+    /// nil — "nothing chosen", the state the onboarding copy speaks to.
+    ///
+    /// The mirror of `setActive` on the persistence side: the selection goes
+    /// out of `defaults` through the same door it was written through, so a
+    /// relaunch finds nothing chosen rather than a provider nobody picked.
+    ///
+    /// Not a mirror on the validation side, deliberately. `setActive` forgets
+    /// the kind's verdict and freshness stamp because it names a *different
+    /// model*, and the old verdict described the old one; nothing about any
+    /// credential changes here, only which provider Ask reaches for. So every
+    /// kind keeps what it proved this session and no sweep re-probes (and
+    /// re-bills) a key that passed a moment ago.
+    ///
+    /// The dropped kind's generation is still bumped, as every selection
+    /// change bumps it: a `validate(_:)` that began against the old selection
+    /// must not commit over the un-choosing. Its `.validating` marker is the
+    /// one thing that cannot survive — the run that would have replaced it is
+    /// now discarded, and a marker nothing will ever replace freezes the
+    /// settings card on "Validating…" (the same trap `setActive` avoids).
+    ///
+    /// A no-op when nothing was explicitly chosen.
+    public func clearSelection() {
+        lock.lock(); defer { lock.unlock() }
+        guard let dropped = _selection else { return }
+        _validationGeneration[dropped.kind, default: 0] += 1
+        if _validation[dropped.kind] == .validating { _validation[dropped.kind] = nil }
+        _selection = nil
+        Self.save(nil, to: defaults)
+    }
+
     /// Called after a new credential for `kind` has been stored: decides
     /// whether the active selection moves to it now, or only after
     /// validation clears the key (`validateAndActivate(_:)`).
@@ -310,8 +342,16 @@ public final class ProviderManager: @unchecked Sendable {
         return try? JSONDecoder().decode(ProviderSelection.self, from: data)
     }
 
-    private static func save(_ selection: ProviderSelection, to defaults: UserDefaults?) {
-        guard let defaults, let data = try? JSONEncoder().encode(selection) else { return }
+    /// The only door to the persisted selection: `nil` removes the key, so
+    /// `setActive` and `clearSelection` cannot drift apart on what "nothing
+    /// chosen" looks like on disk.
+    private static func save(_ selection: ProviderSelection?, to defaults: UserDefaults?) {
+        guard let defaults else { return }
+        guard let selection else {
+            defaults.removeObject(forKey: selectionDefaultsKey)
+            return
+        }
+        guard let data = try? JSONEncoder().encode(selection) else { return }
         defaults.set(data, forKey: selectionDefaultsKey)
     }
 

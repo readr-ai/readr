@@ -111,11 +111,106 @@ public struct AdaptiveContextStrategy: ContextStrategy {
     public init(
         index: RAGIndex,
         lengths: ReadingLengthCache = ReadingLengthCache(),
-        wholeBookBudgetFraction: Double = 0.6
+        wholeBookBudgetFraction: Double = AdaptiveContextStrategy.defaultWholeBookBudgetFraction
     ) {
         self.index = index
         self.lengths = lengths
         self.wholeBookBudgetFraction = wholeBookBudgetFraction
+    }
+
+    /// The share of the context budget a book may occupy before the router
+    /// switches to retrieval. Named rather than written twice: a caller that
+    /// has to predict the tier without a strategy in hand (deciding whether a
+    /// retrieval index is worth building at all) reads this one, so a change
+    /// here cannot leave a second copy behind.
+    public static let defaultWholeBookBudgetFraction = 0.6
+
+    // MARK: - Routing
+
+    /// The tier decision, and the numbers it rests on, in one place.
+    ///
+    /// `assembleContext` reads the parts it also needs to build the prompt;
+    /// `routesWholeBook` reads only the verdict. Neither carries its own copy
+    /// of the rule, so a caller that plans work on the prediction — skipping
+    /// an index build for a question that will never retrieve — cannot be
+    /// told one thing and served another.
+    struct Routing {
+        /// The share of the provider's context budget the text may occupy.
+        let budget: Int
+        /// Characters before the frontier, or nil for an unscoped question —
+        /// nil and 0 are different answers, and only 0 means "not started".
+        let charactersRead: Int?
+        /// A scoped question from a reader who has not started. Nothing has
+        /// been read, so nothing is sent: the whole-book tier with an empty
+        /// book, whatever the provider — there is no text to be too big for
+        /// it and nothing for retrieval to find.
+        var nothingRead: Bool { charactersRead == 0 }
+        /// Whether the text itself fits, for a provider that can take it.
+        /// Local models never do: they are the small-window case retrieval
+        /// exists for.
+        let fits: Bool
+        /// The tier `assembleContext` picks.
+        var isWholeBook: Bool { nothingRead || fits }
+    }
+
+    static func routing(
+        book: Book,
+        scope: ReadingScope,
+        provider: ProviderInfo,
+        lengths: ReadingLengthCache,
+        wholeBookBudgetFraction: Double
+    ) -> Routing {
+        let budget = Int(Double(provider.contextBudget) * wholeBookBudgetFraction)
+        // Counted, not built: a long book the reader has only started is a
+        // short text, and the text itself is only assembled once the
+        // whole-book tier is chosen.
+        let charactersRead = scope.frontier.map { lengths.table(for: book).charactersRead(upTo: $0) }
+        // What would ride along on the whole-book tier, and therefore what
+        // the budget has to fit.
+        let bookTokens = charactersRead.map(estimateTokens(characterCount:)) ?? book.estimatedTokenCount
+        return Routing(
+            budget: budget,
+            charactersRead: charactersRead,
+            fits: !provider.isLocal && bookTokens <= budget
+        )
+    }
+
+    /// Whether a question would be answered from the book's own text rather
+    /// than from retrieved passages — `assembleContext`'s tier choice, made
+    /// without assembling anything.
+    ///
+    /// For callers that must act on the tier *before* the prompt exists: an
+    /// index is only worth building for a question that will retrieve, and
+    /// chunking and embedding a long book is seconds no whole-book answer
+    /// would use.
+    public func routesWholeBook(
+        book: Book, scope: ReadingScope, provider: ProviderInfo
+    ) -> Bool {
+        Self.routing(
+            book: book, scope: scope, provider: provider,
+            lengths: lengths, wholeBookBudgetFraction: wholeBookBudgetFraction
+        ).isWholeBook
+    }
+
+    /// The same predicate for a caller with no strategy instance yet, given
+    /// the same inputs the strategy would use.
+    ///
+    /// - Parameter lengths: required, not defaulted. A scoped question
+    ///   measures what has been read, and measuring it through a throwaway
+    ///   cache walks every chapter of the book — on a per-question check
+    ///   ("is an index worth building?") that is a full text pass each time.
+    ///   Hand in the same cache the strategy gets.
+    public static func routesWholeBook(
+        book: Book,
+        scope: ReadingScope,
+        provider: ProviderInfo,
+        lengths: ReadingLengthCache,
+        wholeBookBudgetFraction: Double = AdaptiveContextStrategy.defaultWholeBookBudgetFraction
+    ) -> Bool {
+        routing(
+            book: book, scope: scope, provider: provider,
+            lengths: lengths, wholeBookBudgetFraction: wholeBookBudgetFraction
+        ).isWholeBook
     }
 
     public func assembleContext(
@@ -143,14 +238,16 @@ public struct AdaptiveContextStrategy: ContextStrategy {
             ? Self.systemPrompt + "\n\n" + Self.spoilerGuard
             : Self.systemPrompt
         let priorTurns = Self.historyMessages(from: history)
-        let budget = Int(Double(provider.contextBudget) * wholeBookBudgetFraction)
+        // The tier decision and the numbers behind it, from the one place
+        // that holds the rule — `routesWholeBook` asks the same question of
+        // the same code, so a caller that predicted the tier gets it.
+        let routing = Self.routing(
+            book: book, scope: scope, provider: provider,
+            lengths: lengths, wholeBookBudgetFraction: wholeBookBudgetFraction
+        )
+        let budget = routing.budget
 
-        // How much would ride along on the whole-book tier — and therefore
-        // what the budget has to fit. Counted, not built: a long book the
-        // reader has only started is a short text, and the text itself is
-        // only assembled once that tier is chosen.
-        let charactersRead = frontier.map { frontier in table?.charactersRead(upTo: frontier) ?? 0 }
-        if let charactersRead, charactersRead == 0 {
+        if routing.nothingRead {
             // Frontier at the very start: nothing has been read, so nothing
             // is sent — not an empty cacheable prefix, which some providers
             // reject and all of them would answer from thin air. The system
@@ -165,10 +262,8 @@ public struct AdaptiveContextStrategy: ContextStrategy {
             return AssembledContext(tier: .wholeBook, request: request)
         }
         let systemMessage = ChatMessage(role: .system, content: systemContent)
-        let bookTokens = charactersRead.map(estimateTokens(characterCount:)) ?? book.estimatedTokenCount
-        let fitsWholeBook = !provider.isLocal && bookTokens <= budget
 
-        if fitsWholeBook {
+        if routing.fits {
             // Tier 1: the text read so far always rides along; question
             // carries the anchor. Providers that support prompt caching cache
             // the prefix, the rest send it as a plain system message — either
