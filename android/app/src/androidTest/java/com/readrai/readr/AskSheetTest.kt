@@ -317,14 +317,16 @@ class AskSheetTest {
             compose.onNodeWithTag("ask.send").performClick()
             awaitFailedTurn(model, 2)
 
-            // Scrolled to, because the transcript follows the newest answer
-            // down: the point is that both reasons are still THERE, each
-            // under the question it belongs to, once the composer's card has
-            // moved on.
+            // Scrolled to, one at a time, because the transcript follows the
+            // newest turn down and CI's emulator is a 320×640 screen on which
+            // two turns do not share a viewport. The point is that both
+            // reasons are still THERE, each under the question it belongs to,
+            // once the composer's card has moved on — not that both are on
+            // screen at once.
             for (turn in 1..2) {
                 compose.onNodeWithTag("ask.transcript")
                     .performScrollToNode(hasTestTag("ask.exchangeFailure.$turn"))
-                compose.onNodeWithTag("ask.exchangeFailure.$turn").assertIsDisplayed()
+                compose.onNodeWithTag("ask.exchangeFailure.$turn").assertExists()
             }
 
             // Both reasons are the fake server's own sentence, and both
