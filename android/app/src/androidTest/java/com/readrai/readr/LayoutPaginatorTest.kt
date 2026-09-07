@@ -1,0 +1,178 @@
+package com.readrai.readr
+
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.TextMeasurer
+import androidx.compose.ui.text.font.createFontFamilyResolver
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Constraints
+import androidx.compose.ui.unit.Density
+import androidx.compose.ui.unit.LayoutDirection
+import androidx.compose.ui.unit.dp
+import androidx.test.ext.junit.runners.AndroidJUnit4
+import androidx.test.platform.app.InstrumentationRegistry
+import com.readrai.readr.data.LayoutSpan
+import com.readrai.readr.ui.reader.ChapterStyling
+import com.readrai.readr.ui.reader.LayoutKey
+import com.readrai.readr.ui.reader.LayoutPaginator
+import com.readrai.readr.ui.reader.Page
+import com.readrai.readr.ui.reader.Pagination
+import com.readrai.readr.ui.reader.ReaderAppearance
+import com.readrai.readr.ui.reader.StyledChapter
+import com.readrai.readr.ui.theme.Marginalia
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
+import org.junit.Test
+import org.junit.runner.RunWith
+
+/** The paginator's contracts, measured with the real text engine on the device. */
+@RunWith(AndroidJUnit4::class)
+class LayoutPaginatorTest {
+    private val context get() = InstrumentationRegistry.getInstrumentation().targetContext
+    private val density by lazy { Density(context) }
+    private val measurer by lazy { TextMeasurer(createFontFamilyResolver(context), density, LayoutDirection.Ltr, cacheSize = 0) }
+    private val layout = LayoutKey(ReaderAppearance())
+    private val palette = Marginalia.paper
+    private val style by lazy { ChapterStyling.pageTextStyle(layout, palette) }
+    private val width by lazy { with(density) { 340.dp.roundToPx() } }
+    private val height by lazy { with(density) { 480.dp.roundToPx() } }
+
+    private val paragraph = "It was the best of times, it was the worst of times, it was the age of wisdom, it was the age of " +
+        "foolishness, it was the epoch of belief, it was the epoch of incredulity, it was the season of Light, it was the " +
+        "season of Darkness, it was the spring of hope, it was the winter of despair."
+
+    private fun chapter(paragraphs: Int): String = (1..paragraphs).joinToString("\n") { "$it. $paragraph" }
+
+    private fun paginate(text: String, spans: List<LayoutSpan> = emptyList()): Pair<StyledChapter, List<Page>> {
+        val styled = ChapterStyling.styled(text, spans, layout)
+        return styled to LayoutPaginator.paginate(styled, style, width, height, measurer)
+    }
+
+    private fun drawn(styled: StyledChapter, page: Page) = measurer.measure(
+        ChapterStyling.pageText(styled, page.textStart, page.textEnd, palette),
+        style, TextOverflow.Clip, softWrap = true, constraints = Constraints(maxWidth = width),
+    )
+
+    private fun assertEveryPageFits(styled: StyledChapter, pages: List<Page>) {
+        for ((index, page) in pages.withIndex()) {
+            val result = drawn(styled, page)
+            assertTrue("page $index is ${result.size.height}px tall for a ${height}px page", result.size.height <= height + 1)
+            assertFalse("page $index overflowed when drawn", result.didOverflowHeight)
+        }
+    }
+
+    @Test
+    fun pagesTileTheChapter() {
+        val text = chapter(30)
+        val (_, pages) = paginate(text)
+        assertTrue("expected several pages, got ${pages.size}", pages.size > 3)
+        assertEquals(0, pages.first().rangeStart)
+        assertEquals(text.length, pages.last().rangeEnd)
+        pages.zipWithNext().forEach { (a, b) -> assertEquals("ranges must tile", a.rangeEnd, b.rangeStart) }
+        for (page in pages) {
+            assertTrue(page.textStart >= page.rangeStart && page.textEnd <= page.rangeEnd)
+            assertTrue(page.textStart < page.textEnd)
+            assertFalse("a page never opens on whitespace", text[page.textStart].isWhitespace())
+            assertFalse("a page never closes on whitespace", text[page.textEnd - 1].isWhitespace())
+            assertTrue(page.wordCount > 0)
+        }
+    }
+
+    @Test
+    fun everyPageFitsWhenDrawnFromItsOwnStart() {
+        val (styled, pages) = paginate(chapter(30))
+        assertEveryPageFits(styled, pages)
+    }
+
+    @Test
+    fun pagesAcrossMeasurementSeamsStillFit() {
+        // Long enough for several 24K-character chunks, with paragraphs that straddle the cuts.
+        val text = chapter(260)
+        assertTrue(text.length > 3 * LayoutPaginator.CHUNK)
+        val (styled, pages) = paginate(text)
+        assertEveryPageFits(styled, pages)
+        assertEquals(text.length, pages.last().rangeEnd)
+        // Every drawn page, rendered in order, reproduces the chapter's words exactly once.
+        val words = pages.joinToString(" ") { styled.text.text.substring(it.textStart, it.textEnd) }.split(Regex("\\s+"))
+        assertEquals(text.split(Regex("\\s+")), words)
+    }
+
+    @Test
+    fun aPageOpeningInsideABlockquoteKeepsItsInset() {
+        val quote = (1..40).joinToString(" ") { paragraph }
+        val text = "Lead-in.\n$quote\nAfter."
+        val styled = ChapterStyling.styled(text, listOf(LayoutSpan(9, 9 + quote.length, "blockquote")), layout)
+        val pages = LayoutPaginator.paginate(styled, style, width, height, measurer)
+        val inside = pages.first { it.textStart > 9 && it.textStart < 9 + quote.length }
+        val result = drawn(styled, inside)
+        val firstGlyph = result.getHorizontalPosition(0, usePrimaryDirection = true)
+        val secondLineGlyph = result.getHorizontalPosition(result.getLineStart(1), usePrimaryDirection = true)
+        assertTrue("first line keeps the quote inset ($firstGlyph)", firstGlyph > 0f)
+        assertEquals("first and second lines share the inset", secondLineGlyph, firstGlyph, 0.5f)
+        assertEveryPageFits(styled, pages)
+    }
+
+    @Test
+    fun foldsBoundaryWhitespaceAndTheChapterTail() {
+        val text = chapter(30) + "\n\n\n   "
+        val (_, pages) = paginate(text)
+        assertEquals("trailing whitespace belongs to the last page's range", text.length, pages.last().rangeEnd)
+        assertTrue(pages.last().textEnd < text.length)
+        pages.zipWithNext().forEach { (a, b) ->
+            for (i in a.rangeEnd until b.textStart) assertTrue("only whitespace is folded at a boundary", text[i].isWhitespace())
+        }
+    }
+
+    @Test
+    fun anAnchorFindsItsPage() {
+        val (_, pages) = paginate(chapter(30))
+        val pagination = Pagination(pages)
+        assertEquals(2, pagination.pageIndex(pages[2].rangeStart))
+        assertEquals(2, pagination.pageIndex(pages[2].rangeStart + 5))
+        assertEquals(2, pagination.pageIndex(pages[2].rangeEnd - 1))
+        assertEquals(3, pagination.pageIndex(pages[2].rangeEnd))
+        assertEquals(pages.size - 1, pagination.pageIndex(Int.MAX_VALUE))
+        assertEquals(0, pagination.pageIndex(-1))
+        assertEquals(pages.map { it.wordCount }.sum(), pagination.wordsRemaining[0])
+        assertEquals(pages.last().wordCount, pagination.wordsRemaining.last())
+    }
+
+    @Test
+    fun aHeadingDoesNotOpenABlankLine() {
+        val text = "Heading\nBody."
+        val styled = ChapterStyling.styled(text, listOf(LayoutSpan(0, 7, "heading", level = 1)), layout)
+        assertEquals("the string keeps its length", text.length, styled.text.length)
+        val laid = measurer.measure(styled.text, style, TextOverflow.Clip, softWrap = true, constraints = Constraints(maxWidth = width))
+        assertEquals("heading line + body line, nothing between", 2, laid.lineCount)
+    }
+
+    @Test
+    fun aPageOpeningMidParagraphIsNotIndented() {
+        val (styled, pages) = paginate(chapter(30))
+        val mid = pages.first { it.textStart > 0 && !styled.startsParagraph(it.textStart) }
+        val result = drawn(styled, mid)
+        assertEquals("first line starts at the margin", 0f, result.getHorizontalPosition(0, usePrimaryDirection = true), 0.5f)
+        // Whereas a page that opens on a paragraph keeps the book indent.
+        val fresh = pages.first { it.textStart == 0 || styled.startsParagraph(it.textStart) }
+        assertTrue("a paragraph start is indented", drawn(styled, fresh).getHorizontalPosition(0, usePrimaryDirection = true) > 0f)
+    }
+
+    @Test
+    fun emptyAndBlankChaptersDoNotCrash() {
+        assertTrue(paginate("").second.isEmpty())
+        val (_, blank) = paginate("  \n\n  \n")
+        assertEquals(1, blank.size)
+        assertEquals(blank[0].textStart, blank[0].textEnd)
+    }
+
+    @Test
+    fun aLongBookPaginatesInBoundedTime() {
+        val text = chapter(2_000) // ~600 K characters, a Gutenberg novel as one chapter
+        val started = System.nanoTime()
+        val (_, pages) = paginate(text)
+        val seconds = (System.nanoTime() - started) / 1e9
+        assertTrue("took ${"%.1f".format(seconds)} s", seconds < 60) // generous: CI emulators render in software
+        assertTrue(pages.size > 200)
+        assertEquals(text.length, pages.last().rangeEnd)
+    }
+}

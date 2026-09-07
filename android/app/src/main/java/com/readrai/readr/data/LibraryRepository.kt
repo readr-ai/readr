@@ -80,18 +80,29 @@ class LibraryRepository(private val context: Context, private val kit: Kit) {
         kit.library.chapterText(bookId, index.toLong())
     }
 
+    /** Format spans, anchors and linearity for a chapter; offsets in UTF-16. */
+    suspend fun chapterLayout(bookId: String, index: Int): ChapterLayout = withContext(Dispatchers.IO) {
+        kitJson.decodeFromString(kit.library.chapterLayoutJSON(bookId, index.toLong()))
+    }
+
+    /** The Contents rows: the real table of contents, or the spine when there is none. */
+    suspend fun contents(bookId: String): Contents = withContext(Dispatchers.IO) {
+        kitJson.decodeFromString(kit.library.contentsJSON(bookId))
+    }
+
     suspend fun position(bookId: String): ReadingPosition? = withContext(Dispatchers.IO) {
         kit.library.positionJSON(bookId).takeIf { it.isNotEmpty() }?.let { kitJson.decodeFromString<ReadingPosition>(it) }
     }
 
-    suspend fun savePosition(bookId: String, chapterIndex: Int, characterOffset: Int) = withContext(Dispatchers.IO) {
-        kit.library.savePosition(bookId, chapterIndex.toLong(), characterOffset.toLong())
+    /** Saves the reader's place; `utf16Offset` is into the chapter text as Kotlin sees it. */
+    suspend fun savePosition(bookId: String, chapterIndex: Int, utf16Offset: Int) = withContext(Dispatchers.IO) {
+        kit.library.savePosition(bookId, chapterIndex.toLong(), utf16Offset.toLong())
     }
 
     /** Fire-and-forget position save from UI callbacks; failures are logged, never shown. */
-    fun savePositionLater(bookId: String, chapterIndex: Int, characterOffset: Int) {
+    fun savePositionLater(bookId: String, chapterIndex: Int, utf16Offset: Int) {
         scope.launch {
-            try { savePosition(bookId, chapterIndex, characterOffset) } catch (e: Exception) { Log.w(TAG, "position save failed: ${e.message}") }
+            try { savePosition(bookId, chapterIndex, utf16Offset) } catch (e: Exception) { Log.w(TAG, "position save failed: ${e.message}") }
         }
     }
 

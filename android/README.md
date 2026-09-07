@@ -47,6 +47,25 @@ cd android
 The kit's own XCTest suite runs on an emulator too — see
 `.github/workflows/android.yml` for the push-and-run recipe.
 
+## The reader
+
+`ui/reader/` is the paginated reading surface. `LayoutPaginator` lays the
+chapter out with Compose's `TextMeasurer` at the page width (in
+paragraph-aligned chunks) and cuts pages on whole lines that fit the page
+height; a page is drawn from the same styled text at the same width, so what
+was measured is what is shown. `ChapterStyling` turns the kit's format spans
+into the `AnnotatedString` — every kit paragraph is one Compose paragraph,
+with the closing newline drawn as a space so offsets keep their meaning.
+
+Offsets cross the bridge as **UTF-16** (what Kotlin and Compose index); the
+Swift facade converts to and from the kit's character offsets with the
+chapter text in hand (`TextOffsets.swift`). Positions, contents rows,
+anchors and spans all follow that rule.
+
+Appearance (`ReaderSettings`) is plain `SharedPreferences` under the keys the
+iOS app uses — `readingTheme`, `readingFontSize`, `readingFont`,
+`readingLineSpacing`, `readingJustified`.
+
 ## Layout on device
 
 `filesDir/library.json` (FileLibraryStore), `filesDir/Books/<uuid>.epub|txt`

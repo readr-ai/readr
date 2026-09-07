@@ -327,10 +327,20 @@ bridge; `android/README.md` has the build recipe.
 - [x] CI lane: kit XCTest suite on an x86_64 emulator + instrumented tests
 - [ ] Play Console account, closed-test track
 
+### A2 — Reading
+- [x] A2a: paginated surface over `Chapter.text` — layout-accurate pages,
+  running head + page label, tap zones and swipes, chapter overflow, the
+  Apple reader's anchor/save timing; Appearance sheet (theme, size, font,
+  spacing, justify; iOS preference keys); Contents sheet (real TOC or spine)
+- [ ] A2b: selection, highlights (four colours), notes, bookmarks, Highlights
+  list
+- [ ] A2c: in-book search, inline images, internal links + footnotes, double
+  page on wide screens, scroll layout
+
 ### Next
-- A2 Reading: paginated surface over `Chapter.text` (selection, highlights,
-  notes, bookmarks, TOC, search, appearance)
-- A3 Ask: provider settings, streamed Ask with citations, Gemini Nano tier
+- A3 Ask: provider settings, streamed Ask with citations, Gemini Nano tier.
+  Decision (2026-09-07): phones without Nano get no no-key tier — the same
+  position as iPhones older than 15.
 - A4 Listen: platform `TextToSpeech` engine, media session, Listen card
 - A5 PDF, A6 Readr Voice (research: CPU Kokoro measured marginal), A7 article
   studio + bug report, A8 Play production
