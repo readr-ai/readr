@@ -273,7 +273,7 @@ class ReaderScreenTest {
 
     @Test
     fun aLongPressHighlightsAWordAndTappingItAgainRemovesIt() {
-        open()
+        val model = open()
         compose.onNodeWithTag("reader.page").performTouchInput { longClick(center) }
         awaitTag("annotation.capsule")
 
@@ -288,6 +288,16 @@ class ReaderScreenTest {
         // The selection goes with the capsule, and the colour is remembered for next time.
         awaitNoTag("annotation.capsule")
         assertEquals(HighlightColor.GREEN, settings.lastHighlightColor.value)
+
+        // The tap hit-tests against the highlights the SCREEN has, not the
+        // ones the store has: `addHighlight` writes through the bridge and the
+        // page is told a moment later, on the main thread. `highlights()`
+        // above reads the store, so it goes true first — and a tap sent in
+        // that window lands on text the page still thinks is unmarked, falls
+        // through to the surface behind, and toggles the chrome instead of
+        // opening the capsule. On a fast emulator the window is not there to
+        // land in; on CI's it is.
+        compose.waitUntil(10_000) { model.highlights.any { it.id == created.id } }
 
         // Tapping the highlighted word opens the capsule on it; ✕ takes the highlight away.
         compose.onNodeWithTag("reader.page").performTouchInput { click(center) }

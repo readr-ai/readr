@@ -206,8 +206,23 @@ private fun Transcript(
     // was cancelled — which, on the effect keyed by the turn count, took the
     // scroll for that turn with it. Conflated, so a fast stream produces one
     // scroll per frame rather than one per delta.
+    //
+    // `isStreaming` belongs in that key because the thinking dots are an item
+    // of their own: they arrive after the question is shown as sent and leave
+    // when the answer does, changing the list's length without changing
+    // either the turn count or the answer's length. A turn that FAILS changes
+    // neither of those two at all — the reason simply takes the dots' place —
+    // so without this the transcript stays anchored on an item that is no
+    // longer there, and the newest turn can be left off the fold. Which is
+    // exactly where a reader looks for what went wrong.
     LaunchedEffect(listState) {
-        snapshotFlow { model.exchanges.size to (model.exchanges.lastOrNull()?.answerText?.length ?: 0) }
+        snapshotFlow {
+            Triple(
+                model.exchanges.size,
+                model.exchanges.lastOrNull()?.answerText?.length ?: 0,
+                model.isStreaming,
+            )
+        }
             .conflate()
             .collect {
                 try {

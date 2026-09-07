@@ -110,6 +110,26 @@ class AskSheetTest {
     private fun textOf(tag: String): String =
         nodes(tag).firstOrNull()?.config?.get(SemanticsProperties.Text)?.joinToString("") { it.text } ?: ""
 
+    /**
+     * Turn `id` has failed and the composer is free again.
+     *
+     * The turn's own state, not a node in the transcript: the transcript is a
+     * `LazyColumn`, so whether a turn's card is composed at all depends on
+     * where the list happens to be scrolled — and a wait for a *node* to
+     * decide a question about *state* is a wait on the layout, which is what
+     * made this class hang for three minutes on the CI emulator and not at
+     * all on a fast one. The transcript is asked about afterwards, by
+     * scrolling to the card and looking at it.
+     *
+     * `isStreaming` is waited on too: the composer's ↑ is not clickable while
+     * a turn is in flight, and the turn is marked failed a moment before the
+     * stream's `finally` clears that flag — a send tapped in between is
+     * silently nothing at all.
+     */
+    private fun awaitFailedTurn(model: AskViewModel, id: Long) = compose.waitUntil(TURN_TIMEOUT) {
+        !model.isStreaming && model.exchanges.any { it.id == id && it.failed }
+    }
+
     /** The sheet on its own, opened on the book at the very start. */
     private fun openSheet(model: AskViewModel, onOpenProviders: () -> Unit = {}) {
         compose.setContent {
@@ -286,20 +306,38 @@ class AskSheetTest {
             errorBody = "{\"error\":{\"message\":\"Incorrect API key provided.\"}}",
         ).use { server ->
             connect(server)
-            openSheet(askModel())
+            val model = askModel()
+            openSheet(model)
             awaitTag("ask.suggestion.0")
             compose.onNodeWithTag("ask.suggestion.0").performClick()
-            awaitTag("ask.exchangeFailure.1", 180_000)
+            awaitFailedTurn(model, 1)
 
+            awaitTag("ask.field")
             compose.onNodeWithTag("ask.field").performTextInput("And then what?")
             compose.onNodeWithTag("ask.send").performClick()
-            compose.waitUntil(180_000) { nodes("ask.exchangeFailure.2").isNotEmpty() }
-            // Scrolled back to, because the transcript follows the newest
-            // answer down: the point is that it is still THERE, under the
-            // question it belongs to, once the composer's card has moved on.
-            compose.onNodeWithTag("ask.transcript")
-                .performScrollToNode(hasTestTag("ask.exchangeFailure.1"))
-            compose.onNodeWithTag("ask.exchangeFailure.1").assertIsDisplayed()
+            awaitFailedTurn(model, 2)
+
+            // Scrolled to, because the transcript follows the newest answer
+            // down: the point is that both reasons are still THERE, each
+            // under the question it belongs to, once the composer's card has
+            // moved on.
+            for (turn in 1..2) {
+                compose.onNodeWithTag("ask.transcript")
+                    .performScrollToNode(hasTestTag("ask.exchangeFailure.$turn"))
+                compose.onNodeWithTag("ask.exchangeFailure.$turn").assertIsDisplayed()
+            }
+
+            // Both reasons are the fake server's own sentence, and both
+            // questions were counted by it: nothing on this path ever asked a
+            // vendor's host anything, so a CI machine with no way out to one
+            // runs this exactly as a laptop does.
+            for (exchange in model.exchanges) {
+                assertTrue(
+                    "the turn kept the provider's own sentence: ${exchange.failure}",
+                    exchange.failure?.contains("Incorrect API key provided.") == true,
+                )
+            }
+            assertEquals("both questions went to the server this test runs", 2, server.requests)
         }
     }
 
@@ -373,6 +411,17 @@ class AskSheetTest {
     private companion object {
         /** This suite's Keystore key, and its own secrets file. */
         const val TEST_ALIAS = "readr.secrets.test"
+
+        /**
+         * How long one turn may take against [FakeChatServer].
+         *
+         * The server answers out of memory, so the only thing being waited on
+         * is the emulator: CI's is x86_64 under software rendering, where the
+         * slowest turn in this class has measured about four seconds. Thirty
+         * is headroom for a cold one, and short enough that a wait which will
+         * never be satisfied says so in half a minute rather than three.
+         */
+        const val TURN_TIMEOUT = 30_000L
 
         /**
          * An answer taller than the sheet, so a transcript that stopped
