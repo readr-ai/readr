@@ -292,20 +292,29 @@ public struct URLSessionHTTPClient: HTTPClient {
 
     public func stream(_ request: HTTPRequest) async throws -> AsyncThrowingStream<Data, Error> {
         #if canImport(FoundationNetworking)
-        // swift-corelibs-foundation (Linux) has no `URLSession.bytes` — there
-        // is no incremental-bytes API to wrap. Linux only needs this path to
-        // COMPILE for CI (unit tests use `MockHTTPClient`, never the network):
-        // fetch the whole body, then replay it line-by-line.
-        let response = try await send(request)
-        guard (200..<300).contains(response.status) else {
-            throw HTTPError.status(response.status, body: "")
-        }
+        // swift-corelibs-foundation (Linux, and therefore Android) has no
+        // `URLSession.bytes`; its data delegate is the only incremental-bytes
+        // API, so the lines are assembled by hand (`LineSplitter`). A delegate
+        // can only be attached when a session is built, so this borrows the
+        // injected session's CONFIGURATION rather than the session itself —
+        // timeouts and any test protocol still apply.
+        //
+        // Unlike the Darwin path the status is not known before the stream is
+        // handed back (it arrives in a callback), so a non-2xx surfaces as the
+        // stream's terminating error instead of a throw from this function.
+        // Every caller is a `for try await` inside a `do`, so both reach the
+        // reader the same way — and this one carries the body with it.
         return AsyncThrowingStream { continuation in
-            let text = String(decoding: response.body, as: UTF8.self)
-            for line in text.split(separator: "\n", omittingEmptySubsequences: true) {
-                continuation.yield(Data(line.utf8))
-            }
-            continuation.finish()
+            let delegate = StreamingLineDelegate(continuation: continuation)
+            let streaming = URLSession(
+                configuration: session.configuration, delegate: delegate, delegateQueue: nil
+            )
+            let task = streaming.dataTask(with: request.urlRequest)
+            continuation.onTermination = { _ in task.cancel() }
+            task.resume()
+            // Releases the session, and the delegate it retains, once this
+            // task ends; no further task is ever created on it.
+            streaming.finishTasksAndInvalidate()
         }
         #else
         let (bytes, response) = try await session.bytes(for: request.urlRequest)

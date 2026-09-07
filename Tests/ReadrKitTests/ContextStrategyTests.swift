@@ -221,6 +221,87 @@ final class ContextStrategyTests: XCTestCase {
         XCTAssertFalse(AssembledContext.Tier.wholeBook.providesCitations)
         XCTAssertTrue(AssembledContext.Tier.retrieval.providesCitations)
     }
+
+    // MARK: - Where a citation points
+
+    /// "Ch. 2 ¶3" is for the reader to read, not for the app to act on. The
+    /// chapter and offset the index knew about ride along, so a source can be
+    /// opened at the passage rather than at the top of a chapter.
+    func testRetrievalCitationsCarryTheirPositionInTheBook() async throws {
+        let index = StubRAGIndex(passages: [
+            RetrievedPassage(
+                text: "First relevant passage.", locator: "Ch. 2 ¶3", score: 0.9,
+                chapterIndex: 1, characterOffset: 480
+            ),
+            RetrievedPassage(
+                text: "Second relevant passage.", locator: "Ch. 5 ¶1", score: 0.8,
+                chapterIndex: 4, characterOffset: 12
+            ),
+        ])
+        let strategy = AdaptiveContextStrategy(index: index)
+
+        let result = try await strategy.assembleContext(
+            for: "What happens?",
+            in: makeBook(tokenCount: 5_000_000),
+            selection: nil,
+            scope: .wholeBook,
+            provider: provider(budget: 200_000, isLocal: false)
+        )
+
+        XCTAssertEqual(result.tier, .retrieval)
+        XCTAssertEqual(result.citations.map(\.chapterIndex), [1, 4])
+        XCTAssertEqual(result.citations.map(\.characterOffset), [480, 12])
+    }
+
+    /// An index that knows no position says so, rather than the strategy
+    /// inventing one.
+    func testACitationFromAPositionlessPassageStaysPositionless() async throws {
+        let strategy = AdaptiveContextStrategy(index: StubRAGIndex(passages: [
+            RetrievedPassage(text: "somewhere", locator: "Ch. 1", score: 1),
+        ]))
+
+        let result = try await strategy.assembleContext(
+            for: "What happens?",
+            in: makeBook(tokenCount: 5_000_000),
+            selection: nil,
+            scope: .wholeBook,
+            provider: provider(budget: 200_000, isLocal: false)
+        )
+
+        XCTAssertNil(result.citations.first?.chapterIndex)
+        XCTAssertNil(result.citations.first?.characterOffset)
+    }
+
+    /// The fallback passage — the end of what has been read, when nothing
+    /// indexed sits before the frontier — points at itself too: it is the
+    /// tail of the frontier chapter, so its offset is where that tail starts.
+    func testTheReadSoFarPassagePointsAtWhereItStarts() async throws {
+        let chapter = Chapter(
+            title: "One", order: 0, text: String(repeating: "read text. ", count: 400)
+        )
+        let book = Book(
+            metadata: BookMetadata(title: "Test Book", authors: ["A. Author"]),
+            chapters: [chapter],
+            estimatedTokenCount: 5_000_000
+        )
+        // Nothing indexed before the frontier, so the tail is all there is.
+        let strategy = AdaptiveContextStrategy(index: StubRAGIndex(passages: []))
+
+        let result = try await strategy.assembleContext(
+            for: "Recap what I've read.",
+            in: book,
+            selection: nil,
+            scope: .upTo(ReadingFrontier(chapterIndex: 0, characterOffset: chapter.text.count)),
+            provider: provider(budget: 200, isLocal: true)
+        )
+
+        let citation = try XCTUnwrap(result.citations.first)
+        XCTAssertEqual(citation.locator, "Read so far")
+        XCTAssertEqual(citation.chapterIndex, 0)
+        // The tail is the last four characters per token of the whole-book
+        // budget — 60% of the provider's, as the strategy computes it.
+        XCTAssertEqual(citation.characterOffset, chapter.text.count - Int(200 * 0.6) * 4)
+    }
 }
 
 /// Minimal in-memory index for routing tests.

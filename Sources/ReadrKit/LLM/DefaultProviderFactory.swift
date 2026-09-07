@@ -50,6 +50,10 @@ public enum DefaultProviderFactory {
             // this one and builds it (`AppProviderFactory`). Reaching here
             // means the app didn't — refuse rather than pretend.
             throw ProviderManager.ProviderError.notConfigured(.appleIntelligence)
+        case .geminiNano:
+            // Same bargain on the other phone: AICore is an Android API, so
+            // the Kotlin side supplies this provider.
+            throw ProviderManager.ProviderError.notConfigured(.geminiNano)
         }
     }
 

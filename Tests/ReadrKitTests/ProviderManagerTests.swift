@@ -195,7 +195,7 @@ final class ProviderManagerTests: XCTestCase {
         XCTAssertEqual(Set(ProviderInfo.Kind.allCases).count, ProviderInfo.Kind.allCases.count)
         XCTAssertEqual(
             Set(ProviderInfo.Kind.allCases),
-            Set([.anthropic, .openAI, .chatGPT, .openRouter, .local, .appleIntelligence])
+            Set([.anthropic, .openAI, .chatGPT, .openRouter, .local, .appleIntelligence, .geminiNano])
         )
         let manager = makeManager(store: FakeCredentialStore(), factory: CapturingFactory())
         XCTAssertTrue(
@@ -242,16 +242,21 @@ final class ProviderManagerTests: XCTestCase {
         let factory = CapturingFactory()
         let manager = makeManager(store: store, factory: factory)
 
-        // The on-device kinds are always available even with an empty store.
-        XCTAssertEqual(manager.availableKinds(), [.local, .appleIntelligence])
+        // The on-device kinds are always available even with an empty store —
+        // every one the kit knows, whatever platform this build runs on. Which
+        // of them a reader is OFFERED is the app's filter, not this list's.
+        XCTAssertEqual(manager.availableKinds(), [.local, .appleIntelligence, .geminiNano])
 
         try store.save(.apiKey("sk-anthropic"), for: .anthropic)
-        XCTAssertEqual(Set(manager.availableKinds()), Set([.anthropic, .local, .appleIntelligence]))
+        XCTAssertEqual(
+            Set(manager.availableKinds()),
+            Set([.anthropic, .local, .appleIntelligence, .geminiNano])
+        )
 
         try store.save(.apiKey("sk-openai"), for: .openAI)
         XCTAssertEqual(
             Set(manager.availableKinds()),
-            Set([.anthropic, .openAI, .local, .appleIntelligence])
+            Set([.anthropic, .openAI, .local, .appleIntelligence, .geminiNano])
         )
 
         // The sign-in kinds surface once their credentials exist: OpenRouter
@@ -262,7 +267,7 @@ final class ProviderManagerTests: XCTestCase {
         )
         XCTAssertEqual(
             Set(manager.availableKinds()),
-            Set([.anthropic, .openAI, .openRouter, .chatGPT, .local, .appleIntelligence])
+            Set([.anthropic, .openAI, .openRouter, .chatGPT, .local, .appleIntelligence, .geminiNano])
         )
     }
 
@@ -491,6 +496,7 @@ final class ProviderManagerTests: XCTestCase {
             + ProviderCatalog.openRouterModels.count
             + ProviderCatalog.localModels.count
             + ProviderCatalog.appleIntelligenceModels.count
+            + ProviderCatalog.geminiNanoModels.count
         XCTAssertEqual(ProviderCatalog.all.count, expected)
     }
 

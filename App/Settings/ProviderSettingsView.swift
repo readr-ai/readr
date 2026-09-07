@@ -443,7 +443,7 @@ struct ProviderSettingsView: View {
         case .chatGPT: return "SUBSCRIPTION"
         case .openRouter: return "SIGN IN OR KEY"
         case .anthropic, .openAI: return "API KEY"
-        case .local, .appleIntelligence: return "ON-DEVICE"
+        case .local, .appleIntelligence, .geminiNano: return "ON-DEVICE"
         }
     }
 
@@ -559,7 +559,7 @@ struct ProviderSettingsView: View {
         switch kind {
         case .chatGPT: return "Sign in with ChatGPT"
         case .openRouter: return "Sign in with OpenRouter"
-        case .anthropic, .openAI, .local, .appleIntelligence: return "Sign in with subscription"
+        case .anthropic, .openAI, .local, .appleIntelligence, .geminiNano: return "Sign in with subscription"
         }
     }
 
@@ -585,7 +585,7 @@ struct ProviderSettingsView: View {
             return (URL(string: "https://platform.openai.com/api-keys")!, "openai")
         case .openRouter:
             return (URL(string: "https://openrouter.ai/keys")!, "openrouter")
-        case .chatGPT, .local, .appleIntelligence:
+        case .chatGPT, .local, .appleIntelligence, .geminiNano:
             // ChatGPT connects by subscription sign-in only; the on-device
             // kinds need no key.
             return nil

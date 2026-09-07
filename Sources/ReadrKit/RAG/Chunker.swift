@@ -8,11 +8,17 @@ public struct Chunk: Sendable, Hashable {
     public var locator: String
     /// Zero-based index into `Book.chapters` (sorted by reading order).
     public var chapterIndex: Int
+    /// Where this chunk starts in `Chapter.text`, as a character offset — the
+    /// splitter knows where it cut, and a citation that can't be pointed at
+    /// is only prose. Optional so a chunk assembled by hand (a test, a
+    /// synthetic passage) need not invent one.
+    public var characterOffset: Int?
 
-    public init(text: String, locator: String, chapterIndex: Int) {
+    public init(text: String, locator: String, chapterIndex: Int, characterOffset: Int? = nil) {
         self.text = text
         self.locator = locator
         self.chapterIndex = chapterIndex
+        self.characterOffset = characterOffset
     }
 }
 
@@ -40,9 +46,13 @@ public struct Chunker {
 
         for (chapterIndex, chapter) in ordered.enumerated() {
             let locator = Self.locator(for: chapter)
-            let pieces = splitChapter(chapter.text)
-            for piece in pieces {
-                result.append(Chunk(text: piece, locator: locator, chapterIndex: chapterIndex))
+            for piece in splitChapter(chapter.text) {
+                result.append(
+                    Chunk(
+                        text: piece.text, locator: locator, chapterIndex: chapterIndex,
+                        characterOffset: piece.offset
+                    )
+                )
             }
         }
         return result
@@ -66,28 +76,39 @@ public struct Chunker {
 
     // MARK: - Splitting
 
+    /// One window of a chapter, and where it begins in that chapter's text.
+    struct Piece: Equatable {
+        var text: String
+        var offset: Int
+    }
+
     /// Split a single chapter's text into overlapping windows, preferring
     /// paragraph then sentence then word boundaries, never cutting mid-word.
-    func splitChapter(_ text: String) -> [String] {
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return [] }
+    ///
+    /// The window walks the chapter's own text in place rather than a trimmed
+    /// copy of it, so every piece can report the offset it was cut at — the
+    /// offset a citation is pointed at later.
+    func splitChapter(_ text: String) -> [Piece] {
+        let chars = Array(text)
+        // Whitespace at either end belongs to no chunk.
+        var start = 0
+        var n = chars.count
+        while start < n, chars[start].isWhitespace { start += 1 }
+        while n > start, chars[n - 1].isWhitespace { n -= 1 }
+        guard start < n else { return [] }
 
-        let chars = Array(trimmed)
-        let n = chars.count
-        if n <= targetCharacters {
-            return [trimmed]
+        if n - start <= targetCharacters {
+            return [Piece(text: String(chars[start..<n]), offset: start)]
         }
 
-        var chunks: [String] = []
-        var start = 0
+        var chunks: [Piece] = []
 
         while start < n {
             let hardEnd = min(start + targetCharacters, n)
 
             // If we've reached the end of the text, emit the remainder.
             if hardEnd >= n {
-                let piece = String(chars[start..<n]).trimmingCharacters(in: .whitespacesAndNewlines)
-                if !piece.isEmpty { chunks.append(piece) }
+                if let piece = Self.piece(in: chars, from: start, to: n) { chunks.append(piece) }
                 break
             }
 
@@ -96,8 +117,7 @@ public struct Chunker {
             let minEnd = start + max(1, targetCharacters / 2)
             let end = bestBoundary(in: chars, from: start, lowerBound: minEnd, upperBound: hardEnd)
 
-            let piece = String(chars[start..<end]).trimmingCharacters(in: .whitespacesAndNewlines)
-            if !piece.isEmpty { chunks.append(piece) }
+            if let piece = Self.piece(in: chars, from: start, to: end) { chunks.append(piece) }
 
             // Advance with overlap, guaranteeing forward progress.
             let nextStart = end - overlapCharacters
@@ -105,6 +125,18 @@ public struct Chunker {
         }
 
         return chunks
+    }
+
+    /// The window `from..<to` with its own surrounding whitespace dropped, and
+    /// the offset that trim leaves it at. Nil when the window is all
+    /// whitespace — a blank line between paragraphs is not a chunk.
+    private static func piece(in chars: [Character], from: Int, to: Int) -> Piece? {
+        var lower = from
+        var upper = to
+        while lower < upper, chars[lower].isWhitespace { lower += 1 }
+        while upper > lower, chars[upper - 1].isWhitespace { upper -= 1 }
+        guard lower < upper else { return nil }
+        return Piece(text: String(chars[lower..<upper]), offset: lower)
     }
 
     /// Pick the highest-quality boundary index (exclusive end) in

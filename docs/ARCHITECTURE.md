@@ -14,7 +14,7 @@
 │  Reader   ── BookParser (EPUB/PDF) ──▶ Book model            │
 │  Context  ── ContextStrategy (Tier 1/2/3 router)            │
 │  RAG      ── RAGIndex (sqlite-vec + FTS5, rerank)            │
-│  LLM      ── LLMProvider (Apple on-device / cloud / Ollama)  │
+│  LLM      ── LLMProvider (system on-device / cloud / Ollama) │
 │  Article  ── ArticleComposer (highlights+notes → Markdown)   │
 │  Speech   ── NarrationController (segments → SpeechEngine)   │
 │  Models   ── Book, Chapter, Highlight, Note, Conversation    │
@@ -36,12 +36,18 @@ can be swapped or mocked.
 | Protocol | Responsibility | Default impl |
 |----------|----------------|--------------|
 | `BookParser` | Turn an EPUB/PDF/text file into a `Book` (chapters, text, TOC, metadata) | Native: `PlainTextBookParser`, `EPUBBookParser` (+ZIPFoundation), `PDFKitBookParser` |
-| `LLMProvider` | Chat completion + streaming + token counting | Apple on-device (FoundationModels, app layer) / Anthropic / OpenAI / OpenRouter / ChatGPT / Local (Ollama) |
+| `LLMProvider` | Chat completion + streaming + token counting | System on-device — Apple Intelligence (FoundationModels) and Gemini Nano (AICore), each supplied by its own platform layer / Anthropic / OpenAI / OpenRouter / ChatGPT / Local (Ollama) |
 | `EmbeddingProvider` | Text → vectors | Hosted or on-device (MLX) |
 | `RAGIndex` | Build/query the hybrid index for a book | SQLite (`sqlite-vec` + FTS5) |
 | `ContextStrategy` | Assemble the optimal prompt context for a query | `AdaptiveContextStrategy` |
 | `ArticleComposer` | Compose highlights + notes into an article | LLM-backed |
 | `SpeechEngine` | Speak one utterance; report boundaries and completion | `AVSpeechEngine` (AVFoundation, on-device) |
+
+Only the model call itself is platform code. How a small on-device model is
+asked a question about a book — the prompt shaping, the off-topic
+classification, the window-fitting rule, and the cumulative-snapshot →
+delta conversion that keeps a looping model off the screen — lives in the
+kit (`LLM/OnDevice`), shared by every such model.
 
 ## Rendering
 

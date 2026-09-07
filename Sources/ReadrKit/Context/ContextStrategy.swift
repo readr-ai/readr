@@ -208,12 +208,16 @@ public struct AdaptiveContextStrategy: ContextStrategy {
             // through the first chapter, say. The end of what they've read is
             // the best available grounding, so the passage block is never
             // empty: the last budget's worth of it, as one passage.
-            let tail = book.textRead(upTo: frontier, lastCharacters: budget * 4)
+            let tailCharacters = budget * 4
+            let tail = book.textRead(upTo: frontier, lastCharacters: tailCharacters)
             if !tail.isEmpty {
                 passages = [
                     RetrievedPassage(
                         text: tail, locator: Self.readSoFarLocator, score: 0,
-                        chapterIndex: frontier.chapterIndex
+                        chapterIndex: frontier.chapterIndex,
+                        characterOffset: book.readTailOffset(
+                            upTo: frontier, lastCharacters: tailCharacters
+                        )
                     ),
                 ]
             }
@@ -240,10 +244,15 @@ public struct AdaptiveContextStrategy: ContextStrategy {
             }
         }
         let retrieved = kept.map(Self.passageLine).joined(separator: Self.passageSeparator)
+        // A citation carries the passage's position as well as its wording:
+        // the locator is what the reader reads, the two indices are what the
+        // app needs to open the book at the passage the answer leaned on.
         let citations = kept.map { passage in
             Citation(
                 locator: passage.locator,
-                quotedText: Self.snippet(from: passage.text)
+                quotedText: Self.snippet(from: passage.text),
+                chapterIndex: passage.chapterIndex,
+                characterOffset: passage.characterOffset
             )
         }
         let ask = ChatMessage(

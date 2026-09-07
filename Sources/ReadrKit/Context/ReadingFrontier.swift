@@ -111,6 +111,18 @@ public extension Book {
         return pieces.reversed().joined(separator: "\n\n")
     }
 
+    /// Where the frontier chapter's share of `textRead(upTo:lastCharacters:)`
+    /// begins inside that chapter. Zero once the tail reaches back past the
+    /// chapter's own start — from there the passage begins in an earlier
+    /// chapter, and the frontier chapter contributes all of itself.
+    func readTailOffset(upTo frontier: ReadingFrontier, lastCharacters maxCharacters: Int) -> Int {
+        let ordered = chaptersInReadingOrder
+        let index = min(max(0, frontier.chapterIndex), ordered.count)
+        guard index < ordered.count, maxCharacters > 0 else { return 0 }
+        let cut = max(0, min(frontier.characterOffset, ordered[index].text.count))
+        return max(0, cut - maxCharacters)
+    }
+
     /// Whether the frontier sits at or past the end of its chapter — i.e. the
     /// reader has finished that chapter, so all of it is safe to surface.
     func hasFinishedChapter(at frontier: ReadingFrontier) -> Bool {

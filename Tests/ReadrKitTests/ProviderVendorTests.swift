@@ -56,6 +56,50 @@ final class ProviderVendorTests: XCTestCase {
         )
     }
 
+    /// Android's system model is the same bargain on the other phone.
+    func testGeminiNanoIsOnDeviceAndNeedsNothing() {
+        XCTAssertFalse(ProviderInfo.Kind.geminiNano.usesAPIKey)
+        XCTAssertFalse(ProviderInfo.Kind.geminiNano.offersSignIn)
+        XCTAssertTrue(ProviderInfo.Kind.geminiNano.isOnDevice)
+    }
+
+    /// It has a card of its own — "On this device" is Apple's framework, and
+    /// a phone that runs one of them never runs the other.
+    func testGeminiNanoHasItsOwnVendorBesideApples() {
+        let android = ProviderVendor.vendor(for: .geminiNano)
+        XCTAssertEqual(android?.id, "android")
+        XCTAssertEqual(android?.title, "On this phone")
+        XCTAssertEqual(android?.methods, [.geminiNano])
+        XCTAssertEqual(android?.badge, "On-device")
+        XCTAssertEqual(ProviderVendor.all.prefix(2).map(\.id), ["apple", "android"])
+    }
+
+    /// The one that matters for shipping: the Apple builds pass their own
+    /// kinds, and the Android card must not appear on any of them. Both sets
+    /// come from `SettingsModel.allKinds` — macOS's, then iOS's.
+    func testTheAppleBuildsNeverShowTheAndroidVendor() {
+        for kinds in [
+            [.appleIntelligence, .chatGPT, .openRouter, .anthropic, .openAI, .local],
+            [.appleIntelligence, .openRouter, .anthropic, .openAI],
+        ] as [[ProviderInfo.Kind]] {
+            let displayed = ProviderVendor.displayed(forKinds: kinds)
+            XCTAssertFalse(
+                displayed.contains { $0.id == "android" },
+                "the Android card leaked into an Apple build"
+            )
+            XCTAssertFalse(displayed.flatMap(\.methods).contains(.geminiNano))
+        }
+    }
+
+    /// And the mirror image: an Android build offers Nano and not Apple's.
+    func testTheAndroidBuildShowsItsOwnCardAndNotApples() {
+        let displayed = ProviderVendor.displayed(
+            forKinds: [.geminiNano, .openRouter, .anthropic, .openAI]
+        )
+        XCTAssertEqual(displayed.map(\.id), ["android", "openai", "openrouter", "anthropic"])
+        XCTAssertFalse(displayed.flatMap(\.methods).contains(.appleIntelligence))
+    }
+
     // MARK: - Grouping
 
     func testChatGPTAndOpenAIShareOneVendor() {
@@ -79,7 +123,7 @@ final class ProviderVendorTests: XCTestCase {
         XCTAssertEqual(Set(listed).count, listed.count, "a kind is listed twice")
         XCTAssertEqual(
             Set(listed),
-            Set([.chatGPT, .openAI, .anthropic, .openRouter, .local, .appleIntelligence]
+            Set([.chatGPT, .openAI, .anthropic, .openRouter, .local, .appleIntelligence, .geminiNano]
                 as [ProviderInfo.Kind])
         )
     }
@@ -88,7 +132,8 @@ final class ProviderVendorTests: XCTestCase {
     /// the sign-in vendors, then the paste-a-key ones.
     func testZeroSetupThenSignInVendorsComeFirst() {
         XCTAssertEqual(
-            ProviderVendor.all.map(\.id), ["apple", "openai", "openrouter", "anthropic", "local"]
+            ProviderVendor.all.map(\.id),
+            ["apple", "android", "openai", "openrouter", "anthropic", "local"]
         )
     }
 
