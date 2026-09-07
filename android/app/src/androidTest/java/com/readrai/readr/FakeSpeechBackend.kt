@@ -34,8 +34,18 @@ class FakeSpeechBackend(private val events: NarrationEvents) : SpeechBackend {
     /** How many times the kit asked for silence. */
     @Volatile var stops = 0
         private set
-    /** What voices the phone claims to have; empty by default. */
+    /**
+     * The voices the phone claims to have, as a JSON array — the `voices` half
+     * of what [voicesJSON] answers. Empty by default, which with [voicesReady]
+     * true is a phone that has none.
+     */
     var voices: String = "[]"
+    /**
+     * Whether the phone's engine has finished starting up. A real one says no
+     * for the first second or so of a session and the picker has a sentence
+     * for it, which is a different sentence from "no voices installed".
+     */
+    var voicesReady = true
     /**
      * A phone with no working synthesizer: every sentence is refused on the
      * spot, the way [com.readrai.readr.kit.PlatformSpeechBackend] refuses one
@@ -74,7 +84,7 @@ class FakeSpeechBackend(private val events: NarrationEvents) : SpeechBackend {
 
     override fun state(): String = state
 
-    override fun voicesJSON(): String = voices
+    override fun voicesJSON(): String = """{"ready":$voicesReady,"voices":$voices}"""
 
     // MARK: Driving it from a test
 
@@ -94,6 +104,15 @@ class FakeSpeechBackend(private val events: NarrationEvents) : SpeechBackend {
     fun speakWord(start: Int, end: Int) {
         val id = activeID ?: return
         events.willSpeak(id, start.toLong(), end.toLong())
+    }
+
+    /**
+     * The system takes the audio away mid-sentence — a call, a navigation
+     * prompt. Reported the way the app reports it: through `NarrationEvents`,
+     * so what happens to the book is the kit's decision and not this fake's.
+     */
+    fun interrupt() {
+        events.suspended("audioInterrupted")
     }
 
     /** The engine refuses the sentence. */

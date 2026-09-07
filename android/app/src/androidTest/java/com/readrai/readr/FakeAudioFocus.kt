@@ -12,12 +12,16 @@ import com.readrai.readr.ui.listen.NarrationAudioFocus
 class FakeAudioFocus : NarrationAudioFocus {
     /** Whether the phone would give focus at all. */
     var granted = true
+    /** How many times it was asked — the session must not ask twice for what it holds. */
+    var requests = 0
+        private set
     var abandoned = false
         private set
 
     private var listener: ((Int) -> Unit)? = null
 
     override fun request(onChange: (Int) -> Unit): Boolean {
+        requests += 1
         listener = onChange
         return granted
     }

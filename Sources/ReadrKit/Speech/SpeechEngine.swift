@@ -52,6 +52,12 @@ public enum NarrationHoldReason: Hashable, Sendable {
     /// reader unlocks the phone to go on. "Paused — unlock Readr to keep
     /// listening."
     case needsForeground
+    /// The system took the audio away — a call, a navigation prompt, another
+    /// app's playback. Narration holds on the sentence and the platform layer
+    /// decides whether the audio ever comes back: `play()` re-speaks from the
+    /// word the voice reached, and a pause by the reader clears the reason,
+    /// so nothing may start the voice on their behalf afterwards.
+    case audioInterrupted
 }
 
 public enum SpeechEngineState: Hashable, Sendable {

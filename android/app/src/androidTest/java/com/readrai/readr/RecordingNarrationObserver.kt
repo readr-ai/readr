@@ -14,6 +14,9 @@ class RecordingNarrationObserver : NarrationObserver {
     val sentences = CopyOnWriteArrayList<String>()
     val sleeps = CopyOnWriteArrayList<String>()
     val holds = CopyOnWriteArrayList<String>()
+    /** How many times the facade said the phone's voice list had arrived. */
+    @Volatile var voiceRefreshes = 0
+        private set
 
     override fun statusChanged(status: String) { statuses += status }
 
@@ -30,4 +33,6 @@ class RecordingNarrationObserver : NarrationObserver {
     override fun sleepTimerChanged(json: String) { sleeps += json }
 
     override fun holdChanged(reason: String) { holds += reason }
+
+    override fun voicesChanged() { voiceRefreshes += 1 }
 }

@@ -105,11 +105,17 @@ class VoicePickerTest {
     }
 
     /** The reader, over a synthesizer that claims [voices]. */
-    private fun open(voices: String = installedVoices) {
+    private fun open(voices: String = installedVoices, ready: Boolean = true) {
         val model = ReaderViewModel({ repository }, book.id)
         narration = NarrationModel(
             context, { kit }, book.id, settings,
-            backends = { events -> FakeSpeechBackend(events).also { it.voices = voices; backend = it } },
+            backends = { events ->
+                FakeSpeechBackend(events).also {
+                    it.voices = voices
+                    it.voicesReady = ready
+                    backend = it
+                }
+            },
         )
         store = ViewModelStore()
         val owner = object : ViewModelStoreOwner {
@@ -140,6 +146,15 @@ class VoicePickerTest {
     }
 
     /**
+     * Tap the Voice row — which is what builds a listening session and asks
+     * the phone for its voices. The row itself costs nothing to draw.
+     */
+    private fun openPicker() {
+        compose.onNodeWithTag("appearance.voice").performScrollTo().performClick()
+        compose.waitUntil(20_000) { !narration.voices.isEmpty }
+    }
+
+    /**
      * The row opens on the voice that is reading — which, with nothing stored,
      * is the one the kit recommends for this book's language. Behind it: the
      * English voices first, in `VoiceSelector`'s order, and the French one
@@ -149,6 +164,7 @@ class VoicePickerTest {
     fun theRowShowsTheRecommendedVoiceAndTheListIsTheKitsOrder() {
         open()
         openAppearance()
+        openPicker()
 
         val voices = narration.voices
         assertEquals("the kit's choice for an English book", american, voices.recommendedID)
@@ -164,7 +180,6 @@ class VoicePickerTest {
             textOf("appearance.voice").contains("English (United States)"),
         )
 
-        compose.onNodeWithTag("appearance.voice").performScrollTo().performClick()
         awaitTag("voice.$american")
         assertTrue("the other English voice is offered", nodes("voice.$british").isNotEmpty())
         assertTrue("the French one is not, until asked for", nodes("voice.$french").isEmpty())
@@ -176,7 +191,7 @@ class VoicePickerTest {
     fun pickingAVoiceChangesTheStateAndIsRemembered() {
         open()
         openAppearance()
-        compose.onNodeWithTag("appearance.voice").performScrollTo().performClick()
+        openPicker()
         awaitTag("voice.$british")
 
         compose.onNodeWithTag("voice.$british").performClick()
@@ -185,9 +200,18 @@ class VoicePickerTest {
         assertEquals("the kit is reading in it", british, narration.voices.selectedID)
         assertEquals("and it is written down", british, settings.narrationVoiceID)
         assertEquals(
+            "with its name beside it, for the row to draw before there is a session",
+            "English (United Kingdom)",
+            settings.narrationVoiceName,
+        )
+        assertEquals(
             "the recommendation is unchanged — it is not the same thing as the choice",
             american,
             narration.voices.recommendedID,
+        )
+        assertTrue(
+            "and the row names it: '${textOf("appearance.voice")}'",
+            textOf("appearance.voice").contains("English (United Kingdom)"),
         )
     }
 
@@ -196,7 +220,7 @@ class VoicePickerTest {
     fun theOtherVoicesDisclosureOffersTheRest() {
         open()
         openAppearance()
-        compose.onNodeWithTag("appearance.voice").performScrollTo().performClick()
+        openPicker()
         awaitTag("appearance.otherVoices")
 
         compose.onNodeWithTag("appearance.otherVoices").performClick()
@@ -216,11 +240,88 @@ class VoicePickerTest {
     fun aPhoneWithNoVoicesSaysSoInTheFacadesWords() {
         open(voices = "[]")
         openAppearance()
+        compose.onNodeWithTag("appearance.voice").performScrollTo().performClick()
+        awaitTag("voice.absent")
 
         assertTrue("nothing to offer", narration.voices.isEmpty)
-        val text = textOf("appearance.voice")
+        val text = textOf("voice.absent")
         assertEquals("the sentence is the facade's", narration.voices.emptyText, text)
         assertTrue("and it says something", text.isNotBlank())
         assertFalse("there is nothing to pick from", text.contains("null"))
+    }
+
+    /**
+     * The row draws before any listening session exists — and must, because
+     * building one starts a `TextToSpeech` engine and this row is passed on
+     * every trip to the Appearance sheet. What it shows is the name written
+     * down when the voice was chosen; the facade's own default sentence when
+     * nothing has been.
+     */
+    @Test
+    fun theRowNamesTheStoredVoiceWithoutASession() {
+        settings.narrationVoiceID = british
+        settings.narrationVoiceName = "English (United Kingdom)"
+        open()
+        openAppearance()
+
+        assertTrue("no session was built to draw a row", narration.voices.isEmpty)
+        assertTrue(
+            "the row names the stored voice: '${textOf("appearance.voice")}'",
+            textOf("appearance.voice").contains("English (United Kingdom)"),
+        )
+
+        // And the tap that opens the picker is what asks the phone.
+        openPicker()
+        awaitTag("voice.$british")
+        assertEquals(british, narration.voices.selectedID)
+    }
+
+    /** With nothing stored, the row says so — in the facade's words. */
+    @Test
+    fun theRowNamesTheDefaultVoiceWhenNothingIsStored() {
+        open()
+        openAppearance()
+
+        val expected = com.readrai.readr.ui.listen.NarrationOptions.current.defaultVoiceName
+        assertTrue("the facade supplied one", expected.isNotBlank())
+        assertTrue(
+            "the row says '${textOf("appearance.voice")}'",
+            textOf("appearance.voice").contains(expected),
+        )
+    }
+
+    /**
+     * A synthesizer that has not finished starting up is not a phone with no
+     * voices, and the picker must not send the reader off to a settings screen
+     * they do not need. It says it is looking, and fills in when the engine
+     * reports — pushed by the facade, not polled.
+     */
+    @Test
+    fun anEngineStillStartingUpSaysItIsLookingRatherThanEmpty() {
+        // An engine that has not started up has nothing to say *and* says it
+        // has not said it — both halves, which is the state the flag exists for.
+        open(voices = "[]", ready = false)
+        openAppearance()
+        compose.onNodeWithTag("appearance.voice").performScrollTo().performClick()
+        awaitTag("voice.absent")
+
+        val looking = textOf("voice.absent")
+        assertEquals("the facade's waiting sentence", narration.voices.lookingText, looking)
+        assertTrue(looking.isNotBlank())
+        assertFalse(
+            "never the one that blames the phone: '$looking'",
+            looking.contains("No voices installed"),
+        )
+
+        // The engine reports in, exactly as `PlatformSpeechBackend` does.
+        onMain {
+            backend.voices = installedVoices
+            backend.voicesReady = true
+            narration.voicesChanged()
+        }
+
+        compose.waitUntil(20_000) { !narration.voices.isEmpty }
+        awaitTag("voice.$american")
+        assertTrue(nodes("voice.$british").isNotEmpty())
     }
 }

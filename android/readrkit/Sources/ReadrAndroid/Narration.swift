@@ -50,9 +50,21 @@ public protocol SpeechBackend {
   /// mattered. (`"paused"` is understood by the kit but never produced here —
   /// this backend is stopped, not paused.)
   func state() -> String
-  /// `[{id, name, language, quality, isDefault}]`, quality one of
-  /// `standard`/`enhanced`/`premium`. `[]` before the engine is ready.
+  /// `{"ready":Bool,"voices":[{id, name, language, quality, isDefault}]}`,
+  /// quality one of `standard`/`enhanced`/`premium`.
+  ///
+  /// `ready` is the difference between "the engine has not finished starting
+  /// up" and "the engine started and this phone has no voice data" — two
+  /// states that both look like an empty list and want opposite sentences on
+  /// the picker's row. Kotlin reports the fact; the words for it are this
+  /// side's.
   func voicesJSON() -> String
+}
+
+/// What Kotlin answers `voicesJSON()` with.
+private struct InstalledVoicesWire: Codable {
+  var ready: Bool
+  var voices: [VoiceWire]
 }
 
 /// One installed voice, as Kotlin describes it.
@@ -91,17 +103,32 @@ private struct VoicePickerWire: Codable {
   var recommendedID: String?
   var selectedID: String?
   var selectedName: String?
-  /// What the row says when the phone has no voice data at all. The facade's
-  /// words, like every other sentence a reader could be stopped by here.
+  /// Whether the phone's engine is still starting up, so its silence means
+  /// "not yet" rather than "none". The row says two different things.
+  var looking: Bool
+  /// What the row says while the engine is still starting up.
+  var lookingText: String
+  /// What the row says when the engine has started and the phone has no voice
+  /// data at all. The facade's words, like every other sentence a reader could
+  /// be stopped by here. Empty while `looking`: there is nothing to say "none"
+  /// about yet.
   var emptyText: String
+}
+
+/// One chapter of the media session's playlist — see `nowPlayingJSON()`.
+private struct NowPlayingChapterWire: Codable {
+  /// The chapter's index in the book, in the same space `stateJSON`'s
+  /// `chapterIndex` and `start(chapterIndex:…)` use. Not the row's position:
+  /// chapters narration would never read are not rows at all.
+  var index: Int
+  var title: String
 }
 
 /// What the media session publishes — see `nowPlayingJSON()`.
 private struct NowPlayingWire: Codable {
   var title: String
   var authors: String
-  var chapterTitles: [String]
-  var chapterIndex: Int
+  var chapters: [NowPlayingChapterWire]
 }
 
 // MARK: - What the reader's card is told
@@ -129,6 +156,11 @@ public protocol NarrationObserver {
   /// Why narration stopped without the reader asking: `""` for nothing,
   /// else a token `holdText(for:)` turns into the sentence the card shows.
   func holdChanged(_ reason: String)
+  /// The phone's engine finished starting up, so `voicesJSON()` has something
+  /// to say at last. Pushed rather than polled: the Voice row used to ask
+  /// twenty-four times at quarter-second intervals because there was nothing
+  /// to wait on, and this is the thing to wait on.
+  func voicesChanged()
 }
 
 // MARK: - Engine callbacks, as Kotlin makes them
@@ -182,6 +214,20 @@ public final class NarrationEvents {
   /// with its own text and its own table.)
   public func willSpeak(_ requestID: String, utf16Start: Int64, utf16End: Int64) {
     engine?.willSpeak(requestID, utf16Start: Int(utf16Start), utf16End: Int(utf16End))
+  }
+
+  /// The system took the audio away and the utterance is set down unspoken —
+  /// a call, a navigation prompt, another app's playback. `reason` is a
+  /// `NarrationHoldReason` token (`"audioInterrupted"`); anything unknown is
+  /// read as that one, since the audio going is what a Kotlin-side suspension
+  /// means today.
+  ///
+  /// Not a failure: the sentence is *held*, with a reason the card and the
+  /// notification show and the kit's `play()` re-speaks from. The decision
+  /// about whether the audio comes back is Kotlin's (`AudioManager` focus);
+  /// what happens to the book is the kit's.
+  public func suspended(reason: String) {
+    engine?.suspend(reason)
   }
 
   /// The utterance could not be spoken. `diagnostic` is for the log — the
@@ -294,6 +340,34 @@ final class BridgedSpeechEngine: SpeechEngine {
     delegate?.speechEngine(self, willSpeak: lower..<upper, of: id)
   }
 
+  /// The audio went away under the utterance in flight: stop the backend and
+  /// hand the sentence back to the controller as a *hold*, not a failure.
+  ///
+  /// The order matters. The backend is stopped first (Android's synthesizer
+  /// would otherwise keep talking into an audio focus we no longer have), the
+  /// active utterance is forgotten so a late report from it is stale by
+  /// construction — the same rule `stop()` follows — and only then is the
+  /// controller told, because it publishes state from inside that call.
+  func suspend(_ reason: String) {
+    guard let requestID = activeID, let id = UUID(uuidString: requestID) else { return }
+    backend.stop()
+    activeID = nil
+    activeOffsets = nil
+    lastFailure = nil
+    delegate?.speechEngine(self, didSuspend: id, reason: Self.holdReason(reason))
+  }
+
+  /// A hold token as Kotlin sends it. Unknown tokens read as
+  /// `.audioInterrupted`: a suspension raised from the Kotlin side is the
+  /// system taking the sound, and a token this build does not know is still
+  /// that rather than a reason to drop the report on the floor.
+  private static func holdReason(_ token: String) -> NarrationHoldReason {
+    switch token {
+    case "needsForeground": return .needsForeground
+    default: return .audioInterrupted
+    }
+  }
+
   func didFail(_ requestID: String, diagnostic: String) {
     guard requestID == activeID, let id = UUID(uuidString: requestID) else { return }
     activeID = nil
@@ -377,6 +451,9 @@ private struct NarrationOptionsWire: Codable {
   var sleepMinutes: [Int]
   var sleepMinuteLabels: [String]
   var sleepLabels: [String: String]
+  /// What the Voice row names when the reader has chosen nothing — the row
+  /// draws before any listening session exists, so this cannot come from one.
+  var defaultVoiceName: String
 }
 
 /// What `setSleepTimer` takes: `{"mode":"off"|"after"|"endOfChapter","minutes":N}`.
@@ -399,6 +476,15 @@ public final class AndroidNarration {
   private let observer: any NarrationObserver
   private let offsets: OffsetTableCache
   private let book: Book?
+  /// The language narration is in: the book's own if it declares one, else the
+  /// phone's. **One** language, used by the picker's grouping *and* by the
+  /// choice of reading voice — they used to differ, so an untagged book was
+  /// grouped under the device's locale and then read by whatever the engine's
+  /// default happened to be, and the row the picker marked "Recommended" was
+  /// not the voice doing the reading. The locale comes from Kotlin
+  /// (`Locale.getDefault().toLanguageTag()`): `Foundation.Locale.current` on
+  /// Android is the C locale, not the reader's.
+  private let narrationLanguage: String?
   /// The last values published to the observer, so a tick that changes
   /// nothing costs no recomposition.
   private var lastStatus = ""
@@ -424,13 +510,18 @@ public final class AndroidNarration {
   ///   - settingsJSON: the reader's stored speed and voice, as
   ///     `SpeechSettings` encodes itself. `""` (or anything unreadable) is
   ///     the default: a preferences file is not a contract.
+  ///   - deviceLocale: the phone's own language tag
+  ///     (`Locale.getDefault().toLanguageTag()`), for a book that declares
+  ///     none. Kotlin's, because Foundation's idea of the current locale on
+  ///     Android is not the reader's.
   public init(
     library: AndroidLibrary,
     bookID: String,
     backend: any SpeechBackend,
     events: NarrationEvents,
     observer: any NarrationObserver,
-    settingsJSON: String
+    settingsJSON: String,
+    deviceLocale: String
   ) {
     self.observer = observer
     self.backend = backend
@@ -441,6 +532,10 @@ public final class AndroidNarration {
 
     let book = try? library.book(bookID)
     self.book = book
+    let declared = book?.metadata.language?.trimmingCharacters(in: .whitespacesAndNewlines)
+    let fallback = deviceLocale.trimmingCharacters(in: .whitespacesAndNewlines)
+    self.narrationLanguage = (declared?.isEmpty == false ? declared : nil)
+      ?? (fallback.isEmpty ? nil : fallback)
     guard let book else {
       // A book that is no longer in the library: everything below is a
       // no-op and `stateJSON` reports idle. Nothing here can throw — a
@@ -479,7 +574,8 @@ public final class AndroidNarration {
       sleepLabels: [
         "off": SleepTimer.off.displayName,
         "endOfChapter": SleepTimer.endOfChapter.displayName,
-      ])
+      ],
+      defaultVoiceName: Self.defaultVoiceName)
     guard let data = try? AndroidLibrary.encoder().encode(wire) else { return "" }
     return String(decoding: data, as: UTF8.self)
   }
@@ -516,6 +612,19 @@ public final class AndroidNarration {
   public func togglePlayPause() {
     resolveVoiceIfNeeded()
     controller?.togglePlayPause()
+    publish()
+  }
+
+  /// The system took the sound: hold the sentence where it is, with a reason.
+  ///
+  /// Kotlin owns audio focus — it is the only side that hears a call arrive or
+  /// another app start playing — but it does not own the *pause*. This routes
+  /// the interruption through the engine, so the kit stops narration by its
+  /// own rules, keeps the word the voice reached, and publishes a hold the
+  /// card and the notification can explain. What Kotlin then reads back
+  /// (`stateJSON`'s `holdReason`) is what decides whether a regain resumes.
+  public func audioInterrupted() {
+    engine.suspend("audioInterrupted")
     publish()
   }
 
@@ -634,7 +743,7 @@ public final class AndroidNarration {
     let installed = Self.installedVoices(backend.voicesJSON())
     let systemDefault = installed.systemDefault
     let selector = VoiceSelector()
-    let language = Self.pickerLanguage(of: book)
+    let language = narrationLanguage
     // `voices(matching:)` answers the book's language, or everything when it
     // matches nothing — so the second group is whatever the first left over,
     // ranked by the same rule. Empty, then, exactly when the first group is
@@ -657,42 +766,52 @@ public final class AndroidNarration {
         quality: Self.name(of: voice.quality), isDefault: voice.id == systemDefault,
         isRecommended: voice.id == recommended?.id)
     }
+    // "Not yet" and "none at all" both look like an empty list and want
+    // opposite sentences: a phone whose engine is still starting up is not a
+    // phone with no voices, and telling a reader to go and install one while
+    // the list is on its way is simply wrong. Neither sentence is offered when
+    // there *is* a list — a payload that carries an explanation for an absence
+    // that has not happened invites something to show it.
+    let nothingToOffer = forBook.isEmpty && others.isEmpty
     let wire = VoicePickerWire(
       voices: forBook.map(option), otherVoices: others.map(option),
       recommendedID: recommended?.id, selectedID: selectedID, selectedName: selected?.name,
-      emptyText: Self.noVoicesText)
+      looking: nothingToOffer && !installed.ready, lookingText: Self.lookingForVoicesText,
+      emptyText: nothingToOffer && installed.ready ? Self.noVoicesText : "")
     guard let data = try? AndroidLibrary.encoder().encode(wire) else { return "" }
     return String(decoding: data, as: UTF8.self)
   }
 
-  /// What the media session publishes: the book, who wrote it, and its
-  /// chapters — the session's playlist, so the notification's ⏭ and ⏮ move by
-  /// the book's own chapters. Titles are the kit's `chapterDisplayTitle`, so
-  /// nothing on the Kotlin side writes a heading.
+  /// What the media session publishes: the book, who wrote it, and the
+  /// chapters it will be read in — the session's playlist, so the
+  /// notification's ⏭ and ⏮ move by the book's own chapters.
   ///
-  /// Asked once a listening session (the book cannot change under one) and
-  /// again whenever the chapter does, which is the only field that moves.
+  /// The playlist is the chapters the **kit will narrate**
+  /// (`Book.narratableChapterIndices`: `linear="no"` spine entries and
+  /// chapters with nothing speakable in them are not rows), each carrying its
+  /// own `index` in the book. Chapters the kit skips used to be rows all the
+  /// same, so ⏭ into a notes document put a track on the lock screen that
+  /// auto-advance would never play and left the row highlighted on the wrong
+  /// chapter for the rest of the book.
+  ///
+  /// Titles come from `chapterDisplayTitlesInStoredOrder` — the same
+  /// `chapters` index space `stateJSON`'s `chapterIndex` is in. The
+  /// reading-order lookup (`chapterDisplayTitle`) counts differently, and a
+  /// playlist titled through it is out of step for any book whose array is not
+  /// already sorted. Nothing on the Kotlin side writes a heading either way.
+  ///
+  /// Asked once a listening session: none of it changes under one.
   public func nowPlayingJSON() -> String {
     guard let book else { return "" }
+    let titles = book.chapterDisplayTitlesInStoredOrder
     let wire = NowPlayingWire(
       title: book.metadata.title,
       authors: book.metadata.authors.joined(separator: ", "),
-      chapterTitles: book.chapters.indices.map { book.chapterDisplayTitle($0) },
-      chapterIndex: controller?.position?.chapterIndex ?? 0)
+      chapters: book.narratableChapterIndices.map {
+        NowPlayingChapterWire(index: $0, title: titles.indices.contains($0) ? titles[$0] : "")
+      })
     guard let data = try? AndroidLibrary.encoder().encode(wire) else { return "" }
     return String(decoding: data, as: UTF8.self)
-  }
-
-  /// The language the picker groups by. A book that declares none — most
-  /// plain text, plenty of EPUBs — would otherwise offer every voice the
-  /// phone has in every language, which is not a picker so much as a wall;
-  /// the reader's own locale is the better guess, since a book whose language
-  /// nobody recorded is most likely in the one they read in. This is
-  /// `prepareVoices(for:)`'s rule on Apple, and it is the picker's alone:
-  /// `resolveVoiceIfNeeded` still leaves an unlabelled book to the engine's
-  /// own default rather than guessing which voice should read it.
-  private static func pickerLanguage(of book: Book?) -> String {
-    book?.metadata.language ?? Locale.current.identifier
   }
 
   // MARK: Publishing
@@ -701,14 +820,19 @@ public final class AndroidNarration {
   private func publish() {
     let wire = state()
 
-    if wire.status != lastStatus {
-      lastStatus = wire.status
-      observer.statusChanged(wire.status)
-    }
+    // The hold first, and the status it explains after. Kotlin's audio-focus
+    // rules read the reason to decide what a pause means — whether the phone's
+    // audio may be handed back, whether a regain may resume — and a status of
+    // "paused" arriving before the reason for it is a moment in which every
+    // pause looks like the reader's own.
     let hold = wire.holdReason ?? ""
     if hold != lastHold {
       lastHold = hold
       observer.holdChanged(hold)
+    }
+    if wire.status != lastStatus {
+      lastStatus = wire.status
+      observer.statusChanged(wire.status)
     }
     let position = (wire.chapterIndex, wire.utf16Offset, wire.utf16SentenceStart)
     if lastPosition == nil || lastPosition! != position {
@@ -786,10 +910,20 @@ public final class AndroidNarration {
   private struct InstalledVoices {
     var voices: [SpeechVoice]
     var systemDefault: String?
+    /// Whether the phone's engine has finished starting up and this list is
+    /// its answer rather than its silence.
+    var ready: Bool
   }
 
   private static func installedVoices(_ json: String) -> InstalledVoices {
-    let wire = (try? JSONDecoder().decode([VoiceWire].self, from: Data(json.utf8))) ?? []
+    guard let decoded = try? JSONDecoder().decode(
+      InstalledVoicesWire.self, from: Data(json.utf8))
+    else {
+      // Nothing readable came back. Not ready is the honest reading: it is the
+      // state that says "no answer yet" rather than "this phone has none".
+      return InstalledVoices(voices: [], systemDefault: nil, ready: false)
+    }
+    let wire = decoded.voices
     return InstalledVoices(
       voices: wire.map {
         // Android has one generation of voice, so `family` says nothing here
@@ -797,13 +931,21 @@ public final class AndroidNarration {
         SpeechVoice(
           id: $0.id, name: $0.name, language: $0.language, quality: $0.quality_, family: .modern)
       },
-      systemDefault: wire.first(where: { $0.isDefault == true })?.id)
+      systemDefault: wire.first(where: { $0.isDefault == true })?.id,
+      ready: decoded.ready)
   }
 
   /// The voice to read this book in: the reader's stored choice while it is
   /// still installed, then the kit's own rule over what the phone has — an
   /// exact locale match, then the language, then nothing, which leaves the
-  /// engine its default rather than reading a French novel in English.
+  /// engine its default.
+  ///
+  /// The language is `narrationLanguage`, the same one the picker groups by.
+  /// It used to be the book's declared language alone, so an untagged book was
+  /// listed under the reader's own locale with a row marked "Recommended" and
+  /// then read by the engine's default, which on a phone whose default is
+  /// French is a French voice reading an English book — and a picker whose
+  /// recommendation was not the voice doing the reading.
   ///
   /// Tried again whenever the reader touches narration, and once more when
   /// the platform engine says it is ready (`NarrationEvents.voicesReady`),
@@ -816,7 +958,7 @@ public final class AndroidNarration {
     guard !installed.voices.isEmpty else { return }
     voiceResolved = true
     let chosen = VoiceSelector().voice(
-      for: book?.metadata.language, in: installed.voices, preferring: storedVoiceID,
+      for: narrationLanguage, in: installed.voices, preferring: storedVoiceID,
       systemDefault: installed.systemDefault)?.id ?? storedVoiceID
     controller.settings.voiceID = chosen
   }
@@ -827,6 +969,9 @@ public final class AndroidNarration {
   func voicesBecameAvailable() {
     resolveVoiceIfNeeded()
     publish()
+    // The picker was waiting on exactly this. Pushed, so a Voice row open on
+    // "Looking for voices…" fills in by itself rather than by a poll.
+    observer.voicesChanged()
   }
 
   private static func settings(from json: String) -> SpeechSettings {
@@ -869,6 +1014,7 @@ public final class AndroidNarration {
   private static func name(of reason: NarrationHoldReason) -> String {
     switch reason {
     case .needsForeground: return "needsForeground"
+    case .audioInterrupted: return "audioInterrupted"
     }
   }
 
@@ -878,6 +1024,7 @@ public final class AndroidNarration {
   private static func holdText(for reason: NarrationHoldReason) -> String {
     switch reason {
     case .needsForeground: return "Paused \u{2014} unlock Readr to keep listening"
+    case .audioInterrupted: return "Paused \u{2014} another app is using the sound"
     }
   }
 
@@ -895,6 +1042,16 @@ public final class AndroidNarration {
   private static let noVoicesText =
     "No voices installed \u{2014} add one in Settings \u{203A} Accessibility "
     + "\u{203A} Text-to-speech output."
+
+  /// The engine has not finished starting up, so the list is empty for a
+  /// reason that will pass. Saying "no voices installed" here sent readers off
+  /// to a settings screen they did not need.
+  private static let lookingForVoicesText = "Looking for voices\u{2026}"
+
+  /// What the Voice row says before there is a session to ask: the reader has
+  /// chosen nothing, so the phone's own default will read. Facade's words like
+  /// the rest, and static because the row draws before any book is narrated.
+  static let defaultVoiceName = "Phone\u{2019}s default voice"
 
   /// Muted footnote markers leave runs of spaces in a segment's text (the
   /// substitution is length-preserving by design, so offsets stay true).

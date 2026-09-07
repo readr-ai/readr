@@ -5,6 +5,7 @@ import androidx.media3.common.Player
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.readrai.readr.data.BookSummary
+import com.readrai.readr.data.EpubExtractor
 import com.readrai.readr.data.kitJson
 import com.readrai.readr.kit.KeystoreSecretStore
 import com.readrai.readr.kit.Kit
@@ -114,11 +115,17 @@ class NarrationSessionTest {
         }
 
     /**
-     * Listen publishes a session at once, playing, with the sentence being
-     * read as the title — what the lock screen shows is what is being said.
+     * Listen publishes a session at once, playing, with the **book** on it —
+     * and none of the book's text.
+     *
+     * A media notification is not a private surface: the lock screen shows it
+     * to whoever picks the phone up and the shade keeps it in its history. The
+     * sentence being read stays on the card, inside the app. What the
+     * notification gets is the title, the chapter and the author, which is
+     * what every audiobook player shows.
      */
     @Test
-    fun listeningPublishesAPlayingSessionWithTheSentenceOnIt() {
+    fun listeningPublishesAPlayingSessionWithNoBookTextOnIt() {
         val model = listen()
         val player = model.media!!.player
         assertTrue("the session is the process's one", NarrationSession.active === model.media)
@@ -126,10 +133,24 @@ class NarrationSessionTest {
         assertEquals(Player.STATE_READY, onMain { player.playbackState })
 
         val metadata = onMain { player.mediaMetadata }
-        assertEquals("the sentence is the title", model.sentence, metadata.title.toString())
-        assertTrue("and there is one", model.sentence.startsWith("Alpha 1"))
+        assertEquals("the book is the title", "Read Aloud", metadata.title.toString())
         assertEquals("the book is the album", "Read Aloud", metadata.albumTitle.toString())
         assertTrue("the chapter is the line under it", metadata.artist.toString().isNotBlank())
+
+        // And the sentence being read is nowhere in any of it.
+        val sentence = onMain { model.sentence }
+        assertTrue("there is a sentence to leave out", sentence.startsWith("Alpha 1"))
+        val published = listOfNotNull(
+            metadata.title, metadata.artist, metadata.albumTitle, metadata.albumArtist,
+            metadata.subtitle, metadata.description, metadata.displayTitle,
+        ).map { it.toString() }
+        for (field in published) {
+            assertFalse(
+                "the sentence reached the notification as '$field'",
+                field.contains("Alpha 1"),
+            )
+        }
+
         // The playlist is the chapters, which is what makes ⏭ mean "next chapter".
         assertEquals(3, onMain { player.mediaItemCount })
         assertEquals(0, onMain { player.currentMediaItemIndex })
@@ -185,15 +206,147 @@ class NarrationSessionTest {
         assertTrue(model.sentence.startsWith("Alpha 2"))
         assertEquals(1, onMain { player.currentMediaItemIndex })
 
+        // Read on, so ⏮ is pressed from the middle of a chapter — where a
+        // track control restarts the chapter rather than leaving it. That is
+        // the kit's rule, and it is a seek to the item already playing, which
+        // is exactly the case an index comparison could not see.
+        onMain { backend.finishCurrent() }
+        await("a later sentence of the same chapter") { model.sentence.startsWith("Beta 2") }
+
+        onMain { player.seekToPrevious() }
+        await("the chapter to start again") { model.sentence.startsWith("Alpha 2") }
+        assertEquals("still the same chapter", 1, onMain { model.chapterIndex })
+        assertEquals("and the same item", 1, onMain { player.currentMediaItemIndex })
+
+        // From the chapter's own first sentence, ⏮ is the chapter before.
         onMain { player.seekToPrevious() }
         await("the chapter before") { model.chapterIndex == 0 }
         assertEquals(0, onMain { player.currentMediaItemIndex })
+    }
+
+    /** ⏮ on the first chapter restarts it rather than doing nothing. */
+    @Test
+    fun previousAtTheFirstChapterRestartsIt() {
+        val model = listen()
+        val player = model.media!!.player
+        onMain { backend.finishCurrent() }
+        await("a later sentence") { model.sentence.startsWith("Beta 1") }
+
+        onMain { player.seekToPrevious() }
+
+        await("the chapter to start again") { model.sentence.startsWith("Alpha 1") }
+        assertEquals(0, onMain { model.chapterIndex })
+        assertEquals(0, onMain { player.currentMediaItemIndex })
+    }
+
+    /**
+     * The transport offers what it can actually do. A ⏭ on the last chapter is
+     * a control that does nothing when pressed, which reads as broken; ⏮ is
+     * always there, because there is always a chapter to restart.
+     */
+    @Test
+    fun theLastChapterOffersNoNextControl() {
+        val model = listen()
+        val player = model.media!!.player
+        assertTrue("a next chapter exists at the start", onMain { player.hasNextMediaItem() })
+
+        onMain { player.seekToNext() }
+        await("the second chapter") { model.chapterIndex == 1 }
+        onMain { player.seekToNext() }
+        await("the last chapter") { model.chapterIndex == 2 }
+
+        assertFalse("nothing follows the last chapter", onMain { player.hasNextMediaItem() })
+        assertFalse(
+            onMain { player.isCommandAvailable(Player.COMMAND_SEEK_TO_NEXT) }
+        )
+        assertTrue(
+            "and there is always a chapter to go back to",
+            onMain { player.isCommandAvailable(Player.COMMAND_SEEK_TO_PREVIOUS) },
+        )
+    }
+
+    /**
+     * The playlist is the chapters the **kit will read**, not every document
+     * in the book. A `linear="no"` spine entry — a notes file, an answer key —
+     * is skipped by continuous playback, so putting it on the lock screen
+     * would offer a track that auto-advance refuses to play.
+     */
+    @Test
+    fun nonLinearChaptersAreNotInThePlaylist() = runBlocking {
+        val archive = IllustratedBook.write(File(root, "illustrated.epub"))
+        val extracted = File(root, "illustrated-extracted")
+        EpubExtractor.extract(archive.inputStream(), extracted)
+        val illustrated: BookSummary = kitJson.decodeFromString(
+            kit.library.importEPUB(extracted.absolutePath, archive.absolutePath, "Illustrated").await()
+        )
+        val model = NarrationModel(
+            context, { kit }, illustrated.id, settings,
+            backends = { events -> FakeSpeechBackend(events).also { backend = it } },
+            sessions = { m -> NarrationSession(context, m, focus = { focus }) },
+        ).also { narration = it }
+        listen(model)
+
+        val chapters = onMain { model.nowPlaying.chapters }
+        assertEquals(
+            "every chapter but the notes document",
+            (0 until IllustratedBook.NOTES_CHAPTER).toList(),
+            chapters.map { it.index },
+        )
+        assertEquals(chapters.size, onMain { model.media!!.player.mediaItemCount })
+    }
+
+    /**
+     * The notification's timeline does not change as the book is read.
+     *
+     * The playlist is the book's chapters, and a book does not grow chapters
+     * mid-sentence — so publishing the state once a sentence and once a second
+     * must produce the *same* timeline every time. It used to be rebuilt from
+     * scratch on every publish, with the sentence being read baked into each
+     * row's metadata, which made it a new timeline a second: a flicker in the
+     * shade and an `onTimelineChanged` for everything listening. What moves as
+     * the reader listens is the current item, and only that.
+     */
+    @Test
+    fun theTimelineOnlyChangesWhenTheChapterDoes() {
+        val model = listen()
+        val player = model.media!!.player
+        var timelines = 0
+        val listener = object : Player.Listener {
+            override fun onTimelineChanged(timeline: androidx.media3.common.Timeline, reason: Int) {
+                timelines += 1
+            }
+        }
+        onMain { player.addListener(listener) }
+        try {
+            onMain { backend.finishCurrent() }
+            await("the next sentence") { model.sentence.startsWith("Beta 1") }
+            onMain { backend.finishCurrent() }
+            await("the one after") { model.sentence.startsWith("Gamma 1") }
+            // A second of ticks on top of the sentence moves, for the tick's
+            // own republishing.
+            Thread.sleep(1_500)
+            assertEquals("sentences are not timeline changes", 0, onMain { timelines })
+
+            // And a chapter move is not one either — the same chapters are on
+            // offer; it is the *current item* that moved.
+            onMain { player.seekToNext() }
+            await("the next chapter") { model.chapterIndex == 1 }
+            assertEquals("nor is a chapter", 0, onMain { timelines })
+            assertEquals("but the current item followed", 1, onMain { player.currentMediaItemIndex })
+        } finally {
+            onMain { player.removeListener(listener) }
+        }
     }
 
     /**
      * Something else took the audio. A transient loss — a navigation prompt, a
      * call — pauses the voice and gives it back afterwards; a permanent one
      * pauses it for good, because the reader will say when to carry on.
+     *
+     * Neither is a pause this side performs: the interruption goes through the
+     * kit, which holds the sentence with a reason the card and the
+     * notification can explain — and the kit's own state is then what decides
+     * whether the regain resumes.
      */
     @Test
     fun aTransientFocusLossPausesAndTheRegainResumes() {
@@ -201,9 +354,12 @@ class NarrationSessionTest {
 
         onMain { focus.send(AudioManager.AUDIOFOCUS_LOSS_TRANSIENT) }
         await("the voice to pause for the interruption") { model.status == NarrationModel.PAUSED }
+        assertEquals("the kit holds, with a reason", "audioInterrupted", onMain { model.holdReason })
+        assertTrue("and words for it", onMain { model.holdText }.orEmpty().isNotEmpty())
 
         onMain { focus.send(AudioManager.AUDIOFOCUS_GAIN) }
         await("the voice to pick up again") { model.isUnderway }
+        assertNull("and the explanation goes with it", onMain { model.holdText })
     }
 
     @Test
@@ -217,6 +373,81 @@ class NarrationSessionTest {
         onMain { focus.send(AudioManager.AUDIOFOCUS_GAIN) }
         Thread.sleep(250)
         assertEquals(NarrationModel.PAUSED, onMain { model.status })
+    }
+
+    /**
+     * The reader pressed pause during the call. When the call ends, the phone
+     * hands the audio back — and that is not permission to start reading at
+     * them. The kit clears its hold reason the moment the reader takes the
+     * pause over, so the regain finds nothing of its own to resume.
+     */
+    @Test
+    fun aReadersPauseDuringAnInterruptionSurvivesTheRegain() {
+        val model = listen()
+        onMain { focus.send(AudioManager.AUDIOFOCUS_LOSS_TRANSIENT) }
+        await("the hold") { model.holdReason == NarrationSession.HOLD_AUDIO_INTERRUPTED }
+
+        onMain { model.pause() }
+        assertNull("the reader owns the pause now", onMain { model.holdReason })
+
+        onMain { focus.send(AudioManager.AUDIOFOCUS_GAIN) }
+        Thread.sleep(250)
+        assertEquals(NarrationModel.PAUSED, onMain { model.status })
+    }
+
+    /**
+     * The same rule for Ask, which pauses the voice so a question is not read
+     * over. A call arriving while the answer is on screen must not leave the
+     * book reading aloud once it ends — dismissing Ask is what resumes it.
+     */
+    @Test
+    fun anAskPauseDuringAnInterruptionSurvivesTheRegain() {
+        val model = listen()
+        onMain { model.pauseForAsk() }
+        await("Ask's pause") { model.status == NarrationModel.PAUSED }
+
+        onMain { focus.send(AudioManager.AUDIOFOCUS_LOSS_TRANSIENT) }
+        onMain { focus.send(AudioManager.AUDIOFOCUS_GAIN) }
+        Thread.sleep(250)
+        assertEquals("still Ask's pause", NarrationModel.PAUSED, onMain { model.status })
+
+        onMain { model.resumeAfterAsk() }
+        await("Ask to give it back") { model.isUnderway }
+    }
+
+    /**
+     * A phone that will not share its audio: the voice does not run, and the
+     * card says why. Logging a line and reading anyway would be a book talking
+     * over someone's call.
+     */
+    @Test
+    fun refusedFocusHoldsTheVoiceWithAnExplanation() {
+        focus.granted = false
+        val model = model()
+        onMain { model.listen(0, 0) }
+
+        await("the hold") { model.holdReason == NarrationSession.HOLD_AUDIO_INTERRUPTED }
+        assertFalse("nothing is being read", onMain { model.isUnderway })
+        assertTrue("and the card says why", onMain { model.holdText }.orEmpty().isNotEmpty())
+    }
+
+    /**
+     * After a permanent loss the focus was given back, so the next Play is a
+     * fresh request rather than a claim on something we no longer hold — and
+     * the session does not ask twice for focus it already has.
+     */
+    @Test
+    fun playAfterAPermanentLossAsksForTheAudioAgain() {
+        val model = listen()
+        assertEquals("asked once, when the voice started", 1, focus.requests)
+
+        onMain { focus.send(AudioManager.AUDIOFOCUS_LOSS) }
+        await("the voice to pause") { model.status == NarrationModel.PAUSED }
+        assertTrue("and the audio was handed back", focus.abandoned)
+
+        onMain { model.play() }
+        await("the voice to read again") { model.isUnderway }
+        assertEquals("a second request, not a stale claim", 2, focus.requests)
     }
 
     /** Ducking is ignored: a voice under someone else's music is not listenable. */
@@ -236,9 +467,11 @@ class NarrationSessionTest {
      */
     @Test
     fun forgettingTheBookReleasesTheSessionAndStopsTheService() {
-        val store = Narrations(context, { kit }, settings) { events ->
-            FakeSpeechBackend(events).also { backend = it }
-        }
+        val store = Narrations(
+            context, { kit }, settings,
+            backends = { events -> FakeSpeechBackend(events).also { backend = it } },
+            sessions = { model -> NarrationSession(context, model, focus = { focus }) },
+        )
         narrations = store
         val model = onMain { store.forBook(book.id) }
         narration = model

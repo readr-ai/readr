@@ -275,3 +275,29 @@ public struct SpeechPlaylist: Sendable {
         return nil
     }
 }
+
+// MARK: - Which chapters are read at all
+
+public extension SpeechPlaylist {
+    /// Whether continuous playback will read this chapter — the rule the
+    /// chapter walk above applies, asked without walking. A spine entry marked
+    /// `linear="no"` (a notes document, an answer key) is skipped, and so is
+    /// one with nothing speakable in it once footnote markers are muted.
+    static func isNarratable(_ chapter: Chapter) -> Bool {
+        guard chapter.isLinear != false else { return false }
+        return speakableText(of: chapter).contains { !$0.isWhitespace }
+    }
+}
+
+public extension Book {
+    /// The chapters continuous narration reads, as indices into `chapters` —
+    /// the index space `NarrationPosition` and `SpeechPlaylist` use.
+    ///
+    /// One list, so a chapter playlist offered to a listener (the lock
+    /// screen's ⏭ and ⏮) cannot contain a row that auto-advance would refuse
+    /// to play, and so no second copy of the rule can drift from
+    /// `isNarratable`.
+    var narratableChapterIndices: [Int] {
+        chapters.indices.filter { SpeechPlaylist.isNarratable(chapters[$0]) }
+    }
+}

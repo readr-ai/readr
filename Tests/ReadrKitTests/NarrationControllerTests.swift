@@ -1437,3 +1437,60 @@ extension NarrationControllerTests {
         XCTAssertNil(controller.holdReason)
     }
 }
+
+// MARK: - Holding because the system took the audio
+
+extension NarrationControllerTests {
+
+    /// A call, a navigation prompt, another app starting its own playback:
+    /// the sentence is set down where it is, with a reason the platform layer
+    /// can read back.
+    func testAnAudioInterruptionHoldsWithItsReason() {
+        let (controller, engine) = makeController()
+        var statuses: [NarrationStatus] = []
+        controller.onStatusChange = { statuses.append($0) }
+        controller.start(atChapter: 0)
+
+        engine.suspend(.audioInterrupted)
+        XCTAssertEqual(controller.status, .paused)
+        XCTAssertEqual(controller.holdReason, .audioInterrupted)
+        XCTAssertEqual(controller.currentSegment?.text, "Alpha one.", "Held on the sentence")
+        XCTAssertEqual(statuses, [.speaking, .paused])
+        XCTAssertEqual(engine.spoken.count, 1, "Nothing else is spoken")
+    }
+
+    /// The audio came back: the sentence is re-spoken from the word the voice
+    /// reached, and the reason goes with it.
+    func testPlayAfterAnAudioInterruptionResumesFromTheSpokenOffsetAndClearsTheReason() {
+        let (controller, engine) = makeController()
+        controller.start(atChapter: 0)
+        // "Alpha one." — the voice got as far as "one".
+        engine.speakWord(6..<9)
+        engine.suspend(.audioInterrupted)
+        XCTAssertEqual(controller.holdReason, .audioInterrupted)
+
+        controller.play()
+        XCTAssertEqual(controller.status, .speaking)
+        XCTAssertNil(controller.holdReason)
+        XCTAssertEqual(
+            engine.spokenTexts, ["Alpha one.", "one."],
+            "Re-spoken from the last word boundary, not from the top"
+        )
+    }
+
+    /// The invariant Android's audio-focus regain leans on: a reader who
+    /// pressed pause during the interruption has taken the hold over, so the
+    /// regain finds no reason to resume by and leaves their pause alone.
+    func testAReadersPauseWhileHoldingForAudioClearsTheReason() {
+        let (controller, engine) = makeController()
+        controller.start(atChapter: 0)
+        engine.suspend(.audioInterrupted)
+        XCTAssertEqual(controller.status, .paused)
+        XCTAssertEqual(controller.holdReason, .audioInterrupted)
+
+        controller.pause()
+        XCTAssertEqual(controller.status, .paused, "Still paused — only the reason is gone")
+        XCTAssertNil(controller.holdReason)
+        XCTAssertEqual(controller.currentSegment?.text, "Alpha one.", "And still on the sentence")
+    }
+}

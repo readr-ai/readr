@@ -43,52 +43,49 @@ import com.readrai.readr.ui.theme.touchTarget
  *
  * Everything shown here comes from the facade: the order is the kit's
  * `VoiceSelector`, the split between the book's own language and "Other
- * voices" is the kit's rule over what the phone has installed, and the
- * sentence shown when the phone has no voice data at all is the facade's.
- * Kotlin ranks nothing and words nothing.
+ * voices" is the kit's rule over what the phone has installed, and both
+ * sentences a list with nothing in it can show — "still looking" and "none
+ * installed" — are the facade's. So is the name on the row before any voice
+ * has been chosen. Kotlin ranks nothing and words nothing.
+ *
+ * **The row costs nothing to draw.** It names the reader's stored voice from
+ * the preferences file, and only the tap that opens the picker asks the phone
+ * — which means building a listening session and starting a `TextToSpeech`
+ * engine. Doing that when the row merely *appeared* started one on every trip
+ * to the Appearance sheet.
  */
 @Composable
 fun VoiceRow(narration: NarrationModel) {
     val palette = LocalReadingPalette.current
     var picking by remember { mutableStateOf(false) }
     val voices = narration.voices
-    // The phone cannot say which voices it has until its synthesizer has
-    // started, so the row asks for the list when it appears rather than
-    // waiting for the first Listen.
-    LaunchedEffect(Unit) { narration.prepareVoices() }
-
-    if (voices.isEmpty) {
-        Row(
-            Modifier
-                .fillMaxWidth()
-                .heightIn(min = touchTarget)
-                .testTag("appearance.voice")
-                // Merged so the sentence is read as one line — there is no
-                // control here, only the phone's answer.
-                .semantics(mergeDescendants = true) { },
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text(
-                voices.emptyText,
-                style = MaterialTheme.typography.bodyMedium,
-                color = palette.muted,
-            )
-        }
-        return
-    }
+    // The kit's fixed lists, which include the sentence for "no voice chosen".
+    // A static call, not a listening session: this is exactly the work the row
+    // is allowed to do before the reader has asked for anything.
+    LaunchedEffect(Unit) { NarrationOptions.loadOnce() }
+    // The row draws without a listening session. Building one to name a voice
+    // would start a `TextToSpeech` engine on every trip to this sheet, for
+    // something the preferences file already knows — so the name comes from
+    // there, and the phone is only asked when the reader opens the picker.
+    val name = voices.selectedName
+        ?: narration.storedVoiceName
+        ?: NarrationOptions.current.defaultVoiceName
 
     Row(
         Modifier
             .fillMaxWidth()
             .heightIn(min = touchTarget)
-            .clickable { picking = true }
+            .clickable {
+                narration.prepareVoices()
+                picking = true
+            }
             .testTag("appearance.voice"),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text("Voice", style = MaterialTheme.typography.bodyMedium, color = palette.ink)
         Spacer(Modifier.weight(1f))
         Text(
-            voices.selectedName.orEmpty(),
+            name,
             style = MaterialTheme.typography.bodyMedium,
             color = palette.muted,
             maxLines = 1,
@@ -123,8 +120,23 @@ private fun VoiceDialog(
                 Modifier.verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(2.dp),
             ) {
+                if (voices.isEmpty) {
+                    // Two different silences: an engine still starting up, and
+                    // one that started and has nothing. Both sentences are the
+                    // facade's; nothing here chooses between them but the flag.
+                    Text(
+                        voices.absentText,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = palette.muted,
+                        modifier = Modifier.testTag("voice.absent"),
+                    )
+                    return@Column
+                }
                 voices.voices.forEach { voice ->
-                    VoiceOption(voice, voices.checkedID) { narration.chooseVoice(voice.id); onDismiss() }
+                    VoiceOption(voice, voices.checkedID) {
+                        narration.chooseVoice(voice.id, voice.name)
+                        onDismiss()
+                    }
                 }
                 if (voices.otherVoices.isEmpty()) return@Column
                 HorizontalDivider(Modifier.padding(vertical = 6.dp), color = palette.line)
@@ -146,7 +158,10 @@ private fun VoiceDialog(
                 }
                 if (!showsOthers) return@Column
                 voices.otherVoices.forEach { voice ->
-                    VoiceOption(voice, voices.checkedID) { narration.chooseVoice(voice.id); onDismiss() }
+                    VoiceOption(voice, voices.checkedID) {
+                        narration.chooseVoice(voice.id, voice.name)
+                        onDismiss()
+                    }
                 }
             }
         },

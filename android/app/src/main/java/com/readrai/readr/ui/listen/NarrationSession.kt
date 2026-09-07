@@ -6,6 +6,7 @@ import android.content.Intent
 import android.media.AudioAttributes
 import android.media.AudioFocusRequest
 import android.media.AudioManager
+import android.os.Handler
 import android.os.Looper
 import android.util.Log
 import androidx.annotation.OptIn
@@ -51,8 +52,6 @@ class NarrationSession(
     private val narration: NarrationModel,
     /** Swapped for a stand-in by the instrumented tests, which own no speakers. */
     focus: (Context) -> NarrationAudioFocus = ::SystemAudioFocus,
-    /** Likewise the service, so a test can watch it start and stop. */
-    private val service: NarrationServiceControl = SystemNarrationService,
 ) {
     private val app = context.applicationContext
     private val focus = focus(app)
@@ -67,18 +66,72 @@ class NarrationSession(
         .setSessionActivity(openTheReader(app))
         .build()
 
-    /** Whether the voice was paused by something else taking the audio, not by the reader. */
-    private var pausedForFocus = false
+    /** Whether our focus request is registered with the system. */
+    private var holdsFocus = false
+    /** Whether a refusal is on its way to the kit — see [holdFocus]. */
+    private var refusalPending = false
     private var released = false
+    private val main = Handler(Looper.getMainLooper())
 
     init {
         active = this
-        if (!this.focus.request(::focusChanged)) {
-            // Nothing else will tell us; the phone is busy with something that
-            // will not share. The kit's own pause is the honest answer.
-            Log.w(TAG, "audio focus refused; not starting the voice in the background")
+        // The reader is looking at the book when Listen starts, so this is
+        // never a background start; the service goes foreground as soon as it
+        // has the session, which is inside `onCreate`.
+        runCatching { ContextCompat.startForegroundService(app, serviceIntent(app)) }
+            .onFailure { Log.w(TAG, "narration service would not start: ${it.message}") }
+    }
+
+    /**
+     * Claim the phone's audio for the voice. Idempotent — the model says this
+     * on every state change, and asking `AudioManager` twice for something we
+     * already hold is noise.
+     *
+     * A refusal is not a quiet failure: the phone is busy with something that
+     * will not share, so the voice must not run. The interruption goes to the
+     * kit, which holds the sentence with a reason — and *that* is what puts
+     * the explanation on the card and in the notification, rather than a line
+     * in the log and a book reading aloud over someone's call.
+     *
+     * The refusal is *posted* because this is said from inside the kit's own
+     * status callback, at the moment narration starts — and the sentence being
+     * started is not on the engine yet, so there would be nothing to hold. A
+     * refusal is an answer from outside the app in any case.
+     */
+    fun holdFocus() {
+        if (released || holdsFocus || refusalPending) return
+        if (focus.request(::focusChanged)) {
+            holdsFocus = true
+            return
         }
-        service.start(app)
+        refusalPending = true
+        Log.w(TAG, "audio focus refused; the voice holds")
+        main.post {
+            refusalPending = false
+            if (!released && !holdsFocus) narration.audioInterrupted()
+        }
+    }
+
+    /**
+     * Give it back — the reader is not listening any more.
+     *
+     * **Except during an interruption.** A transient loss (a call, a
+     * navigation prompt) leaves our request registered with the system, and
+     * that registration is the only way the regain ever reaches us;
+     * abandoning it here would trade the resume for nothing. The kit's own
+     * hold reason is what tells the two apart, and it is cleared the moment
+     * the reader takes the pause over — at which point the audio really does
+     * go back.
+     */
+    fun dropFocus() {
+        if (narration.holdReason == HOLD_AUDIO_INTERRUPTED) return
+        abandonFocus()
+    }
+
+    private fun abandonFocus() {
+        if (!holdsFocus) return
+        holdsFocus = false
+        focus.abandon()
     }
 
     /** Re-read the model. Cheap: media3 diffs the state and reports only changes. */
@@ -96,12 +149,14 @@ class NarrationSession(
         if (released) return
         released = true
         if (active === this) active = null
-        focus.abandon()
+        // Unconditionally, not `dropFocus()`: the reader has finished
+        // listening, so there is no regain worth keeping a registration for.
+        abandonFocus()
         // Released first: media3 takes a released session off the service by
         // itself, so the service is never left holding one.
         session.release()
         player.release()
-        service.stop(app)
+        runCatching { app.stopService(serviceIntent(app)) }
     }
 
     /** Stop the voice itself — what a swipe of the app off the recents list means. */
@@ -114,21 +169,30 @@ class NarrationSession(
      * pauses it for good — the reader will say when to carry on. Ducking is
      * ignored: a quieter voice under someone else's music is not listenable,
      * and the alternative — pausing — is what a permanent loss already does.
+     *
+     * Neither loss pauses the voice from here. Both hand the interruption to
+     * the kit, which holds the sentence with `audioInterrupted` as its reason
+     * — so the card and the notification say why the book stopped, and the
+     * **kit's own state** is what decides whether a regain resumes. This side
+     * used to keep a `pausedForFocus` flag beside the kit's, and the two could
+     * disagree: a reader who pressed pause during a call, or opened Ask, had
+     * the voice started back up under them when the call ended. The reader's
+     * pause clears the hold reason (`NarrationController.pause`), so the check
+     * below simply finds nothing to resume.
      */
     private fun focusChanged(change: Int) {
         when (change) {
             AudioManager.AUDIOFOCUS_LOSS -> {
-                pausedForFocus = false
-                if (narration.isUnderway) narration.pause()
+                // Gone for good: give the registration back too, so the next
+                // Play is a fresh request rather than a claim on something we
+                // no longer hold. Before the hold, so `dropFocus`'s
+                // interruption guard has nothing to protect.
+                abandonFocus()
+                narration.audioInterrupted()
             }
-            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> {
-                if (!narration.isUnderway) return
-                pausedForFocus = true
-                narration.pause()
-            }
+            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> narration.audioInterrupted()
             AudioManager.AUDIOFOCUS_GAIN -> {
-                if (!pausedForFocus) return
-                pausedForFocus = false
+                if (narration.holdReason != HOLD_AUDIO_INTERRUPTED) return
                 narration.play()
             }
             else -> Unit
@@ -140,6 +204,13 @@ class NarrationSession(
         private var nextID = 0
 
         /**
+         * The kit's own token for "the system took the sound"
+         * (`NarrationHoldReason.audioInterrupted`, as the facade names it).
+         * The only thing a regain is allowed to resume.
+         */
+        const val HOLD_AUDIO_INTERRUPTED = "audioInterrupted"
+
+        /**
          * The process's one live session, so [NarrationService] can find the
          * session it was started for. There is one synthesizer on the phone
          * and therefore one book being read; [Narrations] enforces the same.
@@ -147,6 +218,9 @@ class NarrationSession(
         @Volatile
         var active: NarrationSession? = null
             private set
+
+        private fun serviceIntent(context: Context): Intent =
+            Intent(context, NarrationService::class.java)
 
         private fun openTheReader(context: Context): PendingIntent = PendingIntent.getActivity(
             context,
@@ -162,21 +236,39 @@ class NarrationSession(
  * on one: the media session.
  *
  * It plays nothing and decides nothing. `getState()` is a reading of
- * [NarrationModel] — the sentence being read is the media item's title (the
- * hold's explanation takes that line while narration is held, as the Apple
- * app's now-playing info does), the chapter is the artist line and the book
- * the album — and every command is handed straight back to the model, which
- * hands it to the kit.
+ * [NarrationModel] — the chapter is the artist line and the book is both the
+ * title and the album — and every command is handed straight back to the
+ * model, which hands it to the kit.
  *
- * The playlist is the book's **chapters**, which is what makes ⏭ and ⏮ on the
- * lock screen mean "next chapter": media3 turns `seekToNext` into a seek to
- * the next item, and the only thing this does with a seek is notice which way
- * the chapter moved. Sentence skips stay on the card, where a reader can see
- * what they are skipping.
+ * **No book text reaches the notification.** The sentence being read used to
+ * be the media item's title, so the lock screen showed a line of the book to
+ * anyone who picked the phone up, and the shade kept it in its history. A
+ * media notification is not a private surface; the card in the app is, and
+ * that is where the sentence stays. A *hold* still takes the title line —
+ * "Paused — another app is using the sound" is the app's own words about the
+ * app's own state, and the lock screen is exactly where the reader is when the
+ * voice stops by itself.
+ *
+ * The playlist is the book's **narratable chapters**, which is what makes ⏭
+ * and ⏮ on the lock screen mean "next chapter": media3 turns `seekToNext` into
+ * a seek to the next item. Sentence skips stay on the card, where a reader can
+ * see what they are skipping.
  */
 @OptIn(UnstableApi::class)
 class NarrationPlayer(private val narration: NarrationModel) :
     SimpleBasePlayer(Looper.getMainLooper()) {
+
+    /**
+     * The playlist, rebuilt only when something in it changed.
+     *
+     * `getState()` runs on every publish — once a sentence, and once a second
+     * on the tick — and media3 compares timelines by identity of the item
+     * list. Rebuilding it each time made the notification a new timeline every
+     * second, which is a visible flicker in the shade and a `onTimelineChanged`
+     * for every listener. The key is everything the rows are built from.
+     */
+    private var cachedRows: List<MediaItemData>? = null
+    private var cachedKey: Triple<List<NarrationChapter>, String?, String>? = null
 
     /**
      * Re-read the model. `invalidateState` is media3's own and protected;
@@ -185,24 +277,20 @@ class NarrationPlayer(private val narration: NarrationModel) :
     fun refreshState() = invalidateState()
 
     override fun getState(): State {
-        val builder = State.Builder().setAvailableCommands(COMMANDS)
         if (!narration.isActive) {
             // Nothing is being read: an empty playlist, which media3 requires
             // to be idle or ended.
-            return builder.setPlaybackState(STATE_IDLE).setPlayWhenReady(false, PLAY_WHEN_READY_CHANGE_REASON_USER_REQUEST).build()
-        }
-        val now = narration.nowPlaying
-        val chapters = now.chapterTitles.ifEmpty { listOf(now.title) }
-        val index = narration.chapterIndex.coerceIn(chapters.indices)
-        val playlist = chapters.mapIndexed { at, title ->
-            MediaItemData.Builder(at)
-                .setMediaItem(MediaItem.Builder().setMediaId("chapter/$at").build())
-                .setMediaMetadata(metadata(now, title, current = at == index))
-                .setIsSeekable(false)
+            return State.Builder()
+                .setAvailableCommands(commands(rows = 0, at = 0))
+                .setPlaybackState(STATE_IDLE)
+                .setPlayWhenReady(false, PLAY_WHEN_READY_CHANGE_REASON_USER_REQUEST)
                 .build()
         }
-        return builder
-            .setPlaylist(playlist)
+        val rows = rows()
+        val index = indexOfCurrentChapter(rows)
+        return State.Builder()
+            .setAvailableCommands(commands(rows.size, index))
+            .setPlaylist(rows)
             .setCurrentMediaItemIndex(index)
             // Nothing here has a duration or a timeline: a sentence is as long
             // as it is read for. The position is a *constant* zero rather than
@@ -219,16 +307,52 @@ class NarrationPlayer(private val narration: NarrationModel) :
             .build()
     }
 
+    /** The rows, from the cache when nothing they are built from has changed. */
+    private fun rows(): List<MediaItemData> {
+        val now = narration.nowPlaying
+        val chapters = now.chapters.ifEmpty { listOf(NarrationChapter(0, now.title)) }
+        val key = Triple(chapters, narration.holdText, now.title)
+        cachedRows?.let { if (key == cachedKey) return it }
+        val built = chapters.map { chapter ->
+            MediaItemData.Builder(chapter.index)
+                .setMediaItem(MediaItem.Builder().setMediaId("chapter/${chapter.index}").build())
+                .setMediaMetadata(metadata(now, chapter.title))
+                .setIsSeekable(false)
+                .build()
+        }
+        cachedRows = built
+        cachedKey = key
+        return built
+    }
+
     /**
-     * What the notification and the lock screen read. The sentence is the
-     * title, so what is on the screen is what is being said; a hold takes that
-     * line instead, because the lock screen is exactly where the reader is
-     * when the voice stops by itself.
+     * Which row is playing. The rows carry the *book's* chapter indices, not
+     * their own positions, so this is a lookup rather than an offset — and a
+     * chapter that is in no row (a notes document a reader opened and pressed
+     * Listen on: `seek` honours any chapter, only auto-advance filters) falls
+     * back to the last row before it rather than to a `coerceIn` on -1, which
+     * is an exception.
      */
-    private fun metadata(now: NarrationNowPlaying, chapterTitle: String, current: Boolean): MediaMetadata {
-        val title = if (current) narration.holdText ?: narration.sentence.ifBlank { now.title } else chapterTitle
-        return MediaMetadata.Builder()
-            .setTitle(title)
+    private fun indexOfCurrentChapter(rows: List<MediaItemData>): Int {
+        val chapters = narration.nowPlaying.chapters
+        if (chapters.isEmpty()) return 0
+        val current = narration.chapterIndex
+        val exact = chapters.indexOfFirst { it.index == current }
+        if (exact >= 0) return exact
+        return chapters.indexOfLast { it.index <= current }.takeIf { it >= 0 } ?: 0
+    }
+
+    /**
+     * What the notification and the lock screen read: the **book**, never a
+     * line of it. The chapter is the artist line, so the shade still says
+     * where the reader is; the sentence being read is the card's, in the app.
+     * A hold takes the title line, because the lock screen is exactly where
+     * the reader is when the voice stops by itself, and its words are the
+     * app's own rather than the book's.
+     */
+    private fun metadata(now: NarrationNowPlaying, chapterTitle: String): MediaMetadata =
+        MediaMetadata.Builder()
+            .setTitle(narration.holdText ?: now.title)
             .setArtist(chapterTitle.ifBlank { now.authors })
             .setAlbumTitle(now.title)
             .setAlbumArtist(now.authors.ifBlank { null })
@@ -236,7 +360,6 @@ class NarrationPlayer(private val narration: NarrationModel) :
             .setIsPlayable(true)
             .setMediaType(MediaMetadata.MEDIA_TYPE_AUDIO_BOOK_CHAPTER)
             .build()
-    }
 
     override fun handlePrepare(): ListenableFuture<*> = Futures.immediateVoidFuture()
 
@@ -256,47 +379,87 @@ class NarrationPlayer(private val narration: NarrationModel) :
     override fun handleRelease(): ListenableFuture<*> = Futures.immediateVoidFuture()
 
     /**
-     * ⏭ and ⏮. The playlist is the chapters, so the only thing to read out of
-     * a seek is which way the chapter went; a seek that stays inside the
-     * chapter is nothing to do — there is no timeline to move along.
+     * ⏭ and ⏮, read from the **command** rather than from the index.
+     *
+     * Comparing `mediaItemIndex` against the current one was wrong twice over.
+     * The row index and the chapter index are different numbers now, so the
+     * comparison was against the wrong thing; and ⏮ mid-chapter is a seek to
+     * the *same* row (the kit restarts the chapter first, which is what a
+     * track control does), which read as "nothing moved" and did nothing at
+     * all. media3 says which button was pressed; that is what to answer.
      */
     override fun handleSeek(mediaItemIndex: Int, positionMs: Long, seekCommand: Int): ListenableFuture<*> {
-        val current = narration.chapterIndex
-        when {
-            mediaItemIndex > current -> narration.skipToNextChapter()
-            mediaItemIndex < current -> narration.skipToPreviousChapter()
+        when (seekCommand) {
+            Player.COMMAND_SEEK_TO_NEXT, Player.COMMAND_SEEK_TO_NEXT_MEDIA_ITEM ->
+                narration.skipToNextChapter()
+            Player.COMMAND_SEEK_TO_PREVIOUS, Player.COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM ->
+                narration.skipToPreviousChapter()
+            Player.COMMAND_SEEK_TO_MEDIA_ITEM -> {
+                // A row picked out of the queue: play that chapter from its
+                // top. The row carries the book's own chapter index.
+                val chapters = narration.nowPlaying.chapters
+                chapters.getOrNull(mediaItemIndex)?.let { narration.listen(it.index, 0) }
+            }
+            // Anything else is a move along a timeline, and there is none: a
+            // sentence is as long as it is read for.
             else -> Unit
         }
         return Futures.immediateVoidFuture()
     }
 
-    private companion object {
-        val COMMANDS: Player.Commands = Player.Commands.Builder()
-            .addAll(
-                Player.COMMAND_PLAY_PAUSE,
-                Player.COMMAND_PREPARE,
-                Player.COMMAND_STOP,
-                Player.COMMAND_SEEK_TO_NEXT,
-                Player.COMMAND_SEEK_TO_NEXT_MEDIA_ITEM,
+    /**
+     * What the transport offers, for the state it is actually in. A ⏭ on the
+     * last chapter is a control that does nothing when pressed, which reads as
+     * broken; ⏮ is always offered, because the kit's rule restarts the chapter
+     * before it steps back and there is always a chapter to restart.
+     */
+    private fun commands(rows: Int, at: Int): Player.Commands {
+        val builder = Player.Commands.Builder().addAll(
+            Player.COMMAND_PLAY_PAUSE,
+            Player.COMMAND_PREPARE,
+            Player.COMMAND_STOP,
+            Player.COMMAND_GET_CURRENT_MEDIA_ITEM,
+            Player.COMMAND_GET_TIMELINE,
+            Player.COMMAND_GET_METADATA,
+            Player.COMMAND_RELEASE,
+        )
+        if (rows > 0) {
+            builder.addAll(
                 Player.COMMAND_SEEK_TO_PREVIOUS,
                 Player.COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM,
-                Player.COMMAND_GET_CURRENT_MEDIA_ITEM,
-                Player.COMMAND_GET_TIMELINE,
-                Player.COMMAND_GET_METADATA,
-                Player.COMMAND_RELEASE,
+                Player.COMMAND_SEEK_TO_MEDIA_ITEM,
             )
-            .build()
+        }
+        if (at < rows - 1) {
+            builder.addAll(Player.COMMAND_SEEK_TO_NEXT, Player.COMMAND_SEEK_TO_NEXT_MEDIA_ITEM)
+        }
+        return builder.build()
     }
 }
 
-/** The book the session publishes, as `AndroidNarration.nowPlayingJSON` reports it. */
+/**
+ * The book the session publishes, as `AndroidNarration.nowPlayingJSON` reports
+ * it: the title, who wrote it, and the chapters the kit will actually read.
+ *
+ * There is no current-chapter field. Where the voice is comes from the model,
+ * which is told a hundred times a session; this is asked once, because none of
+ * it changes under one.
+ */
 @Serializable
 data class NarrationNowPlaying(
     val title: String = "",
     val authors: String = "",
-    val chapterTitles: List<String> = emptyList(),
-    val chapterIndex: Int = 0,
+    val chapters: List<NarrationChapter> = emptyList(),
 )
+
+/**
+ * One chapter of the playlist. [index] is the chapter's own index in the book
+ * — not the row's position, since chapters the kit will not narrate
+ * (`linear="no"` spine entries, chapters with nothing to say) are not rows at
+ * all. A seek to a row plays *that* chapter.
+ */
+@Serializable
+data class NarrationChapter(val index: Int, val title: String)
 
 /**
  * The phone's audio focus, behind a seam: the instrumented tests own no
@@ -342,23 +505,3 @@ class SystemAudioFocus(context: Context) : NarrationAudioFocus {
     }
 }
 
-/** Starting and stopping [NarrationService], behind a seam for the same reason. */
-interface NarrationServiceControl {
-    fun start(context: Context)
-    fun stop(context: Context)
-}
-
-object SystemNarrationService : NarrationServiceControl {
-    override fun start(context: Context) {
-        val intent = Intent(context, NarrationService::class.java)
-        // The reader is looking at the book when Listen starts, so this is
-        // never a background start; the service goes foreground as soon as it
-        // has the session, which is inside onCreate.
-        runCatching { ContextCompat.startForegroundService(context, intent) }
-            .onFailure { Log.w("Readr.Listen", "narration service would not start: ${it.message}") }
-    }
-
-    override fun stop(context: Context) {
-        runCatching { context.stopService(Intent(context, NarrationService::class.java)) }
-    }
-}

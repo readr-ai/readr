@@ -23,6 +23,8 @@ import com.readrai.readr.kit.NarrationObserver
 import com.readrai.readr.kit.PlatformSpeechBackend
 import com.readrai.readr.kit.SpeechBackend
 import com.readrai.readr.ui.reader.ReaderSettings
+import java.util.Locale
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
@@ -84,6 +86,12 @@ data class NarrationOptions(
     val sleepMinutes: List<Int> = emptyList(),
     val sleepMinuteLabels: List<String> = emptyList(),
     val sleepLabels: Map<String, String> = emptyMap(),
+    /**
+     * What the Voice row names when the reader has chosen nothing. The
+     * facade's words — this row draws before any listening session exists, so
+     * the sentence cannot come from one, and it may not be written here.
+     */
+    val defaultVoiceName: String = "",
 ) {
     /** "1×", "1.25×" — the kit's label for one of its steps. */
     fun rateLabel(rate: Double): String {
@@ -184,10 +192,16 @@ class NarrationModel(
     private var events: NarrationEvents? = null
     private var backend: SpeechBackend? = null
     private var narration: AndroidNarration? = null
-    private var opening: Job? = null
+    /**
+     * The one session being built, however many callers asked for it. It used
+     * to be two fields — a `Job` for "a control is waiting" and a `Deferred`
+     * for "the voice list is waiting" — which is two ways for one session to
+     * be under construction and one more thing to keep in step.
+     */
     private var openJob: Deferred<AndroidNarration?>? = null
-    private var preparingVoices: Job? = null
     private var ticker: Job? = null
+    /** Whether [release] has been called: nothing may open a synthesizer after it. */
+    private var released = false
 
     var status by mutableStateOf(IDLE)
         private set
@@ -209,9 +223,25 @@ class NarrationModel(
     /** The sentence shown in place of the text when narration stopped by itself. */
     var holdText by mutableStateOf<String?>(null)
         private set
+    /**
+     * Why it stopped, as the kit's own token — `null` for a pause the reader
+     * asked for. Read by [NarrationSession] to decide whether an audio-focus
+     * regain may start the voice again: the kit clears the reason the moment
+     * the reader takes the pause over, which is what keeps a regain from
+     * undoing them. The words for the token are the facade's ([holdText]).
+     */
+    var holdReason by mutableStateOf<String?>(null)
+        private set
     var rate by mutableDoubleStateOf(settings.narrationRate)
         private set
     var voiceID by mutableStateOf(settings.narrationVoiceID)
+        private set
+    /**
+     * What the reader's stored voice is called, as it was written down when
+     * they chose it. The Voice row draws before any synthesizer exists to ask,
+     * and the id alone is a machine name nobody would recognise.
+     */
+    var storedVoiceName by mutableStateOf(settings.narrationVoiceName)
         private set
     /**
      * The voices the Appearance sheet's Voice row draws — the book's own
@@ -263,6 +293,17 @@ class NarrationModel(
         refresh()
     }
 
+    /**
+     * The phone took the sound away, or would not give it: hold the sentence,
+     * with the kit's own reason on it. Never opens a session — there is
+     * nothing to interrupt if no voice is reading.
+     */
+    fun audioInterrupted() {
+        val narration = narration ?: return
+        narration.audioInterrupted()
+        refresh()
+    }
+
     fun togglePlayPause() = withNarration { it.togglePlayPause() }
     fun play() = withNarration { it.play() }
     fun pause() = withNarration { it.pause() }
@@ -281,13 +322,24 @@ class NarrationModel(
         settings.narrationRate = rate
     }
 
-    /** The voice, persisted under the iOS key; `null` leaves the choice to the engine. */
-    fun chooseVoice(id: String?) {
+    /**
+     * The voice, persisted under the iOS key (`null` leaves the choice to the
+     * engine) — and its name beside it, under Android's own key, so the row
+     * can name the chosen voice before a synthesizer exists to ask.
+     *
+     * The picker's payload is updated in place rather than re-read: the only
+     * two fields a pick changes are which row is checked and what the row
+     * above says, and asking the phone for its whole voice list again to learn
+     * that is a walk over every installed voice for nothing.
+     */
+    fun chooseVoice(id: String?, name: String? = null) {
         voiceID = id
+        storedVoiceName = name
         settings.narrationVoiceID = id
+        settings.narrationVoiceName = name
         narration?.setVoice(id.orEmpty())
+        voices = voices.copy(selectedID = id, selectedName = name ?: voices.selectedName)
         refresh()
-        refreshVoices()
     }
 
     fun setSleepTimer(mode: String, minutes: Int? = null) {
@@ -301,25 +353,24 @@ class NarrationModel(
      * first Listen — the Apple app's `prepareVoices(for:)`, which resolves the
      * list for a book without narrating it.
      *
-     * The phone cannot say which voices it has until its synthesizer has
+     * **Called when the reader opens the picker, not when the row appears.**
+     * This builds a synthesizer, and building one to draw a row nobody has
+     * touched is a `TextToSpeech` engine started on every trip to the
+     * Appearance sheet — for a name the preferences file already knows.
+     *
+     * The phone cannot say which voices it has until that synthesizer has
      * started up, which is *after* the session is built (the same lateness the
-     * facade's own lazy voice resolution exists for), so this opens the
-     * session and then asks again for a few seconds. Idempotent, and it
-     * stops as soon as there is a list.
+     * facade's own lazy voice resolution exists for). There is nothing to poll
+     * for: the facade pushes [voicesChanged] when the engine reports in, and
+     * until it does the payload says so and the picker shows it.
      */
     fun prepareVoices() {
-        if (preparingVoices?.isActive == true) return
-        if (!voices.isEmpty) {
+        if (narration != null) {
             refreshVoices()
             return
         }
-        preparingVoices = scope.launch {
+        scope.launch {
             open() ?: return@launch
-            repeat(VOICE_TRIES) {
-                refreshVoices()
-                if (!voices.isEmpty) return@launch
-                delay(VOICE_RETRY_MILLIS)
-            }
             refreshVoices()
         }
     }
@@ -410,7 +461,22 @@ class NarrationModel(
     override fun holdChanged(reason: String) {
         // The reason is a token; the sentence for it comes from the facade
         // with the rest of the state, so nothing here writes copy.
-        if (reason.isEmpty()) holdText = null else refresh()
+        if (reason.isEmpty()) {
+            holdText = null
+            holdReason = null
+        } else {
+            refresh()
+        }
+    }
+
+    /**
+     * The phone's engine finished starting up and can say which voices it has.
+     * The Voice row was waiting on exactly this — and waiting is all it does
+     * now, where it used to ask twenty-four times a quarter-second apart
+     * because there was nothing to wait on.
+     */
+    override fun voicesChanged() {
+        refreshVoices()
     }
 
     // MARK: Plumbing
@@ -427,8 +493,7 @@ class NarrationModel(
             startTicking()
             return
         }
-        if (opening?.isActive == true) return
-        opening = scope.launch {
+        scope.launch {
             val built = open() ?: return@launch
             body(built)
             refresh()
@@ -453,8 +518,23 @@ class NarrationModel(
         narration?.let { return it }
         val kit = try {
             withContext(Dispatchers.IO) { openKit() }
+        } catch (e: CancellationException) {
+            // The scope went away under us — the reader left the book. Not a
+            // failure of the library, and logging it as one buried the real
+            // ones. Let it propagate: the caller is cancelled too.
+            openJob = null
+            throw e
         } catch (e: Exception) {
             Log.w(TAG, "narration could not open the library: ${e.message}")
+            // Nothing was built, so nothing may be awaited: a caller after
+            // this would otherwise get the same null for ever.
+            openJob = null
+            return null
+        }
+        if (released) {
+            // The reader left while the library was opening. Building a
+            // synthesizer now would start one nobody will ever hand back.
+            openJob = null
             return null
         }
         // Everything below is on the main thread, which is where the
@@ -471,6 +551,10 @@ class NarrationModel(
             events,
             this,
             kitJson.encodeToString(StoredSettings(rate, voiceID)),
+            // The reader's own language, for a book that declares none. The
+            // facade cannot ask: Foundation's current locale on Android is not
+            // the phone's.
+            Locale.getDefault().toLanguageTag(),
             arena,
         )
         narration = built
@@ -504,6 +588,7 @@ class NarrationModel(
         chapterProgress = state.chapterProgress
         sleep = state.sleepTimer
         holdText = state.holdText
+        holdReason = state.holdReason
         rate = state.rate
         voiceID = state.voiceID
         if (status == IDLE) stopTicking()
@@ -519,6 +604,11 @@ class NarrationModel(
     private fun syncMediaSession() {
         if (isActive) {
             val session = media ?: sessions(this)?.also { media = it } ?: return
+            // Audio focus follows the *status*, not the session: the session
+            // lives as long as the card is up, and a paused book has no claim
+            // on the phone's sound. Both calls are idempotent, so this can be
+            // said on every state change without asking the system twice.
+            if (isUnderway) session.holdFocus() else session.dropFocus()
             session.invalidate()
         } else {
             media?.release()
@@ -547,8 +637,22 @@ class NarrationModel(
         ticker = null
     }
 
-    /** Hand the synthesizer back — the model is finished with. */
+    /**
+     * Hand the synthesizer back — the model is finished with.
+     *
+     * Hops to the main looper if it is not already there, the same idiom
+     * [NarrationLease.onCleared] uses and for the same reason: everything
+     * below is main-thread-confined, the Swift controller included, and
+     * `Narrations.forget` is called from wherever a book happens to be
+     * removed.
+     */
     fun release() {
+        val main = Looper.getMainLooper()
+        if (Looper.myLooper() != main) {
+            Handler(main).post { release() }
+            return
+        }
+        released = true
         stopTicking()
         media?.release()
         media = null
@@ -575,9 +679,6 @@ class NarrationModel(
         const val SENTENCE_CONTAINING = "sentenceContaining"
 
         private const val TICK_MILLIS = 1_000L
-        /** How long [prepareVoices] waits for a synthesizer to finish starting up. */
-        private const val VOICE_TRIES = 24
-        private const val VOICE_RETRY_MILLIS = 250L
         private const val TAG = "Readr.Listen"
     }
 }
@@ -611,9 +712,21 @@ data class NarrationVoices(
     val recommendedID: String? = null,
     val selectedID: String? = null,
     val selectedName: String? = null,
+    /** Whether the phone's engine is still starting up, so there is no answer yet. */
+    val looking: Boolean = false,
+    /** What the row says while it is. The facade's words. */
+    val lookingText: String = "",
+    /** What the row says once the engine has answered with nothing. Likewise. */
     val emptyText: String = "",
 ) {
     val isEmpty: Boolean get() = voices.isEmpty() && otherVoices.isEmpty()
+
+    /**
+     * What a row with nothing to offer says: "still looking" and "none at all"
+     * are different answers, and telling a reader to install a voice while the
+     * list is on its way is simply wrong. Both sentences are the facade's.
+     */
+    val absentText: String get() = if (looking) lookingText else emptyText
 
     /**
      * The row the picker checks: the reader's own choice, or — before they
@@ -643,6 +756,13 @@ class Narrations(
      * the app, which means the phone's own.
      */
     private val backends: ((NarrationEvents) -> SpeechBackend)? = null,
+    /**
+     * The media session, for the same reason and with the same shape. A test
+     * that owns no speakers cannot let the real one ask `AudioManager` for
+     * audio focus: an instrumented app is not the foreground app a reader's is,
+     * and the system refuses it — which the voice, correctly, now holds for.
+     */
+    private val sessions: ((NarrationModel) -> NarrationSession?)? = null,
 ) {
     private var current: NarrationModel? = null
 
@@ -655,7 +775,10 @@ class Narrations(
         val model = if (backends == null) {
             NarrationModel(context, openKit, bookId, settings)
         } else {
-            NarrationModel(context, openKit, bookId, settings, backends)
+            NarrationModel(
+                context, openKit, bookId, settings, backends,
+                sessions ?: { model -> NarrationSession(context, model) },
+            )
         }
         return model.also { current = it }
     }

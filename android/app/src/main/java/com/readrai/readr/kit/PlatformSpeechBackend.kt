@@ -24,6 +24,20 @@ private data class VoiceWire(
 )
 
 /**
+ * What `voicesJSON()` answers — see `Narration.swift`'s `InstalledVoicesWire`.
+ *
+ * [ready] is the whole point of the wrapper: "the engine has not started up
+ * yet" and "the engine started and this phone has no voice data" are both an
+ * empty list, and they want opposite sentences on the picker's row. This side
+ * reports the fact and words neither of them.
+ */
+@Serializable
+private data class InstalledVoicesWire(
+    val ready: Boolean,
+    val voices: List<VoiceWire>,
+)
+
+/**
  * The phone's own voice behind the kit's `SpeechEngine`: the facade's
  * [SpeechBackend] over `android.speech.tts.TextToSpeech`.
  *
@@ -175,7 +189,12 @@ class PlatformSpeechBackend(context: Context, private val events: NarrationEvent
      * after it (see [variant]).
      */
     override fun voicesJSON(): String {
-        val tts = engine?.takeIf { ready } ?: return "[]"
+        // An engine that failed to start counts as ready: it is never going to
+        // have voices, and "Looking for voices…" for ever is worse than the
+        // sentence that names the door out.
+        val tts = engine?.takeIf { ready } ?: return json.encodeToString(
+            InstalledVoicesWire(ready = dead, voices = emptyList())
+        )
         val defaultID = runCatching { tts.defaultVoice?.name }.getOrNull()
         val voices = installedVoices(tts).map { voice ->
             VoiceWire(
@@ -186,7 +205,7 @@ class PlatformSpeechBackend(context: Context, private val events: NarrationEvent
                 isDefault = voice.name == defaultID,
             )
         }
-        return json.encodeToString(voices)
+        return json.encodeToString(InstalledVoicesWire(ready = true, voices = voices))
     }
 
     // MARK: Driving the engine
@@ -215,12 +234,16 @@ class PlatformSpeechBackend(context: Context, private val events: NarrationEvent
         // A fresh engine has its own voices; whatever was resolved against the
         // last one means nothing to it.
         forgetVoice()
-        val waiting = pending ?: return
+        val waiting = pending
         pending = null
-        enqueue(tts, waiting)
-        // Only now, with the sentence that was waiting already on its way:
-        // the kit may pick a voice on this and re-speak, and it should be
-        // re-speaking something rather than racing the first dispatch.
+        waiting?.let { enqueue(tts, it) }
+        // Unconditional, and after the waiting sentence (if there was one) has
+        // been handed over: the kit may pick a voice on this and re-speak, and
+        // it should be re-speaking something rather than racing the first
+        // dispatch. It used to sit *below* an early return for "nothing was
+        // waiting", which is exactly the case the Voice row is in — a session
+        // opened to list voices and not to read — so the row was never told
+        // its list had arrived and polled for it instead.
         events.voicesReady()
     }
 

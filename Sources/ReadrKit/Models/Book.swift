@@ -89,6 +89,37 @@ public extension Book {
     func chapterDisplayTitle(_ index: Int) -> String {
         chapterTitle(forChapterIndex: index) ?? Self.fallbackChapterTitle(number: index + 1)
     }
+
+    /// Display titles for every entry of `chapters`, in **that array's own
+    /// order** — the index space narration addresses
+    /// (`NarrationPosition.chapterIndex`, `SpeechPlaylist`'s cursor,
+    /// `chapters.indices` everywhere the speech code walks).
+    ///
+    /// `chapterDisplayTitle(_:)` takes a *reading-order* index and looks it up
+    /// in `chaptersInReadingOrder`. For a parsed book the two arrays are the
+    /// same — parsers fill `chapters` in reading order — but for one where they
+    /// are not, a chapter list built by asking the reading-order lookup for
+    /// `chapters` positions is titled out of step with the chapter being read.
+    /// This is the same rule, asked the way narration counts; the sort is paid
+    /// once for the whole list rather than once a chapter.
+    var chapterDisplayTitlesInStoredOrder: [String] {
+        var readingIndex: [UUID: Int] = [:]
+        for (position, chapter) in chaptersInReadingOrder.enumerated() {
+            readingIndex[chapter.id] = position
+        }
+        return chapters.map { chapter in
+            if let own = chapter.title?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !own.isEmpty {
+                return own
+            }
+            // A table-of-contents entry is addressed by reading order, and so
+            // is the number the fallback counts from — otherwise two chapters
+            // of a shuffled array could both come out "Chapter 2".
+            let index = readingIndex[chapter.id] ?? chapter.order
+            return tocTitle(forChapterIndex: index)
+                ?? Self.fallbackChapterTitle(number: index + 1)
+        }
+    }
 }
 
 public extension Chapter {

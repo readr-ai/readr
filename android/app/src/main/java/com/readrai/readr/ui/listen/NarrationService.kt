@@ -24,6 +24,12 @@ import androidx.media3.session.MediaSessionService
 @OptIn(UnstableApi::class)
 class NarrationService : MediaSessionService() {
 
+    /**
+     * Whether the `startForegroundService` that started this is still owed its
+     * `startForeground` — see [onUpdateNotification].
+     */
+    private var owesForeground = true
+
     override fun onCreate() {
         super.onCreate()
         running = true
@@ -42,13 +48,28 @@ class NarrationService : MediaSessionService() {
         NarrationSession.active?.session
 
     /**
-     * Go foreground as soon as there is a session, playing or paused. A paused
-     * audiobook whose notification had gone would leave the reader no way back
-     * to it, and the foreground promise is what keeps the voice alive with the
-     * screen off.
+     * The notification stays up for as long as there is a session, playing or
+     * paused: a paused audiobook whose notification had gone would leave the
+     * reader no way back to it.
+     *
+     * Whether the service must be *in the foreground* for it is media3's call,
+     * not ours, so the flag is passed through — it used to be forced `true`,
+     * which kept the service in the foreground for a book nobody was
+     * listening to.
+     *
+     * The one exception is the **first** update. `NarrationSession` starts
+     * this with `startForegroundService`, and that is a promise to call
+     * `startForeground` within a few seconds or be killed for it
+     * (`ForegroundServiceDidNotStartInTimeException`). media3 says foreground
+     * is not required whenever the player is not playing — which is true of a
+     * book held from its very first publish, when the phone refuses audio
+     * focus. So the promise is kept once, and every update after it is
+     * media3's own call.
      */
     override fun onUpdateNotification(session: MediaSession, startInForegroundRequired: Boolean) {
-        super.onUpdateNotification(session, true)
+        val keepingThePromise = owesForeground
+        owesForeground = false
+        super.onUpdateNotification(session, startInForegroundRequired || keepingThePromise)
     }
 
     /**
