@@ -10,6 +10,10 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewmodel.compose.viewModel
+import android.os.Handler
+import android.os.Looper
 import com.readrai.readr.ReadrApplication
 import com.readrai.readr.data.kitJson
 import com.readrai.readr.kit.AndroidNarration
@@ -47,19 +51,69 @@ data class NarrationSleep(
 
     /** "Off", "15 min", "End of chapter" — the kit's own `displayName`. */
     val displayName: String
-        get() = when (mode) {
-            AFTER -> "${(minutes ?: 1).coerceAtLeast(1)} min"
-            END_OF_CHAPTER -> "End of chapter"
-            else -> "Off"
+        get() = NarrationOptions.current.let { options ->
+            when (mode) {
+                AFTER -> options.sleepMinuteLabel((minutes ?: 1).coerceAtLeast(1))
+                END_OF_CHAPTER -> options.endOfChapterLabel
+                else -> options.offLabel
+            }
         }
 
     companion object {
         const val OFF = "off"
         const val AFTER = "after"
         const val END_OF_CHAPTER = "endOfChapter"
+    }
+}
 
-        /** The durations the sleep control offers — the kit's `minuteOptions`. */
-        val minuteOptions = listOf(5, 10, 15, 30, 45, 60)
+/**
+ * The fixed lists the speed and sleep controls are drawn from — the kit's own
+ * (`SpeechSettings.rateSteps`/`rateLabel`, `SleepTimer.minuteOptions`/
+ * `displayName`), read through the facade rather than copied here. A step
+ * added on one side used to have to be added on the other, and the copy is
+ * exactly the kind of thing that goes quietly stale.
+ *
+ * `rateLabels` and `sleepMinuteLabels` run parallel to the values above them.
+ */
+@Serializable
+data class NarrationOptions(
+    val rateSteps: List<Double> = emptyList(),
+    val rateLabels: List<String> = emptyList(),
+    val sleepMinutes: List<Int> = emptyList(),
+    val sleepMinuteLabels: List<String> = emptyList(),
+    val sleepLabels: Map<String, String> = emptyMap(),
+) {
+    /** "1×", "1.25×" — the kit's label for one of its steps. */
+    fun rateLabel(rate: Double): String {
+        val index = rateSteps.indexOfFirst { kotlin.math.abs(it - rate) < 0.001 }
+        // A stored speed that is not one of the kit's steps — a preferences
+        // file written by a build with a different list — still has to read.
+        return rateLabels.getOrNull(index) ?: "${Math.round(rate * 100) / 100.0}×"
+    }
+
+    fun sleepMinuteLabel(minutes: Int): String =
+        sleepMinuteLabels.getOrNull(sleepMinutes.indexOf(minutes)) ?: "$minutes min"
+
+    val offLabel: String get() = sleepLabels[NarrationSleep.OFF] ?: "Off"
+    val endOfChapterLabel: String
+        get() = sleepLabels[NarrationSleep.END_OF_CHAPTER] ?: "End of chapter"
+
+    companion object {
+        /** What the controls draw now; empty until the kit has been asked. */
+        var current by mutableStateOf(NarrationOptions())
+            private set
+
+        /**
+         * Ask the kit, once a process. No listening session is needed — the
+         * lists are the same for every book — but the Swift runtime is, so
+         * this is called once a [Kit] is open and before the card can draw.
+         */
+        fun loadOnce() {
+            if (current.rateSteps.isNotEmpty()) return
+            current = runCatching {
+                kitJson.decodeFromString<NarrationOptions>(AndroidNarration.optionsJSON())
+            }.getOrNull() ?: return
+        }
     }
 }
 
@@ -324,6 +378,7 @@ class NarrationModel(
         }
         // Everything below is on the main thread, which is where the
         // controller lives and where every callback comes back.
+        NarrationOptions.loadOnce()
         val events = NarrationEvents.init(arena)
         val backend = backends(events)
         this.events = events
@@ -453,6 +508,38 @@ class Narrations(
         model.release()
         current = null
     }
+
+    /**
+     * The reader left this book: the voice stops and the synthesizer goes
+     * back. Takes the model rather than an id so a screen given a stand-in
+     * ([NarrationModel]'s `backends` hook, in the instrumented tests) releases
+     * the one it was actually reading with.
+     */
+    @Synchronized
+    fun release(model: NarrationModel) {
+        if (current === model) current = null
+        model.release()
+    }
+}
+
+/**
+ * The reader's claim on a voice, scoped to their entry on the back stack.
+ *
+ * Narration deliberately outlives the composition — a rotation, or the trip
+ * to the provider settings Ask's empty state offers, must not cut the voice
+ * off mid-sentence — so it cannot be released in an `onDispose`. It must not
+ * outlive the *reader*, though: a book left behind that goes on reading aloud
+ * from the library screen is the bug this closes. A `ViewModel` on the
+ * reader's `NavBackStackEntry` is exactly that lifetime.
+ */
+class NarrationLease(private val onDeparture: () -> Unit) : ViewModel() {
+    override fun onCleared() {
+        // Everything narration touches is main-thread-confined, the Swift
+        // controller included. `onCleared` already runs there in practice;
+        // this makes it so whatever cleared the store.
+        val main = Looper.getMainLooper()
+        if (Looper.myLooper() == main) onDeparture() else Handler(main).post(onDeparture)
+    }
 }
 
 /** The book's narration, bound to this composition. */
@@ -460,4 +547,17 @@ class Narrations(
 fun rememberNarrationModel(bookId: String): NarrationModel {
     val app = LocalContext.current.applicationContext as ReadrApplication
     return remember(bookId) { app.narrations.forBook(bookId) }
+}
+
+/**
+ * Hold [narration] for as long as the reader is on the back stack, and stop
+ * it when they leave. See [NarrationLease] for why this is a `ViewModel` and
+ * not a `DisposableEffect`.
+ */
+@Composable
+fun RememberNarrationLease(narration: NarrationModel) {
+    val app = LocalContext.current.applicationContext as? ReadrApplication
+    viewModel(key = "narration/${narration.bookId}") {
+        NarrationLease { app?.narrations?.release(narration) ?: narration.release() }
+    }
 }

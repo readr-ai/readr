@@ -1374,7 +1374,96 @@ class KitBridgeTest {
         assertEquals("paused", state.status)
         assertNull(state.holdReason)
         assertNull(state.holdText)
-        assertEquals("paused", onMain { session.backend.state() })
+        // The backend is stopped, not paused: Android's synthesizer has no
+        // pause, so the kit takes the sentence off it and re-speaks the rest.
+        assertEquals("idle", onMain { session.backend.state() })
+    }
+
+    /**
+     * And that is what a pause and a play actually are here: the utterance is
+     * stopped, and playing again speaks the **remainder** of the sentence from
+     * the last word boundary — under a new request id, since it is a new
+     * utterance. The rule is the kit's (`pausesInPlace`); this is the proof it
+     * reaches the phone's engine intact.
+     */
+    @Test
+    fun playingAfterAPauseRespeaksTheRemainderOfTheSentence() = runTest(timeout = TEST_TIMEOUT) {
+        val book = narrationBook()
+        val chapter = kit.library.chapterText(book.id, 0)
+        val session = session(book.id)
+        onMain { session.narration.start(0, chapter.indexOf("Beta 1").toLong(), "sentenceContaining") }
+        val sentence = session.backend.lastText.orEmpty()
+        val word = sentence.indexOf("second")
+        onMain { session.backend.speakWord(word, word + "second".length) }
+
+        val stopsBefore = session.backend.stops
+        onMain { session.narration.pause() }
+        assertEquals("paused", session.state().status)
+        assertEquals("the utterance was taken off the engine", stopsBefore + 1, session.backend.stops)
+
+        onMain { session.narration.play() }
+        assertEquals("speaking", session.state().status)
+        assertEquals(
+            "the rest of the sentence, from the word the voice reached",
+            sentence.substring(word),
+            session.backend.lastText,
+        )
+    }
+
+    /**
+     * A phone whose synthesizer will not start: every sentence is refused. The
+     * card has to say so — a Pause nobody pressed, with the sentence still on
+     * it, reads as the app having quietly given up — and nothing may park
+     * waiting for an engine that is never coming.
+     */
+    @Test
+    fun aVoiceThatRefusesTheSentenceHoldsWithAnExplanation() = runTest(timeout = TEST_TIMEOUT) {
+        val book = narrationBook()
+        val session = session(book.id)
+        session.backend.refusesEverySentence = true
+
+        onMain { session.narration.start(0, 0, "nextSentenceStart") }
+        val held = session.state()
+        assertEquals("paused", held.status)
+        assertEquals("engineFailed", held.holdReason)
+        assertTrue(held.holdText.orEmpty(), held.holdText.orEmpty().isNotEmpty())
+        assertTrue(
+            "the card was told: ${session.observer.holds}",
+            session.observer.holds.any { it.isNotEmpty() },
+        )
+        // Nothing is pending on an engine that will not speak.
+        assertEquals("idle", onMain { session.backend.state() })
+
+        session.backend.refusesEverySentence = false
+        onMain { session.narration.play() }
+        val playing = session.state()
+        assertEquals("speaking", playing.status)
+        assertNull("the explanation goes with the failure", playing.holdText)
+    }
+
+    /**
+     * The phone cannot say which voices it has until its engine has started
+     * up, and that is after the session is built. So the choice is made when
+     * the reader first asks for a voice, not once in `init` against an empty
+     * list — which is what used to happen, and read every book in whatever
+     * the device's default was.
+     */
+    @Test
+    fun theVoiceIsChosenOnceThePhoneSaysWhichItHas() = runTest(timeout = TEST_TIMEOUT) {
+        val book = aliceBook()
+        val session = session(book.id)
+        assertEquals("nothing installed yet", "[]", onMain { session.backend.voicesJSON() })
+
+        session.backend.voices = """[
+          {"id":"fr-fr-x-vlf#female_1-local","name":"French","language":"fr-FR","quality":"standard","isDefault":true},
+          {"id":"en-us-x-tpf#female_1-local","name":"English","language":"en-US","quality":"standard","isDefault":false}
+        ]"""
+        onMain { session.narration.start(0, 0, "nextSentenceStart") }
+
+        // Alice declares `dc:language` en, so the English voice reads it —
+        // not the engine's own default, which here is the French one.
+        assertEquals("en-us-x-tpf#female_1-local", session.backend.spoken.last().voiceID)
+        assertEquals("en-us-x-tpf#female_1-local", session.state().voiceID)
     }
 
     /** Skipping a chapter lands on the first sentence of the next linear one. */

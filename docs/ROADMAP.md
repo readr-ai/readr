@@ -351,8 +351,9 @@ bridge; `android/README.md` has the build recipe.
 
 ### A4 — Listen
 - [x] A4a: narration over the platform voice — the kit's `NarrationController`
-  behind a Kotlin `SpeechBackend` (Android has no pause, so a pause is a stop
-  plus a rebased re-speak), the now-reading card, the page following the voice,
+  behind a Kotlin `SpeechBackend` (Android has no pause, so `SpeechEngine`
+  gained `pausesInPlace` and the kit stops the engine and re-speaks the
+  remainder itself), the now-reading card, the page following the voice,
   Listen from a selection, and Ask pausing the voice
 - [ ] A4b: media session, lock-screen and headphone controls, a voice picker
 

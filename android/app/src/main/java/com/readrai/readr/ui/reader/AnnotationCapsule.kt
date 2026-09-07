@@ -43,6 +43,8 @@ import com.readrai.readr.data.HighlightColor
 import com.readrai.readr.ui.theme.LocalReadingPalette
 import com.readrai.readr.ui.theme.Marginalia
 import com.readrai.readr.ui.theme.ReadingPalette
+import com.readrai.readr.ui.theme.SpeakerGlyph
+import com.readrai.readr.ui.theme.touchTarget
 
 /** What the capsule is acting on: a fresh selection, or a highlight the reader tapped. */
 sealed interface AnnotationTarget {
@@ -68,8 +70,6 @@ sealed interface AnnotationTarget {
     }
 }
 
-/** Apple's minimum, and Material's: nothing here is smaller than a fingertip. */
-private val touchTarget = 44.dp
 
 /** Neither worded button grows past this; the row scrolls before it does. */
 private val labelledButtonWidth = 72.dp
@@ -217,7 +217,7 @@ fun AnnotationCapsule(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(3.dp, Alignment.CenterHorizontally),
             ) {
-                SpeakerGlyph(palette.muted)
+                SpeakerGlyph(palette.muted, Modifier.size(14.dp))
                 if (LocalDensity.current.fontScale <= 1.25f) {
                     Text(
                         "Listen",
@@ -274,33 +274,6 @@ fun AnnotationCapsule(
 
 private val AnnotationTarget.hasNote: Boolean
     get() = (this as? AnnotationTarget.Existing)?.highlight?.note.isNullOrBlank().not()
-
-/** A speaker cone — drawn, like the copy mark, because Material's core set has none. */
-@Composable
-private fun SpeakerGlyph(color: Color) {
-    Canvas(Modifier.size(14.dp)) {
-        val body = Path().apply {
-            moveTo(0f, size.height * 0.34f)
-            lineTo(size.width * 0.3f, size.height * 0.34f)
-            lineTo(size.width * 0.62f, 0f)
-            lineTo(size.width * 0.62f, size.height)
-            lineTo(size.width * 0.3f, size.height * 0.66f)
-            lineTo(0f, size.height * 0.66f)
-            close()
-        }
-        drawPath(body, color)
-        val stroke = Stroke(width = 1.2.dp.toPx())
-        drawArc(
-            color,
-            startAngle = -55f,
-            sweepAngle = 110f,
-            useCenter = false,
-            topLeft = Offset(size.width * 0.34f, size.height * 0.16f),
-            size = Size(size.width * 0.62f, size.height * 0.68f),
-            style = stroke,
-        )
-    }
-}
 
 /** Two stacked sheets — the copy mark, drawn rather than bundled (Material's core icon set has none). */
 @Composable

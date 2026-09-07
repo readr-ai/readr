@@ -1,7 +1,6 @@
 package com.readrai.readr
 
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.semantics.SemanticsActions
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.junit4.createComposeRule
@@ -11,7 +10,9 @@ import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performTouchInput
-import androidx.compose.ui.text.TextLayoutResult
+import androidx.lifecycle.ViewModelStore
+import androidx.lifecycle.ViewModelStoreOwner
+import androidx.lifecycle.viewmodel.compose.LocalViewModelStoreOwner
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.readrai.readr.data.AskRepository
@@ -24,6 +25,7 @@ import com.readrai.readr.kit.NanoProbe
 import com.readrai.readr.ui.ask.AskConversation
 import com.readrai.readr.ui.ask.AskViewModel
 import com.readrai.readr.ui.listen.NarrationModel
+import com.readrai.readr.ui.reader.PageLayout
 import com.readrai.readr.ui.reader.ReaderScreen
 import com.readrai.readr.ui.reader.ReaderSettings
 import com.readrai.readr.ui.reader.ReaderViewModel
@@ -60,6 +62,12 @@ class ListenCardTest {
     private lateinit var narration: NarrationModel
     private lateinit var backend: FakeSpeechBackend
     private lateinit var ask: AskViewModel
+    /**
+     * The reader's own `ViewModelStore` — in the app it is the back-stack
+     * entry's, and clearing it is what popping the reader does. The narration
+     * lease lives on it.
+     */
+    private lateinit var store: ViewModelStore
 
     /** Long enough that a chapter runs to several pages, so the voice has somewhere to walk. */
     private val filler = "It was the best of times, it was the worst of times, it was the age of wisdom, " +
@@ -94,20 +102,40 @@ class ListenCardTest {
     }
 
     /** The reader, with narration wired to a synthesizer the test drives. */
-    private fun open(): ReaderViewModel {
+    private fun open(scrolling: Boolean = false): ReaderViewModel {
+        if (scrolling) settings.update { it.copy(layout = PageLayout.Scroll) }
         val model = ReaderViewModel({ repository }, book.id)
         narration = NarrationModel(
             context, { kit }, book.id, settings,
             backends = { events -> FakeSpeechBackend(events).also { backend = it } },
         )
         ask = AskViewModel({ AskRepository(kit) }, AskConversation(book.id))
+        store = ViewModelStore()
+        val owner = object : ViewModelStoreOwner {
+            override val viewModelStore: ViewModelStore get() = store
+        }
         compose.setContent {
             ReadrTheme {
-                ReaderScreen(model, settings, ask = ask, narration = narration, onBack = {})
+                CompositionLocalProvider(LocalViewModelStoreOwner provides owner) {
+                    ReaderScreen(model, settings, ask = ask, narration = narration, onBack = {})
+                }
             }
         }
-        awaitTag("reader.pageLabel")
+        awaitTag(if (scrolling) "reader.scrollLabel" else "reader.pageLabel")
         return model
+    }
+
+    /** What the reader's place would be written down as, once it settles. */
+    private fun savedPlace() = runBlocking { repository.position(book.id) }
+
+    /** Polls off the compose clock — for the tests that drive the view model directly. */
+    private fun <T : Any> awaitValue(what: String, timeoutMs: Long = 15_000, value: () -> T?): T {
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while (System.currentTimeMillis() < deadline) {
+            value()?.let { return it }
+            Thread.sleep(25)
+        }
+        error("timed out waiting for $what")
     }
 
     private fun nodes(tag: String) = compose.onAllNodes(hasTestTag(tag)).fetchSemanticsNodes()
@@ -266,7 +294,7 @@ class ListenCardTest {
     @Test
     fun theCapsuleListensFromTheSelectedSentence() {
         open()
-        val (point, word) = wordPoint()
+        val (point, word) = compose.wordOnThePage()
         compose.onNodeWithTag("reader.page").performTouchInput { longClick(point) }
         awaitTag("annotation.capsule")
 
@@ -281,29 +309,140 @@ class ListenCardTest {
         )
     }
 
+
     /**
-     * A point over the middle of a word on the drawn page, and the word it
-     * lands in — taken from the page's own text layout, because a fraction of
-     * the page box is a guess about pagination (see `ReaderScreenTest`).
+     * Leaving the reader stops the voice. Narration deliberately outlives the
+     * composition — a rotation, or the trip to the provider settings, must not
+     * cut it off mid-sentence — so nothing in `onDispose` can do this; the
+     * lease on the reader's back-stack entry does. Clearing that entry's
+     * `ViewModelStore` is what popping the reader amounts to.
      */
-    private fun wordPoint(): Pair<Offset, String> {
-        val node = compose.onNodeWithTag("reader.page").fetchSemanticsNode()
-        val layouts = mutableListOf<TextLayoutResult>()
-        node.config[SemanticsActions.GetTextLayoutResult].action?.invoke(layouts)
-        val layout = layouts.firstOrNull() ?: error("the page has no text layout to aim at")
-        val text = layout.layoutInput.text.text
-        fun insideAWord(index: Int) = text[index].isLetter() &&
-            index > 0 && text[index - 1].isLetter() &&
-            index + 1 < text.length && text[index + 1].isLetter()
-        val width = node.size.width
-        val aimed = (text.indices.drop(text.length / 2) + text.indices).firstOrNull { index ->
-            insideAWord(index) && layout.getBoundingBox(index).center.x in width * 0.35f..width * 0.65f
-        } ?: error("no word in the middle of the page to aim at")
-        var start = aimed
-        while (start > 0 && text[start - 1].isLetter()) start -= 1
-        var end = aimed
-        while (end + 1 < text.length && text[end + 1].isLetter()) end += 1
-        val box = layout.getBoundingBox(aimed)
-        return Offset(box.left + box.width * 0.4f, box.center.y) to text.substring(start, end + 1)
+    @Test
+    fun leavingTheReaderStopsTheVoice() {
+        open()
+        startListening()
+        val stopsBefore = compose.runOnUiThread { backend.stops }
+
+        compose.runOnUiThread { store.clear() }
+
+        awaitNoTag("listen.bar")
+        assertEquals(NarrationModel.IDLE, narration.status)
+        assertTrue(
+            "the synthesizer was handed the sentence back",
+            compose.runOnUiThread { backend.stops } > stopsBefore,
+        )
+    }
+
+    /**
+     * A jump inside the chapter the voice is reading leaves the voice alone:
+     * a reader looking something up two pages on has not asked it to start
+     * again — and restarting would re-arm the sleep timer they set.
+     */
+    @Test
+    fun aJumpInsideTheChapterBeingReadDoesNotRestartTheVoice() {
+        open()
+        startListening()
+        val sentence = sentenceOnCard()
+        val spokenBefore = compose.runOnUiThread { backend.spoken.size }
+
+        compose.onNodeWithTag("reader.toc").performClick()
+        awaitTag("contents.row.0")
+        compose.onNodeWithTag("contents.row.0").performClick()
+        awaitNoTag("contents.list")
+        compose.waitForIdle()
+
+        assertEquals(
+            "nothing new was spoken",
+            spokenBefore,
+            compose.runOnUiThread { backend.spoken.size },
+        )
+        assertEquals("the same sentence, still being read", sentence, sentenceOnCard())
+    }
+
+    /** A jump into another chapter takes the voice with it. */
+    @Test
+    fun aJumpToAnotherChapterTakesTheVoiceAlong() {
+        open()
+        startListening()
+
+        compose.onNodeWithTag("reader.toc").performClick()
+        awaitTag("contents.row.1")
+        compose.onNodeWithTag("contents.row.1").performClick()
+        awaitNoTag("contents.list")
+
+        compose.waitUntil(10_000) { sentenceOnCard().startsWith("Alpha 2") }
+        assertEquals(1, narration.chapterIndex)
+    }
+
+    /**
+     * In a scroll the place written down is still the sentence being read. The
+     * list echoes back the line at the top of its viewport on every frame, and
+     * that echo used to read as a page turn — which cleared the voice's resume
+     * anchor and saved the top of the screen instead of the sentence.
+     */
+    @Test
+    fun followingTheVoiceInAScrollStillSavesTheSentence() {
+        open(scrolling = true)
+        startListening()
+        val beta = chapterText(0).indexOf("Beta 1")
+
+        finishSentence()
+        compose.waitUntil(10_000) { sentenceOnCard().startsWith("Beta 1") }
+
+        compose.waitUntil(20_000) { savedPlace()?.utf16Offset == beta }
+        assertEquals(0, savedPlace()!!.chapterIndex)
+    }
+
+    /**
+     * The voice's sentence is the place only in the chapter the voice is in.
+     * A reader who crosses back out of that chapter takes their own page with
+     * them; keeping the offset would save an offset from one chapter against
+     * the index of another — some way into a chapter they had walked out of,
+     * or past its end entirely.
+     */
+    @Test
+    fun crossingBackOutOfTheChapterBeingReadDropsTheVoicesAnchor() {
+        val model = ReaderViewModel({ repository }, book.id)
+        awaitValue("the book to open") { model.state as? ReaderViewModel.State.Ready }
+        val beta = chapterText(1).indexOf("Beta 2")
+
+        onMain { model.jump(1, 0) }
+        awaitValue("chapter two") { model.chapter?.takeIf { it.index == 1 } }
+        onMain { model.followVoice(beta, beta) }
+
+        onMain { model.overflow(-1) }
+        val chapterOne = awaitValue("chapter one") { model.chapter?.takeIf { it.index == 0 } }
+        onMain { model.settleAtChapterEnd() }
+
+        val saved = awaitValue("the place to settle") {
+            runBlocking { repository.position(book.id) }?.takeIf { it.chapterIndex == 0 }
+        }
+        assertEquals(
+            "the end of the chapter crossed into, not an offset from the one left",
+            chapterOne.layout.utf16Length,
+            saved.utf16Offset,
+        )
+    }
+
+    /**
+     * "Listen from here" on a sentence that began on the page before holds the
+     * page where the reader is — but the place is still the sentence being
+     * read, so leaving now picks the book back up on it rather than a page on.
+     */
+    @Test
+    fun aHeldPageStillSavesTheSentenceBeingRead() {
+        val model = ReaderViewModel({ repository }, book.id)
+        awaitValue("the book to open") { model.state as? ReaderViewModel.State.Ready }
+        val gamma = chapterText(0).indexOf("Gamma 1")
+
+        onMain { model.turned(gamma + 400) }
+        onMain { model.holdNarrationResumeAnchor(gamma) }
+        onMain { model.flush() }
+
+        val saved = awaitValue("the place to be written") {
+            runBlocking { repository.position(book.id) }?.takeIf { it.utf16Offset == gamma }
+        }
+        assertEquals(0, saved.chapterIndex)
+        assertEquals("the page did not move", gamma + 400, model.anchor)
     }
 }

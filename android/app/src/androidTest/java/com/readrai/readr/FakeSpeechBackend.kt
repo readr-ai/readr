@@ -10,12 +10,10 @@ import java.util.concurrent.CopyOnWriteArrayList
  * Android counterpart of the kit's `PlainMockSpeechEngine`, one layer further
  * out — everything from `BridgedSpeechEngine` inwards is the real thing.
  *
- * It keeps [PlatformSpeechBackend]'s bargain about pause, because that bargain
- * is the interesting half of the contract: a pause stops the utterance and
- * remembers the last word boundary, a resume re-speaks the remainder under the
- * same request id, and every boundary reported afterwards has the cut added
- * back in — so the facade never learns that the text it handed over was
- * shortened.
+ * It has no pause, because [com.readrai.readr.kit.PlatformSpeechBackend] has
+ * none: the kit stops this backend on a pause and re-speaks the remainder of
+ * the sentence as a fresh request on play, so what a pause looks like from
+ * here is a `stop()` followed by a `speak()` of a shorter text.
  */
 class FakeSpeechBackend(private val events: NarrationEvents) : SpeechBackend {
 
@@ -31,19 +29,22 @@ class FakeSpeechBackend(private val events: NarrationEvents) : SpeechBackend {
     )
 
     val spoken = CopyOnWriteArrayList<Spoken>()
-    /** What the last `speak` (or the last resume) was handed. */
+    /** What the last `speak` was handed. */
     val lastText: String? get() = spoken.lastOrNull()?.text
+    /** How many times the kit asked for silence. */
+    @Volatile var stops = 0
+        private set
     /** What voices the phone claims to have; empty by default. */
     var voices: String = "[]"
+    /**
+     * A phone with no working synthesizer: every sentence is refused on the
+     * spot, the way [com.readrai.readr.kit.PlatformSpeechBackend] refuses one
+     * after its engine failed to start.
+     */
+    var refusesEverySentence = false
 
     private var state = IDLE
     private var activeID: String? = null
-    private var activeText = ""
-    /** Where in the whole sentence the string handed over begins. */
-    private var base = 0
-    /** The last word boundary, in whole-sentence offsets. */
-    private var spokenUtf16 = 0
-    private var held: Pair<String, String>? = null
 
     override fun speak(
         requestID: String,
@@ -54,43 +55,20 @@ class FakeSpeechBackend(private val events: NarrationEvents) : SpeechBackend {
         pitch: Double,
         volume: Double,
     ) {
-        held = null
-        activeID = requestID
-        activeText = text
-        base = 0
-        spokenUtf16 = 0
-        state = SPEAKING
         spoken += Spoken(requestID, text, language, voiceID, rate, pitch, volume)
-    }
-
-    override fun pause() {
-        val id = activeID ?: return
-        held = id to activeText
-        activeID = null
-        state = PAUSED
-    }
-
-    override fun resume() {
-        val (id, text) = held ?: return
-        held = null
-        activeID = id
-        activeText = text
-        base = spokenUtf16.coerceIn(0, text.length)
+        if (refusesEverySentence) {
+            activeID = null
+            state = IDLE
+            events.didFail(requestID, "text-to-speech unavailable")
+            return
+        }
+        activeID = requestID
         state = SPEAKING
-        val last = spoken.lastOrNull()
-        spoken += Spoken(
-            id, text.substring(base), last?.language.orEmpty(), last?.voiceID.orEmpty(),
-            last?.rate ?: 1.0, last?.pitch ?: 1.0, last?.volume ?: 1.0,
-        )
-        events.didBegin(id)
     }
 
     override fun stop() {
+        stops += 1
         activeID = null
-        held = null
-        activeText = ""
-        base = 0
-        spokenUtf16 = 0
         state = IDLE
     }
 
@@ -109,17 +87,12 @@ class FakeSpeechBackend(private val events: NarrationEvents) : SpeechBackend {
     }
 
     /**
-     * A word boundary, in offsets into the **whole** sentence.
-     *
-     * Whole-sentence is the contract, not a convenience: the facade keeps one
-     * offset table per request, over the text it handed to `speak`, and a
-     * resume re-speaks only a tail without the kit ever hearing about it. So a
-     * real backend adds its cut back in before reporting, and so does this one
-     * — which here means reporting the number the test wrote.
+     * A word boundary, in offsets into the text this backend was last handed
+     * — which is exactly what a real one reports, since nothing on the Kotlin
+     * side ever shortens a request.
      */
     fun speakWord(start: Int, end: Int) {
         val id = activeID ?: return
-        spokenUtf16 = start
         events.willSpeak(id, start.toLong(), end.toLong())
     }
 
@@ -134,6 +107,5 @@ class FakeSpeechBackend(private val events: NarrationEvents) : SpeechBackend {
     private companion object {
         const val IDLE = "idle"
         const val SPEAKING = "speaking"
-        const val PAUSED = "paused"
     }
 }

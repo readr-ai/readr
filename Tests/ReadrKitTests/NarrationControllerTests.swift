@@ -188,6 +188,70 @@ final class NarrationControllerTests: XCTestCase {
         XCTAssertEqual(engine.stopCount, stopsBefore + 1)
     }
 
+    /// An engine with no native pause — Android's `TextToSpeech`. The
+    /// controller stops it instead of pausing it, and `play()` re-speaks the
+    /// rest of the sentence from the last word boundary, exactly as it does
+    /// after a sleep-timer stop. The reader hears the same thing either way;
+    /// only the mechanism differs, and it belongs here rather than in a
+    /// platform's backend faking a pause it does not have.
+    func testAnEngineThatCannotPauseIsStoppedAndTheRemainderRespoken() {
+        let engine = PlainMockSpeechEngine()
+        engine.pausesInPlace = false
+        let controller = NarrationController(book: makeBook(), engine: engine)
+        controller.start(atChapter: 0)
+        let stopsAtStart = engine.stopCount
+        engine.speakWord(6..<9)          // "one" in "Alpha one."
+
+        controller.pause()
+        XCTAssertEqual(controller.status, .paused)
+        XCTAssertNil(controller.holdReason, "A reader's pause is not a hold")
+        XCTAssertEqual(engine.pauseCount, 0, "An engine that cannot pause is never asked to")
+        XCTAssertEqual(engine.stopCount, stopsAtStart + 1, "It is stopped instead")
+
+        controller.play()
+        XCTAssertEqual(controller.status, .speaking)
+        XCTAssertEqual(engine.resumeCount, 0, "There is nothing left to resume")
+        XCTAssertEqual(engine.spokenTexts, ["Alpha one.", "one."], "The remainder is re-spoken")
+    }
+
+    /// And the re-spoken remainder is still placed in the chapter: the word
+    /// offsets a resumed utterance reports are local to the tail it was handed
+    /// (see `testSpokenWordsOfAResumedRemainderStayInChapterCoordinates`).
+    func testTheRemainderRespokenAfterAPauseStaysInChapterCoordinates() {
+        let engine = PlainMockSpeechEngine()
+        engine.pausesInPlace = false
+        let controller = NarrationController(book: makeBook(), engine: engine)
+        var spoken: [Range<Int>] = []
+        controller.onSpokenRangeChange = { _, range in spoken.append(range) }
+
+        controller.start(atChapter: 0)
+        engine.speakWord(6..<9)
+        controller.pause()
+        controller.play()
+        engine.speakWord(0..<3)          // "one" again, local to the remainder
+
+        XCTAssertEqual(spoken, [6..<9, 6..<9])
+    }
+
+    /// A resume the engine refuses on the spot: the audio route went away
+    /// while the reader was paused. The failure arrives from inside `play()`,
+    /// so narration has to end up paused — not speaking silently — and the
+    /// next play re-speaks rather than resuming an utterance that is gone.
+    func testAResumeThatFailsLeavesNarrationPausedAndPlayableAgain() {
+        let engine = FailingResumeMockSpeechEngine()
+        let controller = NarrationController(book: makeBook(), engine: engine)
+        controller.start(atChapter: 0)
+        controller.pause()
+
+        controller.play()
+        XCTAssertEqual(controller.status, .paused, "The failure wins over the play")
+        XCTAssertEqual(engine.spoken.count, 1, "Nothing new was spoken")
+
+        controller.play()
+        XCTAssertEqual(controller.status, .speaking)
+        XCTAssertEqual(engine.spoken.count, 2, "The sentence is re-spoken")
+    }
+
     func testPauseBeforeAnythingStartedDoesNothing() {
         let (controller, engine) = makeController()
         controller.pause()

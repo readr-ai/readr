@@ -94,10 +94,12 @@ import com.readrai.readr.ui.ask.AskViewModel
 import com.readrai.readr.ui.ask.rememberAskViewModel
 import com.readrai.readr.ui.listen.ListenCard
 import com.readrai.readr.ui.listen.NarrationModel
+import com.readrai.readr.ui.listen.RememberNarrationLease
 import com.readrai.readr.ui.listen.rememberNarrationModel
 import com.readrai.readr.ui.theme.LocalReadingPalette
 import com.readrai.readr.ui.theme.Marginalia
 import com.readrai.readr.ui.theme.ReadingPalette
+import com.readrai.readr.ui.theme.SpeakerGlyph
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.filterNotNull
@@ -181,6 +183,11 @@ fun ReaderScreen(
     var wideSurface by rememberSaveable { mutableStateOf(false) }
 
     DisposableEffect(model) { onDispose { model.flush() } }
+    // The voice outlives this composition on purpose — a rotation, or the trip
+    // to the provider settings Ask's empty state offers, must not cut it off
+    // mid-sentence — but not the reader: leaving the book stops it. See
+    // `NarrationLease`.
+    RememberNarrationLease(narration)
 
     /**
      * How far the reader has got, for a scoped question — the Apple reader's
@@ -231,10 +238,19 @@ fun ReaderScreen(
         narration.listen(chapterIndex, utf16Offset, anchor)
     }
 
+    /**
+     * The one place narration is stopped from: the card's ✕ and the bar's
+     * Listen toggle. Both have to hand the reader's own page back as the place
+     * to save, and only one of them used to.
+     */
+    fun stopListening() {
+        narration.stopListening()
+        model.stopFollowingVoice()
+    }
+
     fun toggleListening() {
         if (narration.isActive) {
-            narration.stopListening()
-            model.stopFollowingVoice()
+            stopListening()
         } else {
             // The reading anchor, so the voice picks up at the top of the page
             // in front of the reader rather than at the chapter's start.
@@ -243,16 +259,24 @@ fun ReaderScreen(
     }
 
     /**
-     * A jump the reader made (Contents, a search hit, a bookmark). A voice that
-     * was reading goes with them — and if it was paused when they jumped, it
-     * is paused again on the new chapter rather than starting to read.
+     * A jump the reader made — Contents, a search hit, a bookmark, a highlight,
+     * "Show in book" on an answer's citation. A voice that was reading goes
+     * with them into a *different* chapter, and if it was paused when they
+     * jumped it is paused again there rather than starting to read.
+     *
+     * A jump inside the chapter the voice is already reading leaves it alone:
+     * the reader looking something up two pages on has not asked the voice to
+     * start again, and restarting it would also re-arm the sleep timer. The
+     * page simply stops following until the voice catches up or the reader
+     * turns it. (The Apple reader's rule, restored.)
      */
-    fun jumpTaking(narrationTo: Int, utf16Offset: Int) {
+    fun jumpTaking(target: Int, utf16Offset: Int) {
         val wasActive = narration.isActive
         val wasUnderway = narration.isUnderway
-        model.jump(narrationTo, utf16Offset)
-        if (!wasActive) return
-        startListening(narrationTo, utf16Offset, NarrationModel.NEXT_SENTENCE_START)
+        val voiceChapter = narration.chapterIndex
+        model.jump(target, utf16Offset)
+        if (!wasActive || voiceChapter < 0 || voiceChapter == target) return
+        startListening(target, utf16Offset, NarrationModel.NEXT_SENTENCE_START)
         if (!wasUnderway) narration.pause()
     }
 
@@ -276,6 +300,10 @@ fun ReaderScreen(
                     ) {
                         heldSentenceStart = sentenceStart
                         held = true
+                        // The page stays where it is, but the *place* is still
+                        // the sentence being read: a reader who leaves now
+                        // picks the book back up on it, not a page ahead.
+                        model.holdNarrationResumeAnchor(sentenceStart)
                     } else {
                         holdsPageForSelectionStart = false
                         heldSentenceStart = null
@@ -408,6 +436,7 @@ fun ReaderScreen(
                 narration = narration,
                 palette = palette,
                 chapterTitle = chapterTitle,
+                onStop = { stopListening() },
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
                     .zIndex(1f)
@@ -450,7 +479,10 @@ fun ReaderScreen(
                                 contentDescription = if (narration.isActive) "Stop listening" else "Listen"
                             },
                     ) {
-                        ListenGlyph(if (narration.isActive) palette.iris else palette.ink)
+                        SpeakerGlyph(
+                            if (narration.isActive) palette.iris else palette.ink,
+                            Modifier.size(18.dp),
+                        )
                     }
                     IconButton(onClick = { sheet = ReaderSheet.Search }, modifier = Modifier.testTag("reader.search")) {
                         Icon(Icons.Filled.Search, contentDescription = "Find in book", tint = palette.ink)
@@ -490,7 +522,7 @@ fun ReaderScreen(
             ReaderSheet.Highlights -> if (ready != null) HighlightsSheet(
                 highlights = model.highlights,
                 chapters = ready.chapters,
-                onJump = { highlight -> sheet = null; model.jump(highlight.chapterIndex, highlight.utf16Start) },
+                onJump = { highlight -> sheet = null; jumpTaking(highlight.chapterIndex, highlight.utf16Start) },
                 onEditNote = { highlight -> sheet = null; model.noteOnHighlight(highlight) },
                 onDelete = { highlight -> model.removeHighlight(highlight.id) },
                 onDismiss = { sheet = null },
@@ -511,7 +543,7 @@ fun ReaderScreen(
             AskSheet(
                 model = ask,
                 onDismiss = { ask.close(); narration.resumeAfterAsk() },
-                onShowInBook = { chapterIndex, utf16Offset -> model.jump(chapterIndex, utf16Offset) },
+                onShowInBook = { chapterIndex, utf16Offset -> jumpTaking(chapterIndex, utf16Offset) },
                 onOpenProviders = onOpenProviders,
             )
         }
@@ -562,32 +594,39 @@ private fun MarkerGlyph(color: Color) {
     }
 }
 
-/** A speaker with a wave — the bar's Listen mark, drawn like the others. */
-@Composable
-private fun ListenGlyph(color: Color) {
-    Canvas(Modifier.size(18.dp)) {
-        val w = size.width
-        val h = size.height
-        val cone = Path().apply {
-            moveTo(w * 0.06f, h * 0.36f)
-            lineTo(w * 0.26f, h * 0.36f)
-            lineTo(w * 0.52f, h * 0.10f)
-            lineTo(w * 0.52f, h * 0.90f)
-            lineTo(w * 0.26f, h * 0.64f)
-            lineTo(w * 0.06f, h * 0.64f)
-            close()
-        }
-        drawPath(cone, color)
-        drawArc(
-            color,
-            startAngle = -55f,
-            sweepAngle = 110f,
-            useCenter = false,
-            topLeft = Offset(w * 0.34f, h * 0.20f),
-            size = Size(w * 0.52f, h * 0.60f),
-            style = Stroke(width = 1.4.dp.toPx()),
-        )
-    }
+/**
+ * The chapter offset the scroll would report as its place right now: the start
+ * of the first line at the top of the viewport. Null when nothing is drawn
+ * there yet.
+ */
+private fun firstVisibleLineStart(
+    info: androidx.compose.foundation.lazy.LazyListLayoutInfo,
+    pagination: Pagination,
+    layoutOf: (Int) -> TextLayoutResult?,
+): Int? {
+    val visible = info.visibleItemsInfo.firstOrNull { it.key is Int } ?: return null
+    val index = visible.key as Int
+    val chunk = pagination.pages.getOrNull(index) ?: return null
+    val result = layoutOf(index) ?: return null
+    val top = maxOf(0f, (info.viewportStartOffset - visible.offset).toFloat())
+    return chunk.textStart + result.getLineStart(firstLineFrom(result, top))
+}
+
+/**
+ * Whether the whole of `line` of chunk `index` is inside the scroll's
+ * viewport. False when the chunk is not on screen at all — nothing of an
+ * uncomposed chunk is visible.
+ */
+private fun lineIsWhollyVisible(
+    info: androidx.compose.foundation.lazy.LazyListLayoutInfo,
+    index: Int,
+    result: TextLayoutResult,
+    line: Int,
+): Boolean {
+    val item = info.visibleItemsInfo.firstOrNull { it.key == index } ?: return false
+    val top = item.offset + result.getLineTop(line)
+    val bottom = item.offset + result.getLineBottom(line)
+    return top >= info.viewportStartOffset && bottom <= info.viewportEndOffset
 }
 
 /**
@@ -867,6 +906,12 @@ private fun PageSurface(
         var reported by remember(set) { mutableStateOf<Int?>(null) }
         var shown by remember(set) { mutableStateOf<Page?>(null) }
         var restored by remember(set) { mutableStateOf(false) }
+        // The start of the line the anchor was last put on. A scroll echoes
+        // back the line at the top of the viewport, and that echo is a page
+        // turn *by the reader* — unless it is this line, in which case it is
+        // the scroll settling where the voice just moved it, and the sentence
+        // the voice is on must stay the place to save.
+        var followedLine by remember(set) { mutableStateOf<Int?>(null) }
         // The "Previous chapter" button is a row of the list too, so the chunk
         // at list index n is chunk n − this.
         val chunkOffset = if (model.neighbour(-1) != null) 1 else 0
@@ -878,15 +923,35 @@ private fun PageSurface(
                 if (anchor == reported) return@collect
                 val index = laid.pagination.pageIndex(anchor)
                 val chunk = laid.pagination.pages[index]
-                lazyScroll.scrollToItem(chunkOffset + index)
                 // A chunk has no layout until it has been composed, and it is
-                // the layout that says which line the anchor is on.
+                // the layout that says which line the anchor is on — so a
+                // chunk that is nowhere near the viewport has to be scrolled
+                // to before anything can be asked of it.
+                if (lazyScroll.layoutInfo.visibleItemsInfo.none { it.key == index }) {
+                    lazyScroll.scrollToItem(chunkOffset + index)
+                }
                 val result = snapshotFlow { selections.of(index).layout }.filterNotNull().first()
                 val length = result.layoutInput.text.length
                 val local = (anchor - chunk.textStart).coerceIn(0, maxOf(0, length - 1))
+                val line = result.getLineForOffset(local)
                 reported = anchor
                 restored = true
-                lazyScroll.scrollToItem(chunkOffset + index, result.getLineTop(result.getLineForOffset(local)).toInt())
+                // A line already wholly on screen is left where it is. The
+                // voice moving to the next sentence must not yank a scroll the
+                // reader can already read from — only a line that is cut off,
+                // or off screen altogether, is scrolled to the top.
+                //
+                // Either way `followedLine` is what the echo below will
+                // report, so that echo is recognised as this move coming back
+                // rather than mistaken for the reader turning the page.
+                if (lineIsWhollyVisible(lazyScroll.layoutInfo, index, result, line)) {
+                    followedLine = firstVisibleLineStart(
+                        lazyScroll.layoutInfo, laid.pagination,
+                    ) { selections.of(it).layout } ?: (chunk.textStart + result.getLineStart(line))
+                } else {
+                    followedLine = chunk.textStart + result.getLineStart(line)
+                    lazyScroll.scrollToItem(chunkOffset + index, result.getLineTop(line).toInt())
+                }
             }
         }
 
@@ -916,7 +981,10 @@ private fun PageSurface(
                 }
                 if (start != model.anchor) {
                     reported = start
-                    model.turned(start)
+                    // The scroll settling on the line the voice was just put
+                    // on is not a page turn: the sentence being read stays the
+                    // place to save (see [followedLine]).
+                    if (start == followedLine) model.settledOnVoice(start) else model.turned(start)
                 }
             }
         }

@@ -38,21 +38,17 @@ public protocol SpeechBackend {
   func speak(
     _ requestID: String, text: String, language: String, voiceID: String,
     rate: Double, pitch: Double, volume: Double)
-  /// Hold the utterance where it is. Android's synthesizer has no pause, so
-  /// Kotlin stops it and remembers the last word boundary; `state()` must
-  /// report `paused` afterwards.
-  func pause()
-  /// Pick the held utterance back up — for Android, re-speaking its
-  /// remainder under the same `requestID`, with word boundaries rebased so
-  /// this side never learns that the text was cut.
-  func resume()
-  /// Stop and discard. No finish follows.
+  /// Stop and discard. No finish follows. There is no `pause`: Android's
+  /// synthesizer has none, `BridgedSpeechEngine` answers the kit's
+  /// `pausesInPlace` with false, and the kit therefore stops the backend on a
+  /// pause and re-speaks the remainder on play. Nothing here emulates a pause.
   func stop()
-  /// `"idle"`, `"speaking"` or `"paused"`, truthfully: this is what the
-  /// controller's stall watchdog reads, and a completion callback going
-  /// missing is exactly the case it exists for. State kept in a variable that
-  /// only those callbacks update would report `speaking` forever precisely
-  /// when it mattered.
+  /// `"idle"` or `"speaking"`, truthfully: this is what the controller's
+  /// stall watchdog reads, and a completion callback going missing is exactly
+  /// the case it exists for. State kept in a variable that only those
+  /// callbacks update would report `speaking` forever precisely when it
+  /// mattered. (`"paused"` is understood by the kit but never produced here —
+  /// this backend is stopped, not paused.)
   func state() -> String
   /// `[{id, name, language, quality, isDefault}]`, quality one of
   /// `standard`/`enhanced`/`premium`. `[]` before the engine is ready.
@@ -117,8 +113,21 @@ public final class NarrationEvents {
   /// engine, and a Kotlin-held events object must not keep a finished
   /// listening session alive.
   weak var engine: BridgedSpeechEngine?
+  /// The session, for the one report that is not about an utterance
+  /// (`voicesReady`). Weak for the same reason.
+  weak var narration: AndroidNarration?
 
   public init() {}
+
+  /// The platform engine finished starting up, so it can now say which voices
+  /// it has. Until then its list is empty and the kit's choice cannot be made
+  /// — see `AndroidNarration.resolveVoiceIfNeeded`. Called *after* the
+  /// utterance that was waiting on the engine has been handed over, so a
+  /// voice change here lands on a sentence that is already under way rather
+  /// than racing it.
+  public func voicesReady() {
+    narration?.voicesBecameAvailable()
+  }
 
   /// Audio for the utterance has started.
   public func didBegin(_ requestID: String) {
@@ -135,26 +144,28 @@ public final class NarrationEvents {
   /// own text**. Offsets are Kotlin's (UTF-16); the facade converts them into
   /// the Character offsets the kit addresses text with.
   ///
-  /// After a resume the platform speaks only the remainder of the sentence,
-  /// and Kotlin adds back where it cut — so these are always offsets into the
-  /// text this side handed over, whole.
+  /// Plain offsets into exactly the string that was handed over: nothing on
+  /// the Kotlin side ever shortens a request, so nothing has to be added back.
+  /// (The kit re-speaks the remainder of a paused sentence as a *new* request,
+  /// with its own text and its own table.)
   public func willSpeak(_ requestID: String, utf16Start: Int64, utf16End: Int64) {
     engine?.willSpeak(requestID, utf16Start: Int(utf16Start), utf16End: Int(utf16End))
   }
 
   /// The utterance could not be spoken. `diagnostic` is for the log — the
-  /// sentence the reader sees is this side's (`SpeechBackendError`), the same
-  /// rule `NanoProbe` follows: Kotlin reports a state, never copy.
+  /// sentence the reader sees is this side's (`AndroidNarration.holdText`),
+  /// the same rule `NanoProbe` follows: Kotlin reports a state, never copy.
   public func didFail(_ requestID: String, message diagnostic: String) {
     engine?.didFail(requestID, diagnostic: diagnostic)
   }
 }
 
-/// What the reader is told when the phone's voice refuses an utterance. The
-/// engine's own code goes to the log and no further.
-struct SpeechBackendError: LocalizedError {
+/// The engine's own code for an utterance it refused, carried to the
+/// controller and no further. It has no reader-facing description on purpose:
+/// what the card says is `AndroidNarration.holdText(for:)`'s, so the words the
+/// reader sees live with the rest of the copy rather than inside an error.
+struct SpeechBackendError: Error {
   let diagnostic: String
-  var errorDescription: String? { "The phone\u{2019}s voice couldn\u{2019}t read that." }
 }
 
 // MARK: - The kit's engine over the backend
@@ -169,6 +180,18 @@ final class BridgedSpeechEngine: SpeechEngine {
   /// boundaries arrive as UTF-16 offsets into exactly this string.
   private var activeID: String?
   private var activeOffsets: UTF16OffsetTable?
+  /// The engine's own code for the last utterance it refused, or nil. Kept so
+  /// the facade can tell "paused because the reader said so" from "paused
+  /// because the phone's voice would not read that" — the controller's
+  /// `holdReason` covers only the holds the *kit* knows about. Cleared by the
+  /// next thing spoken and by `stop()`.
+  private(set) var lastFailure: String?
+
+  /// Android's `TextToSpeech` has no pause. The kit therefore stops this
+  /// engine on a pause and re-speaks the remainder of the sentence on play,
+  /// from the last word boundary — which is the path a sleep-timer stop
+  /// already takes. `pause()`/`resume()` are never called and not implemented.
+  var pausesInPlace: Bool { false }
 
   init(backend: any SpeechBackend) {
     self.backend = backend
@@ -188,6 +211,7 @@ final class BridgedSpeechEngine: SpeechEngine {
 
   func speak(_ request: SpeechRequest) {
     let id = request.id.uuidString
+    lastFailure = nil
     activeID = id
     // Built per request, not per chapter: a request is one sentence, so this
     // is a walk over a few dozen characters.
@@ -204,16 +228,13 @@ final class BridgedSpeechEngine: SpeechEngine {
       volume: min(max(request.volume, 0), 1))
   }
 
-  func pause() { backend.pause() }
-
-  func resume() { backend.resume() }
-
   func stop() {
     // Cleared first: a report for this utterance that lands after the stop
     // is stale by construction, exactly as `AVSpeechEngine` treats one for a
     // replaced `AVSpeechUtterance`.
     activeID = nil
     activeOffsets = nil
+    lastFailure = nil
     backend.stop()
   }
 
@@ -245,6 +266,8 @@ final class BridgedSpeechEngine: SpeechEngine {
     guard requestID == activeID, let id = UUID(uuidString: requestID) else { return }
     activeID = nil
     activeOffsets = nil
+    // Before the delegate call: the controller publishes state from inside it.
+    lastFailure = diagnostic
     delegate?.speechEngine(
       self, didFail: id, error: SpeechBackendError(diagnostic: diagnostic))
   }
@@ -311,6 +334,19 @@ private struct SentenceRangeWire: Codable {
   var utf16End: Int
 }
 
+/// The fixed lists the speed and sleep controls are drawn from — the kit's,
+/// so a step or a label added to `SpeechSettings.rateSteps` or
+/// `SleepTimer.minuteOptions` reaches Android without a second copy of either
+/// list going stale beside it. `rateLabels` and `sleepMinuteLabels` run
+/// parallel to the values above them.
+private struct NarrationOptionsWire: Codable {
+  var rateSteps: [Double]
+  var rateLabels: [String]
+  var sleepMinutes: [Int]
+  var sleepMinuteLabels: [String]
+  var sleepLabels: [String: String]
+}
+
 /// What `setSleepTimer` takes: `{"mode":"off"|"after"|"endOfChapter","minutes":N}`.
 private struct SleepTimerRequest: Codable {
   var mode: String
@@ -338,6 +374,16 @@ public final class AndroidNarration {
   private var lastPosition: (chapter: Int, offset: Int, sentence: Int)?
   private var lastSleep = ""
   private var lastHold = ""
+  /// The reader's stored voice, as it arrived in `settingsJSON`. Kept apart
+  /// from the controller's settings because it is the *preference*, which
+  /// outlives an engine that has none of its voices installed yet.
+  private var storedVoiceID: String?
+  /// Whether the kit's choice has been made. False while the platform engine
+  /// is still starting up and its voice list is empty — the whole reason this
+  /// is not settled once in `init`, which is where it used to be: a session
+  /// built in the same breath as the engine always found an empty list and
+  /// read every book in the device's default voice.
+  private var voiceResolved = false
 
   /// - Parameters:
   ///   - events: the callback object Kotlin also handed to `backend`. It is
@@ -372,9 +418,8 @@ public final class AndroidNarration {
       return
     }
 
-    var settings = Self.settings(from: settingsJSON)
-    settings.voiceID = Self.resolvedVoiceID(
-      preferring: settings.voiceID, language: book.metadata.language, backend: backend)
+    let settings = Self.settings(from: settingsJSON)
+    storedVoiceID = settings.voiceID
     let controller = NarrationController(book: book, engine: engine, settings: settings)
     self.controller = controller
     controller.onStatusChange = { [weak self] _ in self?.publish() }
@@ -382,6 +427,29 @@ public final class AndroidNarration {
     controller.onSpokenRangeChange = { [weak self] chapterIndex, range in
       self?.publishSpokenRange(chapterIndex, range)
     }
+    events.narration = self
+    // The engine usually has nothing to say about its voices yet — it is
+    // still starting up — so this is a first try, not the only one.
+    resolveVoiceIfNeeded()
+  }
+
+  // MARK: The kit's fixed lists
+
+  /// The speeds and sleep durations the controls offer, with the kit's own
+  /// labels for them. Static: the card draws these before any listening
+  /// session exists, and they are the same for every book.
+  public static func optionsJSON() -> String {
+    let wire = NarrationOptionsWire(
+      rateSteps: SpeechSettings.rateSteps,
+      rateLabels: SpeechSettings.rateSteps.map(SpeechSettings.rateLabel),
+      sleepMinutes: SleepTimer.minuteOptions,
+      sleepMinuteLabels: SleepTimer.minuteOptions.map { SleepTimer.after(minutes: $0).displayName },
+      sleepLabels: [
+        "off": SleepTimer.off.displayName,
+        "endOfChapter": SleepTimer.endOfChapter.displayName,
+      ])
+    guard let data = try? AndroidLibrary.encoder().encode(wire) else { return "" }
+    return String(decoding: data, as: UTF8.self)
   }
 
   // MARK: Controls
@@ -391,6 +459,7 @@ public final class AndroidNarration {
   /// selection — the reader means the sentence their finger is on).
   public func start(chapterIndex: Int64, utf16Offset: Int64, anchor: String) {
     guard let controller, let book else { return }
+    resolveVoiceIfNeeded()
     let index = Int(chapterIndex)
     guard book.chapters.indices.contains(index) else { return }
     let offset = offsets.table(for: book, chapterIndex: index)
@@ -402,6 +471,7 @@ public final class AndroidNarration {
   }
 
   public func play() {
+    resolveVoiceIfNeeded()
     controller?.play()
     publish()
   }
@@ -412,6 +482,7 @@ public final class AndroidNarration {
   }
 
   public func togglePlayPause() {
+    resolveVoiceIfNeeded()
     controller?.togglePlayPause()
     publish()
   }
@@ -454,7 +525,10 @@ public final class AndroidNarration {
   /// Pick a voice. `""` hands the choice back to the engine's own default for
   /// the book's language.
   public func setVoice(_ voiceID: String) {
-    controller?.settings.voiceID = voiceID.isEmpty ? nil : voiceID
+    // The reader chose: nothing is to choose for them afterwards.
+    storedVoiceID = voiceID.isEmpty ? nil : voiceID
+    voiceResolved = true
+    controller?.settings.voiceID = storedVoiceID
     publish()
   }
 
@@ -474,6 +548,9 @@ public final class AndroidNarration {
   /// The once-a-second beat the sleep timer and the stall watchdog need — the
   /// controller has no clock of its own.
   public func tick() {
+    // A voice downloaded (or an engine that started up) mid-book is picked up
+    // here, without the reader having to close the card and open it again.
+    resolveVoiceIfNeeded()
     controller?.tick()
     publish()
   }
@@ -589,11 +666,20 @@ public final class AndroidNarration {
       utf16Offset = table.utf16Offset(ofCharacter: position.characterOffset)
       utf16SentenceStart = table.utf16Offset(ofCharacter: position.sentenceStart)
     }
+    // The kit's own hold first; failing that, an utterance the phone's voice
+    // refused. The controller has no reason for the second — an engine
+    // failure is not one of `NarrationHoldReason`'s cases, because on Apple
+    // it is a retry the bar offers rather than a state — so the card would
+    // otherwise show a Pause nobody pressed with no word about why.
     let hold = controller.holdReason
+    let reason = hold.map(Self.name(of:))
+      ?? (controller.status == .paused && engine.lastFailure != nil ? Self.engineFailed : nil)
+    let text = hold.map(Self.holdText(for:))
+      ?? (reason == Self.engineFailed ? Self.engineFailedText : nil)
     return NarrationStateWire(
       status: Self.name(of: controller.status),
-      holdReason: hold.map(Self.name(of:)),
-      holdText: hold.map(Self.holdText(for:)),
+      holdReason: reason,
+      holdText: text,
       chapterIndex: chapterIndex,
       utf16Offset: utf16Offset,
       utf16SentenceStart: utf16SentenceStart,
@@ -627,14 +713,29 @@ public final class AndroidNarration {
   /// still installed, then the kit's own rule over what the phone has — an
   /// exact locale match, then the language, then nothing, which leaves the
   /// engine its default rather than reading a French novel in English.
-  private static func resolvedVoiceID(
-    preferring stored: String?, language: String?, backend: any SpeechBackend
-  ) -> String? {
-    let installed = installedVoices(backend.voicesJSON())
-    guard !installed.voices.isEmpty else { return stored }
-    return VoiceSelector().voice(
-      for: language, in: installed.voices, preferring: stored,
-      systemDefault: installed.systemDefault)?.id ?? stored
+  ///
+  /// Tried again whenever the reader touches narration, and once more when
+  /// the platform engine says it is ready (`NarrationEvents.voicesReady`),
+  /// because the list is empty until then. Settling it changes the
+  /// controller's settings, which — mid-sentence — re-speaks from the word
+  /// the voice reached, exactly as the reader picking a voice does.
+  private func resolveVoiceIfNeeded() {
+    guard let controller, !voiceResolved else { return }
+    let installed = Self.installedVoices(backend.voicesJSON())
+    guard !installed.voices.isEmpty else { return }
+    voiceResolved = true
+    let chosen = VoiceSelector().voice(
+      for: book?.metadata.language, in: installed.voices, preferring: storedVoiceID,
+      systemDefault: installed.systemDefault)?.id ?? storedVoiceID
+    controller.settings.voiceID = chosen
+  }
+
+  /// The platform engine finished starting up: its voices can be asked for
+  /// now. Called from `NarrationEvents`, on the main thread like everything
+  /// else here.
+  func voicesBecameAvailable() {
+    resolveVoiceIfNeeded()
+    publish()
   }
 
   private static func settings(from json: String) -> SpeechSettings {
@@ -688,6 +789,14 @@ public final class AndroidNarration {
     case .needsForeground: return "Paused \u{2014} unlock Readr to keep listening"
     }
   }
+
+  /// The phone's voice refused the sentence. Not a `NarrationHoldReason`: the
+  /// kit has no case for it, and this is the one thing the facade names for
+  /// itself. The words are the facade's, as every reader-facing sentence on
+  /// this side is — Kotlin reports an engine code to the log and no further.
+  private static let engineFailed = "engineFailed"
+  private static let engineFailedText =
+    "Paused \u{2014} the phone\u{2019}s voice couldn\u{2019}t read that."
 
   /// Muted footnote markers leave runs of spaces in a segment's text (the
   /// substitution is length-preserving by design, so offsets stay true).

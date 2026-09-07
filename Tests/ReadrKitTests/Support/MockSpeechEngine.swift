@@ -159,17 +159,87 @@ final class MockSpeechEngine: SpeechEngine, SpeechPrefetching, SpeechRateAdjusti
 
 /// An engine with none of the optional capabilities — what the platform
 /// synthesizer looks like to the controller.
+///
+/// `pausesInPlace` is settable so one test can be the Apple synthesizer, which
+/// really holds an utterance, and the next can be Android's, which cannot
+/// pause at all and is stopped and re-spoken instead.
 final class PlainMockSpeechEngine: SpeechEngine {
     weak var delegate: (any SpeechEngineDelegate)?
     private(set) var state: SpeechEngineState = .idle
     private(set) var spoken: [SpeechRequest] = []
+    private(set) var pauseCount = 0
+    private(set) var resumeCount = 0
+    private(set) var stopCount = 0
+    var pausesInPlace = true
+
+    private var active: SpeechRequest?
+
+    var spokenTexts: [String] { spoken.map(\.text) }
 
     func speak(_ request: SpeechRequest) {
         spoken.append(request)
+        active = request
+        state = .speaking
+    }
+
+    func pause() {
+        pauseCount += 1
+        state = .paused
+    }
+
+    func resume() {
+        resumeCount += 1
+        state = .speaking
+    }
+
+    func stop() {
+        stopCount += 1
+        active = nil
+        state = .idle
+    }
+
+    /// A word-boundary report for the current utterance, in character offsets
+    /// into its text.
+    func speakWord(_ range: Range<Int>) {
+        guard let request = active else { return }
+        delegate?.speechEngine(self, willSpeak: range, of: request.id)
+    }
+}
+
+/// An engine whose `resume()` refuses the utterance on the spot — an audio
+/// session that cannot be picked back up (a call took the route away while
+/// the reader was paused). The failure lands *inside* `play()`, which is what
+/// makes the order of `setStatus` and `resume()` there matter.
+final class FailingResumeMockSpeechEngine: SpeechEngine {
+    weak var delegate: (any SpeechEngineDelegate)?
+    private(set) var state: SpeechEngineState = .idle
+    private(set) var spoken: [SpeechRequest] = []
+    /// Whether the next `resume()` fails. Cleared by the failure, so a second
+    /// play — which re-speaks rather than resuming — gets through.
+    var failsOnResume = true
+    private var active: SpeechRequest?
+
+    func speak(_ request: SpeechRequest) {
+        spoken.append(request)
+        active = request
         state = .speaking
     }
 
     func pause() { state = .paused }
-    func resume() { state = .speaking }
-    func stop() { state = .idle }
+
+    func resume() {
+        guard failsOnResume, let request = active else {
+            state = .speaking
+            return
+        }
+        failsOnResume = false
+        active = nil
+        state = .idle
+        delegate?.speechEngine(self, didFail: request.id, error: SpeechEngineError.audioUnavailable)
+    }
+
+    func stop() {
+        active = nil
+        state = .idle
+    }
 }

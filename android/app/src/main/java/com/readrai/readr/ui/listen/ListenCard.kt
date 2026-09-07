@@ -42,24 +42,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.readrai.readr.ui.theme.ReadingPalette
-
-/**
- * The speeds the control offers and how it labels them — the kit's
- * `SpeechSettings.rateSteps` and `rateLabel`, mirrored here because the card
- * draws the list before any narration session exists to ask.
- */
-object NarrationSpeeds {
-    val steps = listOf(0.75, 1.0, 1.25, 1.5, 1.75, 2.0)
-
-    /** "1×", "1.25×". */
-    fun label(rate: Double): String {
-        val rounded = Math.round(rate * 100) / 100.0
-        return if (rounded == Math.floor(rounded)) "${rounded.toInt()}×" else "$rounded×"
-    }
-}
-
-/** Apple's minimum, and Material's: nothing here is smaller than a fingertip. */
-private val touchTarget = 44.dp
+import com.readrai.readr.ui.theme.touchTarget
 
 /**
  * The now-reading card: what the reader sees while the book is read aloud.
@@ -80,6 +63,13 @@ fun ListenCard(
     palette: ReadingPalette,
     /** The chapter the voice is in, for the card's kicker. */
     chapterTitle: String?,
+    /**
+     * ✕. The reader's, not the card's: stopping the voice also hands the
+     * reader's own page back as the place to save, and that is the screen's
+     * business — so the bar's Listen toggle and this go through one lambda
+     * rather than each remembering half of it.
+     */
+    onStop: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Box(
@@ -129,7 +119,7 @@ fun ListenCard(
                 SleepMenu(narration, palette)
             }
         }
-        CloseButton(palette, Modifier.align(Alignment.TopEnd)) { narration.stopListening() }
+        CloseButton(palette, Modifier.align(Alignment.TopEnd), onStop)
     }
 }
 
@@ -146,6 +136,10 @@ private fun StatusLine(narration: NarrationModel, palette: ReadingPalette) {
             hold,
             fontSize = 13.sp,
             color = palette.muted,
+            // Two lines either way, so the card is the same height whether it
+            // is showing a sentence or explaining itself — a card that grew
+            // and shrank under the page would re-inset (and re-paginate) it.
+            minLines = 2,
             maxLines = 2,
             overflow = TextOverflow.Ellipsis,
             modifier = Modifier
@@ -162,6 +156,7 @@ private fun StatusLine(narration: NarrationModel, palette: ReadingPalette) {
         fontStyle = FontStyle.Italic,
         fontSize = 14.sp,
         color = palette.ink,
+        minLines = 2,
         maxLines = 2,
         overflow = TextOverflow.Ellipsis,
         modifier = Modifier
@@ -237,6 +232,7 @@ private fun TransportButton(
 @Composable
 private fun SpeedMenu(narration: NarrationModel, palette: ReadingPalette) {
     var open by remember { mutableStateOf(false) }
+    val options = NarrationOptions.current
     Box {
         Box(
             Modifier
@@ -250,18 +246,19 @@ private fun SpeedMenu(narration: NarrationModel, palette: ReadingPalette) {
             contentAlignment = Alignment.Center,
         ) {
             Text(
-                NarrationSpeeds.label(narration.rate),
+                options.rateLabel(narration.rate),
                 fontSize = 13.sp,
                 fontWeight = FontWeight.SemiBold,
                 color = palette.ink,
             )
         }
         DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
-            NarrationSpeeds.steps.forEach { step ->
+            options.rateSteps.forEach { step ->
+                val label = options.rateLabel(step)
                 DropdownMenuItem(
-                    text = { Text(NarrationSpeeds.label(step)) },
+                    text = { Text(label) },
                     onClick = { open = false; narration.chooseRate(step) },
-                    modifier = Modifier.testTag("listen.speed.${NarrationSpeeds.label(step)}"),
+                    modifier = Modifier.testTag("listen.speed.$label"),
                 )
             }
         }
@@ -272,6 +269,7 @@ private fun SpeedMenu(narration: NarrationModel, palette: ReadingPalette) {
 private fun SleepMenu(narration: NarrationModel, palette: ReadingPalette) {
     var open by remember { mutableStateOf(false) }
     val sleep = narration.sleep
+    val options = NarrationOptions.current
     Box {
         Row(
             Modifier
@@ -294,18 +292,18 @@ private fun SleepMenu(narration: NarrationModel, palette: ReadingPalette) {
         }
         DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
             DropdownMenuItem(
-                text = { Text("Off") },
+                text = { Text(options.offLabel) },
                 onClick = { open = false; narration.setSleepTimer(NarrationSleep.OFF) },
             )
             HorizontalDivider()
-            NarrationSleep.minuteOptions.forEach { minutes ->
+            options.sleepMinutes.forEach { minutes ->
                 DropdownMenuItem(
-                    text = { Text("$minutes min") },
+                    text = { Text(options.sleepMinuteLabel(minutes)) },
                     onClick = { open = false; narration.setSleepTimer(NarrationSleep.AFTER, minutes) },
                 )
             }
             DropdownMenuItem(
-                text = { Text("End of chapter") },
+                text = { Text(options.endOfChapterLabel) },
                 onClick = { open = false; narration.setSleepTimer(NarrationSleep.END_OF_CHAPTER) },
             )
         }
