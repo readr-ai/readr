@@ -8,6 +8,11 @@ public protocol SecretStore {
   func write(_ key: String, value: String) -> Bool
   func read(_ key: String) -> String
   func remove(_ key: String) -> Bool
+  /// Whether an entry exists, without decrypting it. Settings asks this of
+  /// every provider on every read of the screen, and decrypting a key to
+  /// learn that it is there is a Keystore round trip for an answer the
+  /// preferences file already holds.
+  func has(_ key: String) -> Bool
 }
 
 /// ReadrKit's `CredentialStore` over a Kotlin `SecretStore`: the Android
@@ -39,6 +44,10 @@ final class SecretCredentialStore: CredentialStore, @unchecked Sendable {
       throw AndroidBridgeError.secretStoreFailed("remove \(kind.rawValue)")
     }
   }
+
+  /// Whether a credential is stored, without reading it. What the settings
+  /// payload uses: the screen needs to know a key is there, never what it is.
+  func has(_ kind: ProviderInfo.Kind) -> Bool { store.has(key(kind)) }
 }
 
 /// Facade errors. `errorDescription` is reader-facing (it is what reaches the
@@ -51,6 +60,12 @@ enum AndroidBridgeError: LocalizedError, CustomStringConvertible {
   case unknownHighlight(String)
   case unknownBookmark(String)
   case unknownHighlightColor(String)
+  /// Save pressed with nothing in the field.
+  case emptyAPIKey
+  /// Ask reached the phone's own model before A3c taught it to answer.
+  case onDeviceModelNotReady
+  /// A debug endpoint override that pointed somewhere other than this device.
+  case endpointNotLoopback(String)
 
   var errorDescription: String? {
     switch self {
@@ -61,6 +76,9 @@ enum AndroidBridgeError: LocalizedError, CustomStringConvertible {
     case .unknownHighlight: return "That highlight is no longer in your library."
     case .unknownBookmark: return "That bookmark is no longer in your library."
     case .unknownHighlightColor: return "That highlight colour isn't available."
+    case .emptyAPIKey: return "Paste an API key to connect."
+    case .onDeviceModelNotReady: return "Gemini Nano isn't ready on this phone yet."
+    case .endpointNotLoopback: return "Readr can only be pointed at a server on this device."
     }
   }
 
@@ -75,43 +93,9 @@ enum AndroidBridgeError: LocalizedError, CustomStringConvertible {
     case .unknownHighlight(let id): return "no highlight with id \(id)"
     case .unknownBookmark(let id): return "no bookmark with id \(id)"
     case .unknownHighlightColor(let name): return "unknown highlight color \(name)"
-    }
-  }
-}
-
-/// Provider credentials for the Android app, backed by `SecretCredentialStore`.
-/// This is the object Settings talks to; `ProviderManager` receives the same
-/// store in the Ask milestone.
-public final class AndroidCredentials {
-  let credentialStore: SecretCredentialStore
-
-  public init(store: any SecretStore) {
-    credentialStore = SecretCredentialStore(store: store)
-  }
-
-  /// `kind` is a `ProviderInfo.Kind` raw value ("anthropic", "openAI", ...).
-  public func saveAPIKey(_ kind: String, apiKey: String) throws {
-    try readerFacing {
-      guard let k = ProviderInfo.Kind(rawValue: kind) else { throw AndroidBridgeError.unknownProviderKind(kind) }
-      try credentialStore.save(.apiKey(apiKey), for: k)
-    }
-  }
-
-  public func hasCredential(_ kind: String) -> Bool {
-    guard let k = ProviderInfo.Kind(rawValue: kind) else { return false }
-    return (try? credentialStore.load(for: k)) != nil
-  }
-
-  /// The stored API key, or "" when none (or when the credential is OAuth).
-  public func apiKey(_ kind: String) -> String {
-    guard let k = ProviderInfo.Kind(rawValue: kind), case .apiKey(let key)? = try? credentialStore.load(for: k) else { return "" }
-    return key
-  }
-
-  public func deleteCredential(_ kind: String) throws {
-    try readerFacing {
-      guard let k = ProviderInfo.Kind(rawValue: kind) else { throw AndroidBridgeError.unknownProviderKind(kind) }
-      try credentialStore.delete(for: k)
+    case .emptyAPIKey: return "empty API key"
+    case .onDeviceModelNotReady: return "on-device provider is a placeholder until A3c"
+    case .endpointNotLoopback(let host): return "endpoint override is not loopback: \(host)"
     }
   }
 }

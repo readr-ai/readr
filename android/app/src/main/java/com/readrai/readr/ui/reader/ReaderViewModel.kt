@@ -176,6 +176,13 @@ class ReaderViewModel(private val library: suspend () -> LibraryRepository, val 
             anchor = maxOf(0, position?.utf16Offset ?: 0)
             persisted = chapterIndex to anchor
             state = State.Ready(book.title, chapters, contents)
+            // Ask's index, off the critical path. Building it is seconds on a
+            // long book, and the reader is about to spend minutes on page one
+            // — which is a far better moment to pay for it than after they
+            // have typed a question and are watching a spinner. Fire and
+            // forget: a failure here costs nothing, because `ask` builds
+            // (and waits for) whatever is missing.
+            viewModelScope.launch { runCatching { repo.prepareAsk(bookId) } }
             loadChapter()
             reload(repo)
         } catch (e: Exception) {

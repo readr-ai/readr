@@ -70,8 +70,8 @@ sealed interface AnnotationTarget {
 /** Apple's minimum, and Material's: nothing here is smaller than a fingertip. */
 private val touchTarget = 44.dp
 
-/** The note button never grows past this; the row scrolls before it does. */
-private val noteButtonWidth = 72.dp
+/** Neither worded button grows past this; the row scrolls before it does. */
+private val labelledButtonWidth = 72.dp
 
 /**
  * One marker dot in a fingertip-sized target: the swatch, ringed when it is
@@ -129,6 +129,8 @@ fun AnnotationCapsule(
     onRemove: (() -> Unit)? = null,
     /** Opens the note editor: "Note" on a selection, "Edit note" on a highlight that has one. */
     onNote: ((AnnotationTarget) -> Unit)? = null,
+    /** Opens Ask on this passage — the ✦ of the iOS selection menu. */
+    onAsk: ((AnnotationTarget) -> Unit)? = null,
 ) {
     val editing = target as? AnnotationTarget.Existing
     Row(
@@ -137,8 +139,12 @@ fun AnnotationCapsule(
             .shadow(6.dp, RoundedCornerShape(50))
             .background(palette.elevated, RoundedCornerShape(50))
             .border(1.dp, palette.line, RoundedCornerShape(50))
-            // Seven controls at a large font scale outgrow a 360 dp screen;
-            // the row scrolls rather than pushing the last of them off it.
+            // Four colour dots, Ask, Note and Copy — plus ✕ on a highlight
+            // the reader tapped — are 7 to 8 fingertip-sized targets, and at
+            // 44 dp each they are past the 360 dp of the narrowest phone
+            // before the labels are counted. The row scrolls rather than
+            // pushing the last of them off the screen: everything stays
+            // reachable, and a test taps through `performScrollTo()`.
             .horizontalScroll(rememberScrollState())
             .padding(horizontal = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -164,6 +170,34 @@ fun AnnotationCapsule(
             ) { Text("✕", fontSize = 13.sp, color = palette.faint) }
         }
         Box(Modifier.width(1.dp).height(16.dp).background(palette.line))
+        if (onAsk != null) {
+            // Iris, and the ✦ leading: the one AI moment on the page, and the
+            // only control here that leaves the book behind for a moment.
+            Row(
+                Modifier
+                    .height(touchTarget)
+                    .widthIn(min = touchTarget, max = labelledButtonWidth)
+                    .clip(RoundedCornerShape(50))
+                    .clickable { onAsk(target) }
+                    .padding(horizontal = 6.dp)
+                    .testTag("annotation.ask")
+                    .semantics { contentDescription = "Ask the book" },
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(3.dp, Alignment.CenterHorizontally),
+            ) {
+                Text(Marginalia.aiGlyph, fontSize = 13.sp, color = palette.iris)
+                if (LocalDensity.current.fontScale <= 1.25f) {
+                    Text(
+                        "Ask",
+                        fontSize = 13.sp,
+                        color = palette.ink,
+                        maxLines = 1,
+                        softWrap = false,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+        }
         if (onNote != null) {
             // The note glyph carries the meaning and the word confirms it, so
             // the button stays a thumb wide however large the reader's type is
@@ -174,7 +208,7 @@ fun AnnotationCapsule(
             Row(
                 Modifier
                     .height(touchTarget)
-                    .widthIn(min = touchTarget, max = noteButtonWidth)
+                    .widthIn(min = touchTarget, max = labelledButtonWidth)
                     .clip(RoundedCornerShape(50))
                     .clickable { onNote(target) }
                     .padding(horizontal = 6.dp)

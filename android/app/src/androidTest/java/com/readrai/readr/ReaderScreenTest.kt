@@ -10,6 +10,7 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.SemanticsNodeInteraction
 import androidx.compose.ui.test.assertIsDisplayed
@@ -18,10 +19,12 @@ import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.longClick
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.swipeLeft
 import androidx.compose.ui.test.swipeUp
+import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.Dp
@@ -34,6 +37,7 @@ import com.readrai.readr.data.LibraryRepository
 import com.readrai.readr.data.kitJson
 import com.readrai.readr.kit.KeystoreSecretStore
 import com.readrai.readr.kit.Kit
+import com.readrai.readr.kit.NanoProbe
 import com.readrai.readr.ui.reader.ChapterStyling
 import com.readrai.readr.ui.reader.LayoutKey
 import com.readrai.readr.ui.reader.PageLayout
@@ -77,7 +81,7 @@ class ReaderScreenTest {
     @Before
     fun setUp() = runBlocking {
         root = File(context.cacheDir, "reader-test-${System.nanoTime()}").apply { mkdirs() }
-        kit = Kit.open(root, KeystoreSecretStore(context, alias = "readr.secrets.test"))
+        kit = Kit.open(root, KeystoreSecretStore(context, alias = "readr.secrets.test"), NanoProbe(context))
         repository = LibraryRepository(context, kit)
         settingsName = "reader-test-${System.nanoTime()}"
         settings = ReaderSettings(context, settingsName)
@@ -168,6 +172,46 @@ class ReaderScreenTest {
     /** A tap high on the page, where a highlight over the chapter's opening lies. */
     private fun tapMarked(fraction: Float) {
         compose.onNodeWithTag("reader.page").performTouchInput { click(Offset(width * fraction, height * 0.1f)) }
+    }
+
+    /**
+     * A point over the middle of a word on the drawn page — taken from the
+     * page's own text layout, which semantics hands out, rather than guessed
+     * as a fraction of the page's box.
+     *
+     * A fraction is a guess about pagination, and the press and the tap do
+     * not resolve a pixel the same way: a long press takes the word at the
+     * nearest CARET, a tap takes the glyph the finger is actually ON (so that
+     * a tap in a margin follows nothing). They disagree by one offset
+     * wherever the finger is in the right half of a glyph — which on the
+     * emulator CI uses, a 320×640 screen, is where the centre of this book's
+     * first page falls: the press there took the comma after "Light", and the
+     * tap that should have reopened it landed on the "t" before it. A
+     * one-character mark three pixels wide, and a test that came down to the
+     * screen it ran on.
+     *
+     * A letter with letters either side of it is a point both resolve inside
+     * the same word. It is chosen from the middle of the page and kept in the
+     * middle half of the line, clear of the page-turn zones the outer
+     * quarters of the surface are.
+     */
+    private fun wordPoint(): Offset {
+        val node = compose.onNodeWithTag("reader.page").fetchSemanticsNode()
+        val layouts = mutableListOf<TextLayoutResult>()
+        node.config[SemanticsActions.GetTextLayoutResult].action?.invoke(layouts)
+        val layout = layouts.firstOrNull() ?: error("the page has no text layout to aim at")
+        val text = layout.layoutInput.text.text
+        fun insideAWord(index: Int) = text[index].isLetter() &&
+            index > 0 && text[index - 1].isLetter() &&
+            index + 1 < text.length && text[index + 1].isLetter()
+        val width = node.size.width
+        val aimed = (text.indices.drop(text.length / 2) + text.indices).firstOrNull { index ->
+            insideAWord(index) && layout.getBoundingBox(index).center.x in width * 0.35f..width * 0.65f
+        } ?: error("no word in the middle of the page to aim at")
+        val box = layout.getBoundingBox(aimed)
+        // Into the glyph rather than on its edge, so the caret the press
+        // rounds to and the glyph the tap lands on are the same character.
+        return Offset(box.left + box.width * 0.4f, box.center.y)
     }
 
     private fun nodes(tag: String) = compose.onAllNodes(androidx.compose.ui.test.hasTestTag(tag)).fetchSemanticsNodes()
@@ -271,8 +315,11 @@ class ReaderScreenTest {
 
     @Test
     fun aLongPressHighlightsAWordAndTappingItAgainRemovesIt() {
-        open()
-        compose.onNodeWithTag("reader.page").performTouchInput { longClick(center) }
+        val model = open()
+        // The same point for both gestures, and a point the page's own layout
+        // says is inside a word — see `wordPoint`.
+        val word = wordPoint()
+        compose.onNodeWithTag("reader.page").performTouchInput { longClick(word) }
         awaitTag("annotation.capsule")
 
         compose.onNodeWithTag("annotation.color.green").performClick()
@@ -287,10 +334,20 @@ class ReaderScreenTest {
         awaitNoTag("annotation.capsule")
         assertEquals(HighlightColor.GREEN, settings.lastHighlightColor.value)
 
+        // The tap hit-tests against the highlights the SCREEN has, not the
+        // ones the store has: `addHighlight` writes through the bridge and the
+        // page is told a moment later, on the main thread. `highlights()`
+        // above reads the store, so it goes true first — and a tap sent in
+        // that window lands on text the page still thinks is unmarked, falls
+        // through to the surface behind, and toggles the chrome instead of
+        // opening the capsule. On a fast emulator the window is not there to
+        // land in; on CI's it is.
+        compose.waitUntil(10_000) { model.highlights.any { it.id == created.id } }
+
         // Tapping the highlighted word opens the capsule on it; ✕ takes the highlight away.
-        compose.onNodeWithTag("reader.page").performTouchInput { click(center) }
+        compose.onNodeWithTag("reader.page").performTouchInput { click(word) }
         awaitTag("annotation.remove")
-        compose.onNodeWithTag("annotation.remove").performClick()
+        compose.onNodeWithTag("annotation.remove").performScrollTo().performClick()
         compose.waitUntil(10_000) { highlights().isEmpty() }
         awaitNoTag("annotation.capsule")
     }
@@ -330,7 +387,7 @@ class ReaderScreenTest {
         open()
         compose.onNodeWithTag("reader.page").performTouchInput { longClick(center) }
         awaitTag("annotation.capsule")
-        compose.onNodeWithTag("annotation.copy").performClick()
+        compose.onNodeWithTag("annotation.copy").performScrollTo().performClick()
         awaitNoTag("annotation.capsule")
         val copied = clipboardText()
         assertTrue("something was copied", copied.isNotBlank())
@@ -352,7 +409,7 @@ class ReaderScreenTest {
         open()
         compose.onNodeWithTag("reader.page").performTouchInput { longClick(center) }
         awaitTag("annotation.capsule")
-        compose.onNodeWithTag("annotation.note").performClick()
+        compose.onNodeWithTag("annotation.note").performScrollTo().performClick()
 
         // "Note" highlights the passage first — a note has to live on a highlight.
         awaitTag("note.editor")
@@ -381,13 +438,31 @@ class ReaderScreenTest {
         open()
         compose.onNodeWithTag("reader.page").performTouchInput { longClick(center) }
         awaitTag("annotation.capsule")
-        compose.onNodeWithTag("annotation.note").performClick()
+        compose.onNodeWithTag("annotation.note").performScrollTo().performClick()
         awaitTag("note.editor")
         compose.waitUntil(10_000) { highlights().size == 1 }
 
         compose.onNodeWithTag("note.cancel").performClick()
         compose.waitUntil(10_000) { highlights().isEmpty() }
         awaitNoTag("note.editor")
+    }
+
+    /**
+     * 360 dp is the narrowest screen anyone reads Readr on, and the capsule's
+     * seven controls do not fit across it. Nothing is dropped: the row
+     * scrolls, and every control is still reachable and still tappable.
+     */
+    @Test
+    fun everyCapsuleControlIsReachableOnANarrowScreen() {
+        open(width = 360.dp)
+        compose.onNodeWithTag("reader.page").performTouchInput { longClick(center) }
+        awaitTag("annotation.capsule")
+        for (tag in listOf("annotation.color.yellow", "annotation.color.pink", "annotation.ask", "annotation.note")) {
+            compose.onNodeWithTag(tag).performScrollTo().assertIsDisplayed()
+        }
+        compose.onNodeWithTag("annotation.copy").performScrollTo().performClick()
+        awaitNoTag("annotation.capsule")
+        assertTrue("the last control in the row still copies", clipboardText().isNotBlank())
     }
 
     @Test

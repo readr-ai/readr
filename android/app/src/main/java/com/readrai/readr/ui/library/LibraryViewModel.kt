@@ -12,7 +12,15 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 
-class LibraryViewModel(private val app: ReadrApplication) : ViewModel() {
+/**
+ * The shelf. Takes the repository as an opener rather than the application
+ * itself, the way the reader's and the settings' view models do — the app's
+ * own library is one line away, and a test can hand it a scratch one instead
+ * of writing into the reader's.
+ */
+class LibraryViewModel(private val open: suspend () -> LibraryRepository) : ViewModel() {
+    constructor(app: ReadrApplication) : this({ app.library() })
+
     private val _books = MutableStateFlow<List<BookSummary>>(emptyList())
     val books: StateFlow<List<BookSummary>> = _books.asStateFlow()
     private val _busy = MutableStateFlow(true)
@@ -24,7 +32,7 @@ class LibraryViewModel(private val app: ReadrApplication) : ViewModel() {
     init {
         viewModelScope.launch {
             try {
-                val repo = app.library()  // opens the kit off the main thread on first use
+                val repo = open()  // opens the kit off the main thread on first use
                 repository = repo
                 launch { repo.books.collect { _books.value = it } }
                 repo.refresh()

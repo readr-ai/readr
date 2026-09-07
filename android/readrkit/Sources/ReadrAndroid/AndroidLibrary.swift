@@ -161,6 +161,12 @@ public final class AndroidLibrary {
   /// position save, a contents build and a layout all convert against the
   /// same table instead of re-walking the chapter each time.
   let offsetTables = OffsetTableCache()
+  /// Ask's retrieval indexes and the questions in flight (see `Ask.swift`).
+  let askIndexes = AskIndexes()
+  let askRuns = AskRunRegistry()
+  /// Per-book chapter lengths, shared by the context router and the position
+  /// caption so a scoped question never measures the book twice.
+  let readingLengths = ReadingLengthCache()
 
   private var booksDirectory: URL { root.appendingPathComponent("Books", isDirectory: true) }
   private var coversDirectory: URL { root.appendingPathComponent("Covers", isDirectory: true) }
@@ -370,6 +376,8 @@ public final class AndroidLibrary {
     try readerFacing {
       let book = try book(bookID)
       offsetTables.forget(book.id)
+      askIndexes.forget(book.id)
+      readingLengths.invalidate(bookID: book.id)
       try store.removeBook(id: book.id)
       if let name = book.sourceFilename {
         try? FileManager.default.removeItem(at: booksDirectory.appendingPathComponent(name))

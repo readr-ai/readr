@@ -5,7 +5,7 @@ import org.swift.swiftkit.core.SwiftArena
 
 /**
  * The process's handle on ReadrKit. Wraps the jextract-generated
- * `com.readrai.readr.kit.AndroidLibrary` / `AndroidCredentials` facades
+ * `com.readrai.readr.kit.AndroidLibrary` and `AndroidProviders` facades
  * (native Swift, cross-compiled from the repo's `Sources/ReadrKit`).
  *
  * Opening loads the Swift runtime and reads the whole library file, so call
@@ -15,14 +15,20 @@ import org.swift.swiftkit.core.SwiftArena
 class Kit private constructor(
     @Suppress("unused") private val arena: SwiftArena,
     val library: AndroidLibrary,
-    val credentials: AndroidCredentials,
+    val providers: AndroidProviders,
 ) {
     companion object {
-        fun open(root: File, secrets: SecretStore): Kit {
+        /**
+         * `probe` is what the phone can say about its own model — see
+         * [NanoProbe]. It is asked on every read of the active selection, so
+         * an answer that changes (AICore finishing a download) changes what
+         * Settings shows without anything being re-opened.
+         */
+        fun open(root: File, secrets: SecretStore, probe: OnDeviceProbe): Kit {
             val arena = SwiftArena.ofAuto()
             val library = AndroidLibrary.init(root.absolutePath, arena)
-            val credentials = AndroidCredentials.init(secrets, arena)
-            return Kit(arena, library, credentials)
+            val providers = AndroidProviders.init(secrets, root.absolutePath, probe, arena)
+            return Kit(arena, library, providers)
         }
     }
 }

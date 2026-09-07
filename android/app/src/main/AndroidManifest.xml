@@ -1,5 +1,19 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Only the provider the reader connected is ever called: an API-key
+         check and an Ask question go to that host and nowhere else. The
+         on-device path makes no request at all. -->
+    <uses-permission android:name="android.permission.INTERNET" />
+
+    <!-- The one package this app ever asks about: AICore, which is what the
+         phone's own model runs inside. Android 11+ hides the package list
+         from an app that has not declared what it needs to see, and without
+         this the on-device card would report "no AICore" on every phone that
+         has it. Nothing else is queried, and nothing is launched. -->
+    <queries>
+        <package android:name="com.google.android.aicore" />
+    </queries>
+
     <application
         android:name=".ReadrApplication"
         android:allowBackup="false"
