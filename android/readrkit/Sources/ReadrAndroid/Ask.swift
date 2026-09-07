@@ -36,7 +36,7 @@ public protocol AskSink {
 
 /// The sink as the streaming task needs it: `Sendable`, and each call made
 /// exactly where the event happened. `@unchecked` for the same reason
-/// `OnDeviceProbeBox` is — the object behind it is a Kotlin listener that
+/// `OnDeviceModelBox` is — the object behind it is a Kotlin listener that
 /// hops to the main thread itself.
 final class AskSinkBox: @unchecked Sendable {
   private let sink: any AskSink

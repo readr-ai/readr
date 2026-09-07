@@ -10,7 +10,11 @@ import PackageDescription
 //
 // Boundary rules learned in the 2026-09 bridging spike:
 // no type may share the module's name; Java-implemented protocol methods take
-// Int64, not Int; no optionals or throws on protocol methods.
+// Int64, not Int; no optionals or throws on protocol methods. And a callback
+// travelling the other way — a Swift object passed INTO a Java-implemented
+// method — must be a public class, not a protocol: jextract wraps a concrete
+// jextracted type, and a protocol existential has no address for the Java
+// wrapper to hold (`OnDeviceSink` in OnDevice.swift).
 let package = Package(
   name: "ReadrAndroid",
   platforms: [.macOS(.v15)],

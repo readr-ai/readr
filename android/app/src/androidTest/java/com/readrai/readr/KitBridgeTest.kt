@@ -23,7 +23,7 @@ import com.readrai.readr.kit.AndroidNarration
 import com.readrai.readr.kit.KeystoreSecretStore
 import com.readrai.readr.kit.KitLimits
 import com.readrai.readr.kit.Kit
-import com.readrai.readr.kit.NanoProbe
+import com.readrai.readr.kit.NanoModel
 import com.readrai.readr.kit.NarrationEvents
 import com.readrai.readr.ui.ask.AnswerBlock
 import com.readrai.readr.ui.ask.AnswerMarkdown
@@ -69,10 +69,10 @@ class KitBridgeTest {
     }
 
     /** A second handle on the same library, as a relaunch would open it. */
-    private fun reopen(probe: com.readrai.readr.kit.OnDeviceProbe = NanoProbe(context)): Kit = openKit(probe)
+    private fun reopen(model: com.readrai.readr.kit.OnDeviceModel = NanoModel(context)): Kit = openKit(model)
 
-    private fun openKit(probe: com.readrai.readr.kit.OnDeviceProbe = NanoProbe(context)): Kit =
-        Kit.open(root, KeystoreSecretStore(context, alias = TEST_ALIAS), probe)
+    private fun openKit(model: com.readrai.readr.kit.OnDeviceModel = NanoModel(context)): Kit =
+        Kit.open(root, KeystoreSecretStore(context, alias = TEST_ALIAS), model)
 
     private fun clearTestSecrets() {
         context.deleteSharedPreferences(KeystoreSecretStore.fileName(TEST_ALIAS))
@@ -785,7 +785,7 @@ class KitBridgeTest {
      */
     @Test
     fun aPhoneThatCanRunNanoStartsWithIt() {
-        val ready = reopen(FixedProbe.READY)
+        val ready = reopen(FakeOnDeviceModel())
         assertTrue(ready.providers.hasAnyProvider())
         val settings = providerSettings(from = ready)
         assertEquals("geminiNano", settings.selection?.kind)
@@ -793,7 +793,7 @@ class KitBridgeTest {
         assertTrue(settings.askUsesLine, settings.askUsesLine.startsWith("Ask uses Gemini Nano"))
         assertTrue(settings.vendors.first().kinds.single().isActive)
 
-        val cannot = reopen(FixedProbe.UNSUPPORTED)
+        val cannot = reopen(FakeOnDeviceModel(state = FakeOnDeviceModel.UNSUPPORTED))
         assertFalse("nothing is chosen, and nothing is assumed", cannot.providers.hasAnyProvider())
         val without = providerSettings(from = cannot)
         assertNull(without.selection)
@@ -1239,6 +1239,138 @@ class KitBridgeTest {
         val third = kitJson.decodeFromString<AskPosition>(kit.library.positionSummaryJSON(book.id, 2, 0))
         assertEquals(3, third.chapterNumber)
         assertTrue("progress grows with the place", third.percent > start.percent)
+    }
+
+    // MARK: The phone's own model (A3c)
+
+    /**
+     * The whole on-device path on a phone that can run the model: the kit's
+     * prompt plan, its one-word classifier hop, and cumulative snapshots
+     * turned into the deltas the sheet draws.
+     *
+     * What `SnapshotAnswerStream` promises is what is asserted here — a
+     * finished sentence arrives once, whole, and in the order it was written.
+     */
+    @Test
+    fun theOnDeviceModelStreamsSettledSentencesAndCompletesOnce() = runTest(timeout = TEST_TIMEOUT) {
+        val book = twoChapterBook()
+        val model = FakeOnDeviceModel()
+        val nano = reopen(model)
+        assertTrue("a ready phone answers with its own model", nano.providers.isActiveOnDevice())
+
+        val sink = RecordingAskSink()
+        val handle = nano.library.ask(
+            book.id, "What does Alice follow?", WHOLE_BOOK_SCOPE, "", "", nano.providers, sink,
+        )
+        assertTrue("an ask that started has a handle to cancel", handle != 0L)
+        assertTrue("no answer arrived: $sink", sink.await(RecordingAskSink.COMPLETED))
+
+        val streamed = sink.of(RecordingAskSink.TOKEN).joinToString("") { it.text }
+        assertEquals("the deltas add up to the answer", streamed, sink.of(RecordingAskSink.COMPLETED).single().text)
+        for (sentence in listOf(FakeOnDeviceModel.FIRST_SENTENCE, FakeOnDeviceModel.SECOND_SENTENCE)) {
+            assertEquals("\"$sentence\" arrives once in \"$streamed\"", 1, occurrences(streamed, sentence))
+        }
+        assertTrue(
+            "and in the order it was written: $streamed",
+            streamed.indexOf(FakeOnDeviceModel.FIRST_SENTENCE) <
+                streamed.indexOf(FakeOnDeviceModel.SECOND_SENTENCE),
+        )
+        assertEquals(1, sink.of(RecordingAskSink.COMPLETED).size)
+        assertTrue("a completed answer never also fails: $sink", sink.of(RecordingAskSink.FAILED).isEmpty())
+
+        // The grounding the sheet promises: a passage-retrieval tier, from a
+        // model that runs on the phone and knows nothing wider.
+        val routed = sink.lastTierJSON()
+        assertTrue("a routed tier is reported: $routed", routed.contains("\"tier\":\"retrieval\""))
+        val citations = kitJson.decodeFromString<List<AskCitation>>(
+            sink.of(RecordingAskSink.CITATIONS).last().text
+        )
+        assertTrue("the retrieval tier cites its passages", citations.isNotEmpty())
+
+        // The kit's own recipe ran: the classifier's short call went through
+        // the same model, and the answer was capped at a few sentences.
+        assertTrue(
+            "the classifier asked first: ${model.instructions}",
+            model.instructions.any { it.startsWith(FakeOnDeviceModel.CLASSIFIER_MARKER) },
+        )
+        assertTrue("an answer is a paragraph or two: ${model.caps}", model.caps.all { it in 1L..350L })
+    }
+
+    /** Cancelling reaches the generation itself, and says nothing more. */
+    @Test
+    fun cancellingAnOnDeviceAskStopsTheGeneration() = runTest(timeout = TEST_TIMEOUT) {
+        val book = twoChapterBook()
+        val model = FakeOnDeviceModel(answer = FakeOnDeviceModel.LONG_ANSWER, gapMillis = 250)
+        val nano = reopen(model)
+        val sink = RecordingAskSink()
+        val handle = nano.library.ask(
+            book.id, "What happens to Alice?", WHOLE_BOOK_SCOPE, "", "", nano.providers, sink,
+        )
+        assertTrue("nothing streamed to cancel: $sink", sink.await(RecordingAskSink.TOKEN))
+        nano.library.cancelAsk(handle)
+
+        // Real time: `runTest`'s virtual clock would skip straight past the
+        // words that must never arrive.
+        withContext(Dispatchers.Default) { delay(4.seconds) }
+        assertTrue("the model was still writing when it was stopped", model.stoppedMidAnswer.get())
+        assertTrue("a cancelled ask must not complete: $sink", sink.of(RecordingAskSink.COMPLETED).isEmpty())
+        assertTrue("a cancelled ask is not a failure: $sink", sink.of(RecordingAskSink.FAILED).isEmpty())
+    }
+
+    /**
+     * A small model that falls into a loop is cut before its first repeat
+     * reaches the reader — the kit's `RepetitionGuard`, reached through the
+     * facade rather than reimplemented on this side.
+     */
+    @Test
+    fun aLoopingOnDeviceAnswerIsCutBeforeItRepeats() = runTest(timeout = TEST_TIMEOUT) {
+        val book = twoChapterBook()
+        val nano = reopen(FakeOnDeviceModel(answer = FakeOnDeviceModel.LOOPING_ANSWER))
+        val sink = RecordingAskSink()
+        nano.library.ask(book.id, "What does Alice follow?", WHOLE_BOOK_SCOPE, "", "", nano.providers, sink)
+        assertTrue("no answer arrived: $sink", sink.await(RecordingAskSink.COMPLETED))
+
+        val answer = sink.of(RecordingAskSink.COMPLETED).single().text
+        assertEquals("the reader sees the sentence once: \"$answer\"", 1, occurrences(answer, FakeOnDeviceModel.FIRST_SENTENCE))
+        assertTrue("a cut answer is still an answer, not a failure: $sink", sink.of(RecordingAskSink.FAILED).isEmpty())
+    }
+
+    /**
+     * A question the phone's window cannot hold says so in one sentence —
+     * `SmallModelPrompt.DoesNotFit`, in the reader's words.
+     */
+    @Test
+    fun aQuestionTooLongForThePhoneSaysSo() = runTest(timeout = TEST_TIMEOUT) {
+        val book = twoChapterBook()
+        val nano = reopen(FakeOnDeviceModel())
+        val sink = RecordingAskSink()
+        nano.library.ask(
+            book.id,
+            "Why ".repeat(2_000) + "does Alice follow the White Rabbit?",
+            WHOLE_BOOK_SCOPE, "", "", nano.providers, sink,
+        )
+        assertTrue("no failure arrived: $sink", sink.await(RecordingAskSink.FAILED))
+
+        val failure = sink.of(RecordingAskSink.FAILED).single()
+        assertEquals(
+            "This question needed more of the book than Gemini Nano can hold at once.",
+            failure.text,
+        )
+        assertTrue("a failure carries a next step", failure.recovery.isNotBlank())
+        assertTrue("and never also completes: $sink", sink.of(RecordingAskSink.COMPLETED).isEmpty())
+        for (leak in listOf("DoesNotFit", "ReadrKit.", "NanoError", "Optional(")) {
+            assertFalse("no Swift internals in \"${failure.text}\"", failure.text.contains(leak))
+        }
+    }
+
+    private fun occurrences(text: String, part: String): Int {
+        var count = 0
+        var index = text.indexOf(part)
+        while (index >= 0) {
+            count++
+            index = text.indexOf(part, index + part.length)
+        }
+        return count
     }
 
     @Test

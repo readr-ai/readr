@@ -35,7 +35,7 @@ import com.readrai.readr.data.LibraryRepository
 import com.readrai.readr.data.kitJson
 import com.readrai.readr.kit.KeystoreSecretStore
 import com.readrai.readr.kit.Kit
-import com.readrai.readr.kit.NanoProbe
+import com.readrai.readr.kit.NanoModel
 import com.readrai.readr.ui.reader.ChapterStyling
 import com.readrai.readr.ui.reader.LayoutKey
 import com.readrai.readr.ui.reader.PageLayout
@@ -79,7 +79,7 @@ class ReaderScreenTest {
     @Before
     fun setUp() = runBlocking {
         root = File(context.cacheDir, "reader-test-${System.nanoTime()}").apply { mkdirs() }
-        kit = Kit.open(root, KeystoreSecretStore(context, alias = "readr.secrets.test"), NanoProbe(context))
+        kit = Kit.open(root, KeystoreSecretStore(context, alias = "readr.secrets.test"), NanoModel(context))
         repository = LibraryRepository(context, kit)
         settingsName = "reader-test-${System.nanoTime()}"
         settings = ReaderSettings(context, settingsName)

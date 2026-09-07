@@ -21,7 +21,7 @@ import com.readrai.readr.data.LibraryRepository
 import com.readrai.readr.data.kitJson
 import com.readrai.readr.kit.KeystoreSecretStore
 import com.readrai.readr.kit.Kit
-import com.readrai.readr.kit.NanoProbe
+import com.readrai.readr.kit.NanoModel
 import com.readrai.readr.ui.ask.AskConversation
 import com.readrai.readr.ui.ask.AskViewModel
 import com.readrai.readr.ui.listen.NarrationModel
@@ -80,7 +80,7 @@ class ListenCardTest {
         // window out from under the test.
         grantNotifications()
         root = File(context.cacheDir, "listen-test-${System.nanoTime()}").apply { mkdirs() }
-        kit = Kit.open(root, KeystoreSecretStore(context, alias = "readr.secrets.test"), NanoProbe(context))
+        kit = Kit.open(root, KeystoreSecretStore(context, alias = "readr.secrets.test"), NanoModel(context))
         repository = LibraryRepository(context, kit)
         settingsName = "listen-test-${System.nanoTime()}"
         settings = ReaderSettings(context, settingsName)

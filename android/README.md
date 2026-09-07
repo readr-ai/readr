@@ -212,23 +212,64 @@ no phone runs), and Apple's system model is not a thing an Android phone has.
 There is no browser sign-in yet, so the card badges and connect hints say
 "API key" rather than repeating the kit's "sign in or key".
 
-Gemini Nano's readiness is Kotlin's to answer: `kit/NanoProbe` implements the
-facade's `OnDeviceProbe` and reports one bare token — `ready`, `unavailable`
-or `unsupported` (a bridged protocol method may not throw or return an
-optional). The *sentence* a reader sees is the kit's
-(`ProviderManager.ProviderError.notConfigured(.geminiNano)`), supplied by the
-facade, so Kotlin writes no copy. It is asked on every read of the selection —
-cached for five seconds, since one settings payload asks several times — so
-the phone's own model is the default *while* the phone can run it and the
-reader is back to "nothing chosen" the moment it cannot.
+### On this phone: Gemini Nano
 
-What the probe can see is the system: Android 14+ and an installed, non-stub
-`com.google.android.aicore` (declared in the manifest's `<queries>`, or
-Android 11+ hides the package). It still answers `unsupported` until A3c
-brings ML Kit's own check and the model: this build cannot drive Nano, and a
-card that could be made active would point Ask at a provider that can only
-refuse. A card is offerable at all only when a check came back *ready* (an
-on-device one) or a key is stored (a cloud one).
+The phone's own model is Kotlin's to drive, because AICore is an Android API.
+`kit/NanoModel` implements the facade's `OnDeviceModel` — one object for both
+questions the facade has: whether this phone can run the model, and what it
+says when asked something.
+
+**Readiness** is one bare token, never a sentence: `ready`, `unavailable` (with
+an optional reason code after a colon — `unavailable:downloading`) or
+`unsupported` (a bridged protocol method may not throw or return an optional).
+The *sentence* a reader sees is written on the Swift side — the kit's
+`ProviderManager.ProviderError.notConfigured(.geminiNano)` for a phone that
+cannot run it, `OnDevice.swift`'s own line for one still downloading — so
+Kotlin writes no reader-facing copy. It is asked on every read of the
+selection, cached for five seconds since one settings payload asks several
+times, so the phone's own model is the default *while* the phone can run it and
+the reader is back to "nothing chosen" the moment it cannot.
+
+**Eligibility**, plainly: Android 14 or newer; a flagship whose
+`com.google.android.aicore` is installed and is not the do-nothing stub
+(declared in the manifest's `<queries>`, or Android 11+ hides the package);
+ML Kit's own `GenerativeModel.checkStatus()` answering `AVAILABLE`; and Readr
+on screen — AICore refuses a backgrounded app, so a generation started from the
+background fails with a sentence rather than hanging for the timeout. Anything
+else is `unsupported`, and a card is offerable at all only when a check came
+back *ready* (an on-device one) or a key is stored (a cloud one). Every ML Kit
+call is wrapped: a check that cannot be made is not a model that can answer.
+Emulators and Firebase Test Lab devices all ship the stub, which is why nothing
+in CI ever generates for real.
+
+**Privacy**: nothing leaves the phone. AICore runs the model locally, there is
+no key and no account, and the passages a question carries — the book the
+reader is holding — are never sent anywhere. The app's `INTERNET` permission is
+for the cloud provider a reader connected, and the on-device path makes no
+request at all.
+
+**Answering** is the kit's recipe and Kotlin's model call, exactly the split
+the Apple app's `FoundationModelsProvider` makes. `NanoProvider` (Swift) runs
+`SmallModelPrompt.plan` — the tier, the one-word off-topic classifier hop, the
+answer-style rules, and the window arithmetic against the catalogue's budget —
+then generates through `NanoModel` and feeds the cumulative snapshots into
+`SnapshotAnswerStream`, which is what decides the reader sees settled sentences
+only, no repeats (`RepetitionGuard`), and nothing pasted out of the passages.
+Snapshots are cumulative on the wire because that is what the kit reads;
+ML Kit streams the new text, so `NanoModel` accumulates before it calls back.
+Instructions ride in ML Kit's system slot where the model has one
+(`isSystemPromptAvailable`) and are folded into the prompt where it does not.
+Cancelling the ask cancels the generation, and a cancelled generation reports
+neither ending.
+
+`OnDeviceSink` is the one callback that travels Swift → Kotlin, so unlike
+`SecretStore`, `AskSink` and `OnDeviceModel` it is a **class** rather than a
+protocol: jextract can only carry a concrete jextracted type into a
+Java-implemented method. Failures come back through it as reason codes
+(`background`, `busy`, `declined`, `tooLong`, `unavailable`) that the facade
+turns into sentences.
+
+### Keys, and what choosing a provider means
 
 Saving a key does not choose a provider: `AndroidProviders.connect` runs the
 kit's own rule — `requestActivation` then `validateAndActivate` — so an
