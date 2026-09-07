@@ -26,11 +26,13 @@ class Pagination(val pages: List<Page>) {
         for (i in pages.indices.reversed()) { total += pages[i].wordCount; sums[i] = total }
     }
 
+    private val rangeStarts = IntArray(pages.size) { pages[it].rangeStart }
+
     /** Index of the page containing `offset`; clamps out-of-range offsets to the first or last page. */
     fun pageIndex(containing: Int): Int {
         if (pages.isEmpty()) return 0
-        pages.forEachIndexed { index, page -> if (containing in page) return index }
-        return if (containing < pages[0].rangeStart) 0 else pages.size - 1
+        val i = rangeStarts.binarySearch(containing)
+        return (if (i >= 0) i else (-i - 1) - 1).coerceIn(0, pages.size - 1)
     }
 }
 
@@ -47,7 +49,8 @@ object LayoutPaginator {
 
     private class Line(val start: Int, val end: Int, val height: Float)
 
-    fun paginate(text: AnnotatedString, style: TextStyle, widthPx: Int, heightPx: Int, measurer: TextMeasurer): List<Page> {
+    fun paginate(chapter: StyledChapter, style: TextStyle, widthPx: Int, heightPx: Int, measurer: TextMeasurer): List<Page> {
+        val text = chapter.text
         val length = text.length
         if (length == 0 || widthPx <= 8 || heightPx <= 0) return emptyList()
         val raw = text.text
@@ -57,8 +60,10 @@ object LayoutPaginator {
         while (chunkStart < length) {
             var chunkEnd = minOf(chunkStart + CHUNK, length)
             if (chunkEnd < length) {
-                val newline = raw.lastIndexOf('\n', chunkEnd - 1)
-                if (newline >= chunkStart + CHUNK / 2) chunkEnd = newline + 1
+                // Cut at a paragraph start so no line is measured across a seam
+                // (the styled string has no newlines; the starts are the source).
+                val boundary = chapter.paragraphStart(atOrBefore = chunkEnd)
+                if (boundary >= chunkStart + CHUNK / 2) chunkEnd = boundary
             }
             val result = measurer.measure(
                 text = text.subSequence(chunkStart, chunkEnd),
@@ -70,9 +75,7 @@ object LayoutPaginator {
             for (i in 0 until result.lineCount) {
                 val start = chunkStart + result.getLineStart(i)
                 val end = chunkStart + result.getLineEnd(i, visibleEnd = false)
-                // Android's layout ends a chunk that closes with a newline on a
-                // phantom empty line; nothing is drawn there.
-                if (start == end && end == chunkEnd) continue
+                if (start == end && end == chunkEnd) continue // a phantom empty last line
                 lines.add(Line(start, end, result.getLineBottom(i) - result.getLineTop(i)))
             }
             chunkStart = chunkEnd

@@ -87,9 +87,11 @@ class ReaderScreenTest {
     private fun SemanticsNodeInteraction.text(): String =
         fetchSemanticsNode().config[SemanticsProperties.Text].joinToString { it.text }
 
-    private fun label(): String = compose.onNodeWithTag("reader.pageLabel").text()
-    private fun pageCount(): Int = Regex("Page \\d+ of (\\d+)").find(label())!!.groupValues[1].toInt()
-    private fun pageNumber(): Int = Regex("Page (\\d+) of").find(label())!!.groupValues[1].toInt()
+    /** The page label, or "" while a chapter is loading and the label is not in the tree. */
+    private fun label(): String = compose.onAllNodes(androidx.compose.ui.test.hasTestTag("reader.pageLabel")).fetchSemanticsNodes()
+        .firstOrNull()?.config?.get(SemanticsProperties.Text)?.joinToString { it.text } ?: ""
+    private fun pageCount(): Int = Regex("Page \\d+ of (\\d+)").find(label())?.groupValues?.get(1)?.toInt() ?: -1
+    private fun pageNumber(): Int = Regex("Page (\\d+) of").find(label())?.groupValues?.get(1)?.toInt() ?: -1
     private fun kicker(): String = compose.onNodeWithTag("reader.kicker").fetchSemanticsNode().config[SemanticsProperties.ContentDescription].first()
 
     private fun tapPage(fraction: Float) {
@@ -129,15 +131,16 @@ class ReaderScreenTest {
         val pages = pageCount()
         repeat(pages) { n ->
             tapPage(0.9f)
-            compose.waitUntil(5_000) { if (n < pages - 1) pageNumber() == n + 2 else kicker() == "Chapter 2" }
+            compose.waitUntil(10_000) { if (n < pages - 1) pageNumber() == n + 2 else kicker() == "Chapter 2" && pageNumber() == 1 }
         }
         assertEquals("Chapter 2", kicker())
-        assertEquals(1, pageNumber())
-        // And back over the same boundary lands on the previous chapter's last page.
+        // And back over the same boundary lands on the previous chapter's last page, and that is what is saved.
         tapPage(0.1f)
-        compose.waitUntil(5_000) { kicker() == "Chapter 1" }
-        compose.waitUntil(5_000) { pageNumber() == pages }
-        assertEquals(runBlocking { repository.position(book.id)!!.chapterIndex }, 0)
+        compose.waitUntil(10_000) { kicker() == "Chapter 1" && pageNumber() == pages }
+        compose.waitUntil(5_000) { runBlocking { repository.position(book.id) }?.let { it.chapterIndex == 0 && it.utf16Offset > 0 } == true }
+        val saved = runBlocking { repository.position(book.id)!! }
+        val chapterLength = runBlocking { repository.chapterText(book.id, 0) }.length
+        assertTrue("the saved place is inside the chapter, not past its end", saved.utf16Offset < chapterLength)
     }
 
     @Test
@@ -146,9 +149,17 @@ class ReaderScreenTest {
         compose.onNodeWithTag("reader.toc").performClick()
         compose.waitUntil(5_000) { compose.onAllNodes(androidx.compose.ui.test.hasTestTag("contents.row.2")).fetchSemanticsNodes().isNotEmpty() }
         compose.onNodeWithTag("contents.row.2").performClick()
-        compose.waitUntil(10_000) { kicker() == "Chapter 3" }
-        assertEquals(1, pageNumber())
+        compose.waitUntil(10_000) { kicker() == "Chapter 3" && pageNumber() == 1 }
         compose.waitUntil(5_000) { runBlocking { repository.position(book.id)?.chapterIndex } == 2 }
+    }
+
+    @Test
+    fun openingAndLeavingWritesNothing() {
+        val before = runBlocking { repository.position(book.id) }
+        val model = open()
+        model.flush()
+        Thread.sleep(500)
+        assertEquals(before, runBlocking { repository.position(book.id) })
     }
 
     @Test

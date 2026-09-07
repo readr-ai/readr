@@ -38,7 +38,8 @@ fun ContentsSheet(contents: Contents, currentChapter: Int, onPick: (ContentsRow)
     val palette = LocalReadingPalette.current
     val currentRow = currentRow(contents, currentChapter)
     val listState = rememberLazyListState()
-    LaunchedEffect(currentRow) { if (currentRow > 0) listState.scrollToItem(maxOf(0, currentRow)) }
+    // Item 0 is the section header, so row `id` sits at item `id + 1`.
+    LaunchedEffect(currentRow) { if (currentRow > 0) listState.scrollToItem(currentRow + 1) }
 
     ModalBottomSheet(onDismissRequest = onDismiss, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = false), containerColor = palette.elevated) {
         LazyColumn(state = listState, modifier = Modifier.fillMaxWidth().padding(bottom = 24.dp).testTag("contents.list")) {

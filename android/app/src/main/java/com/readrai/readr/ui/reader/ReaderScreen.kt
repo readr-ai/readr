@@ -156,7 +156,8 @@ private fun PageSurface(
         val compact = maxWidth < 600.dp
         val insets = if (compact) compactInsets else regularInsets
         val labelBand = if (compact) 24.dp else 28.dp
-        val textStyle = remember(appearance, palette) { ChapterStyling.pageTextStyle(appearance, palette) }
+        val layoutKey = LayoutKey(appearance)
+        val textStyle = remember(layoutKey, palette) { ChapterStyling.pageTextStyle(layoutKey, palette) }
 
         // The column is at most 33 em wide (65–70 characters a line), centred.
         val geometry = with(density) {
@@ -172,15 +173,18 @@ private fun PageSurface(
         }
         val (textWidthPx, pageHeightPx, columnWidth) = geometry
 
-        val pageSet by produceState<PageSet?>(initialValue = null, chapter, appearance, textWidthPx, pageHeightPx) {
+        val pageKey = chapter?.let { PageKey(it.index, textWidthPx, pageHeightPx, density.density, density.fontScale, layoutKey) }
+        val pageSet by produceState<PageSet?>(initialValue = null, chapter, pageKey) {
             val loaded = chapter
-            if (loaded == null) { value = null; return@produceState }
-            val key = "${loaded.index}|${textWidthPx}x$pageHeightPx|$appearance"
+            val key = pageKey
+            if (loaded == null || key == null) { value = null; return@produceState }
+            // Measurement ignores colour, so the theme is not part of the key.
+            val measureStyle = textStyle
             value = withContext(Dispatchers.Default) {
                 model.pageSet(key) {
-                    val styled = ChapterStyling.styled(loaded.text, loaded.layout.spans, appearance, palette)
+                    val styled = ChapterStyling.styled(loaded.text, loaded.layout.spans, layoutKey)
                     val measurer = TextMeasurer(fontFamilyResolver, density, layoutDirection, cacheSize = 0)
-                    PageSet(styled, Pagination(LayoutPaginator.paginate(styled, textStyle, textWidthPx, pageHeightPx, measurer)))
+                    PageSet(styled, Pagination(LayoutPaginator.paginate(styled, measureStyle, textWidthPx, pageHeightPx, measurer)))
                 }
             }
         }
@@ -246,8 +250,9 @@ private fun PageSurface(
                         set == null -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator(color = palette.muted) }
                         pages.isNotEmpty() -> {
                             val page = pages[pageIndex]
+                            val content = remember(set, pageIndex, palette) { ChapterStyling.pageText(set.styled, page.textStart, page.textEnd, palette) }
                             Text(
-                                text = ChapterStyling.pageText(set.styled, page.textStart, page.textEnd),
+                                text = content,
                                 style = textStyle,
                                 softWrap = true,
                                 overflow = TextOverflow.Clip,

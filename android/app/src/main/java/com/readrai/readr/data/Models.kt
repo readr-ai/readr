@@ -22,18 +22,13 @@ data class BookSummary(
 data class ChapterSummary(val index: Int, val title: String, val characterCount: Int, val isLinear: Boolean = true)
 
 /**
- * ReadrKit's `ReadingPosition` plus `utf16Offset`, the same place in the
- * coordinates Kotlin and Compose use. Only `utf16Offset` is meaningful on
- * this side of the bridge; `characterOffset` is the kit's count and is kept
- * for diagnostics.
+ * The saved place as the facade reports it: `utf16Offset` is the coordinate
+ * Kotlin and Compose use and is required, so a producer that forgets the
+ * conversion fails to decode rather than restoring the wrong page;
+ * `characterOffset` is the kit's count, kept for diagnostics and tests.
  */
 @Serializable
-data class ReadingPosition(
-    val chapterIndex: Int,
-    val characterOffset: Int = 0,
-    val pdfPageIndex: Int? = null,
-    val utf16Offset: Int = characterOffset,
-)
+data class ReadingPosition(val chapterIndex: Int, val utf16Offset: Int, val characterOffset: Int = utf16Offset)
 
 /** Mirrors ReadrAndroid's `LayoutSpan`: a format run with UTF-16 offsets. */
 @Serializable
@@ -52,8 +47,6 @@ data class LayoutSpan(
 @Serializable
 data class ChapterLayout(
     val index: Int,
-    val title: String,
-    val isLinear: Boolean = true,
     val utf16Length: Int,
     val spans: List<LayoutSpan> = emptyList(),
     val anchors: Map<String, Int> = emptyMap(),

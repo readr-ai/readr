@@ -1,23 +1,23 @@
 package com.readrai.readr.ui.reader
 
-import androidx.compose.ui.text.AnnotatedString
+/** A chapter styled for one layout, and its pages for one geometry. */
+class PageSet(val styled: StyledChapter, val pagination: Pagination)
 
-/** A chapter styled for one appearance, and its pages for one geometry. */
-class PageSet(val styled: AnnotatedString, val pagination: Pagination)
+/** What a pagination depends on. Density and font scale matter because the ViewModel outlives a configuration change. */
+data class PageKey(val chapterIndex: Int, val widthPx: Int, val heightPx: Int, val density: Float, val fontScale: Float, val layout: LayoutKey)
 
 /**
- * The last few paginations, keyed by chapter + geometry + appearance. More
- * than one slot on purpose: toggling the chrome changes the surface height,
- * and a single slot would re-paginate on every tap.
+ * The last few paginations, so an appearance change and back, or a rotation
+ * and back, does not measure the chapter again.
  */
 class PaginationCache(private val capacity: Int = 4) {
-    private val entries = object : LinkedHashMap<String, PageSet>(capacity, 0.75f, true) {
-        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, PageSet>?): Boolean = size > capacity
+    private val entries = object : LinkedHashMap<PageKey, PageSet>(capacity, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<PageKey, PageSet>?): Boolean = size > capacity
     }
 
     @Synchronized
-    fun get(key: String): PageSet? = entries[key]
+    fun get(key: PageKey): PageSet? = entries[key]
 
     @Synchronized
-    fun put(key: String, value: PageSet) { entries[key] = value }
+    fun put(key: PageKey, value: PageSet) { entries[key] = value }
 }

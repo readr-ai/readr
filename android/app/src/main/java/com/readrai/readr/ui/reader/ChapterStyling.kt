@@ -19,6 +19,30 @@ import androidx.compose.ui.unit.sp
 import com.readrai.readr.data.LayoutSpan
 import com.readrai.readr.ui.theme.ReadingPalette
 
+/** The appearance fields that change layout. Colour is applied at draw time and never re-paginates. */
+data class LayoutKey(val fontSize: Int, val font: ReaderFont, val spacing: LineSpacing, val justified: Boolean) {
+    val lineHeightMultiplier: Float get() = 1.2f + spacing.extraLeading
+
+    constructor(appearance: ReaderAppearance) : this(appearance.fontSize, appearance.font, appearance.spacing, appearance.justified)
+}
+
+/**
+ * A chapter styled for one [LayoutKey]. `paragraphStarts` are the offsets
+ * where the kit's paragraphs begin (ascending, starting at 0) — the one
+ * source of paragraph boundaries for chunking, page slicing and indents,
+ * since the string itself no longer carries newlines (see [ChapterStyling]).
+ */
+class StyledChapter(val text: AnnotatedString, val paragraphStarts: IntArray) {
+    /** Whether `offset` begins a paragraph. */
+    fun startsParagraph(offset: Int): Boolean = paragraphStarts.binarySearch(offset) >= 0
+
+    /** The last paragraph start at or before `offset`. */
+    fun paragraphStart(atOrBefore: Int): Int {
+        val i = paragraphStarts.binarySearch(atOrBefore)
+        return if (i >= 0) paragraphStarts[i] else paragraphStarts[(-i - 1) - 1]
+    }
+}
+
 /**
  * Turns a chapter's text and format spans into what the page draws.
  *
@@ -26,11 +50,13 @@ import com.readrai.readr.ui.theme.ReadingPalette
  * Compose paragraph with its own `ParagraphStyle` — that is where first-line
  * indents, heading line heights and alignment live. Compose lays each
  * paragraph range out as its own text, verbatim, and Android's layout turns
- * a trailing newline into an extra empty line, so the newline that closes a
- * styled paragraph is drawn as a space. The string keeps its length: every
- * UTF-16 offset still means what it means in the kit's text.
+ * a trailing newline into an extra empty line, so every newline is drawn as
+ * a space. The string keeps its length: every UTF-16 offset still means
+ * what it means in the kit's text.
  */
 object ChapterStyling {
+    private const val LINK_TAG = "link"
+
     /** Heading scale by level, as on iOS (`Theme.swift`): h1 1.6, h2 1.35, h3 1.2, else 1.05. */
     fun headingScale(level: Int?): Float = when (level) {
         1 -> 1.6f
@@ -44,13 +70,13 @@ object ChapterStyling {
      * breaking makes a line's break depend only on where the line starts, so
      * a page rendered from a line boundary breaks exactly as it measured.
      */
-    fun pageTextStyle(appearance: ReaderAppearance, palette: ReadingPalette): TextStyle = TextStyle(
-        fontFamily = appearance.font.family,
-        fontSize = appearance.fontSize.sp,
-        lineHeight = (appearance.fontSize * appearance.lineHeightMultiplier).sp,
+    fun pageTextStyle(layout: LayoutKey, palette: ReadingPalette): TextStyle = TextStyle(
+        fontFamily = layout.font.family,
+        fontSize = layout.fontSize.sp,
+        lineHeight = (layout.fontSize * layout.lineHeightMultiplier).sp,
         color = palette.ink,
-        textAlign = if (appearance.justified) TextAlign.Justify else TextAlign.Start,
-        hyphens = if (appearance.justified) Hyphens.Auto else Hyphens.None,
+        textAlign = if (layout.justified) TextAlign.Justify else TextAlign.Start,
+        hyphens = if (layout.justified) Hyphens.Auto else Hyphens.None,
         lineBreak = LineBreak.Simple,
         lineHeightStyle = LineHeightStyle(LineHeightStyle.Alignment.Center, LineHeightStyle.Trim.None),
         platformStyle = PlatformTextStyle(includeFontPadding = false),
@@ -62,33 +88,26 @@ object ChapterStyling {
         var align: TextAlign? = null
     }
 
-    fun styled(text: String, spans: List<LayoutSpan>, appearance: ReaderAppearance, palette: ReadingPalette): AnnotatedString {
+    fun styled(text: String, spans: List<LayoutSpan>, layout: LayoutKey): StyledChapter {
         val length = text.length
-        if (length == 0) return AnnotatedString("")
-        val chars = text.toCharArray()
-        val fontSize = appearance.fontSize
-        val lineHeight = fontSize * appearance.lineHeightMultiplier
+        val starts = ArrayList<Int>().apply {
+            add(0)
+            var i = text.indexOf('\n')
+            while (i >= 0) { add(i + 1); i = text.indexOf('\n', i + 1) }
+        }
+        val paragraphStarts = starts.toIntArray()
+        if (length == 0) return StyledChapter(AnnotatedString(""), paragraphStarts)
+        val fontSize = layout.fontSize
+        val lineHeight = fontSize * layout.lineHeightMultiplier
 
-        // Paragraph starts, in order, and the attributes spans give them.
-        val starts = ArrayList<Int>()
-        run {
-            var p = 0
-            while (p <= length) {
-                starts.add(p)
-                val nl = text.indexOf('\n', p)
-                if (nl < 0) break
-                p = nl + 1
-            }
+        // Paragraph i covers [starts[i], starts[i + 1]) including its newline.
+        fun paragraphIndex(offset: Int): Int {
+            val i = paragraphStarts.binarySearch(offset)
+            return if (i >= 0) i else (-i - 1) - 1
         }
         val attributes = HashMap<Int, ParagraphAttributes>()
-        fun paragraphStart(offset: Int): Int = if (offset <= 0) 0 else text.lastIndexOf('\n', offset - 1) + 1
-        fun paragraphEnd(start: Int): Int = text.indexOf('\n', start).let { if (it < 0) length else it }
         fun forEachParagraph(start: Int, end: Int, block: (ParagraphAttributes) -> Unit) {
-            var p = paragraphStart(start)
-            while (p < end) {
-                block(attributes.getOrPut(p) { ParagraphAttributes() })
-                p = paragraphEnd(p) + 1
-            }
+            for (p in paragraphIndex(start)..paragraphIndex(end - 1)) block(attributes.getOrPut(p) { ParagraphAttributes() })
         }
 
         val clamped = spans.mapNotNull { span ->
@@ -112,29 +131,27 @@ object ChapterStyling {
             }
         }
 
-        // The newline closing each paragraph is drawn as a space (see above).
-        for (start in starts) {
-            val end = paragraphEnd(start)
-            if (end < length) chars[end] = ' '
-        }
-
-        return buildAnnotatedString {
-            append(String(chars))
-            for (start in starts) {
-                val end = minOf(paragraphEnd(start) + 1, length)
+        val bodyAlign = if (layout.justified) TextAlign.Justify else TextAlign.Start
+        val annotated = buildAnnotatedString {
+            append(text.replace('\n', ' '))
+            for (p in paragraphStarts.indices) {
+                val start = paragraphStarts[p]
+                val end = if (p + 1 < paragraphStarts.size) paragraphStarts[p + 1] else length
                 if (start >= end) continue
-                val attrs = attributes[start]
+                val attrs = attributes[p]
                 val heading = attrs?.headingLevel
-                val style = ParagraphStyle(
-                    textAlign = attrs?.align ?: if (heading != null) TextAlign.Start else if (appearance.justified) TextAlign.Justify else TextAlign.Start,
-                    textIndent = when {
-                        heading != null || attrs?.align == TextAlign.Center -> TextIndent.None
-                        attrs?.quote == true -> TextIndent(firstLine = 1.5.em, restLine = 1.5.em)
-                        else -> TextIndent(firstLine = 1.5.em)
-                    },
-                    lineHeight = if (heading != null) (fontSize * headingScale(heading) * appearance.lineHeightMultiplier).sp else lineHeight.sp,
+                addStyle(
+                    ParagraphStyle(
+                        textAlign = attrs?.align ?: if (heading != null) TextAlign.Start else bodyAlign,
+                        textIndent = when {
+                            heading != null || attrs?.align == TextAlign.Center -> TextIndent.None
+                            attrs?.quote == true -> TextIndent(firstLine = 1.5.em, restLine = 1.5.em)
+                            else -> TextIndent(firstLine = 1.5.em)
+                        },
+                        lineHeight = if (heading != null) (fontSize * headingScale(heading) * layout.lineHeightMultiplier).sp else lineHeight.sp,
+                    ),
+                    start, end,
                 )
-                addStyle(style, start, end)
             }
             for (span in clamped) {
                 val style = when (span.kind) {
@@ -144,33 +161,36 @@ object ChapterStyling {
                     "superscript" -> SpanStyle(baselineShift = BaselineShift.Superscript, fontSize = (fontSize * 0.7f).sp)
                     "subscript" -> SpanStyle(baselineShift = BaselineShift.Subscript, fontSize = (fontSize * 0.7f).sp)
                     "smallCaps" -> SpanStyle(fontFeatureSettings = "smcp")
-                    "link" -> SpanStyle(color = palette.iris)
+                    "link" -> { addStringAnnotation(LINK_TAG, span.url ?: "", span.start, span.end); null }
                     else -> null
                 }
                 if (style != null) addStyle(style, span.start, span.end)
             }
         }
+        return StyledChapter(annotated, paragraphStarts)
     }
 
     /**
-     * The slice of the styled chapter a page draws. A page that opens in the
-     * middle of a paragraph must not indent its first line — the layout that
-     * measured it didn't — so that paragraph's fragment loses its indent.
+     * The slice of the styled chapter a page draws, coloured for the theme.
+     * A page that opens in the middle of a paragraph must not indent its
+     * first line differently from the line it was measured as — a
+     * continuation line — so that paragraph's fragment takes its rest-line
+     * indent for its first line too.
      */
-    fun pageText(chapter: AnnotatedString, textStart: Int, textEnd: Int): AnnotatedString {
-        val slice = chapter.subSequence(textStart, textEnd)
-        if (textStart == 0 || startsParagraph(chapter, textStart)) return slice
+    fun pageText(chapter: StyledChapter, textStart: Int, textEnd: Int, palette: ReadingPalette): AnnotatedString {
+        val slice = chapter.text.subSequence(textStart, textEnd)
+        val midParagraph = textStart > 0 && !chapter.startsParagraph(textStart)
         return buildAnnotatedString {
             append(slice.text)
             slice.spanStyles.forEach { addStyle(it.item, it.start, it.end) }
             slice.paragraphStyles.forEach {
-                val item = if (it.start == 0) it.item.copy(textIndent = it.item.textIndent?.let { indent -> TextIndent(firstLine = 0.sp, restLine = indent.restLine) }) else it.item
+                val item = if (midParagraph && it.start == 0) {
+                    val rest = it.item.textIndent?.restLine ?: 0.sp
+                    it.item.copy(textIndent = TextIndent(firstLine = rest, restLine = rest))
+                } else it.item
                 addStyle(item, it.start, it.end)
             }
+            slice.getStringAnnotations(LINK_TAG, 0, slice.length).forEach { addStyle(SpanStyle(color = palette.iris), it.start, it.end) }
         }
     }
-
-    /** Whether `offset` begins a paragraph range of `chapter` (paragraph boundaries survive the newline swap as range starts). */
-    private fun startsParagraph(chapter: AnnotatedString, offset: Int): Boolean =
-        chapter.paragraphStyles.any { it.start == offset }
 }

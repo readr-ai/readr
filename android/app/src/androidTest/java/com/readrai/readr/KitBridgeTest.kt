@@ -63,7 +63,7 @@ class KitBridgeTest {
 
         assertEquals("", kit.library.positionJSON(book.id))
         kit.library.savePosition(book.id, 0, 12)
-        assertEquals(ReadingPosition(0, 12, null), kitJson.decodeFromString<ReadingPosition>(kit.library.positionJSON(book.id)))
+        assertEquals(ReadingPosition(chapterIndex = 0, utf16Offset = 12, characterOffset = 12), kitJson.decodeFromString<ReadingPosition>(kit.library.positionJSON(book.id)))
 
         kit.library.removeBook(book.id)
         assertEquals("[]", kit.library.booksJSON())
@@ -105,6 +105,11 @@ class KitBridgeTest {
         kit.library.savePosition(book.id, 0L, 10_000L)
         val text = kit.library.chapterText(book.id, 0)
         assertEquals(text.length, kitJson.decodeFromString<ReadingPosition>(kit.library.positionJSON(book.id)).utf16Offset)
+        // Every character boundary round-trips through the same table.
+        for (utf16 in listOf(0, 1, 4, 5, 7, 8, text.length)) {
+            kit.library.savePosition(book.id, 0L, utf16.toLong())
+            assertEquals("offset $utf16", utf16, kitJson.decodeFromString<ReadingPosition>(kit.library.positionJSON(book.id)).utf16Offset)
+        }
     }
 
     @Test

@@ -78,11 +78,9 @@ struct LayoutSpan: Codable {
 }
 
 /// Everything the reader needs to lay a chapter out besides its text, with
-/// every offset in UTF-16.
+/// every offset in UTF-16. Title and linearity travel with `ChapterSummary`.
 struct ChapterLayout: Codable {
   var index: Int
-  var title: String
-  var isLinear: Bool
   var utf16Length: Int
   var spans: [LayoutSpan]
   /// Element id → UTF-16 offset, for TOC fragments and internal links.
@@ -147,6 +145,10 @@ public final class KitLimits {
 public final class AndroidLibrary {
   private let root: URL
   private let store: FileLibraryStore
+  /// Offset tables for the chapters in play, keyed by book + chapter. A
+  /// position save, a contents build and a layout all convert against the
+  /// same table instead of re-walking the chapter each time.
+  private let offsetTables = OffsetTableCache()
 
   private var booksDirectory: URL { root.appendingPathComponent("Books", isDirectory: true) }
   private var coversDirectory: URL { root.appendingPathComponent("Covers", isDirectory: true) }
@@ -253,11 +255,9 @@ public final class AndroidLibrary {
     try readerFacing {
       let book = try book(bookID)
       let chapter = try chapter(book, index)
-      let offsets = UTF16OffsetTable(chapter.text)
+      let offsets = offsetTables.table(for: book, chapterIndex: Int(index))
       let layout = ChapterLayout(
         index: Int(index),
-        title: book.chapterDisplayTitle(Int(index)),
-        isLinear: chapter.isLinear ?? true,
         utf16Length: offsets.utf16Count,
         spans: (chapter.formatSpans ?? []).compactMap { LayoutSpan($0, offsets: offsets) },
         anchors: (chapter.anchors ?? [:]).mapValues { offsets.utf16Offset(ofCharacter: $0) })
@@ -277,12 +277,15 @@ public final class AndroidLibrary {
           if book.chapters.indices.contains(entry.chapterIndex) {
             let chapter = book.chapters[entry.chapterIndex]
             let characterOffset = entry.fragment.flatMap { chapter.anchors?[$0] } ?? 0
+            let utf16Offset = characterOffset == 0
+              ? 0
+              : offsetTables.table(for: book, chapterIndex: entry.chapterIndex).utf16Offset(ofCharacter: characterOffset)
             rows.append(ContentsRow(
               id: rows.count,
               title: entry.title.trimmingCharacters(in: .whitespacesAndNewlines),
               chapterIndex: entry.chapterIndex,
               depth: depth,
-              utf16Offset: TextOffsets.utf16Offset(ofCharacter: characterOffset, in: chapter.text)))
+              utf16Offset: utf16Offset))
           }
           walk(entry.children, depth: depth + 1)
         }
@@ -304,12 +307,12 @@ public final class AndroidLibrary {
   public func savePosition(_ bookID: String, chapterIndex: Int64, utf16Offset: Int64) throws {
     try readerFacing {
       let book = try book(bookID)
-      let chapter = try chapter(book, chapterIndex)
+      _ = try chapter(book, chapterIndex)
       let existing = store.position(for: book.id)
       try store.savePosition(
         ReadingPosition(
           chapterIndex: Int(chapterIndex),
-          characterOffset: TextOffsets.characterOffset(ofUTF16: Int(utf16Offset), in: chapter.text),
+          characterOffset: offsetTables.table(for: book, chapterIndex: Int(chapterIndex)).characterOffset(ofUTF16: Int(utf16Offset)),
           pdfPageIndex: existing?.pdfPageIndex),
         for: book.id)
     }
@@ -322,12 +325,14 @@ public final class AndroidLibrary {
     try readerFacing {
       guard let id = UUID(uuidString: bookID), let position = store.position(for: id) else { return "" }
       let book = try book(bookID)
-      let text = book.chapters.indices.contains(position.chapterIndex) ? book.chapters[position.chapterIndex].text : ""
+      let utf16Offset = book.chapters.indices.contains(position.chapterIndex)
+        ? offsetTables.table(for: book, chapterIndex: position.chapterIndex).utf16Offset(ofCharacter: position.characterOffset)
+        : 0
       let summary = PositionSummary(
         chapterIndex: position.chapterIndex,
         characterOffset: position.characterOffset,
         pdfPageIndex: position.pdfPageIndex,
-        utf16Offset: TextOffsets.utf16Offset(ofCharacter: position.characterOffset, in: text))
+        utf16Offset: utf16Offset)
       return String(decoding: try Self.encoder().encode(summary), as: UTF8.self)
     }
   }
@@ -335,6 +340,7 @@ public final class AndroidLibrary {
   public func removeBook(_ bookID: String) throws {
     try readerFacing {
       let book = try book(bookID)
+      offsetTables.forget(book.id)
       try store.removeBook(id: book.id)
       if let name = book.sourceFilename {
         try? FileManager.default.removeItem(at: booksDirectory.appendingPathComponent(name))
@@ -386,5 +392,40 @@ public final class AndroidLibrary {
   private func coverPath(for id: UUID) -> String? {
     let url = coverURL(for: id)
     return FileManager.default.fileExists(atPath: url.path) ? url.path : nil
+  }
+}
+
+/// A small LRU of `UTF16OffsetTable`s. Chapter text only changes with the
+/// book's identity (a re-import is a new UUID), so book id + chapter index is
+/// a sound key.
+final class OffsetTableCache {
+  private struct Key: Hashable { let book: UUID; let chapter: Int }
+  private let lock = NSLock()
+  private var tables: [Key: UTF16OffsetTable] = [:]
+  private var order: [Key] = []
+  private let capacity = 4
+
+  func table(for book: Book, chapterIndex: Int) -> UTF16OffsetTable {
+    let key = Key(book: book.id, chapter: chapterIndex)
+    lock.lock(); defer { lock.unlock() }
+    if let table = tables[key] {
+      order.removeAll { $0 == key }
+      order.append(key)
+      return table
+    }
+    let table = UTF16OffsetTable(book.chapters[chapterIndex].text)
+    tables[key] = table
+    order.append(key)
+    while order.count > capacity, let oldest = order.first {
+      order.removeFirst()
+      tables[oldest] = nil
+    }
+    return table
+  }
+
+  func forget(_ bookID: UUID) {
+    lock.lock(); defer { lock.unlock() }
+    order.removeAll { $0.book == bookID }
+    tables = tables.filter { $0.key.book != bookID }
   }
 }
