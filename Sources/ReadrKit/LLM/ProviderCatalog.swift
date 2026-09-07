@@ -322,6 +322,25 @@ public enum ProviderCatalog {
         ),
     ]
 
+    /// Android's system model, reached through AICore. One entry, for the
+    /// same reason as Apple's: the OS picks the model, the app can only ask
+    /// for it.
+    ///
+    /// The budget is PROVISIONAL — it is set below Apple's on the assumption
+    /// that Nano's window is at least as tight, and has not yet been measured
+    /// on a phone. Measure it before shipping and move this figure to what
+    /// the device reports (docs/ROADMAP.md, the A3 line).
+    public static let geminiNanoModels: [ProviderInfo] = [
+        ProviderInfo(
+            kind: .geminiNano,
+            modelID: "gemini-nano",
+            contextBudget: 2_000,
+            supportsPromptCaching: false,
+            isLocal: true,
+            displayName: "Gemini Nano"
+        ),
+    ]
+
     /// Every selectable model, across all kinds — built from the kinds, so a
     /// new kind can't be left out of the list.
     public static var all: [ProviderInfo] { ProviderInfo.Kind.allCases.flatMap(models(for:)) }
@@ -335,6 +354,7 @@ public enum ProviderCatalog {
         case .openRouter: return openRouterModels
         case .local: return localModels
         case .appleIntelligence: return appleIntelligenceModels
+        case .geminiNano: return geminiNanoModels
         }
     }
 

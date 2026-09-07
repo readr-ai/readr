@@ -82,6 +82,61 @@ final class ChunkerTests: XCTestCase {
         XCTAssertTrue(contextual.contains("Hello world."))
     }
 
+    // MARK: - Offsets
+
+    /// Every chunk says where it was cut from, and the offset indexes the
+    /// chapter's own text — that is the whole point of carrying it, since a
+    /// citation is pointed at `Chapter.text` and not at a trimmed copy.
+    func testEveryChunkOffsetIndexesTheChapterText() {
+        let words = (0..<800).map { "word\($0)" }.joined(separator: " ")
+        // Leading and trailing whitespace: the offsets must survive the trim.
+        let chapter = Chapter(title: "Long", order: 0, text: "\n\n  " + words + "  \n")
+        let book = makeBook(chapters: [chapter])
+
+        let chunks = Chunker(targetCharacters: 600, overlapCharacters: 150).chunk(book)
+        XCTAssertGreaterThan(chunks.count, 1)
+
+        let characters = Array(chapter.text)
+        for chunk in chunks {
+            let offset = try! XCTUnwrap(chunk.characterOffset)
+            XCTAssertLessThan(offset, characters.count)
+            XCTAssertEqual(
+                String(characters[offset..<min(offset + chunk.text.count, characters.count)]),
+                chunk.text,
+                "chunk at \(offset) does not sit there in the chapter"
+            )
+        }
+    }
+
+    /// Chunks walk forward and overlap by the configured amount — an offset
+    /// that stood still or jumped backwards would mean a lost or duplicated
+    /// stretch of book.
+    func testOffsetsAdvanceAndOverlapTheirPredecessor() {
+        let words = (0..<800).map { "word\($0)" }.joined(separator: " ")
+        let chapter = Chapter(title: "Long", order: 0, text: words)
+        let chunks = Chunker(targetCharacters: 600, overlapCharacters: 150)
+            .chunk(makeBook(chapters: [chapter]))
+
+        XCTAssertEqual(chunks.first?.characterOffset, 0)
+        for (previous, next) in zip(chunks, chunks.dropFirst()) {
+            let start = try! XCTUnwrap(previous.characterOffset)
+            let following = try! XCTUnwrap(next.characterOffset)
+            XCTAssertGreaterThan(following, start, "chunks must make forward progress")
+            XCTAssertLessThan(
+                following, start + previous.text.count,
+                "adjacent chunks overlap, so the next one starts inside this one"
+            )
+        }
+    }
+
+    func testAShortChapterStartsAtItsFirstNonBlankCharacter() {
+        let chapter = Chapter(title: "Tiny", order: 0, text: "\n   Just a little text.\n")
+        let chunk = try! XCTUnwrap(Chunker().chunk(makeBook(chapters: [chapter])).first)
+
+        XCTAssertEqual(chunk.text, "Just a little text.")
+        XCTAssertEqual(chunk.characterOffset, 4)
+    }
+
     func testShortChapterIsASingleChunk() {
         let chapter = Chapter(title: "Tiny", order: 0, text: "Just a little text.")
         let book = makeBook(chapters: [chapter])

@@ -266,12 +266,38 @@ extension HTTPError: LocalizedError, DiagnosticallyDescribable {
     }
 }
 
+/// How much of a rejected request's body is kept, and the one place that
+/// decides it.
+///
+/// The useful part of a provider's error body is its first sentence; past
+/// that it is an HTML error page, a stack trace, or a gateway's apology. All
+/// of it would otherwise sit in memory until the stream ends and then be
+/// written into a diagnostics file, so both streaming paths stop at the same
+/// ceiling.
+enum HTTPErrorBody {
+    /// Generous for a JSON error envelope, harmless for anything else.
+    static let maximumBytes = 8 * 1024
+
+    /// Append what still fits, and drop the rest on the floor.
+    static func append(_ data: Data, to body: inout Data) {
+        let room = maximumBytes - body.count
+        guard room > 0 else { return }
+        body.append(data.count <= room ? data : data.prefix(room))
+    }
+}
+
 /// `URLSession`-backed transport.
 public struct URLSessionHTTPClient: HTTPClient {
     private let session: URLSession
+    /// The one delegate-owning session this client streams through — built on
+    /// the first stream, kept for the client's life. Only the
+    /// swift-corelibs-foundation path uses it; it is held (and compiled)
+    /// everywhere so the two transports never drift apart unnoticed.
+    private let streaming: StreamingSession
 
     public init(session: URLSession = .shared) {
         self.session = session
+        self.streaming = StreamingSession(configuration: session.configuration)
     }
 
     public func send(_ request: HTTPRequest) async throws -> HTTPResponse {
@@ -292,26 +318,46 @@ public struct URLSessionHTTPClient: HTTPClient {
 
     public func stream(_ request: HTTPRequest) async throws -> AsyncThrowingStream<Data, Error> {
         #if canImport(FoundationNetworking)
-        // swift-corelibs-foundation (Linux) has no `URLSession.bytes` — there
-        // is no incremental-bytes API to wrap. Linux only needs this path to
-        // COMPILE for CI (unit tests use `MockHTTPClient`, never the network):
-        // fetch the whole body, then replay it line-by-line.
-        let response = try await send(request)
-        guard (200..<300).contains(response.status) else {
-            throw HTTPError.status(response.status, body: "")
-        }
+        // swift-corelibs-foundation (Linux, and therefore Android) has no
+        // `URLSession.bytes`; its data delegate is the only incremental-bytes
+        // API, so the lines are assembled by hand (`LineSplitter`). A delegate
+        // can only be attached when a session is built, so `StreamingSession`
+        // builds ONE from the injected session's CONFIGURATION — timeouts and
+        // any test protocol still apply — and every request rides it.
+        //
+        // Unlike the Darwin path the status is not known before the stream is
+        // handed back (it arrives in a callback), so a non-2xx surfaces as the
+        // stream's terminating error instead of a throw from this function.
+        // Every caller is a `for try await` inside a `do`, so both reach the
+        // reader the same way — and this one carries the body with it.
         return AsyncThrowingStream { continuation in
-            let text = String(decoding: response.body, as: UTF8.self)
-            for line in text.split(separator: "\n", omittingEmptySubsequences: true) {
-                continuation.yield(Data(line.utf8))
-            }
-            continuation.finish()
+            let task = streaming.dataTask(
+                for: request.urlRequest,
+                delegate: StreamingLineDelegate(continuation: continuation)
+            )
+            continuation.onTermination = { _ in task.cancel() }
+            task.resume()
         }
         #else
         let (bytes, response) = try await session.bytes(for: request.urlRequest)
         guard let http = response as? HTTPURLResponse else { throw HTTPError.nonHTTPResponse }
         guard (200..<300).contains(http.statusCode) else {
-            throw HTTPError.status(http.statusCode, body: "")
+            // The body is the only place a provider says WHICH key it
+            // rejected and why; throwing the status without it left the
+            // reader with a bare "the provider couldn't handle that". Read
+            // to the shared ceiling and no further — an error page is not
+            // worth streaming to its end.
+            var body = Data()
+            var truncated = false
+            for try await byte in bytes {
+                guard body.count < HTTPErrorBody.maximumBytes else {
+                    truncated = true
+                    break
+                }
+                body.append(byte)
+            }
+            if truncated { bytes.task.cancel() }
+            throw HTTPError.status(http.statusCode, body: String(decoding: body, as: UTF8.self))
         }
         return AsyncThrowingStream { continuation in
             let task = Task {

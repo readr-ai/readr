@@ -439,12 +439,11 @@ struct ProviderSettingsView: View {
     /// Names one door into a vendor, used only on cards that offer more than
     /// one.
     private func methodLabel(for kind: ProviderInfo.Kind) -> String {
-        switch kind {
-        case .chatGPT: return "SUBSCRIPTION"
-        case .openRouter: return "SIGN IN OR KEY"
-        case .anthropic, .openAI: return "API KEY"
-        case .local, .appleIntelligence: return "ON-DEVICE"
-        }
+        // Derived from what the method IS, not from a list of kinds: a new
+        // on-device model gets the right pill without an edit here.
+        if kind.isOnDevice { return "ON-DEVICE" }
+        if kind == .chatGPT { return "SUBSCRIPTION" }
+        return kind.offersSignIn ? "SIGN IN OR KEY" : "API KEY"
     }
 
     /// A single sentence telling a disconnected card what to do, phrased from
@@ -465,9 +464,14 @@ struct ProviderSettingsView: View {
         case (false, true):
             return "Paste an API key to connect."
         case (false, false):
-            return vendor.methods == [.appleIntelligence]
-                ? "Apple's on-device model. Nothing to set up, nothing leaves your device."
-                : nil
+            // No credential of any kind: a system model. Local is the one
+            // exception — its readiness is a probe against a server the
+            // reader runs, not something they supply here — so it says
+            // nothing rather than promising there is nothing to set up.
+            guard vendor.methods.allSatisfy(\.isOnDevice), !vendor.methods.contains(.local) else {
+                return nil
+            }
+            return "The model built into this device. Nothing to set up, nothing leaves your device."
         }
     }
 
@@ -556,10 +560,12 @@ struct ProviderSettingsView: View {
     /// The per-provider sign-in button title — also the accessibility label
     /// the UI tests assert.
     private func signInLabel(for kind: ProviderInfo.Kind) -> String {
+        // Only the kinds that offer a browser sign-in have a name to put in
+        // this button; nothing else ever renders it.
         switch kind {
         case .chatGPT: return "Sign in with ChatGPT"
         case .openRouter: return "Sign in with OpenRouter"
-        case .anthropic, .openAI, .local, .appleIntelligence: return "Sign in with subscription"
+        default: return "Sign in with subscription"
         }
     }
 
@@ -578,6 +584,10 @@ struct ProviderSettingsView: View {
     /// The provider console where a key is created, or nil for kinds that
     /// don't use keys.
     private func keyConsole(for kind: ProviderInfo.Kind) -> (url: URL, slug: String)? {
+        // ChatGPT connects by subscription sign-in only and the on-device
+        // kinds need no key at all — both answer `usesAPIKey` false, so
+        // neither has to be listed here.
+        guard kind.usesAPIKey else { return nil }
         switch kind {
         case .anthropic:
             return (URL(string: "https://console.anthropic.com/settings/keys")!, "anthropic")
@@ -585,9 +595,7 @@ struct ProviderSettingsView: View {
             return (URL(string: "https://platform.openai.com/api-keys")!, "openai")
         case .openRouter:
             return (URL(string: "https://openrouter.ai/keys")!, "openrouter")
-        case .chatGPT, .local, .appleIntelligence:
-            // ChatGPT connects by subscription sign-in only; the on-device
-            // kinds need no key.
+        default:
             return nil
         }
     }

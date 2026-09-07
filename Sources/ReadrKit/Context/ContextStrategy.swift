@@ -208,12 +208,18 @@ public struct AdaptiveContextStrategy: ContextStrategy {
             // through the first chapter, say. The end of what they've read is
             // the best available grounding, so the passage block is never
             // empty: the last budget's worth of it, as one passage.
-            let tail = book.textRead(upTo: frontier, lastCharacters: budget * 4)
-            if !tail.isEmpty {
+            //
+            // Where the passage points is the tail's own start, which the
+            // walk reports: a long tail read from just inside a chapter
+            // begins in the one before it, and the citation has to open the
+            // book there rather than at the frontier.
+            let tail = book.readTail(upTo: frontier, lastCharacters: budget * 4)
+            if !tail.text.isEmpty {
                 passages = [
                     RetrievedPassage(
-                        text: tail, locator: Self.readSoFarLocator, score: 0,
-                        chapterIndex: frontier.chapterIndex
+                        text: tail.text, locator: Self.readSoFarLocator, score: 0,
+                        chapterIndex: tail.chapterIndex,
+                        characterOffset: tail.characterOffset
                     ),
                 ]
             }
@@ -240,10 +246,15 @@ public struct AdaptiveContextStrategy: ContextStrategy {
             }
         }
         let retrieved = kept.map(Self.passageLine).joined(separator: Self.passageSeparator)
+        // A citation carries the passage's position as well as its wording:
+        // the locator is what the reader reads, the two indices are what the
+        // app needs to open the book at the passage the answer leaned on.
         let citations = kept.map { passage in
             Citation(
                 locator: passage.locator,
-                quotedText: Self.snippet(from: passage.text)
+                quotedText: Self.snippet(from: passage.text),
+                chapterIndex: passage.chapterIndex,
+                characterOffset: passage.characterOffset
             )
         }
         let ask = ChatMessage(

@@ -1,14 +1,32 @@
 import Foundation
 
 /// A pointer back into the book that grounds part of an answer.
+///
+/// `locator` is for the reader; the two indices below are for the app — a
+/// citation the reader can tap has to say WHERE in the book it points, and
+/// "Ch. 4 ¶12" is prose, not a position. Both are optional and decode as nil
+/// from a transcript persisted before they existed, and from any citation a
+/// tier assembles without a passage behind it.
 public struct Citation: Sendable, Hashable, Codable {
     /// Human-readable position, e.g. "Ch. 4 ¶12".
     public var locator: String
     public var quotedText: String
+    /// Reading-order chapter the passage came from — the same index the
+    /// frontier, the TOC and the reader use.
+    public var chapterIndex: Int?
+    /// Where the passage starts in `Chapter.text`, as a character offset.
+    public var characterOffset: Int?
 
-    public init(locator: String, quotedText: String) {
+    public init(
+        locator: String,
+        quotedText: String,
+        chapterIndex: Int? = nil,
+        characterOffset: Int? = nil
+    ) {
         self.locator = locator
         self.quotedText = quotedText
+        self.chapterIndex = chapterIndex
+        self.characterOffset = characterOffset
     }
 }
 

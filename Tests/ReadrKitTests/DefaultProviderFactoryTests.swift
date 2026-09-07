@@ -28,6 +28,43 @@ final class DefaultProviderFactoryTests: XCTestCase {
         }
     }
 
+    /// Android's system model reaches the kit through AICore, an Android API,
+    /// so the Kotlin side supplies the provider exactly as the app does for
+    /// Apple's. The catalog row must route to retrieval like every other
+    /// small-window model.
+    func testGeminiNanoIsLocalSmallAndNotBuiltByTheKitFactory() {
+        let info = ProviderCatalog.defaultModel(for: .geminiNano)
+        XCTAssertEqual(info.modelID, "gemini-nano")
+        XCTAssertEqual(info.name, "Gemini Nano")
+        XCTAssertTrue(info.isLocal)
+        XCTAssertFalse(info.supportsPromptCaching)
+        XCTAssertLessThanOrEqual(info.contextBudget, 3_500)
+        XCTAssertThrowsError(try DefaultProviderFactory.make(info: info, credentials: nil, http: http)) {
+            XCTAssertEqual($0 as? ProviderManager.ProviderError, .notConfigured(.geminiNano))
+        }
+    }
+
+    /// The refusal is a sentence a reader on that phone can act on — never a
+    /// mention of a framework or a factory.
+    func testTheGeminiNanoRefusalReadsAsASentence() {
+        XCTAssertEqual(
+            ProviderManager.ProviderError.notConfigured(.geminiNano).errorDescription,
+            "Gemini Nano isn't available on this phone."
+        )
+    }
+
+    /// A kind is persisted by raw value, so the existing six must keep
+    /// decoding — a stored selection outlives any catalog change.
+    func testKindRawValuesAreStableAndTheNewOneIsAdditive() throws {
+        let stored = #"["anthropic","openAI","chatGPT","openRouter","local","appleIntelligence","geminiNano"]"#
+
+        XCTAssertEqual(
+            try JSONDecoder().decode([ProviderInfo.Kind].self, from: Data(stored.utf8)),
+            [.anthropic, .openAI, .chatGPT, .openRouter, .local, .appleIntelligence, .geminiNano]
+        )
+        XCTAssertEqual(ProviderInfo.Kind.geminiNano.rawValue, "geminiNano")
+    }
+
     func testAnthropicBuildsWithCredentials() throws {
         let info = ProviderCatalog.defaultModel(for: .anthropic)
         let provider = try DefaultProviderFactory.make(

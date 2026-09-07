@@ -56,6 +56,79 @@ final class ProviderVendorTests: XCTestCase {
         )
     }
 
+    /// Android's system model is the same bargain on the other phone.
+    func testGeminiNanoIsOnDeviceAndNeedsNothing() {
+        XCTAssertFalse(ProviderInfo.Kind.geminiNano.usesAPIKey)
+        XCTAssertFalse(ProviderInfo.Kind.geminiNano.offersSignIn)
+        XCTAssertTrue(ProviderInfo.Kind.geminiNano.isOnDevice)
+    }
+
+    /// It has a card of its own — "On this device" is Apple's framework, and
+    /// a phone that runs one of them never runs the other.
+    func testGeminiNanoHasItsOwnVendorBesideApples() {
+        let android = ProviderVendor.vendor(for: .geminiNano)
+        XCTAssertEqual(android?.id, "android")
+        XCTAssertEqual(android?.title, "On this phone")
+        XCTAssertEqual(android?.methods, [.geminiNano])
+        XCTAssertEqual(android?.badge, "On-device")
+        XCTAssertEqual(ProviderVendor.all.prefix(2).map(\.id), ["apple", "android"])
+    }
+
+    /// The one that matters for shipping, and it is the MANAGER that decides
+    /// it: a build hands its kinds to `ProviderManager` once, and everything
+    /// downstream — what is configured, what is available, what Settings
+    /// renders — comes from that. This used to be a copy of the app's list
+    /// pasted into the test, which would have gone on passing while the app's
+    /// own list grew Nano.
+    func testAManagerGivenApplesKindsNeverOffersGeminiNano() {
+        let manager = ProviderManager(
+            store: FakeCredentialStore(),
+            factory: { info, _ in MockLLMProvider(info: info) },
+            supportedKinds: [.appleIntelligence, .chatGPT, .openRouter, .anthropic, .openAI, .local]
+        )
+
+        XCTAssertFalse(manager.supports(.geminiNano))
+        XCTAssertFalse(
+            manager.isConfigured(.geminiNano),
+            "an on-device kind this build doesn't have needs no credential and is still not configured"
+        )
+        XCTAssertFalse(manager.availableKinds().contains(.geminiNano))
+        XCTAssertFalse(manager.requestActivation(of: .geminiNano))
+        XCTAssertNil(manager.explicitSelection, "and a refused activation chose nothing")
+
+        let displayed = ProviderVendor.displayed(forKinds: manager.platformKinds())
+        XCTAssertFalse(
+            displayed.contains { $0.id == "android" },
+            "the Android card leaked into an Apple build"
+        )
+        XCTAssertFalse(displayed.flatMap(\.methods).contains(.geminiNano))
+        XCTAssertTrue(manager.isConfigured(.appleIntelligence), "its own on-device model still is")
+    }
+
+    /// And the mirror: an Android build's manager offers Nano and not Apple's.
+    func testAManagerGivenAndroidsKindsNeverOffersAppleIntelligence() async {
+        let manager = ProviderManager(
+            store: FakeCredentialStore(),
+            factory: { info, _ in MockLLMProvider(info: info) },
+            supportedKinds: [.geminiNano, .openRouter, .anthropic, .openAI]
+        )
+
+        XCTAssertTrue(manager.isConfigured(.geminiNano))
+        XCTAssertFalse(manager.isConfigured(.appleIntelligence))
+        let settled = await manager.validateAndActivate(.appleIntelligence)
+        XCTAssertNil(settled, "there is nothing here to validate")
+        XCTAssertNil(manager.explicitSelection)
+    }
+
+    /// And the mirror image: an Android build offers Nano and not Apple's.
+    func testTheAndroidBuildShowsItsOwnCardAndNotApples() {
+        let displayed = ProviderVendor.displayed(
+            forKinds: [.geminiNano, .openRouter, .anthropic, .openAI]
+        )
+        XCTAssertEqual(displayed.map(\.id), ["android", "openai", "openrouter", "anthropic"])
+        XCTAssertFalse(displayed.flatMap(\.methods).contains(.appleIntelligence))
+    }
+
     // MARK: - Grouping
 
     func testChatGPTAndOpenAIShareOneVendor() {
@@ -79,7 +152,7 @@ final class ProviderVendorTests: XCTestCase {
         XCTAssertEqual(Set(listed).count, listed.count, "a kind is listed twice")
         XCTAssertEqual(
             Set(listed),
-            Set([.chatGPT, .openAI, .anthropic, .openRouter, .local, .appleIntelligence]
+            Set([.chatGPT, .openAI, .anthropic, .openRouter, .local, .appleIntelligence, .geminiNano]
                 as [ProviderInfo.Kind])
         )
     }
@@ -88,7 +161,8 @@ final class ProviderVendorTests: XCTestCase {
     /// the sign-in vendors, then the paste-a-key ones.
     func testZeroSetupThenSignInVendorsComeFirst() {
         XCTAssertEqual(
-            ProviderVendor.all.map(\.id), ["apple", "openai", "openrouter", "anthropic", "local"]
+            ProviderVendor.all.map(\.id),
+            ["apple", "android", "openai", "openrouter", "anthropic", "local"]
         )
     }
 

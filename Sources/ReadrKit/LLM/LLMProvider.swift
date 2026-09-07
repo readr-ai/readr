@@ -59,15 +59,21 @@ public struct ProviderInfo: Sendable, Hashable {
     /// separate subscription-OAuth path against ChatGPT's backend — distinct
     /// kinds because their credentials, catalogs, and endpoints all differ.
     /// `appleIntelligence` is the system's on-device model (Apple's
-    /// FoundationModels framework, iOS/macOS 26+): no key, no account, no
-    /// server. `local` is a loopback Ollama server the reader runs
-    /// themselves. Both are `isLocal`; see `isOnDevice`.
+    /// FoundationModels framework, iOS/macOS 26+) and `geminiNano` is
+    /// Android's (AICore, through ML Kit's GenAI APIs): no key, no account,
+    /// no server on either. `local` is a loopback Ollama server the reader
+    /// runs themselves. All three are `isLocal`; see `isOnDevice`.
+    ///
+    /// A phone only ever has one of the two system models, and which one is
+    /// not this enum's business: each platform's build lists the kinds it can
+    /// offer (`ProviderVendor.displayed(forKinds:)`), so the other never
+    /// reaches a screen.
     public enum Kind: String, Sendable, Hashable, Codable, CaseIterable {
-        case anthropic, openAI, chatGPT, openRouter, local, appleIntelligence
+        case anthropic, openAI, chatGPT, openRouter, local, appleIntelligence, geminiNano
 
         /// Runs without credentials: nothing to store, validate, or revoke.
         public var isOnDevice: Bool {
-            self == .local || self == .appleIntelligence
+            self == .local || self == .appleIntelligence || self == .geminiNano
         }
     }
     public var kind: Kind

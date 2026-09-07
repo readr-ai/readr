@@ -68,8 +68,12 @@ public extension ProviderVendor {
     /// (lowest-friction first run), then the key-only cloud vendors, then the
     /// local model.
     static let all: [ProviderVendor] = [
-        // Zero setup leads: nothing to get, nothing to sign in to.
+        // Zero setup leads: nothing to get, nothing to sign in to. The two
+        // system models sit side by side here, and a build only ever passes
+        // the one its platform has to `displayed(forKinds:)` — a phone has
+        // one of them, never both, and never the other one's card.
         ProviderVendor(id: "apple", title: "On this device", methods: [.appleIntelligence]),
+        ProviderVendor(id: "android", title: "On this phone", methods: [.geminiNano]),
         ProviderVendor(id: "openai", title: "OpenAI", methods: [.chatGPT, .openAI]),
         ProviderVendor(id: "openrouter", title: "OpenRouter", methods: [.openRouter]),
         ProviderVendor(id: "anthropic", title: "Claude (Anthropic)", methods: [.anthropic]),
