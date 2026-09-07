@@ -129,6 +129,8 @@ fun AnnotationCapsule(
     onRemove: (() -> Unit)? = null,
     /** Opens the note editor: "Note" on a selection, "Edit note" on a highlight that has one. */
     onNote: ((AnnotationTarget) -> Unit)? = null,
+    /** Opens Ask on this passage — the ✦ of the iOS selection menu. */
+    onAsk: ((AnnotationTarget) -> Unit)? = null,
 ) {
     val editing = target as? AnnotationTarget.Existing
     Row(
@@ -164,6 +166,34 @@ fun AnnotationCapsule(
             ) { Text("✕", fontSize = 13.sp, color = palette.faint) }
         }
         Box(Modifier.width(1.dp).height(16.dp).background(palette.line))
+        if (onAsk != null) {
+            // Iris, and the ✦ leading: the one AI moment on the page, and the
+            // only control here that leaves the book behind for a moment.
+            Row(
+                Modifier
+                    .height(touchTarget)
+                    .widthIn(min = touchTarget, max = noteButtonWidth)
+                    .clip(RoundedCornerShape(50))
+                    .clickable { onAsk(target) }
+                    .padding(horizontal = 6.dp)
+                    .testTag("annotation.ask")
+                    .semantics { contentDescription = "Ask the book" },
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(3.dp, Alignment.CenterHorizontally),
+            ) {
+                Text(Marginalia.aiGlyph, fontSize = 13.sp, color = palette.iris)
+                if (LocalDensity.current.fontScale <= 1.25f) {
+                    Text(
+                        "Ask",
+                        fontSize = 13.sp,
+                        color = palette.ink,
+                        maxLines = 1,
+                        softWrap = false,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+        }
         if (onNote != null) {
             // The note glyph carries the meaning and the word confirms it, so
             // the button stays a thumb wide however large the reader's type is

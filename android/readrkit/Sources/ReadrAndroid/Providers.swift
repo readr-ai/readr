@@ -148,6 +148,9 @@ public final class AndroidProviders {
   private let probe: OnDeviceProbeBox
   let manager: ProviderManager
   private let openRouterStore: OpenRouterModelStore
+  /// Where a cloud provider's requests actually go. Empty in every build a
+  /// reader runs — see `overrideEndpoint(_:url:)` in `Ask.swift`.
+  let endpointOverrides: EndpointOverrides
   /// The OpenRouter list the picker shows — the curated slice until
   /// `refreshOpenRouterModels()` brings the live (or disk-cached) one.
   private let lock = NSLock()
@@ -166,12 +169,18 @@ public final class AndroidProviders {
     let probeBox = OnDeviceProbeBox(probe)
     self.probe = probeBox
 
-    let remote = DefaultProviderFactory.factory(http: URLSessionHTTPClient())
+    let overrides = EndpointOverrides()
+    endpointOverrides = overrides
     let factory: ProviderManager.ProviderFactory = { info, credentials in
       // The phone's own model is not the kit's to build — AICore is an
       // Android API — so the facade supplies it and the default factory
-      // handles every kind that speaks HTTP.
-      guard info.kind == .geminiNano else { return try remote(info, credentials) }
+      // handles every kind that speaks HTTP. The transport is per kind
+      // rather than shared, so a test can point one vendor somewhere else
+      // without touching the others.
+      guard info.kind == .geminiNano else {
+        return try DefaultProviderFactory.make(
+          info: info, credentials: credentials, http: overrides.client(for: info.kind))
+      }
       return PlaceholderOnDeviceProvider(info: info, probe: probeBox)
     }
 
@@ -372,6 +381,10 @@ public final class AndroidProviders {
     }
     return String(decoding: data, as: UTF8.self)
   }
+
+  /// The kind a wire string names, refusing anything this build does not
+  /// offer. Not private: `Ask.swift`'s extensions parse the same strings.
+  func providerKind(_ raw: String) throws -> ProviderInfo.Kind { try kind(raw) }
 
   private func kind(_ raw: String) throws -> ProviderInfo.Kind {
     guard let kind = ProviderInfo.Kind(rawValue: raw), Self.supportedKinds.contains(kind) else {

@@ -188,6 +188,53 @@ Android 14+ and an installed, non-stub `com.google.android.aicore`; the real
 ML Kit check and the model itself land in A3c, and until then the provider is
 a placeholder that reports readiness and refuses to answer.
 
+## Ask
+
+`ui/ask/` is "Ask the book": a full-height sheet over the reader, opened by
+the ✦ in the bar (about the book, at the reader's place) or by the capsule's
+✦ Ask (about the passage). One conversation per book for the life of the
+process, kept in `ReadrApplication` the way the Apple app keeps one per
+session, so closing the sheet and opening it two chapters later carries on
+rather than starting again.
+
+The whole pipeline is the kit's. `AndroidLibrary.ask` builds a per-book
+`HybridRAGIndex` over `LocalEmbeddingProvider` (an LRU of two — the book in
+hand and the one before it), routes through `AdaptiveContextStrategy`, and
+runs `AskService` against `AndroidProviders`' active provider. Streaming
+crosses the bridge the way the spike found works: a Swift protocol Kotlin
+implements (`AskSink`), called from the streaming task — `contextAssembled`,
+then `citations`, then a `token` per delta, then exactly one of `completed`
+or `failed`. `ask` hands back an `Int64` handle and `cancelAsk` stops that
+task; a cancelled ask reports **neither** ending, because the Kotlin side
+asked for the stop and owns what the sheet shows from there. `AskRepository`
+turns those calls into a `Flow`, and collecting it on the main thread is what
+puts them on the main thread. Scope, selection and history cross as JSON with
+every offset in UTF-16, converted per chapter exactly as everything else is
+(`TextOffsets.swift`).
+
+Every sentence a reader could be alarmed by comes from the kit: a failure is
+`errorDescription` plus `recoverySuggestion` (so a rejected key reads "Your
+API key was rejected… The provider said: …", never a status code or a Swift
+case name), and the "Chapter 7 of 24 · 31% · The Whale" caption is
+`positionSummaryJSON` calling the kit's own `ReadingPositionSummary` — the
+same line the model is given, so the sheet and the prompt never disagree.
+
+Answers are spoiler-scoped by default: the frontier is the reader's anchor
+(the whole chapter in a scroll), pushed forward to cover a selected passage,
+and the ANSWERS FROM control lifts it for the questions that follow. What the
+sheet promises follows the routing tier rather than being written down —
+the whole-book tier returns no passages, so it shows the honest "no passage
+retrieval, no citation list" note instead of a SOURCES row, and an on-device
+model is promised no wider knowledge than the book. A citation that carries a
+chapter and an offset offers "Show in book", which jumps and dismisses.
+
+`AnswerMarkdown.kt` is the answer renderer — paragraphs, `- ` bullets,
+`>` quotes and `**bold**`, tolerant of half-streamed input, and no
+dependency. `AndroidProviders.overrideEndpoint` is test-only: it swaps the
+origin of a vendor's requests for a local one (keeping the path the provider
+built), which is how the instrumented tests stream a real SSE answer from a
+`ServerSocket` on the device without a key or a network.
+
 ## Layout on device
 
 `filesDir/library.json` (FileLibraryStore), `filesDir/Books/<uuid>.epub|txt`

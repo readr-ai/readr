@@ -1,0 +1,408 @@
+package com.readrai.readr.ui.ask
+
+import android.util.Log
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.platform.LocalContext
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
+import androidx.lifecycle.viewmodel.compose.viewModel
+import com.readrai.readr.ReadrApplication
+import com.readrai.readr.data.AskCitation
+import com.readrai.readr.data.AskEvent
+import com.readrai.readr.data.AskFrontier
+import com.readrai.readr.data.AskPosition
+import com.readrai.readr.data.AskRepository
+import com.readrai.readr.data.AskSelection
+import com.readrai.readr.data.AskTier
+import com.readrai.readr.data.AskTurn
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.launch
+
+/**
+ * The book's Ask conversation, as a view model bound to this composition —
+ * keyed by book, so two books never share a transcript, and scoped to the
+ * reader's back-stack entry, so a trip to the provider settings and back
+ * finds the same one.
+ */
+@Composable
+fun rememberAskViewModel(bookId: String): AskViewModel {
+    val app = LocalContext.current.applicationContext as ReadrApplication
+    return viewModel(key = "ask/$bookId") {
+        AskViewModel({ app.asks() }, app.askConversations.forBook(bookId))
+    }
+}
+
+/** One question and the answer streaming into it. */
+data class AskExchange(
+    val id: Long,
+    /** Shown as sent the moment it is sent, not when the answer starts. */
+    val question: String,
+    /**
+     * Whether this answer was held to what the reader had read. Kept per
+     * exchange because the sheet's scope control can flip between questions,
+     * and the note under an answer must describe that answer.
+     */
+    val scoped: Boolean,
+    val answerText: String = "",
+    val tier: String? = null,
+    val citations: List<AskCitation> = emptyList(),
+    val failed: Boolean = false,
+    val isStreaming: Boolean = true,
+) {
+    /** Nothing to show and nothing coming. */
+    val isEmpty: Boolean get() = answerText.isBlank() && !isStreaming && !failed
+}
+
+/**
+ * A book's Ask conversation, for the life of the process — the Apple app
+ * keeps one per session the same way. It outlives the sheet and the reader's
+ * view model, so closing Ask and opening it again on the next chapter
+ * continues the conversation rather than starting a new one.
+ */
+class AskConversation(val bookId: String) {
+    var exchanges by mutableStateOf<List<AskExchange>>(emptyList())
+    /**
+     * The reader's scope choice, kept with the transcript it describes: a
+     * choice made for one question holds for the next opening rather than
+     * snapping back while whole-book answers sit in the history the model
+     * reads.
+     */
+    var wholeBook by mutableStateOf(false)
+
+    private var nextId = 1L
+
+    fun nextExchangeId(): Long = nextId++
+
+    /** Start over, keeping the same object so open sheets stay bound to it. */
+    fun clear() {
+        exchanges = emptyList()
+    }
+}
+
+/** The process's conversations, one per book. */
+class AskConversations {
+    private val byBook = HashMap<String, AskConversation>()
+
+    @Synchronized
+    fun forBook(bookId: String): AskConversation = byBook.getOrPut(bookId) { AskConversation(bookId) }
+}
+
+/**
+ * Everything one opening of the sheet needs, decided by whoever opens it: the
+ * ✦ in the reader bar opens on the book at the reader's place, the capsule's
+ * ✦ Ask opens on the passage.
+ */
+data class AskRequest(
+    /** The passage the question is about, or null for a book-wide question. */
+    val selection: AskSelection? = null,
+    /**
+     * How far the reader has read. Null means there is no reading position to
+     * scope to, so every question is about the whole book and the scope
+     * control is not offered.
+     */
+    val frontier: AskFrontier? = null,
+    /** Sent on the sheet's behalf as soon as there is a provider (the recap chip). */
+    val initialQuestion: String? = null,
+)
+
+/**
+ * Drives one book's Ask conversation: streams each answer, keeps the
+ * transcript so a follow-up can build on what came before, and remembers the
+ * last request so a failure can be retried without retyping.
+ *
+ * Nothing here writes a reader-facing failure sentence: the facade hands over
+ * ReadrKit's own message and recovery line, which is what the error card
+ * shows.
+ */
+class AskViewModel(
+    private val openRepository: suspend () -> AskRepository,
+    private val conversation: AskConversation,
+) : ViewModel() {
+
+    val bookId: String get() = conversation.bookId
+    val exchanges: List<AskExchange> get() = conversation.exchanges
+
+    /** "Whole book" chosen over "Up to where I am". */
+    var wholeBook: Boolean
+        get() = conversation.wholeBook
+        set(value) { conversation.wholeBook = value }
+
+    var isStreaming by mutableStateOf(false)
+        private set
+    /** The book's retrieval index is being built; the answer waits on it. */
+    var indexing by mutableStateOf(false)
+        private set
+
+    /** The kit's sentence for the failure, and the step it suggests. */
+    var errorMessage by mutableStateOf<String?>(null)
+        private set
+    var errorRecovery by mutableStateOf<String?>(null)
+        private set
+
+    /** Null while the answer is still being fetched from the kit. */
+    var hasProvider by mutableStateOf<Boolean?>(null)
+        private set
+
+    /**
+     * True when the active model runs on the phone: it answers from the
+     * passages and nothing else, and the grounding caption says exactly that
+     * rather than promising a wider knowledge it does not have.
+     */
+    var answersFromBookOnly by mutableStateOf(false)
+        private set
+
+    /** The passage this opening pointed the conversation at, or null. */
+    var selection by mutableStateOf<AskSelection?>(null)
+        private set
+    var frontier by mutableStateOf<AskFrontier?>(null)
+        private set
+    /** "Chapter 7 of 24 · 31% · The Whale" — the kit's own line. */
+    var position by mutableStateOf<AskPosition?>(null)
+        private set
+    /** True while the latest opening was a recap, for the sheet's headline. */
+    var openedForRecap by mutableStateOf(false)
+        private set
+
+    /**
+     * Whether the sheet should be showing. Kept here rather than in the
+     * reader's composition so a trip to the provider settings and back comes
+     * home to the sheet the reader left open.
+     */
+    var isOpen by mutableStateOf(false)
+        private set
+
+    /** The question, scope and passage to re-run after a failure. */
+    var lastRequest: AskRequest? = null
+        private set
+    private var lastQuestion: String? = null
+
+    private var repository: AskRepository? = null
+    private var streamJob: Job? = null
+    private var pendingQuestion: String? = null
+
+    /** What the next question is allowed to see. */
+    val scopedFrontier: AskFrontier? get() = frontier?.takeIf { !wholeBook }
+    val isScoped: Boolean get() = scopedFrontier != null
+
+    /** The most recently routed tier — what the tier label describes. */
+    val tier: String? get() = exchanges.lastOrNull { it.tier != null }?.tier
+
+    /**
+     * Point the conversation at a new opening. The transcript stays; a stale
+     * error does not — it was about the last question, not this opening.
+     */
+    fun open(request: AskRequest) {
+        selection = request.selection
+        frontier = request.frontier
+        openedForRecap = request.initialQuestion != null
+        pendingQuestion = request.initialQuestion
+        errorMessage = null
+        errorRecovery = null
+        position = null
+        isOpen = true
+        refresh()
+        loadPosition()
+    }
+
+    /**
+     * The sheet went away. A stream in flight is left running — the answer
+     * belongs to the conversation, not to the sheet, and it will be there
+     * when the reader comes back.
+     */
+    fun close() {
+        isOpen = false
+    }
+
+    /** Re-resolve the provider, then send anything the opening asked for. */
+    fun refresh() {
+        viewModelScope.launch {
+            val repo = repository() ?: return@launch
+            hasProvider = runCatching { repo.hasProvider() }.getOrDefault(false)
+            answersFromBookOnly = runCatching { repo.answersFromBookOnly() }.getOrDefault(false)
+            sendPendingIfReady()
+        }
+    }
+
+    /** Start over: cancel anything in flight and empty the transcript. */
+    fun startOver() {
+        cancel()
+        conversation.clear()
+        errorMessage = null
+        errorRecovery = null
+        lastRequest = null
+        lastQuestion = null
+        pendingQuestion = null
+        openedForRecap = false
+    }
+
+    /** Stop the stream in flight. The answer keeps whatever arrived. */
+    fun cancel() {
+        streamJob?.cancel()
+        streamJob = null
+        isStreaming = false
+        indexing = false
+        update(exchanges.lastOrNull()?.id) { it.copy(isStreaming = false) }
+    }
+
+    /** Ask, under the current scope and about the current passage. */
+    fun submit(question: String) {
+        val request = AskRequest(selection = selection, frontier = scopedFrontier)
+        streamJob = viewModelScope.launch { run(question, request, replacingLast = false) }
+    }
+
+    /** Re-run the last question exactly as it was asked. */
+    fun retry() {
+        val request = lastRequest ?: return
+        val question = lastQuestion ?: return
+        streamJob = viewModelScope.launch { run(question, request, replacingLast = true) }
+    }
+
+    /**
+     * Send the question an opening asked for (the recap), once there is a
+     * provider and no stream in flight — so a recap opened over a running
+     * answer goes out when that answer is done, not never.
+     */
+    fun sendPendingIfReady() {
+        val question = pendingQuestion ?: return
+        if (hasProvider != true || isStreaming) return
+        pendingQuestion = null
+        submit(question)
+    }
+
+    /** Static starters, worded for the scope and the passage. */
+    val suggestions: List<String>
+        get() = when {
+            selection != null -> listOf(
+                "What does this passage mean?",
+                if (isScoped) "How does this connect to what I've read so far?"
+                else "How does this connect to the rest of the book?",
+            )
+            isScoped -> listOf(
+                RECAP_QUESTION,
+                "Summarize what I've read so far",
+                "What are the key themes so far?",
+                "Who are the main characters so far?",
+            )
+            else -> listOf(
+                "Summarize this book",
+                "What are the key themes?",
+                "Who are the main characters?",
+            )
+        }
+
+    // MARK: - Streaming
+
+    private suspend fun run(question: String, request: AskRequest, replacingLast: Boolean) {
+        val trimmed = question.trim()
+        if (trimmed.isEmpty() || isStreaming) return
+        lastRequest = request
+        lastQuestion = trimmed
+        errorMessage = null
+        errorRecovery = null
+
+        // A retry re-runs the SAME turn: drop the failed one rather than
+        // stacking a second copy of the question in the transcript.
+        if (replacingLast && conversation.exchanges.lastOrNull()?.answerText.isNullOrBlank()) {
+            conversation.exchanges = conversation.exchanges.dropLast(1)
+        }
+        val id = conversation.nextExchangeId()
+        val scoped = request.frontier != null
+        conversation.exchanges = conversation.exchanges + AskExchange(id = id, question = trimmed, scoped = scoped)
+
+        val repo = repository()
+        if (repo == null) {
+            fail(id, COULD_NOT_OPEN, null)
+            return
+        }
+        isStreaming = true
+        val history = historyBefore(id, scoped)
+        try {
+            repo.ask(bookId, trimmed, request.frontier, request.selection, history).collect { event ->
+                when (event) {
+                    AskEvent.Indexing -> indexing = true
+                    is AskEvent.Routed -> {
+                        indexing = false
+                        update(id) { it.copy(tier = event.tier) }
+                    }
+                    is AskEvent.Citations -> update(id) { it.copy(citations = event.citations) }
+                    is AskEvent.Token -> update(id) { it.copy(answerText = it.answerText + event.text) }
+                    // Authoritative final text — it covers providers that do
+                    // not stream incremental deltas.
+                    is AskEvent.Completed -> update(id) { it.copy(answerText = event.text) }
+                    is AskEvent.Failed -> fail(id, event.message, event.recovery)
+                }
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "ask failed: ${e.javaClass.simpleName}")
+            fail(id, e.message?.takeIf { it.isNotBlank() } ?: COULD_NOT_OPEN, null)
+        } finally {
+            isStreaming = false
+            indexing = false
+            update(id) { it.copy(isStreaming = false) }
+        }
+        sendPendingIfReady()
+    }
+
+    /**
+     * The answered turns before `id`, oldest first. A failed or empty turn
+     * carries no answer and is left out; so is a whole-book turn when THIS
+     * question is scoped — the no-spoilers promise covers the history the
+     * model reads, not only the passages it is handed.
+     */
+    private fun historyBefore(id: Long, scoped: Boolean): List<AskTurn> =
+        conversation.exchanges
+            .takeWhile { it.id != id }
+            .filter { !it.failed && it.answerText.isNotBlank() }
+            .filter { !scoped || it.scoped }
+            .map { AskTurn(it.question, it.answerText, it.tier ?: AskTier.RETRIEVAL, it.citations) }
+
+    private suspend fun repository(): AskRepository? {
+        repository?.let { return it }
+        return try {
+            openRepository().also { repository = it }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "ask repository failed: ${e.message}")
+            hasProvider = false
+            null
+        }
+    }
+
+    private fun loadPosition() {
+        val place = frontier ?: return
+        viewModelScope.launch {
+            val repo = repository() ?: return@launch
+            position = runCatching { repo.positionSummary(bookId, place.chapterIndex, place.utf16Offset) }.getOrNull()
+        }
+    }
+
+    private fun update(id: Long?, change: (AskExchange) -> AskExchange) {
+        if (id == null) return
+        conversation.exchanges = conversation.exchanges.map { if (it.id == id) change(it) else it }
+    }
+
+    private fun fail(id: Long, message: String, recovery: String?) {
+        errorMessage = message
+        errorRecovery = recovery
+        update(id) { it.copy(failed = true, isStreaming = false) }
+    }
+
+    companion object {
+        /**
+         * The recap, word for word — the first suggestion chip when answers
+         * are scoped, and the same sentence the Apple reader sends.
+         */
+        const val RECAP_QUESTION = "Recap what I've read so far — no spoilers"
+
+        /** The only sentence this class writes, and only when the kit is unreachable. */
+        private const val COULD_NOT_OPEN = "Readr couldn't reach the model. Try asking again."
+        private const val TAG = "Readr.Ask"
+    }
+}

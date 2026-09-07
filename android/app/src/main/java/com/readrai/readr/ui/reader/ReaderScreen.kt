@@ -77,10 +77,17 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.zIndex
+import com.readrai.readr.data.AskFrontier
+import com.readrai.readr.data.AskSelection
 import com.readrai.readr.data.ChapterImages
 import com.readrai.readr.data.Footnote
 import com.readrai.readr.data.Highlight
+import com.readrai.readr.ui.ask.AskRequest
+import com.readrai.readr.ui.ask.AskSheet
+import com.readrai.readr.ui.ask.AskViewModel
+import com.readrai.readr.ui.ask.rememberAskViewModel
 import com.readrai.readr.ui.theme.LocalReadingPalette
+import com.readrai.readr.ui.theme.Marginalia
 import com.readrai.readr.ui.theme.ReadingPalette
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -125,7 +132,14 @@ private val turnSwipeDistance = 40.dp
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ReaderScreen(model: ReaderViewModel, settings: ReaderSettings, onBack: () -> Unit) {
+fun ReaderScreen(
+    model: ReaderViewModel,
+    settings: ReaderSettings,
+    ask: AskViewModel = rememberAskViewModel(model.bookId),
+    /** Where the sheet's "Open AI Providers" goes; coming back refreshes it. */
+    onOpenProviders: () -> Unit = {},
+    onBack: () -> Unit,
+) {
     val appearance by settings.appearance.collectAsState()
     val palette = LocalReadingPalette.current
     var showChrome by rememberSaveable { mutableStateOf(true) }
@@ -137,6 +151,26 @@ fun ReaderScreen(model: ReaderViewModel, settings: ReaderSettings, onBack: () ->
     var wideSurface by rememberSaveable { mutableStateOf(false) }
 
     DisposableEffect(model) { onDispose { model.flush() } }
+
+    /**
+     * How far the reader has got, for a scoped question — the Apple reader's
+     * `askScope`. In a scroll the chapter on screen counts as read; a
+     * selected passage is in front of the reader, so it counts as read
+     * whatever the page-top anchor says.
+     */
+    fun frontierNow(selectionEnd: Int? = null): AskFrontier {
+        val read = if (appearance.layout.on(wideSurface) == PageLayout.Scroll) {
+            model.chapter?.layout?.utf16Length ?: model.anchor
+        } else {
+            model.anchor
+        }
+        return AskFrontier(model.chapterIndex.coerceAtLeast(0), maxOf(0, maxOf(read, selectionEnd ?: 0)))
+    }
+
+    fun openAsk(selection: AskSelection?) {
+        showChrome = true
+        ask.open(AskRequest(selection = selection, frontier = frontierNow(selection?.utf16End)))
+    }
 
     Box(Modifier.fillMaxSize().background(palette.page)) {
         when (val s = model.state) {
@@ -164,6 +198,14 @@ fun ReaderScreen(model: ReaderViewModel, settings: ReaderSettings, onBack: () ->
                 chromeInset = if (showChrome) TopAppBarDefaults.TopAppBarExpandedHeight else 0.dp,
                 onWide = { wideSurface = it },
                 onChromeToggle = { showChrome = !showChrome },
+                onAsk = { target ->
+                    openAsk(AskSelection(
+                        chapterIndex = target.chapterIndex,
+                        utf16Start = target.utf16Start,
+                        utf16End = target.utf16End,
+                        quotedText = target.quotedText,
+                    ))
+                },
             )
         }
 
@@ -193,6 +235,13 @@ fun ReaderScreen(model: ReaderViewModel, settings: ReaderSettings, onBack: () ->
                 },
                 actions = {
                     if (ready != null) {
+                        // The one AI moment in the bar, and the only iris in it.
+                        IconButton(
+                            onClick = { openAsk(null) },
+                            modifier = Modifier.testTag("reader.ask").semantics { contentDescription = "Ask the book" },
+                        ) {
+                            Text(Marginalia.aiGlyph, fontSize = 17.sp, color = palette.iris)
+                        }
                         IconButton(onClick = { sheet = ReaderSheet.Contents }, modifier = Modifier.testTag("reader.toc")) {
                             Icon(Icons.AutoMirrored.Filled.List, contentDescription = "Table of contents")
                         }
@@ -255,6 +304,18 @@ fun ReaderScreen(model: ReaderViewModel, settings: ReaderSettings, onBack: () ->
         // or a card in the Highlights sheet — and closes by dropping the draft.
         model.noteDraft?.let { draft ->
             NoteEditor(draft = draft, onSave = model::saveNote, onCancel = model::cancelNote)
+        }
+
+        // Ask lives on the conversation, not on this composition: the sheet
+        // going away leaves an answer in flight alone, and a trip to the
+        // provider settings comes home to the sheet the reader left open.
+        if (ask.isOpen) {
+            AskSheet(
+                model = ask,
+                onDismiss = { ask.close() },
+                onShowInBook = { chapterIndex, utf16Offset -> model.jump(chapterIndex, utf16Offset) },
+                onOpenProviders = onOpenProviders,
+            )
         }
     }
 }
@@ -373,6 +434,8 @@ private fun PageSurface(
     chromeInset: Dp,
     onWide: (Boolean) -> Unit,
     onChromeToggle: () -> Unit,
+    /** The capsule's ✦ Ask: open Ask on the passage the reader selected. */
+    onAsk: (AnnotationTarget) -> Unit,
 ) {
     val chapter = model.chapter
     val density = LocalDensity.current
@@ -835,6 +898,7 @@ private fun PageSurface(
                                             settings.rememberHighlightColor(color)
                                         },
                                         onCopy = { clipboard.setText(AnnotatedString(target.quotedText)); dismiss() },
+                                        onAsk = { asked -> onAsk(asked); dismiss() },
                                         onNote = { noted ->
                                             when (noted) {
                                                 // A note needs a highlight to live on: make one in the

@@ -62,7 +62,13 @@ private fun ReadrNavHost(app: ReadrApplication) {
         composable("book/{id}") { entry ->
             val id = entry.arguments?.getString("id") ?: return@composable
             val model: ReaderViewModel = viewModel(key = "reader/$id") { ReaderViewModel({ app.library() }, id) }
-            ReaderScreen(model, app.readerSettings) { nav.popBackStack() }
+            ReaderScreen(
+                model,
+                app.readerSettings,
+                // Ask's empty state opens the provider screen; coming back
+                // re-resolves the provider, so a key saved there works at once.
+                onOpenProviders = { nav.navigate("settings") },
+            ) { nav.popBackStack() }
         }
     }
 }

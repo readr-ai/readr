@@ -2,6 +2,8 @@ package com.readrai.readr
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import com.readrai.readr.data.AskCitation
+import com.readrai.readr.data.AskPosition
 import com.readrai.readr.data.BookSummary
 import com.readrai.readr.data.Bookmark
 import com.readrai.readr.data.ChapterImage
@@ -23,6 +25,7 @@ import com.readrai.readr.kit.Kit
 import com.readrai.readr.kit.NanoProbe
 import java.io.File
 import kotlinx.coroutines.future.await
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -66,6 +69,21 @@ class KitBridgeTest {
 
     private fun clearCredentials() {
         for (kind in listOf("openAI", "anthropic", "openRouter")) runCatching { kit.providers.deleteCredential(kind) }
+    }
+
+    private companion object {
+        /** Every question in this file is about the whole book. */
+        const val WHOLE_BOOK_SCOPE = "{\"wholeBook\":true}"
+
+        /** Filler with enough of a subject that retrieval has something to find. */
+        const val WONDERLAND =
+            "Alice was beginning to get very tired of sitting by her sister on the bank, and of having nothing to do: " +
+                "once or twice she had peeped into the book her sister was reading, but it had no pictures or " +
+                "conversations in it, and what is the use of a book, thought Alice, without pictures or conversations? " +
+                "So she was considering in her own mind whether the pleasure of making a daisy-chain would be worth the " +
+                "trouble of getting up and picking the daisies, when suddenly a White Rabbit with pink eyes ran close by " +
+                "her, and down the rabbit-hole she went after it, never once considering how in the world she was to get " +
+                "out again."
     }
 
     @Test
@@ -748,6 +766,180 @@ class KitBridgeTest {
         assertEquals(ValidationStatus.INVALID, status.state)
         assertEquals("Gemini Nano isn't available on this phone.", status.reason)
         assertFalse("an unrunnable model is never the active one", kit.providers.hasAnyProvider())
+    }
+
+    // MARK: Ask (A3b)
+
+    /**
+     * A book too long to fit a provider's whole-book budget, so a question
+     * about it routes to retrieval and the answer comes back with citable
+     * passages. The router's ceiling is 60% of 200,000 tokens at roughly four
+     * characters each; this is comfortably past it. Generated rather than
+     * bundled — no sample in the repo is that long.
+     */
+    private suspend fun longBook(): BookSummary {
+        val text = buildString {
+            for (chapter in 1..8) {
+                append("# Chapter $chapter\n\n")
+                for (paragraph in 1..140) append("$chapter.$paragraph $WONDERLAND\n\n")
+            }
+        }
+        val file = File(root, "long.txt").apply { writeText(text) }
+        val book = kitJson.decodeFromString<BookSummary>(
+            kit.library.importPlainText(file.absolutePath, "Down the Rabbit-Hole").await()
+        )
+        assertTrue("the test book must not fit the whole-book tier", book.estimatedTokenCount > 120_000)
+        return book
+    }
+
+    /** A provider pointed at `server`, connected and made active. */
+    private fun connect(server: FakeChatServer) {
+        kit.providers.overrideEndpoint("openAI", server.origin)
+        kit.providers.saveAPIKey("openAI", "sk-test-not-a-real-key")
+        kit.providers.setActive("openAI", "gpt-5.6-sol")
+    }
+
+    /**
+     * The whole path, on a device: context assembled, passages cited, tokens
+     * delivered AS THEY ARRIVE, one completion at the end.
+     */
+    @Test
+    fun askStreamsAnAnswerAndCitesTheBook() = runTest {
+        val book = longBook()
+        FakeChatServer().use { server ->
+            connect(server)
+            val sink = RecordingAskSink()
+            val handle = kit.library.ask(
+                book.id, "What does Alice follow down the hole?",
+                WHOLE_BOOK_SCOPE, "", "", kit.providers, sink,
+            )
+            assertTrue("an ask that started has a handle to cancel", handle != 0L)
+            assertTrue("no answer arrived: $sink", sink.await(RecordingAskSink.COMPLETED, timeoutMillis = 180_000))
+
+            assertEquals("one delta per chunk the server sent: $sink", 3, sink.of(RecordingAskSink.TOKEN).size)
+            // Streamed, not buffered: the first token was in the reader's
+            // hands before the server had finished writing the answer.
+            assertTrue(
+                "the first token waited for the whole answer",
+                sink.of(RecordingAskSink.TOKEN).first().at < server.sentAt[2],
+            )
+            assertEquals(1, sink.of(RecordingAskSink.COMPLETED).size)
+            assertEquals(FakeChatServer.DEFAULT_ANSWER, sink.of(RecordingAskSink.COMPLETED).single().text)
+            assertTrue("a completed answer never also fails: $sink", sink.of(RecordingAskSink.FAILED).isEmpty())
+
+            // A book this long cannot ride along whole, so the answer is
+            // grounded in retrieved passages — and every one of them says
+            // where in the book it came from, in Kotlin's own offsets.
+            assertEquals("retrieval", sink.of(RecordingAskSink.TIER).last().text)
+            val citations = kitJson.decodeFromString<List<AskCitation>>(
+                sink.of(RecordingAskSink.CITATIONS).last().text
+            )
+            assertTrue("the retrieval tier cites its passages", citations.isNotEmpty())
+            for (citation in citations) {
+                assertTrue("a citation is labelled: $citation", citation.locator.isNotBlank())
+                assertTrue("a citation quotes the book: $citation", citation.quotedText.isNotBlank())
+                assertTrue("a retrieved passage knows where it is: $citation", citation.isLocated)
+                val chapter = kit.library.chapterText(book.id, citation.chapterIndex!!.toLong())
+                val offset = citation.utf16Offset!!
+                assertTrue("$citation is outside its chapter (${chapter.length})", offset in 0..<chapter.length)
+            }
+        }
+    }
+
+    /**
+     * A rejected key reads as what the provider said, not as a status code —
+     * once, and never alongside a completion.
+     */
+    @Test
+    fun askSaysWhatTheProviderSaidWhenTheKeyIsRejected() = runTest {
+        val book = longBook()
+        FakeChatServer(
+            status = 401,
+            errorBody = "{\"error\":{\"message\":\"Incorrect API key provided.\"}}",
+        ).use { server ->
+            connect(server)
+            val sink = RecordingAskSink()
+            kit.library.ask(book.id, "Who is the White Rabbit?", WHOLE_BOOK_SCOPE, "", "", kit.providers, sink)
+            assertTrue("no failure arrived: $sink", sink.await(RecordingAskSink.FAILED, timeoutMillis = 180_000))
+
+            val failure = sink.of(RecordingAskSink.FAILED).single()
+            assertTrue(
+                "the reader is told what the provider said: ${failure.text}",
+                failure.text.contains("The provider said: Incorrect API key provided."),
+            )
+            assertTrue("a failure carries a next step", failure.recovery.isNotBlank())
+            assertTrue("a failed answer never also completes: $sink", sink.of(RecordingAskSink.COMPLETED).isEmpty())
+            for (leak in listOf("HTTPError", "ReadrKit.", "status(", "Optional(")) {
+                assertFalse("no Swift internals in \"${failure.text}\"", failure.text.contains(leak))
+            }
+        }
+    }
+
+    /**
+     * A cancelled ask goes quiet: the Kotlin side asked for the stop and owns
+     * what the panel shows, so neither ending is reported.
+     */
+    @Test
+    fun cancellingAnAskEndsItSilently() {
+        // Not `runTest`: this one waits in real time for chunks that must
+        // never arrive, which a virtual clock would skip straight past.
+        val book = runBlocking { longBook() }
+        FakeChatServer(gapMillis = 1_500).use { server ->
+            connect(server)
+            val sink = RecordingAskSink()
+            val handle = kit.library.ask(book.id, "What is down the hole?", WHOLE_BOOK_SCOPE, "", "", kit.providers, sink)
+            assertTrue("nothing streamed to cancel: $sink", sink.await(RecordingAskSink.TOKEN, timeoutMillis = 180_000))
+            kit.library.cancelAsk(handle)
+
+            // Well past everything the server still had to send.
+            Thread.sleep(5_000)
+            assertTrue("a cancelled ask must not complete: $sink", sink.of(RecordingAskSink.COMPLETED).isEmpty())
+            assertTrue("a cancelled ask is not a failure: $sink", sink.of(RecordingAskSink.FAILED).isEmpty())
+        }
+    }
+
+    /** Nothing connected: one sentence, and no stream started. */
+    @Test
+    fun askWithoutAProviderSaysSoWithoutStarting() = runTest {
+        val file = File(root, "short.txt").apply { writeText("# One\n\nA short book about nothing much at all.\n") }
+        val book = kitJson.decodeFromString<BookSummary>(
+            kit.library.importPlainText(file.absolutePath, "Short").await()
+        )
+        val sink = RecordingAskSink()
+        val handle = kit.library.ask(book.id, "What is this about?", WHOLE_BOOK_SCOPE, "", "", kit.providers, sink)
+        assertEquals("nothing was started", 0L, handle)
+        assertEquals(
+            "Connect an AI provider in settings to ask questions.",
+            sink.of(RecordingAskSink.FAILED).single().text,
+        )
+        assertTrue(sink.of(RecordingAskSink.TOKEN).isEmpty())
+    }
+
+    /**
+     * The caption over a scoped conversation is the kit's own
+     * `ReadingPositionSummary`, so the sheet says exactly what the model is
+     * told and exactly what the Apple panel shows.
+     */
+    @Test
+    fun theScopeCaptionIsTheKitsOwnLine() = runTest {
+        val text = buildString {
+            for (chapter in 1..4) {
+                append("# Chapter $chapter\n\n")
+                for (paragraph in 1..6) append("$chapter.$paragraph $WONDERLAND\n\n")
+            }
+        }
+        val file = File(root, "placed.txt").apply { writeText(text) }
+        val book = kitJson.decodeFromString<BookSummary>(
+            kit.library.importPlainText(file.absolutePath, "Placed").await()
+        )
+        val start = kitJson.decodeFromString<AskPosition>(kit.library.positionSummaryJSON(book.id, 0, 0))
+        assertEquals("Chapter 1 of ${book.chapterCount}", start.chapterLine)
+        assertEquals(0, start.percent)
+        assertTrue(start.caption, start.caption.startsWith("Chapter 1 of ${book.chapterCount} · 0%"))
+
+        val third = kitJson.decodeFromString<AskPosition>(kit.library.positionSummaryJSON(book.id, 2, 0))
+        assertEquals(3, third.chapterNumber)
+        assertTrue("progress grows with the place", third.percent > start.percent)
     }
 
     @Test
