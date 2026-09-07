@@ -3,6 +3,7 @@ package com.readrai.readr.ui.reader
 import android.content.Context
 import android.content.SharedPreferences
 import androidx.compose.ui.text.font.FontFamily
+import com.readrai.readr.data.HighlightColor
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -67,6 +68,19 @@ class ReaderSettings(context: Context, name: String = PREFERENCES) {
     private val _appearance = MutableStateFlow(load())
     val appearance: StateFlow<ReaderAppearance> = _appearance.asStateFlow()
 
+    /**
+     * The colour the reader last highlighted with, under the iOS key. It is
+     * deliberately not part of [ReaderAppearance]: nothing about it changes
+     * layout, so it must never reach a `LayoutKey` and re-paginate a chapter.
+     */
+    private val _lastHighlightColor = MutableStateFlow(HighlightColor.fromKey(prefs.getString(KEY_LAST_HIGHLIGHT_COLOR, null).orEmpty()))
+    val lastHighlightColor: StateFlow<HighlightColor> = _lastHighlightColor.asStateFlow()
+
+    fun rememberHighlightColor(color: HighlightColor) {
+        _lastHighlightColor.value = color
+        prefs.edit().putString(KEY_LAST_HIGHLIGHT_COLOR, color.key).apply()
+    }
+
     fun update(transform: (ReaderAppearance) -> ReaderAppearance) {
         val next = transform(_appearance.value).let { it.copy(fontSize = it.fontSize.coerceIn(ReaderAppearance.fontSizeRange)) }
         _appearance.value = next
@@ -94,5 +108,6 @@ class ReaderSettings(context: Context, name: String = PREFERENCES) {
         const val KEY_FONT = "readingFont"
         const val KEY_SPACING = "readingLineSpacing"
         const val KEY_JUSTIFIED = "readingJustified"
+        const val KEY_LAST_HIGHLIGHT_COLOR = "lastHighlightColor"
     }
 }

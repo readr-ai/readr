@@ -10,6 +10,8 @@ import androidx.lifecycle.viewModelScope
 import com.readrai.readr.data.ChapterLayout
 import com.readrai.readr.data.ChapterSummary
 import com.readrai.readr.data.Contents
+import com.readrai.readr.data.Highlight
+import com.readrai.readr.data.HighlightColor
 import com.readrai.readr.data.LibraryRepository
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
@@ -46,6 +48,14 @@ class ReaderViewModel(private val library: suspend () -> LibraryRepository, val 
     var chapterError by mutableStateOf<String?>(null)
         private set
 
+    /** The book's highlights, so the page can draw the ones it covers. Reloaded after every change. */
+    var highlights by mutableStateOf<List<Highlight>>(emptyList())
+        private set
+
+    /** A short-lived reader-facing message — an annotation that would not save. */
+    var message by mutableStateOf<String?>(null)
+        private set
+
     private var repository: LibraryRepository? = null
     private val cache = PaginationCache()
     private var saveJob: Job? = null
@@ -75,6 +85,7 @@ class ReaderViewModel(private val library: suspend () -> LibraryRepository, val 
             persisted = chapterIndex to anchor
             state = State.Ready(book.title, chapters, contents)
             loadChapter()
+            reloadHighlights(repo)
         } catch (e: Exception) {
             state = State.Failed(e.message ?: "Couldn't open this book.")
         }
@@ -152,6 +163,53 @@ class ReaderViewModel(private val library: suspend () -> LibraryRepository, val 
         wantsChapterEnd = false
         anchor = pagination.pages.lastOrNull()?.rangeStart ?: 0
         saveNow()
+    }
+
+    // MARK: Annotations. Every offset is UTF-16 into the chapter text, as
+    // Compose reports it; the page converts its own offsets with `textStart`.
+
+    /** Highlights the selected range. The list is reloaded so the page redraws with it. */
+    fun addHighlight(chapterIndex: Int, utf16Start: Int, utf16End: Int, color: HighlightColor) {
+        annotate("Couldn't save that highlight.") { repo ->
+            repo.addHighlight(bookId, chapterIndex, utf16Start, utf16End, color, note = null)
+        }
+    }
+
+    /** Recolours a highlight, keeping whatever note it carries. */
+    fun recolor(id: String, color: HighlightColor) {
+        val note = highlights.firstOrNull { it.id == id }?.note
+        annotate("Couldn't change that highlight.") { repo -> repo.updateHighlight(id, color, note) }
+    }
+
+    fun removeHighlight(id: String) {
+        annotate("Couldn't remove that highlight.") { repo -> repo.removeHighlight(id) }
+    }
+
+    fun clearMessage() { message = null }
+
+    private fun annotate(failure: String, work: suspend (LibraryRepository) -> Unit) {
+        val repo = repository ?: return
+        viewModelScope.launch {
+            try {
+                work(repo)
+                reloadHighlights(repo)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w(TAG, "annotation failed: ${e.message}")
+                message = failure
+            }
+        }
+    }
+
+    private suspend fun reloadHighlights(repo: LibraryRepository) {
+        try {
+            highlights = repo.highlights(bookId)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "highlights load failed: ${e.message}")
+        }
     }
 
     /** Pages for `key`, computed once; `compute` runs on the caller's thread. */

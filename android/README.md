@@ -57,6 +57,13 @@ was measured is what is shown. `ChapterStyling` turns the kit's format spans
 into the `AnnotatedString` — every kit paragraph is one Compose paragraph,
 with the closing newline drawn as a space so offsets keep their meaning.
 
+`PageSelection` is the selection on that page — long press for the word,
+drag to extend, two handles to adjust — in page-local offsets that become
+chapter offsets through the page's `textStart`. `AnnotationCapsule` is the
+four colour dots and copy that float over the bottom of the text area, and a
+highlight is drawn as a background span (underlined when it carries a note),
+never an inserted glyph, so marking a passage cannot move a line break.
+
 Offsets cross the bridge as **UTF-16** (what Kotlin and Compose index); the
 Swift facade converts to and from the kit's character offsets with the
 chapter text in hand (`TextOffsets.swift`). Positions, contents rows,

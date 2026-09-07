@@ -13,6 +13,7 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
+import com.readrai.readr.data.HighlightColor
 import com.readrai.readr.ui.reader.ReadingTheme
 
 /** The colour roles of one reading theme — the same roles as `ReadingTheme` in `App/Design/Theme.swift`. */
@@ -25,8 +26,16 @@ data class ReadingPalette(
     val faint: Color,
     val line: Color,
     val iris: Color,
+    val markers: Map<HighlightColor, Color>,
     val isDark: Boolean,
-)
+) {
+    /**
+     * The field a highlight of `color` is drawn on in this theme — the iOS
+     * `marker(_:)` table. A colour the kit adds later falls back to yellow,
+     * as `Highlight.markerColor` does.
+     */
+    fun marker(color: HighlightColor): Color = markers[color] ?: markers.getValue(HighlightColor.YELLOW)
+}
 
 /**
  * "Marginalia" — the same tokens as `App/Design/Theme.swift`: warm paper
@@ -38,20 +47,53 @@ object Marginalia {
     val irisOnDark = Color(0xFF938EE9)
     const val aiGlyph = "✦"
 
+    /**
+     * Highlight fields, the "muted literary" palette of `App/Design/Theme.swift`.
+     * Paper and sepia use opaque fields; night washes the same hues over the
+     * dark page so the text stays luminous.
+     */
+    private val paperMarkers = mapOf(
+        HighlightColor.YELLOW to Color(0xFFEAD8A2), // amber
+        HighlightColor.GREEN to Color(0xFFCBD6B2),  // sage
+        HighlightColor.BLUE to Color(0xFFC2D3E0),   // slate
+        HighlightColor.PINK to Color(0xFFE9C8B8),   // clay
+        HighlightColor.PURPLE to Color(0xFFD8CCE4), // lavender
+    )
+    private val sepiaMarkers = mapOf(
+        HighlightColor.YELLOW to Color(0xFFE4CE8F),
+        HighlightColor.GREEN to Color(0xFFC4CFA3),
+        HighlightColor.BLUE to Color(0xFFBCCAD2),
+        HighlightColor.PINK to Color(0xFFE3BFA9),
+        HighlightColor.PURPLE to Color(0xFFCFC2DC),
+    )
+    private val nightMarkers = mapOf(
+        HighlightColor.YELLOW to Color(0xFFE2BC68).copy(alpha = 0.32f),
+        HighlightColor.GREEN to Color(0xFFA3C078).copy(alpha = 0.30f),
+        HighlightColor.BLUE to Color(0xFF7AA8CC).copy(alpha = 0.30f),
+        HighlightColor.PINK to Color(0xFFE29876).copy(alpha = 0.30f),
+        HighlightColor.PURPLE to Color(0xFFB296DC).copy(alpha = 0.30f),
+    )
+
+    /** The solid dot a colour is offered as, in any theme — iOS's `markerSwatch`. */
+    fun markerSwatch(color: HighlightColor): Color = paperMarkers.getValue(color)
+
+    /** The four colours the annotation capsule offers; purple stays renderable for older highlights. */
+    val pickerColors = listOf(HighlightColor.YELLOW, HighlightColor.GREEN, HighlightColor.BLUE, HighlightColor.PINK)
+
     val paper = ReadingPalette(
         background = Color(0xFFEFEBE1), page = Color(0xFFFAF7F0), elevated = Color(0xFFFFFFFF),
         ink = Color(0xFF26221C), muted = Color(0xFF7E7669), faint = Color(0xFFA89F8F),
-        line = Color(0xFF26221C).copy(alpha = 0.14f), iris = iris, isDark = false,
+        line = Color(0xFF26221C).copy(alpha = 0.14f), iris = iris, markers = paperMarkers, isDark = false,
     )
     val sepia = ReadingPalette(
         background = Color(0xFFE4D8BD), page = Color(0xFFF3E9D0), elevated = Color(0xFFFAF2DD),
         ink = Color(0xFF3B3020), muted = Color(0xFF83745B), faint = Color(0xFFA29170),
-        line = Color(0xFF3B3020).copy(alpha = 0.17f), iris = iris, isDark = false,
+        line = Color(0xFF3B3020).copy(alpha = 0.17f), iris = iris, markers = sepiaMarkers, isDark = false,
     )
     val night = ReadingPalette(
         background = Color(0xFF131109), page = Color(0xFF1E1B14), elevated = Color(0xFF282419),
         ink = Color(0xFFE7E0D1), muted = Color(0xFF9C9483), faint = Color(0xFF6F6857),
-        line = Color(0xFFE7E0D1).copy(alpha = 0.15f), iris = irisOnDark, isDark = true,
+        line = Color(0xFFE7E0D1).copy(alpha = 0.15f), iris = irisOnDark, markers = nightMarkers, isDark = true,
     )
 
     fun palette(theme: ReadingTheme): ReadingPalette = when (theme) {

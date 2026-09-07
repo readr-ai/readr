@@ -24,6 +24,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Snackbar
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -41,12 +42,14 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFontFamilyResolver
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextMeasurer
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
@@ -58,10 +61,14 @@ import androidx.compose.ui.zIndex
 import com.readrai.readr.ui.theme.LocalReadingPalette
 import com.readrai.readr.ui.theme.ReadingPalette
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import kotlin.math.abs
 
 private enum class ReaderSheet { Contents, Appearance }
+
+/** How long a reader-facing message stays up before it fades of its own accord. */
+private const val MESSAGE_MILLIS = 4_000L
 
 /** Page margins in dp: the Apple reader's compact and regular insets. */
 private class PageInsets(val top: Dp, val leading: Dp, val bottom: Dp, val trailing: Dp)
@@ -99,7 +106,20 @@ fun ReaderScreen(model: ReaderViewModel, settings: ReaderSettings, onBack: () ->
                     TextButton(onClick = onBack) { Text("Back to library") }
                 }
             }
-            is ReaderViewModel.State.Ready -> PageSurface(model, s, appearance, palette, onChromeToggle = { showChrome = !showChrome })
+            is ReaderViewModel.State.Ready -> PageSurface(model, s, appearance, palette, settings, onChromeToggle = { showChrome = !showChrome })
+        }
+
+        // Annotation trouble is the reader's business, briefly and then gone.
+        val message = model.message
+        LaunchedEffect(message) {
+            if (message != null) { delay(MESSAGE_MILLIS); model.clearMessage() }
+        }
+        if (message != null) {
+            Snackbar(
+                Modifier.align(Alignment.BottomCenter).padding(16.dp).testTag("reader.message"),
+                containerColor = palette.elevated,
+                contentColor = palette.ink,
+            ) { Text(message, style = MaterialTheme.typography.bodyMedium) }
         }
 
         AnimatedVisibility(visible = showChrome, modifier = Modifier.align(Alignment.TopCenter).zIndex(1f), enter = fadeIn(), exit = fadeOut()) {
@@ -145,12 +165,14 @@ private fun PageSurface(
     ready: ReaderViewModel.State.Ready,
     appearance: ReaderAppearance,
     palette: ReadingPalette,
+    settings: ReaderSettings,
     onChromeToggle: () -> Unit,
 ) {
     val chapter = model.chapter
     val density = LocalDensity.current
     val fontFamilyResolver = LocalFontFamilyResolver.current
     val layoutDirection = LocalLayoutDirection.current
+    val clipboard = LocalClipboardManager.current
 
     BoxWithConstraints(Modifier.fillMaxSize().safeDrawingPadding()) {
         val compact = maxWidth < 600.dp
@@ -204,12 +226,22 @@ private fun PageSurface(
         }
         val swipeDistancePx = with(density) { turnSwipeDistance.toPx() }
 
+        // Selecting on the page: the selection and the capsule belong to the
+        // glyphs on screen, so a turn or a re-pagination drops them.
+        val selection = remember { PageSelectionState() }
+        var editedId by remember { mutableStateOf<String?>(null) }
+        LaunchedEffect(set, pageIndex) { selection.clear(); editedId = null }
+        val annotating = { selection.isActive || editedId != null }
+        val dismiss = { selection.clear(); editedId = null }
+
         Column(
             Modifier
                 .fillMaxSize()
                 .pointerInput(set) {
                     detectTapGestures { offset ->
                         when {
+                            // While the capsule is up, a tap anywhere else puts it away.
+                            annotating() -> dismiss()
                             offset.x < size.width * 0.25f -> turn(-1)
                             offset.x > size.width * 0.75f -> turn(1)
                             else -> onChromeToggle()
@@ -220,7 +252,7 @@ private fun PageSurface(
                     var dragged = 0f
                     detectHorizontalDragGestures(
                         onDragStart = { dragged = 0f },
-                        onDragEnd = { if (abs(dragged) > swipeDistancePx) turn(if (dragged < 0) 1 else -1) },
+                        onDragEnd = { if (!annotating() && abs(dragged) > swipeDistancePx) turn(if (dragged < 0) 1 else -1) },
                         onDragCancel = { dragged = 0f },
                     ) { _, amount -> dragged += amount }
                 },
@@ -250,14 +282,66 @@ private fun PageSurface(
                         set == null -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator(color = palette.muted) }
                         pages.isNotEmpty() -> {
                             val page = pages[pageIndex]
-                            val content = remember(set, pageIndex, palette) { ChapterStyling.pageText(set.styled, page.textStart, page.textEnd, palette) }
+                            val chapterIndex = model.chapterIndex
+                            val marked = model.highlights.filter { it.chapterIndex == chapterIndex }
+                            val content = remember(set, pageIndex, palette, marked) {
+                                ChapterStyling.pageText(set.styled, page.textStart, page.textEnd, palette, marked)
+                            }
+                            val edited = editedId?.let { id -> marked.firstOrNull { it.id == id } }
+                            val range = selection.range
+                            val target: AnnotationTarget? = when {
+                                edited != null -> AnnotationTarget.Existing(edited)
+                                range != null && !range.collapsed -> AnnotationTarget.Selected(
+                                    chapterIndex = chapterIndex,
+                                    utf16Start = page.textStart + range.min,
+                                    utf16End = page.textStart + range.max,
+                                    quotedText = content.text.substring(range.min.coerceIn(0, content.length), range.max.coerceIn(0, content.length)),
+                                )
+                                else -> null
+                            }
                             Text(
                                 text = content,
                                 style = textStyle,
                                 softWrap = true,
                                 overflow = TextOverflow.Clip,
-                                modifier = Modifier.fillMaxWidth().testTag("reader.page"),
+                                onTextLayout = { selection.layout = it },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .testTag("reader.page")
+                                    .pageSelection(key = content, state = selection, palette = palette) { pageOffset ->
+                                        // A tap puts the capsule away, or opens it on the highlight under the finger;
+                                        // anything else is left to the page-turn zones behind.
+                                        if (target != null) {
+                                            dismiss()
+                                            true
+                                        } else {
+                                            val offset = page.textStart + pageOffset
+                                            val hit = marked.firstOrNull { offset >= it.utf16Start && offset < it.utf16End }
+                                            if (hit != null) { editedId = hit.id; true } else false
+                                        }
+                                    },
                             )
+                            if (target != null) {
+                                AnnotationCapsule(
+                                    target = target,
+                                    palette = palette,
+                                    onHighlight = { color ->
+                                        when (target) {
+                                            is AnnotationTarget.Existing -> model.recolor(target.highlight.id, color)
+                                            is AnnotationTarget.Selected -> {
+                                                model.addHighlight(target.chapterIndex, target.utf16Start, target.utf16End, color)
+                                                dismiss()
+                                            }
+                                        }
+                                        settings.rememberHighlightColor(color)
+                                    },
+                                    onCopy = { clipboard.setText(AnnotatedString(target.quotedText)); dismiss() },
+                                    modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 4.dp),
+                                    onRemove = (target as? AnnotationTarget.Existing)?.let { existing ->
+                                        { model.removeHighlight(existing.highlight.id); dismiss() }
+                                    },
+                                )
+                            }
                         }
                     }
                 }

@@ -6,12 +6,14 @@ import androidx.compose.ui.test.SemanticsNodeInteraction
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.click
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.longClick
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTouchInput
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.readrai.readr.data.BookSummary
+import com.readrai.readr.data.HighlightColor
 import com.readrai.readr.data.LibraryRepository
 import com.readrai.readr.data.kitJson
 import com.readrai.readr.kit.KeystoreSecretStore
@@ -98,6 +100,11 @@ class ReaderScreenTest {
         compose.onNodeWithTag("reader.page").performTouchInput { click(Offset(width * fraction, height / 2f)) }
     }
 
+    private fun nodes(tag: String) = compose.onAllNodes(androidx.compose.ui.test.hasTestTag(tag)).fetchSemanticsNodes()
+    private fun awaitTag(tag: String) = compose.waitUntil(10_000) { nodes(tag).isNotEmpty() }
+    private fun awaitNoTag(tag: String) = compose.waitUntil(10_000) { nodes(tag).isEmpty() }
+    private fun highlights() = runBlocking { repository.highlights(book.id) }
+
     @Test
     fun opensOnTheFirstPageAndTurnsWithTaps() {
         val model = open()
@@ -171,6 +178,32 @@ class ReaderScreenTest {
         assertEquals(middle, model.anchor)
         assertTrue("the middle of the chapter opens past page 1", pageNumber() > 1)
         assertTrue("and before the last page", pageNumber() < pageCount())
+    }
+
+    @Test
+    fun aLongPressHighlightsAWordAndTappingItAgainRemovesIt() {
+        open()
+        compose.onNodeWithTag("reader.page").performTouchInput { longClick(center) }
+        awaitTag("annotation.capsule")
+
+        compose.onNodeWithTag("annotation.color.green").performClick()
+        compose.waitUntil(10_000) { highlights().isNotEmpty() }
+        val created = highlights().single()
+        val chapterText = runBlocking { repository.chapterText(book.id, created.chapterIndex) }
+        assertEquals(chapterText.substring(created.utf16Start, created.utf16End), created.quotedText)
+        assertTrue("a whole word, not a blank: '${created.quotedText}'", created.quotedText.isNotBlank())
+        assertTrue("a whole word, not a run: '${created.quotedText}'", created.quotedText.none { it.isWhitespace() })
+        assertEquals("green", created.color)
+        // The selection goes with the capsule, and the colour is remembered for next time.
+        awaitNoTag("annotation.capsule")
+        assertEquals(HighlightColor.GREEN, settings.lastHighlightColor.value)
+
+        // Tapping the highlighted word opens the capsule on it; ✕ takes the highlight away.
+        compose.onNodeWithTag("reader.page").performTouchInput { click(center) }
+        awaitTag("annotation.remove")
+        compose.onNodeWithTag("annotation.remove").performClick()
+        compose.waitUntil(10_000) { highlights().isEmpty() }
+        awaitNoTag("annotation.capsule")
     }
 
     @Test
