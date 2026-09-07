@@ -126,9 +126,10 @@ class PageSelectionState {
 /**
  * Selecting on the page: long-press for the word under the finger, drag on to
  * extend, and two handles to adjust. Taps are offered to `onTap` with the
- * page-local offset under the finger and where the finger landed; only a tap
- * it claims is consumed, so an ordinary tap still reaches the reader's
- * page-turn zones behind this.
+ * page-local offset under the finger — [NO_CHARACTER] when the finger was over
+ * no glyph at all — and where the finger landed; only a tap it claims is
+ * consumed, so an ordinary tap still reaches the reader's page-turn zones
+ * behind this.
  */
 @Composable
 fun Modifier.pageSelection(
@@ -204,18 +205,25 @@ private suspend fun AwaitPointerEventScope.trackUntilUp(id: PointerId, onMove: (
 }
 
 /**
- * The character the finger is over. `getOffsetForPosition` answers with a
- * caret — at the right half of a glyph it names the *next* character — so the
- * glyph boxes decide, and a tap on the last letter of a highlight lands
- * inside it rather than just past its end.
+ * The character the finger is over, or [NO_CHARACTER] where it is over none —
+ * the white past the end of a short line, the margin below the last one, the
+ * air beside a centred picture. `getOffsetForPosition` answers with a caret,
+ * which is never "nowhere": it names the nearest insertion point however far
+ * away the glyphs are, so a tap in a blank corner would resolve to whatever
+ * happened to be closest and could follow a link the finger never touched.
+ * The glyph boxes decide instead — and a tap on the last letter of a highlight
+ * still lands inside it rather than just past its end.
  */
 private fun characterUnder(layout: TextLayoutResult, position: Offset): Int {
     val length = layout.layoutInput.text.length
     val caret = layout.getOffsetForPosition(position).coerceIn(0, length)
     if (caret < length && layout.getBoundingBox(caret).contains(position)) return caret
     if (caret > 0 && layout.getBoundingBox(caret - 1).contains(position)) return caret - 1
-    return caret
+    return NO_CHARACTER
 }
+
+/** What [characterUnder] reports for a tap that landed on no glyph at all. */
+const val NO_CHARACTER = -1
 
 private fun grabbedHandle(
     state: PageSelectionState,

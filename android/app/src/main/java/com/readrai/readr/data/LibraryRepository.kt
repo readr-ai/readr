@@ -85,6 +85,38 @@ class LibraryRepository(private val context: Context, private val kit: Kit) {
         kitJson.decodeFromString(kit.library.chapterLayoutJSON(bookId, index.toLong()))
     }
 
+    /** The chapter's inline images, in reading order; offsets in UTF-16. */
+    suspend fun chapterImages(bookId: String, index: Int): List<ChapterImage> = withContext(Dispatchers.IO) {
+        kitJson.decodeFromString(kit.library.chapterImagesJSON(bookId, index.toLong()))
+    }
+
+    /** The chapter's lifted footnotes — empty for most books. */
+    suspend fun chapterFootnotes(bookId: String, index: Int): List<Footnote> = withContext(Dispatchers.IO) {
+        kitJson.decodeFromString(kit.library.chapterFootnotesJSON(bookId, index.toLong()))
+    }
+
+    /**
+     * The book's retained original, where an inline image's bytes live. Null
+     * for a book with no archive behind it (plain text) or one whose original
+     * has gone — the reader draws alt text rather than failing to open. The
+     * path is the facade's, existence-checked there; nothing here knows how
+     * the library lays its directories out.
+     */
+    suspend fun archive(bookId: String): File? {
+        val path = book(bookId)?.archivePath ?: return null
+        return withContext(Dispatchers.IO) { File(path).takeIf { it.isFile } }
+    }
+
+    /**
+     * The UTF-16 offset a link's fragment names in a chapter, or null when
+     * that chapter lifts no such anchor. One question, one answer: reading it
+     * out of [chapterLayout] would ship every format span in the document
+     * across the bridge to resolve a single id.
+     */
+    suspend fun anchorOffset(bookId: String, index: Int, fragment: String): Int? = withContext(Dispatchers.IO) {
+        kit.library.anchorOffset(bookId, index.toLong(), fragment).takeIf { it >= 0 }?.toInt()
+    }
+
     /** The Contents rows: the real table of contents, or the spine when there is none. */
     suspend fun contents(bookId: String): Contents = withContext(Dispatchers.IO) {
         kitJson.decodeFromString(kit.library.contentsJSON(bookId))
@@ -105,6 +137,17 @@ class LibraryRepository(private val context: Context, private val kit: Kit) {
             try { savePosition(bookId, chapterIndex, utf16Offset) } catch (e: Exception) { Log.w(TAG, "position save failed: ${e.message}") }
         }
     }
+
+    /**
+     * Every match for `query` in the book, in reading order and capped at
+     * [SEARCH_LIMIT]. Case-insensitive, and a blank query matches nothing —
+     * the kit decides both, so a phrase found here is the phrase the Apple
+     * reader finds too.
+     */
+    suspend fun search(bookId: String, query: String, limit: Int = SEARCH_LIMIT): List<SearchResult> =
+        withContext(Dispatchers.IO) {
+            kitJson.decodeFromString(kit.library.searchJSON(bookId, query, limit.toLong()))
+        }
 
     // MARK: Annotations — every offset is UTF-16, as Compose reports it.
 
@@ -174,6 +217,9 @@ class LibraryRepository(private val context: Context, private val kit: Kit) {
 
     companion object {
         const val SAMPLE_ASSET = "alice-in-wonderland.epub"
+
+        /** The kit's own `BookSearcher.resultCap`: more hits than anyone scans in a list. */
+        const val SEARCH_LIMIT = 100
         private const val TAG = "Readr.Library"
 
         /**

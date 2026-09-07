@@ -1,6 +1,8 @@
 package com.readrai.readr
 
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.Placeholder
+import androidx.compose.ui.text.PlaceholderVerticalAlign
 import androidx.compose.ui.text.TextMeasurer
 import androidx.compose.ui.text.font.createFontFamilyResolver
 import androidx.compose.ui.text.style.TextOverflow
@@ -8,8 +10,11 @@ import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import com.readrai.readr.data.ChapterImages
+import com.readrai.readr.data.InlineImage
 import com.readrai.readr.data.LayoutSpan
 import com.readrai.readr.ui.reader.ChapterStyling
 import com.readrai.readr.ui.reader.LayoutKey
@@ -19,6 +24,8 @@ import com.readrai.readr.ui.reader.Pagination
 import com.readrai.readr.ui.reader.ReaderAppearance
 import com.readrai.readr.ui.reader.StyledChapter
 import com.readrai.readr.ui.theme.Marginalia
+import java.io.File
+import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -48,15 +55,27 @@ class LayoutPaginatorTest {
         return styled to LayoutPaginator.paginate(styled, style, width, height, measurer)
     }
 
+    /**
+     * A page as it is actually drawn — the same styled slice, at the same
+     * width, with the same inline images in it. Measuring it without the
+     * placeholders would be measuring a different page.
+     */
     private fun drawn(styled: StyledChapter, page: Page) = measurer.measure(
         ChapterStyling.pageText(styled, page.textStart, page.textEnd, palette),
-        style, TextOverflow.Clip, softWrap = true, constraints = Constraints(maxWidth = width),
+        style, TextOverflow.Clip, softWrap = true,
+        placeholders = styled.placeholdersIn(page.textStart, page.textEnd),
+        constraints = Constraints(maxWidth = width),
     )
 
-    private fun assertEveryPageFits(styled: StyledChapter, pages: List<Page>) {
+    private fun assertEveryPageFits(styled: StyledChapter, pages: List<Page>, atWidth: Int = width, atHeight: Int = height) {
         for ((index, page) in pages.withIndex()) {
-            val result = drawn(styled, page)
-            assertTrue("page $index is ${result.size.height}px tall for a ${height}px page", result.size.height <= height + 1)
+            val result = measurer.measure(
+                ChapterStyling.pageText(styled, page.textStart, page.textEnd, palette),
+                style, TextOverflow.Clip, softWrap = true,
+                placeholders = styled.placeholdersIn(page.textStart, page.textEnd),
+                constraints = Constraints(maxWidth = atWidth),
+            )
+            assertTrue("page $index is ${result.size.height}px tall for a ${atHeight}px page", result.size.height <= atHeight + 1)
             assertFalse("page $index overflowed when drawn", result.didOverflowHeight)
         }
     }
@@ -155,6 +174,132 @@ class LayoutPaginatorTest {
         // Whereas a page that opens on a paragraph keeps the book indent.
         val fresh = pages.first { it.textStart == 0 || styled.startsParagraph(it.textStart) }
         assertTrue("a paragraph start is indented", drawn(styled, fresh).getHorizontalPosition(0, usePrimaryDirection = true) > 0f)
+    }
+
+    /**
+     * A chapter with a picture in it. The placeholder is a whole number of
+     * lines tall, so a paginator that ignored it would happily fill a page to
+     * the brim and then overflow it by exactly that much when the page was
+     * drawn — which is the failure this guards.
+     */
+    @Test
+    fun aChapterWithAnInlineImageStillTilesAndStillFits() {
+        val lineHeightPx = with(density) { (layout.fontSize * layout.lineHeightMultiplier).sp.toPx() }
+        val imageHeightPx = lineHeightPx * 5
+        val head = chapter(6)
+        val text = "$head\n￼\n${chapter(6)}"
+        val offset = head.length + 1
+        assertEquals('￼', text[offset])
+        val image = with(density) {
+            InlineImage(
+                id = "image-$offset",
+                utf16Offset = offset,
+                archivePath = "images/figure.png",
+                placeholder = Placeholder(width.toFloat().toSp(), imageHeightPx.toSp(), PlaceholderVerticalAlign.Center),
+                lineHeight = (imageHeightPx + 4.dp.toPx()).toSp(),
+                hasPicture = true,
+                alt = "A figure",
+            )
+        }
+        val styled = ChapterStyling.styled(text, emptyList(), layout, listOf(image))
+        val pages = LayoutPaginator.paginate(styled, style, width, height, measurer)
+
+        assertTrue("several pages", pages.size > 2)
+        assertEquals(0, pages.first().rangeStart)
+        assertEquals(text.length, pages.last().rangeEnd)
+        pages.zipWithNext().forEach { (a, b) -> assertEquals("ranges must tile", a.rangeEnd, b.rangeStart) }
+        assertEveryPageFits(styled, pages)
+
+        // The picture belongs to exactly one page, and its line belongs to that
+        // page whole: the placeholder is never cut away from the line it is on.
+        val holding = pages.filter { offset >= it.textStart && offset < it.textEnd }
+        assertEquals("one page holds the picture", 1, holding.size)
+        val page = holding.single()
+        val result = drawn(styled, page)
+        val line = result.getLineForOffset(offset - page.textStart)
+        assertTrue("its line starts on the page", result.getLineStart(line) >= 0)
+        assertTrue("and ends on it", result.getLineEnd(line, visibleEnd = false) <= page.textEnd - page.textStart)
+        assertTrue("the picture's line is as tall as the picture",
+            result.getLineBottom(line) - result.getLineTop(line) >= imageHeightPx - 1f)
+        assertEquals("one placeholder on that page", 1, styled.placeholdersIn(page.textStart, page.textEnd).size)
+    }
+
+    /**
+     * The placeholders are part of the shape, not decoration: a narrower
+     * column is a smaller picture, a different set of line breaks and a
+     * different number of pages. This is why the images are placed inside the
+     * same computation the pagination is cached under — a set built for one
+     * column and drawn in another would overflow by exactly the difference.
+     */
+    @Test
+    fun aPictureScalesWithTheColumnAndEveryPageStillFits() = runTest {
+        val root = File(context.cacheDir, "paginator-images-${System.nanoTime()}").apply { mkdirs() }
+        try {
+            val archive = IllustratedBook.write(File(root, "illustrated.epub"))
+            ChapterImages.clearCache()
+            val head = chapter(6)
+            val text = "$head\n￼\n${chapter(6)}"
+            val offset = head.length + 1
+            val narrow = width / 2
+
+            suspend fun laidOut(columnWidth: Int): Pair<StyledChapter, List<Page>> {
+                val images = ChapterImages.place(
+                    archive = archive,
+                    bookId = "paginator-test",
+                    images = listOf(
+                        com.readrai.readr.data.ChapterImage(
+                            utf16Offset = offset,
+                            archivePath = IllustratedBook.IMAGE_PATH,
+                            alt = IllustratedBook.ALT,
+                        ),
+                    ),
+                    density = density,
+                    textWidthPx = columnWidth,
+                    pageHeightPx = height,
+                    fallbackLineHeightPx = with(density) { (layout.fontSize * layout.lineHeightMultiplier).sp.toPx() },
+                )
+                val styled = ChapterStyling.styled(text, emptyList(), layout, images)
+                return styled to LayoutPaginator.paginate(styled, style, columnWidth, height, measurer)
+            }
+
+            val (wideStyled, widePages) = laidOut(width)
+            val (narrowStyled, narrowPages) = laidOut(narrow)
+
+            val widePlaceholder = with(density) { wideStyled.placeholders.single().item.height.toPx() }
+            val narrowPlaceholder = with(density) { narrowStyled.placeholders.single().item.height.toPx() }
+            assertTrue(
+                "a narrower column is a shorter picture ($narrowPlaceholder of $widePlaceholder)",
+                narrowPlaceholder < widePlaceholder,
+            )
+            assertTrue("and the narrower chapter runs to more pages", narrowPages.size > widePages.size)
+            assertEveryPageFits(wideStyled, widePages)
+            assertEveryPageFits(narrowStyled, narrowPages, atWidth = narrow)
+        } finally {
+            ChapterImages.clearCache()
+            root.deleteRecursively()
+        }
+    }
+
+    /**
+     * The scroll layout's pieces: they tile the chapter, they cut where a
+     * paragraph starts, and none of them is measured to make them — which is
+     * the point of a scroll, where there is no page height to fill.
+     */
+    @Test
+    fun chunksTileTheChapterAndCutAtParagraphs() {
+        val text = chapter(260)
+        val styled = ChapterStyling.styled(text, emptyList(), layout)
+        val chunks = LayoutPaginator.chunks(styled)
+        assertTrue("a long chapter is several chunks, got ${chunks.size}", chunks.size > 2)
+        assertEquals(0, chunks.first().textStart)
+        assertEquals(text.length, chunks.last().textEnd)
+        chunks.zipWithNext().forEach { (a, b) ->
+            assertEquals("chunks must tile", a.textEnd, b.textStart)
+            assertTrue("and cut where a paragraph begins", styled.startsParagraph(b.textStart))
+        }
+        assertEquals("every word is in exactly one chunk", LayoutPaginator.wordCount(text, 0, text.length), chunks.sumOf { it.wordCount })
+        assertTrue("no chunk outgrows the measurement bound", chunks.all { it.textEnd - it.textStart <= LayoutPaginator.CHUNK })
+        assertTrue(LayoutPaginator.chunks(ChapterStyling.styled("", emptyList(), layout)).isEmpty())
     }
 
     @Test

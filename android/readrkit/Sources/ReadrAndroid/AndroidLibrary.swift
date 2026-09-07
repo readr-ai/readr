@@ -13,9 +13,15 @@ struct BookSummary: Codable {
   var isFixedLayout: Bool
   /// Absolute path of the extracted cover image, or nil for a placeholder.
   var coverPath: String?
+  /// Absolute path of the retained original under `Books/`, where an inline
+  /// image's bytes live — nil for a book whose original has gone, or that
+  /// never had one. Reported the same way as `coverPath`: the layout under
+  /// the library root is this facade's business, so no caller has to rebuild
+  /// it from a file name and guess whether the file is still there.
+  var archivePath: String?
   var sourceFilename: String?
 
-  init(_ book: Book, coverPath: String?) {
+  init(_ book: Book, coverPath: String?, archivePath: String?) {
     id = book.id.uuidString
     title = book.metadata.title
     authors = book.metadata.authors
@@ -25,6 +31,7 @@ struct BookSummary: Codable {
     isImageOnly = book.metadata.isImageOnly ?? false
     isFixedLayout = book.metadata.isFixedLayout ?? false
     self.coverPath = coverPath
+    self.archivePath = archivePath
     sourceFilename = book.sourceFilename
   }
 }
@@ -36,6 +43,11 @@ struct ChapterSummary: Codable {
   /// False for spine documents marked `linear="no"`; continuous reading
   /// skips them.
   var isLinear: Bool
+  /// The chapter's entry path inside the EPUB, or nil for a book that has no
+  /// archive behind it (plain text, Markdown). An internal link's archive
+  /// path is matched against these, so Kotlin resolves a tapped link to a
+  /// chapter from the list it already holds rather than asking again.
+  var sourcePath: String?
 }
 
 /// A `FormatSpan` with UTF-16 offsets, flattened for Kotlin. `kind` is one
@@ -226,7 +238,9 @@ public final class AndroidLibrary {
 
   public func booksJSON() throws -> String {
     try readerFacing {
-      let summaries = store.allBooks().map { BookSummary($0, coverPath: coverPath(for: $0.id)) }
+      let summaries = store.allBooks().map {
+        BookSummary($0, coverPath: coverPath(for: $0.id), archivePath: archivePath(for: $0))
+      }
       return String(decoding: try Self.encoder().encode(summaries), as: UTF8.self)
     }
   }
@@ -238,7 +252,8 @@ public final class AndroidLibrary {
         ChapterSummary(
           index: index, title: book.chapterDisplayTitle(index),
           characterCount: book.chapters[index].text.count,
-          isLinear: book.chapters[index].isLinear ?? true)
+          isLinear: book.chapters[index].isLinear ?? true,
+          sourcePath: book.chapters[index].sourcePath)
       }
       return String(decoding: try Self.encoder().encode(chapters), as: UTF8.self)
     }
@@ -262,6 +277,20 @@ public final class AndroidLibrary {
         spans: (chapter.formatSpans ?? []).compactMap { LayoutSpan($0, offsets: offsets) },
         anchors: (chapter.anchors ?? [:]).mapValues { offsets.utf16Offset(ofCharacter: $0) })
       return String(decoding: try Self.encoder().encode(layout), as: UTF8.self)
+    }
+  }
+
+  /// The UTF-16 offset a single element id names in a chapter, or -1 when the
+  /// chapter has no such anchor. A tapped link asks one question about one
+  /// fragment; answering it through `chapterLayoutJSON` would serialise every
+  /// format span in the target document to do it.
+  public func anchorOffset(_ bookID: String, chapterIndex: Int64, fragment: String) throws -> Int64 {
+    try readerFacing {
+      let book = try book(bookID)
+      let chapter = try chapter(book, chapterIndex)
+      guard let characterOffset = chapter.anchors?[fragment] else { return -1 }
+      let offsets = offsetTables.table(for: book, chapterIndex: Int(chapterIndex))
+      return Int64(offsets.utf16Offset(ofCharacter: characterOffset))
     }
   }
 
@@ -362,7 +391,8 @@ public final class AndroidLibrary {
     book.coverImageData = nil
     book.sourceFilename = try retainOriginal(original, bookID: book.id, ext: ext)
     try store.add(book)
-    return String(decoding: try Self.encoder().encode(BookSummary(book, coverPath: coverPath(for: book.id))), as: UTF8.self)
+    let summary = BookSummary(book, coverPath: coverPath(for: book.id), archivePath: archivePath(for: book))
+    return String(decoding: try Self.encoder().encode(summary), as: UTF8.self)
   }
 
   func chapter(_ book: Book, _ index: Int64) throws -> Chapter {
@@ -391,6 +421,15 @@ public final class AndroidLibrary {
 
   private func coverPath(for id: UUID) -> String? {
     let url = coverURL(for: id)
+    return FileManager.default.fileExists(atPath: url.path) ? url.path : nil
+  }
+
+  /// Where a book's retained original actually is, or nil when there is none
+  /// on disk any more — checked here rather than trusted, so Kotlin never
+  /// opens a path that has since been removed.
+  private func archivePath(for book: Book) -> String? {
+    guard let name = book.sourceFilename else { return nil }
+    let url = booksDirectory.appendingPathComponent(name)
     return FileManager.default.fileExists(atPath: url.path) ? url.path : nil
   }
 }

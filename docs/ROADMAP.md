@@ -332,10 +332,12 @@ bridge; `android/README.md` has the build recipe.
   running head + page label, tap zones and swipes, chapter overflow, the
   Apple reader's anchor/save timing; Appearance sheet (theme, size, font,
   spacing, justify; iOS preference keys); Contents sheet (real TOC or spine)
-- [ ] A2b: selection, highlights (four colours), notes, bookmarks, Highlights
-  list
-- [ ] A2c: in-book search, inline images, internal links + footnotes, double
-  page on wide screens, scroll layout
+- [x] A2b: selection, highlights (four colours), notes, bookmarks, Highlights
+  list — long-press selection with handles, the annotation capsule, notes on
+  highlights, the bar's bookmark ribbon and the Highlights sheet
+- [x] A2c: in-book search, inline images, internal links + footnotes, double
+  page on wide screens, scroll layout — plus the reader's link policy (web,
+  mail and telephone only) and a scroll drawn as chunks, not pages
 
 ### Next
 - A3 Ask: provider settings, streamed Ask with citations, Gemini Nano tier.

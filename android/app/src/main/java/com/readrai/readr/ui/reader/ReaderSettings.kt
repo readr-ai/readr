@@ -33,6 +33,31 @@ enum class ReaderFont(val key: String, val displayName: String, val family: Font
     }
 }
 
+/**
+ * How the chapter is laid out, keyed as the iOS app persists it
+ * (`Paginator.PageLayout`): a continuous scroll, one page, or two facing
+ * pages. An unknown stored value reads as a single page, which is the
+ * first-run default on both platforms.
+ */
+enum class PageLayout(val key: String, val displayName: String) {
+    Scroll("scroll", "Scroll"), SinglePage("singlePage", "Single page"), DoublePage("doublePage", "Two pages");
+
+    /** Text columns in one spread — the kit's `pagesPerSpread`. */
+    val pagesPerSpread: Int get() = if (this == DoublePage) 2 else 1
+
+    /**
+     * What this layout means on a surface of this width. A facing-page spread
+     * needs a wide window; on a narrow one a stored `doublePage` reads as a
+     * single page — the *preference* is untouched, so a phone plugged into a
+     * larger screen (or turned) gets its two pages back.
+     */
+    fun on(wide: Boolean): PageLayout = if (this == DoublePage && !wide) SinglePage else this
+
+    companion object {
+        fun fromKey(key: String?): PageLayout = entries.firstOrNull { it.key == key } ?: SinglePage
+    }
+}
+
 /** Extra leading as a fraction of the font size, the same steps as iOS. */
 enum class LineSpacing(val key: String, val displayName: String, val extraLeading: Float) {
     Compact("compact", "Compact", 0.10f), Normal("normal", "Normal", 0.24f), Relaxed("relaxed", "Relaxed", 0.52f);
@@ -48,6 +73,7 @@ data class ReaderAppearance(
     val font: ReaderFont = ReaderFont.Serif,
     val spacing: LineSpacing = LineSpacing.Normal,
     val justified: Boolean = true,
+    val layout: PageLayout = PageLayout.SinglePage,
 ) {
     /** Line height as a multiple of the font size: a 1.2 em line box plus the extra leading. */
     val lineHeightMultiplier: Float get() = 1.2f + spacing.extraLeading
@@ -90,6 +116,7 @@ class ReaderSettings(context: Context, name: String = PREFERENCES) {
             .putString(KEY_FONT, next.font.key)
             .putString(KEY_SPACING, next.spacing.key)
             .putBoolean(KEY_JUSTIFIED, next.justified)
+            .putString(KEY_LAYOUT, next.layout.key)
             .apply()
     }
 
@@ -99,6 +126,7 @@ class ReaderSettings(context: Context, name: String = PREFERENCES) {
         font = ReaderFont.fromKey(prefs.getString(KEY_FONT, null)),
         spacing = LineSpacing.fromKey(prefs.getString(KEY_SPACING, null)),
         justified = prefs.getBoolean(KEY_JUSTIFIED, true),
+        layout = PageLayout.fromKey(prefs.getString(KEY_LAYOUT, null)),
     )
 
     companion object {
@@ -108,6 +136,7 @@ class ReaderSettings(context: Context, name: String = PREFERENCES) {
         const val KEY_FONT = "readingFont"
         const val KEY_SPACING = "readingLineSpacing"
         const val KEY_JUSTIFIED = "readingJustified"
+        const val KEY_LAYOUT = "readerLayout"
         const val KEY_LAST_HIGHLIGHT_COLOR = "lastHighlightColor"
     }
 }

@@ -8,12 +8,16 @@ import androidx.compose.runtime.setValue
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.readrai.readr.data.Bookmark
+import com.readrai.readr.data.ChapterImage
 import com.readrai.readr.data.ChapterLayout
 import com.readrai.readr.data.ChapterSummary
 import com.readrai.readr.data.Contents
+import com.readrai.readr.data.Footnote
 import com.readrai.readr.data.Highlight
 import com.readrai.readr.data.HighlightColor
 import com.readrai.readr.data.LibraryRepository
+import com.readrai.readr.data.SearchResult
+import java.io.File
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
@@ -36,7 +40,19 @@ class ReaderViewModel(private val library: suspend () -> LibraryRepository, val 
         data class Ready(val title: String, val chapters: List<ChapterSummary>, val contents: Contents) : State
     }
 
-    class LoadedChapter(val index: Int, val text: String, val layout: ChapterLayout)
+    /**
+     * A chapter as the page needs it: its text, its layout, the inline images
+     * anchored in it, and the footnotes lifted out of it. All four arrive
+     * together — pagination depends on the pictures, so a chapter that is half
+     * loaded is a chapter that would have to be laid out twice.
+     */
+    class LoadedChapter(
+        val index: Int,
+        val text: String,
+        val layout: ChapterLayout,
+        val images: List<ChapterImage> = emptyList(),
+        val footnotes: List<Footnote> = emptyList(),
+    )
 
     /** A drawn page and the chapter it came from — the pair, never the page alone. */
     data class VisiblePage(val chapterIndex: Int, val page: Page)
@@ -75,6 +91,22 @@ class ReaderViewModel(private val library: suspend () -> LibraryRepository, val 
     var visible by mutableStateOf<VisiblePage?>(null)
         private set
 
+    /**
+     * The in-book search: what was typed, what came back, and whether a scan
+     * is still running. It lives here rather than in the sheet so closing the
+     * sheet and opening it again shows the last search instead of a blank
+     * field — the reader who jumped to a hit usually wants the next one.
+     */
+    var searchQuery by mutableStateOf("")
+        private set
+    var searchResults by mutableStateOf<List<SearchResult>>(emptyList())
+        private set
+    var searching by mutableStateOf(false)
+        private set
+
+    /** True when the scan stopped at the cap, so the list is the first hits, not all of them. */
+    val searchCapped: Boolean get() = searchResults.size >= LibraryRepository.SEARCH_LIMIT
+
     /** The note being written, or null when no editor is open. */
     var noteDraft by mutableStateOf<NoteDraft?>(null)
         private set
@@ -91,10 +123,34 @@ class ReaderViewModel(private val library: suspend () -> LibraryRepository, val 
     var messageCount by mutableIntStateOf(0)
         private set
 
+    /**
+     * The book's retained original, where an inline image's bytes live. Null
+     * until the book is open, and for a book with no archive behind it — the
+     * page then draws alt text where a picture would have been.
+     */
+    var archive by mutableStateOf<File?>(null)
+        private set
+
     private var repository: LibraryRepository? = null
     private val cache = PaginationCache()
     private var saveJob: Job? = null
     private var loadJob: Job? = null
+
+    /** The query waiting to be scanned, and the one worker allowed to scan — see [search]. */
+    private var pendingQuery: String? = null
+    private var debounceJob: Job? = null
+    private var searchWorker: Job? = null
+
+    /**
+     * Footnotes of chapters other than the one being read, kept because a
+     * noteref into another document has to ask whether that document lifts the
+     * id before it can decide between a popup and a jump — and a reader
+     * following a run of endnote markers asks the same question of the same
+     * document over and over.
+     */
+    private val otherChapterFootnotes = object : LinkedHashMap<Int, List<Footnote>>(4, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Int, List<Footnote>>?): Boolean = size > 4
+    }
 
     /** The place last written (or read) from the store; a save is skipped when nothing moved. */
     private var persisted: Pair<Int, Int>? = null
@@ -114,6 +170,7 @@ class ReaderViewModel(private val library: suspend () -> LibraryRepository, val 
             val chapters = repo.chapters(bookId)
             if (chapters.isEmpty()) throw IllegalStateException("This book has no readable text.")
             val contents = repo.contents(bookId)
+            archive = repo.archive(bookId)
             val position = repo.position(bookId)
             chapterIndex = position?.chapterIndex?.coerceIn(0, chapters.size - 1) ?: 0
             anchor = maxOf(0, position?.utf16Offset ?: 0)
@@ -137,7 +194,9 @@ class ReaderViewModel(private val library: suspend () -> LibraryRepository, val 
                 val loaded = coroutineScope {
                     val text = async { repo.chapterText(bookId, index) }
                     val layout = async { repo.chapterLayout(bookId, index) }
-                    LoadedChapter(index, text.await(), layout.await())
+                    val images = async { repo.chapterImages(bookId, index) }
+                    val footnotes = async { repo.chapterFootnotes(bookId, index) }
+                    LoadedChapter(index, text.await(), layout.await(), images.await(), footnotes.await())
                 }
                 if (chapterIndex != index) return@launch
                 // Going back: show the last page now; the exact anchor settles with the pages.
@@ -179,10 +238,7 @@ class ReaderViewModel(private val library: suspend () -> LibraryRepository, val 
      * of the book.
      */
     fun overflow(direction: Int): Boolean {
-        val ready = state as? State.Ready ?: return false
-        var index = chapterIndex + direction
-        while (index in ready.chapters.indices && !ready.chapters[index].isLinear) index += direction
-        if (index !in ready.chapters.indices) return false
+        val index = neighbour(direction) ?: return false
         visible = null
         if (direction > 0) {
             jump(index, 0)
@@ -194,12 +250,91 @@ class ReaderViewModel(private val library: suspend () -> LibraryRepository, val 
         return true
     }
 
+    /**
+     * The linear chapter this one runs into going `direction`, skipping the
+     * non-linear ones on the way, or null at either end of the book. The
+     * scroll layout's chapter buttons ask so they can stand down at the
+     * covers; [overflow] asks so a page turn past the end knows where to go.
+     */
+    fun neighbour(direction: Int): Int? {
+        val ready = state as? State.Ready ?: return null
+        var index = chapterIndex + direction
+        while (index in ready.chapters.indices && !ready.chapters[index].isLinear) index += direction
+        return index.takeIf { it in ready.chapters.indices }
+    }
+
     /** Once the pages exist, a backward crossing lands on the last page's start, and that is what is saved. */
     fun settle(pagination: Pagination) {
         if (!wantsChapterEnd) return
         wantsChapterEnd = false
         anchor = pagination.pages.lastOrNull()?.rangeStart ?: 0
         saveNow()
+    }
+
+    /**
+     * A backward crossing in a scroll, which has no last page to land on: the
+     * end of the text — where [loadChapter] has already put the anchor — is
+     * the place, and now that the chapter is drawn it is worth saving.
+     */
+    fun settleAtChapterEnd() {
+        if (!wantsChapterEnd) return
+        wantsChapterEnd = false
+        saveNow()
+    }
+
+    // MARK: Search — the whole book, a fifth of a second after the typing
+    // stops. The scan itself runs inside the kit, across the JNI boundary,
+    // where a cancelled coroutine cannot reach it: cancelling the Kotlin side
+    // would only orphan a scan that keeps running, and a reader typing quickly
+    // would have several of them competing for the bridge at once. So exactly
+    // one scan is allowed at a time. The debounce leaves the latest query in
+    // [pendingQuery]; a single worker takes whatever is there, scans, publishes
+    // if it is still the latest, and goes round again.
+
+    fun search(query: String) {
+        searchQuery = query
+        val needle = query.trim()
+        debounceJob?.cancel()
+        if (needle.isEmpty()) {
+            // Nothing typed: whatever is queued is no longer wanted, and the
+            // scan in flight (if any) will find its answer out of date.
+            pendingQuery = null
+            searchResults = emptyList()
+            searching = false
+            return
+        }
+        searching = true
+        debounceJob = viewModelScope.launch {
+            delay(SEARCH_DEBOUNCE_MS)
+            pendingQuery = needle
+            scanPending()
+        }
+    }
+
+    /** Starts the one search worker, unless it is already running — it will pick the query up. */
+    private fun scanPending() {
+        if (searchWorker?.isActive == true) return
+        searchWorker = viewModelScope.launch {
+            while (true) {
+                val needle = pendingQuery ?: break
+                pendingQuery = null
+                val repo = repository ?: break
+                val found = try {
+                    repo.search(bookId, needle)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    Log.w(TAG, "search failed: ${e.javaClass.simpleName}")
+                    say("Couldn't search this book.")
+                    emptyList()
+                }
+                // Typing carried on while the bridge was busy: what came back
+                // is not an answer to what is on screen, so it is dropped and
+                // the newer query goes round the loop instead.
+                if (pendingQuery == null && needle == searchQuery.trim()) searchResults = found
+            }
+            searching = pendingQuery != null
+        }
     }
 
     // MARK: Annotations. Every offset is UTF-16 into the chapter text, as
@@ -229,6 +364,92 @@ class ReaderViewModel(private val library: suspend () -> LibraryRepository, val 
     }
 
     fun clearMessage() { message = null }
+
+    /** Says something to the reader on the page's behalf — a link that leads nowhere, a browser that isn't there. */
+    fun report(text: String) = say(text)
+
+    // MARK: Links. A tap on a link into the book resolves its archive path
+    // against the chapter list already in hand, and its fragment against the
+    // *target* chapter's anchors — one id, asked for on its own, which is the
+    // only thing that has to be fetched and only when there is one to resolve.
+
+    /**
+     * A tapped link that stays inside the book: a noteref answered in place,
+     * or a jump. The fragment is looked for in the footnotes of the chapter
+     * the *path* names — the current one when the path names none — and only
+     * there; a target that lifts no such note is navigation, never a same-id
+     * note out of the chapter in hand ([noterefChapter] says why). `onNote` is
+     * the page's, because a note shown in place belongs to the page it was
+     * tapped on and dies with it.
+     */
+    fun followLink(path: String?, fragment: String?, onNote: (Footnote) -> Unit) {
+        val ready = state as? State.Ready ?: return
+        if (fragment == null) {
+            if (path != null) followInternalLink(path, null) else say(NOWHERE)
+            return
+        }
+        val target = noterefChapter(ready.chapters, path, chapterIndex)
+        val loaded = chapter?.takeIf { it.index == target }?.footnotes
+        if (loaded != null) {
+            answerNoteref(loaded, path, fragment, onNote)
+            return
+        }
+        viewModelScope.launch {
+            answerNoteref(footnotes(target), path, fragment, onNote)
+        }
+    }
+
+    private fun answerNoteref(notes: List<Footnote>, path: String?, fragment: String, onNote: (Footnote) -> Unit) {
+        val note = notes.firstOrNull { it.id == fragment }
+        when {
+            note != null -> onNote(note)
+            path != null -> followInternalLink(path, fragment)
+            else -> say(NOWHERE)
+        }
+    }
+
+    /** A chapter's lifted footnotes, remembered; an unreadable chapter simply lifts none. */
+    private suspend fun footnotes(index: Int): List<Footnote> {
+        val ready = state as? State.Ready ?: return emptyList()
+        if (index !in ready.chapters.indices) return emptyList()
+        otherChapterFootnotes[index]?.let { return it }
+        val repo = repository ?: return emptyList()
+        return try {
+            repo.chapterFootnotes(bookId, index).also { otherChapterFootnotes[index] = it }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "footnotes failed: ${e.javaClass.simpleName}")
+            emptyList()
+        }
+    }
+
+    fun followInternalLink(path: String, fragment: String?) {
+        val ready = state as? State.Ready ?: return
+        val repo = repository ?: return
+        val target = chapterIndexForPath(ready.chapters, path)
+        if (target == null) {
+            say(NOWHERE)
+            return
+        }
+        if (fragment == null) {
+            jump(target, 0)
+            return
+        }
+        viewModelScope.launch {
+            val offset = try {
+                repo.anchorOffset(bookId, target, fragment)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w(TAG, "link anchors failed: ${e.javaClass.simpleName}")
+                null
+            }
+            // A fragment that names no anchor lands at the chapter's start,
+            // as a TOC row with an unresolvable fragment does.
+            jump(target, offset ?: 0)
+        }
+    }
 
     /** Says something to the reader; every saying is its own, however it reads. */
     private fun say(text: String) {
@@ -330,8 +551,14 @@ class ReaderViewModel(private val library: suspend () -> LibraryRepository, val 
         }
     }
 
-    /** Pages for `key`, computed once; `compute` runs on the caller's thread. */
-    fun pageSet(key: PageKey, compute: () -> PageSet): PageSet =
+    /**
+     * The styled chapter and its pages for `key`, built once. `compute` places
+     * the chapter's images and measures it, and runs on the caller's coroutine
+     * — the surface calls this off the main thread. Everything that shape
+     * depends on is in the key (see [PageKey]), so a set that comes back from
+     * the cache can only be the set that would have been built again.
+     */
+    suspend fun pageSet(key: PageKey, compute: suspend () -> PageSet): PageSet =
         cache.get(key) ?: compute().also { cache.put(key, it) }
 
     private fun scheduleSave() {
@@ -377,7 +604,13 @@ class ReaderViewModel(private val library: suspend () -> LibraryRepository, val 
 
     companion object {
         const val SAVE_DEBOUNCE_MS = 1000L
+
+        /** How long the typing rests before the book is scanned. */
+        const val SEARCH_DEBOUNCE_MS = 200L
         private const val TAG = "Readr.Reader"
+
+        /** What a link that names no document in this book is answered with. */
+        private const val NOWHERE = "That link doesn't lead anywhere in this book."
     }
 }
 

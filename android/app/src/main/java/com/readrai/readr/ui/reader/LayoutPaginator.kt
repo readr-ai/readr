@@ -49,6 +49,37 @@ object LayoutPaginator {
 
     private class Line(val start: Int, val end: Int, val height: Float)
 
+    /**
+     * The chapter cut into pieces at paragraph boundaries — the same rule
+     * [paginate] measures by, and for the same reason: a piece of bounded
+     * length that no line is ever laid out across. The scroll layout draws
+     * these as the rows of its list, so a long chapter is composed a screenful
+     * at a time instead of as one enormous `Text`; nothing here measures
+     * anything, so a scroll costs no layout pass at all.
+     *
+     * Each piece is a [Page] whose range and text are the same span — there is
+     * no page boundary to fold whitespace at — so everything written for a cut
+     * page (offsets through `textStart`, highlights, links, the capsule) works
+     * on a chunk unchanged.
+     */
+    fun chunks(chapter: StyledChapter): List<Page> {
+        val raw = chapter.text.text
+        val length = raw.length
+        if (length == 0) return emptyList()
+        val pieces = ArrayList<Page>(length / CHUNK + 1)
+        var start = 0
+        while (start < length) {
+            var end = minOf(start + CHUNK, length)
+            if (end < length) {
+                val boundary = chapter.paragraphStart(atOrBefore = end)
+                if (boundary >= start + CHUNK / 2) end = boundary
+            }
+            pieces.add(Page(start, end, start, end, wordCount(raw, start, end)))
+            start = end
+        }
+        return pieces
+    }
+
     fun paginate(chapter: StyledChapter, style: TextStyle, widthPx: Int, heightPx: Int, measurer: TextMeasurer): List<Page> {
         val text = chapter.text
         val length = text.length
@@ -70,6 +101,12 @@ object LayoutPaginator {
                 style = style,
                 overflow = TextOverflow.Clip,
                 softWrap = true,
+                // The chapter's inline images, rebased to this chunk. A page is
+                // drawn from the same styled text with the same pictures in it,
+                // so a line holding one is as tall when it is shown as it was
+                // when it was measured — and, being a whole line, is never cut
+                // away from the picture it holds.
+                placeholders = chapter.placeholdersIn(chunkStart, chunkEnd),
                 constraints = Constraints(maxWidth = widthPx),
             )
             for (i in 0 until result.lineCount) {

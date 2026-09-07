@@ -15,11 +15,48 @@ data class BookSummary(
     val isImageOnly: Boolean = false,
     val isFixedLayout: Boolean = false,
     val coverPath: String? = null,
+    /**
+     * Absolute path of the book's retained original, where an inline image's
+     * bytes live — null when there is none on disk. The facade checks it
+     * exists, so this side never rebuilds it out of a file name.
+     */
+    val archivePath: String? = null,
     val sourceFilename: String? = null,
 )
 
+/**
+ * Mirrors ReadrAndroid's `ChapterSummary`. `sourcePath` is the chapter's entry
+ * path inside the EPUB — null for a book with no archive behind it — and is
+ * what an internal link's archive path is matched against.
+ */
 @Serializable
-data class ChapterSummary(val index: Int, val title: String, val characterCount: Int, val isLinear: Boolean = true)
+data class ChapterSummary(
+    val index: Int,
+    val title: String,
+    val characterCount: Int,
+    val isLinear: Boolean = true,
+    val sourcePath: String? = null,
+)
+
+/**
+ * Mirrors ReadrAndroid's `ChapterImageSummary`: an inline image anchored to
+ * the U+FFFC placeholder at `utf16Offset` in the chapter text. The bytes stay
+ * in the book's retained original at `archivePath`; the reader reads them
+ * itself (see `ChapterImages`). `displayWidth`/`displayHeight` are the source
+ * markup's CSS-pixel intent, absent far more often than not.
+ */
+@Serializable
+data class ChapterImage(
+    val utf16Offset: Int,
+    val archivePath: String,
+    val alt: String? = null,
+    val displayWidth: Double? = null,
+    val displayHeight: Double? = null,
+)
+
+/** Mirrors ReadrAndroid's `FootnoteSummary`: a note lifted out of the reading flow. */
+@Serializable
+data class Footnote(val id: String, val text: String)
 
 /**
  * The saved place as the facade reports it: `utf16Offset` is the coordinate
@@ -59,6 +96,21 @@ data class ContentsRow(val id: Int, val title: String, val chapterIndex: Int, va
 /** Mirrors ReadrAndroid's `Contents`. */
 @Serializable
 data class Contents(val rows: List<ContentsRow>, val isFallback: Boolean)
+
+/**
+ * Mirrors ReadrAndroid's `SearchHit`: one in-book match, `utf16Offset` into
+ * the chapter text as Kotlin indexes it. `chapterTitle` is what the kit found
+ * on the chapter — absent for books that title none, in which case the reader
+ * falls back to the chapter list it already has.
+ */
+@Serializable
+data class SearchResult(
+    val id: Int,
+    val chapterIndex: Int,
+    val chapterTitle: String? = null,
+    val utf16Offset: Int,
+    val snippet: String,
+)
 
 /** Mirrors ReadrAndroid's `HighlightSummary`: a text highlight with UTF-16 offsets. */
 @Serializable
