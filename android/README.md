@@ -57,6 +57,22 @@ was measured is what is shown. `ChapterStyling` turns the kit's format spans
 into the `AnnotatedString` — every kit paragraph is one Compose paragraph,
 with the closing newline drawn as a space so offsets keep their meaning.
 
+`PageSelection` is the selection on that page — long press for the word,
+drag to extend, two handles to adjust — in page-local offsets that become
+chapter offsets through the page's `textStart`. `AnnotationCapsule` is the
+four colour dots and copy that float over the bottom of the text area, and a
+highlight is drawn as a background span (underlined when it carries a note),
+never an inserted glyph, so marking a passage cannot move a line break.
+
+A note lives on a highlight: "Note" on a plain selection highlights it in the
+colour last used and opens `NoteEditor`, and cancelling there takes that
+highlight away again. `HighlightsSheet` is the book's highlights in reading
+order — colour chips, a search over quote and note, and a card that jumps to
+the passage. The ribbon in the bar bookmarks *the visible page* (the first
+bookmark whose offset falls in the page's range is "the" one), and the
+Contents sheet lists bookmarks above the table of contents, marking the rows
+whose stretch of the book holds one.
+
 Offsets cross the bridge as **UTF-16** (what Kotlin and Compose index); the
 Swift facade converts to and from the kit's character offsets with the
 chapter text in hand (`TextOffsets.swift`). Positions, contents rows,
@@ -64,7 +80,9 @@ anchors and spans all follow that rule.
 
 Appearance (`ReaderSettings`) is plain `SharedPreferences` under the keys the
 iOS app uses — `readingTheme`, `readingFontSize`, `readingFont`,
-`readingLineSpacing`, `readingJustified`.
+`readingLineSpacing`, `readingJustified`, and `lastHighlightColor` (the colour
+"Note" reaches for, deliberately outside `ReaderAppearance` so it can never
+re-paginate a chapter).
 
 ## Layout on device
 

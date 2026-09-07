@@ -3,6 +3,7 @@ package com.readrai.readr
 import android.net.Uri
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import com.readrai.readr.data.HighlightColor
 import com.readrai.readr.data.LibraryRepository
 import com.readrai.readr.kit.KeystoreSecretStore
 import com.readrai.readr.kit.Kit
@@ -77,6 +78,32 @@ class LibraryRepositoryTest {
             assertTrue(message, message.startsWith("This file seems to be damaged"))
         }
         assertTrue(repository.books.value.isEmpty())
+    }
+
+    @Test
+    fun annotatesABookThroughTheRepository() = runTest {
+        val file = File(root, "annotate.txt").apply { writeText("It was a bright cold day in April, and the clocks were striking thirteen.") }
+        val book = repository.import(Uri.fromFile(file))
+        assertTrue(repository.highlights(book.id).isEmpty())
+
+        val made = repository.addHighlight(book.id, 0, 9, 20, HighlightColor.PINK, note = null)
+        assertEquals("bright cold", made.quotedText)
+        assertEquals(HighlightColor.PINK, made.markerColor)
+        assertEquals(listOf(made), repository.highlights(book.id))
+
+        repository.setHighlightNote(book.id, made.id, "the opening line")
+        repository.setHighlightColor(book.id, made.id, HighlightColor.BLUE)
+        val edited = repository.highlights(book.id).single()
+        assertEquals("the opening line", edited.note)
+        assertEquals(HighlightColor.BLUE, edited.markerColor)
+        repository.removeHighlight(book.id, made.id)
+        assertTrue(repository.highlights(book.id).isEmpty())
+
+        val bookmark = repository.addBookmark(book.id, 0, 0)
+        assertTrue(bookmark.snippet, bookmark.snippet.startsWith("It was a bright cold day"))
+        assertEquals(listOf(bookmark), repository.bookmarks(book.id))
+        repository.removeBookmark(book.id, bookmark.id)
+        assertTrue(repository.bookmarks(book.id).isEmpty())
     }
 
     @Test

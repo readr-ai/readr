@@ -13,9 +13,11 @@ import androidx.compose.ui.text.style.Hyphens
 import androidx.compose.ui.text.style.LineBreak
 import androidx.compose.ui.text.style.LineHeightStyle
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextIndent
 import androidx.compose.ui.unit.em
 import androidx.compose.ui.unit.sp
+import com.readrai.readr.data.Highlight
 import com.readrai.readr.data.LayoutSpan
 import com.readrai.readr.ui.theme.ReadingPalette
 
@@ -171,13 +173,26 @@ object ChapterStyling {
     }
 
     /**
-     * The slice of the styled chapter a page draws, coloured for the theme.
-     * A page that opens in the middle of a paragraph must not indent its
-     * first line differently from the line it was measured as — a
-     * continuation line — so that paragraph's fragment takes its rest-line
-     * indent for its first line too.
+     * The slice of the styled chapter a page draws, coloured for the theme
+     * and with its highlights drawn on it. A page that opens in the middle of
+     * a paragraph must not indent its first line differently from the line it
+     * was measured as — a continuation line — so that paragraph's fragment
+     * takes its rest-line indent for its first line too.
+     *
+     * A highlight is a background field over its glyphs — and an underline
+     * when it carries a note — never an inserted glyph, so marking a passage
+     * cannot move a line break and the page stays the page that was measured.
+     * `highlights` are the ones for this chapter (offsets are chapter-wide
+     * UTF-16); ones that miss the page contribute nothing, and ones that
+     * straddle its edges are clipped.
      */
-    fun pageText(chapter: StyledChapter, textStart: Int, textEnd: Int, palette: ReadingPalette): AnnotatedString {
+    fun pageText(
+        chapter: StyledChapter,
+        textStart: Int,
+        textEnd: Int,
+        palette: ReadingPalette,
+        highlights: List<Highlight> = emptyList(),
+    ): AnnotatedString {
         val slice = chapter.text.subSequence(textStart, textEnd)
         val midParagraph = textStart > 0 && !chapter.startsParagraph(textStart)
         return buildAnnotatedString {
@@ -191,6 +206,18 @@ object ChapterStyling {
                 addStyle(item, it.start, it.end)
             }
             slice.getStringAnnotations(LINK_TAG, 0, slice.length).forEach { addStyle(SpanStyle(color = palette.iris), it.start, it.end) }
+            for (highlight in highlights) {
+                val start = maxOf(highlight.utf16Start, textStart)
+                val end = minOf(highlight.utf16End, textEnd)
+                if (start >= end) continue
+                addStyle(
+                    SpanStyle(
+                        background = palette.marker(highlight.markerColor),
+                        textDecoration = if (highlight.note.isNullOrBlank()) null else TextDecoration.Underline,
+                    ),
+                    start - textStart, end - textStart,
+                )
+            }
         }
     }
 }

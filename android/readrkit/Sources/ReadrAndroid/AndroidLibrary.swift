@@ -144,17 +144,17 @@ public final class KitLimits {
 /// thread and the async ones from Swift's executor.
 public final class AndroidLibrary {
   private let root: URL
-  private let store: FileLibraryStore
+  let store: FileLibraryStore
   /// Offset tables for the chapters in play, keyed by book + chapter. A
   /// position save, a contents build and a layout all convert against the
   /// same table instead of re-walking the chapter each time.
-  private let offsetTables = OffsetTableCache()
+  let offsetTables = OffsetTableCache()
 
   private var booksDirectory: URL { root.appendingPathComponent("Books", isDirectory: true) }
   private var coversDirectory: URL { root.appendingPathComponent("Covers", isDirectory: true) }
   private var seededMarker: URL { root.appendingPathComponent(".sample-seeded") }
 
-  private static func encoder() -> JSONEncoder {
+  static func encoder() -> JSONEncoder {
     let e = JSONEncoder()
     e.outputFormatting = [.sortedKeys]
     return e
@@ -365,12 +365,12 @@ public final class AndroidLibrary {
     return String(decoding: try Self.encoder().encode(BookSummary(book, coverPath: coverPath(for: book.id))), as: UTF8.self)
   }
 
-  private func chapter(_ book: Book, _ index: Int64) throws -> Chapter {
+  func chapter(_ book: Book, _ index: Int64) throws -> Chapter {
     guard index >= 0, index < Int64(book.chapters.count) else { throw AndroidBridgeError.invalidChapter(Int(index)) }
     return book.chapters[Int(index)]
   }
 
-  private func book(_ id: String) throws -> Book {
+  func book(_ id: String) throws -> Book {
     guard let uuid = UUID(uuidString: id), let book = store.book(id: uuid) else {
       throw AndroidBridgeError.unknownBook(id)
     }

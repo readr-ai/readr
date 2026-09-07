@@ -6,19 +6,26 @@ import androidx.compose.ui.test.SemanticsNodeInteraction
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.click
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.longClick
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.performTouchInput
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.readrai.readr.data.BookSummary
+import com.readrai.readr.data.HighlightColor
 import com.readrai.readr.data.LibraryRepository
 import com.readrai.readr.data.kitJson
 import com.readrai.readr.kit.KeystoreSecretStore
 import com.readrai.readr.kit.Kit
+import com.readrai.readr.ui.reader.ChapterStyling
+import com.readrai.readr.ui.reader.LayoutKey
 import com.readrai.readr.ui.reader.ReaderScreen
 import com.readrai.readr.ui.reader.ReaderSettings
 import com.readrai.readr.ui.reader.ReaderViewModel
+import com.readrai.readr.ui.theme.Marginalia
 import com.readrai.readr.ui.theme.ReadrTheme
 import java.io.File
 import kotlinx.coroutines.future.await
@@ -98,6 +105,35 @@ class ReaderScreenTest {
         compose.onNodeWithTag("reader.page").performTouchInput { click(Offset(width * fraction, height / 2f)) }
     }
 
+    /** A tap high on the page, where a highlight over the chapter's opening lies. */
+    private fun tapMarked(fraction: Float) {
+        compose.onNodeWithTag("reader.page").performTouchInput { click(Offset(width * fraction, height * 0.1f)) }
+    }
+
+    private fun nodes(tag: String) = compose.onAllNodes(androidx.compose.ui.test.hasTestTag(tag)).fetchSemanticsNodes()
+    private fun awaitTag(tag: String) = compose.waitUntil(10_000) { nodes(tag).isNotEmpty() }
+    private fun awaitNoTag(tag: String) = compose.waitUntil(10_000) { nodes(tag).isEmpty() }
+    private fun highlights() = runBlocking { repository.highlights(book.id) }
+    private fun bookmarks() = runBlocking { repository.bookmarks(book.id) }
+
+    /** What the system clipboard holds; read on the main thread, as the service requires. */
+    private fun clipboardText(): String {
+        var text = ""
+        InstrumentationRegistry.getInstrumentation().runOnMainSync {
+            val clipboard = context.getSystemService(android.content.ClipboardManager::class.java)
+            text = clipboard?.primaryClip?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.text?.toString().orEmpty()
+        }
+        return text
+    }
+
+    /** The kicker, or "" while a chapter is loading — safe to poll from `waitUntil`. */
+    private fun kickerOrEmpty(): String =
+        nodes("reader.kicker").firstOrNull()?.config?.getOrElseNullable(SemanticsProperties.ContentDescription) { null }?.firstOrNull() ?: ""
+
+    /** What the ribbon in the bar says it will do, or "" when it is not there. */
+    private fun bookmarkLabel(): String =
+        nodes("reader.bookmarks").firstOrNull()?.config?.getOrElseNullable(SemanticsProperties.ContentDescription) { null }?.firstOrNull() ?: ""
+
     @Test
     fun opensOnTheFirstPageAndTurnsWithTaps() {
         val model = open()
@@ -171,6 +207,175 @@ class ReaderScreenTest {
         assertEquals(middle, model.anchor)
         assertTrue("the middle of the chapter opens past page 1", pageNumber() > 1)
         assertTrue("and before the last page", pageNumber() < pageCount())
+    }
+
+    @Test
+    fun aLongPressHighlightsAWordAndTappingItAgainRemovesIt() {
+        open()
+        compose.onNodeWithTag("reader.page").performTouchInput { longClick(center) }
+        awaitTag("annotation.capsule")
+
+        compose.onNodeWithTag("annotation.color.green").performClick()
+        compose.waitUntil(10_000) { highlights().isNotEmpty() }
+        val created = highlights().single()
+        val chapterText = runBlocking { repository.chapterText(book.id, created.chapterIndex) }
+        assertEquals(chapterText.substring(created.utf16Start, created.utf16End), created.quotedText)
+        assertTrue("a whole word, not a blank: '${created.quotedText}'", created.quotedText.isNotBlank())
+        assertTrue("a whole word, not a run: '${created.quotedText}'", created.quotedText.none { it.isWhitespace() })
+        assertEquals("green", created.color)
+        // The selection goes with the capsule, and the colour is remembered for next time.
+        awaitNoTag("annotation.capsule")
+        assertEquals(HighlightColor.GREEN, settings.lastHighlightColor.value)
+
+        // Tapping the highlighted word opens the capsule on it; ✕ takes the highlight away.
+        compose.onNodeWithTag("reader.page").performTouchInput { click(center) }
+        awaitTag("annotation.remove")
+        compose.onNodeWithTag("annotation.remove").performClick()
+        compose.waitUntil(10_000) { highlights().isEmpty() }
+        awaitNoTag("annotation.capsule")
+    }
+
+    /**
+     * The outer quarters are the page-turn zones, and a mark under the finger
+     * does not take them over — only the middle half of the surface opens a
+     * capsule on a tap. Long-press selection stays available everywhere.
+     */
+    @Test
+    fun aTapInTheTurnZoneTurnsThePageEvenOverAHighlight() {
+        // A highlight over the chapter's opening, wide enough to be under the
+        // finger on the first pages whatever the geometry.
+        val marked = runBlocking { repository.addHighlight(book.id, 0, 0, 3_000, HighlightColor.YELLOW) }
+        open()
+        assertEquals(1, pageNumber())
+
+        // Near the top so the finger is over the marked lines, and in the outer
+        // tenth so it is in a turn zone — forward, then back again.
+        tapMarked(0.9f)
+        compose.waitUntil(10_000) { pageNumber() == 2 }
+        assertTrue("no capsule opened on the way", nodes("annotation.capsule").isEmpty())
+
+        tapMarked(0.1f)
+        compose.waitUntil(10_000) { pageNumber() == 1 }
+        assertTrue("nor on the way back", nodes("annotation.capsule").isEmpty())
+        assertEquals(listOf(marked.id), highlights().map { it.id })
+    }
+
+    /**
+     * What the capsule copies is the kit's own chapter text, sliced at the
+     * chapter offsets — not the page's styled string, which draws every
+     * paragraph break as a space.
+     */
+    @Test
+    fun theCapsuleCopiesTheChapterTextItself() {
+        open()
+        compose.onNodeWithTag("reader.page").performTouchInput { longClick(center) }
+        awaitTag("annotation.capsule")
+        compose.onNodeWithTag("annotation.copy").performClick()
+        awaitNoTag("annotation.capsule")
+        val copied = clipboardText()
+        assertTrue("something was copied", copied.isNotBlank())
+
+        // The same word again, this time as a highlight, so the kit reports the
+        // offsets the capsule was working in.
+        compose.onNodeWithTag("reader.page").performTouchInput { longClick(center) }
+        awaitTag("annotation.capsule")
+        compose.onNodeWithTag("annotation.color.green").performClick()
+        compose.waitUntil(10_000) { highlights().isNotEmpty() }
+        val created = highlights().single()
+        val chapterText = runBlocking { repository.chapterText(book.id, created.chapterIndex) }
+        assertEquals(chapterText.substring(created.utf16Start, created.utf16End), copied)
+        assertEquals(created.quotedText, copied)
+    }
+
+    @Test
+    fun aNoteIsWrittenOnTheHighlightTheNoteFlowMakes() {
+        open()
+        compose.onNodeWithTag("reader.page").performTouchInput { longClick(center) }
+        awaitTag("annotation.capsule")
+        compose.onNodeWithTag("annotation.note").performClick()
+
+        // "Note" highlights the passage first — a note has to live on a highlight.
+        awaitTag("note.editor")
+        compose.waitUntil(10_000) { highlights().size == 1 }
+        compose.onNodeWithTag("note.field").performTextInput("Marginal thought")
+        compose.onNodeWithTag("note.save").performClick()
+
+        compose.waitUntil(10_000) { highlights().singleOrNull()?.note == "Marginal thought" }
+        awaitNoTag("note.editor")
+        val noted = highlights().single()
+        assertEquals(HighlightColor.YELLOW, noted.markerColor)
+
+        // And a highlight that carries a note is drawn underlined.
+        val text = runBlocking { repository.chapterText(book.id, noted.chapterIndex) }
+        val layout = runBlocking { repository.chapterLayout(book.id, noted.chapterIndex) }
+        val styled = ChapterStyling.styled(text, layout.spans, LayoutKey(settings.appearance.value))
+        val page = ChapterStyling.pageText(styled, 0, text.length, Marginalia.paper, listOf(noted))
+        assertTrue(
+            "the noted passage is underlined on the page",
+            page.spanStyles.any { it.item.textDecoration == TextDecoration.Underline && it.start == noted.utf16Start },
+        )
+    }
+
+    @Test
+    fun cancellingANewNoteTakesItsHighlightWithIt() {
+        open()
+        compose.onNodeWithTag("reader.page").performTouchInput { longClick(center) }
+        awaitTag("annotation.capsule")
+        compose.onNodeWithTag("annotation.note").performClick()
+        awaitTag("note.editor")
+        compose.waitUntil(10_000) { highlights().size == 1 }
+
+        compose.onNodeWithTag("note.cancel").performClick()
+        compose.waitUntil(10_000) { highlights().isEmpty() }
+        awaitNoTag("note.editor")
+    }
+
+    @Test
+    fun theRibbonBookmarksThePageAndTakesItBack() {
+        open()
+        assertEquals("Bookmark this page", bookmarkLabel())
+        compose.onNodeWithTag("reader.bookmarks").performClick()
+
+        compose.waitUntil(10_000) { bookmarks().isNotEmpty() }
+        val saved = bookmarks().single()
+        assertEquals(0, saved.chapterIndex)
+        assertTrue("the bookmark quotes the page it was made on", saved.snippet.isNotBlank())
+        compose.waitUntil(5_000) { bookmarkLabel() == "Remove bookmark" }
+
+        compose.onNodeWithTag("reader.bookmarks").performClick()
+        compose.waitUntil(10_000) { bookmarks().isEmpty() }
+        compose.waitUntil(5_000) { bookmarkLabel() == "Bookmark this page" }
+    }
+
+    @Test
+    fun contentsListsABookmarkJumpsToItAndRemovesIt() {
+        val bookmark = runBlocking { repository.addBookmark(book.id, 2, 0) }
+        open()
+        compose.onNodeWithTag("reader.toc").performClick()
+        awaitTag("contents.bookmark.${bookmark.id}")
+
+        compose.onNodeWithTag("contents.bookmark.${bookmark.id}").performClick()
+        compose.waitUntil(10_000) { kickerOrEmpty() == "Chapter 3" }
+        awaitNoTag("contents.list")
+
+        compose.onNodeWithTag("reader.toc").performClick()
+        awaitTag("contents.removeBookmark.${bookmark.id}")
+        compose.onNodeWithTag("contents.removeBookmark.${bookmark.id}").performClick()
+        compose.waitUntil(10_000) { bookmarks().isEmpty() }
+        awaitNoTag("contents.bookmark.${bookmark.id}")
+    }
+
+    @Test
+    fun theHighlightsSheetListsAHighlightAndJumpsToIt() {
+        val marked = runBlocking { repository.addHighlight(book.id, 2, 40, 60, HighlightColor.BLUE) }
+        open()
+        assertEquals("Chapter 1", kicker())
+
+        compose.onNodeWithTag("reader.notes").performClick()
+        awaitTag("notes.card.${marked.id}")
+        compose.onNodeWithTag("notes.card.${marked.id}").performClick()
+        compose.waitUntil(10_000) { kickerOrEmpty() == "Chapter 3" }
+        compose.waitUntil(5_000) { runBlocking { repository.position(book.id)?.chapterIndex } == 2 }
     }
 
     @Test
