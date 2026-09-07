@@ -534,31 +534,25 @@ extension AndroidLibrary {
   }
 
   /// Whether `AdaptiveContextStrategy` would send the text itself rather than
-  /// retrieve passages — decided on the same numbers it uses: a non-local
-  /// provider, and a text that fits `wholeBookBudgetFraction` of the model's
-  /// context budget. A scoped question measures only what has been read, and
-  /// a reader who has read nothing routes whole-book with nothing in it.
+  /// retrieve passages — asked of the strategy's own rule rather than
+  /// restated here, so an index is never built for a question that will not
+  /// read it and never skipped for one that will.
   ///
-  /// KIT FOLLOW-UP: this is a *copy* of the strategy's own rule, and a change
-  /// to `AdaptiveContextStrategy` that this does not follow shows up as an
-  /// index built for a question that never reads it — or a question that
-  /// waits for no index at all and is answered from an empty one.
-  /// `KitBridgeTest.theRoutingRuleDecidesWhetherTheBookIsIndexed` pins the
-  /// two together from the outside until the kit exposes the decision
-  /// itself, at which point this should call it rather than restate it.
+  /// The same inputs the strategy gets, including the shared
+  /// `ReadingLengthCache`: a scoped question measures what has been read, and
+  /// measuring it through a throwaway cache would walk every chapter on each
+  /// check. The budget fraction is the kit's default, which is also what the
+  /// strategy built in `ask` runs on.
+  ///
+  /// One answer changed with the copy's removal, in the kit's favour: a
+  /// scoped question from a reader who has read *nothing* routes whole-book
+  /// on the phone's own model too. There is no text to be too big for it and
+  /// nothing for retrieval to find, so the index the copy would have built
+  /// was seconds of work for an empty search.
   func routesWholeBook(_ book: Book, scope: ReadingScope, provider: ProviderInfo) -> Bool {
-    guard !provider.isLocal else { return false }
-    let budget = Int(Double(provider.contextBudget) * Self.wholeBookBudgetFraction)
-    guard let frontier = scope.frontier else { return book.estimatedTokenCount <= budget }
-    let read = readingLengths.table(for: book).charactersRead(upTo: frontier)
-    guard read > 0 else { return true }
-    return estimateTokens(characterCount: read) <= budget
+    AdaptiveContextStrategy.routesWholeBook(
+      book: book, scope: scope, provider: provider, lengths: readingLengths)
   }
-
-  /// `AdaptiveContextStrategy`'s own default: the share of the context budget
-  /// a book may occupy before the router switches to retrieval, leaving the
-  /// rest for the conversation and the answer.
-  static var wholeBookBudgetFraction: Double { 0.6 }
 
   /// Stop the ask `handle` names. The sink hears nothing more from it — no
   /// `completed`, no `failed`. An unknown handle (an ask that already landed)

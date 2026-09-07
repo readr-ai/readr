@@ -95,15 +95,11 @@ public final class AndroidProviders {
   private let credentialStore: SecretCredentialStore
   /// The phone's own model: what it says about itself, and what it answers.
   private let onDevice: OnDeviceModelBox
-  /// Guards `_manager`, which is replaced when a disconnect has to drop the
-  /// selection (see `disconnect(_:)`).
-  private let managerLock = NSLock()
-  private var _manager: ProviderManager
-
-  var manager: ProviderManager {
-    managerLock.lock(); defer { managerLock.unlock() }
-    return _manager
-  }
+  /// Built once and kept: the manager is its own lock, and every move the
+  /// facade makes on it — including un-choosing (see `disconnect(_:)`) — is
+  /// a method on the one instance, so nothing this process learned about a
+  /// provider is thrown away behind a reader's back.
+  let manager: ProviderManager
 
   private let openRouterStore: OpenRouterModelStore
   /// Where a cloud provider's requests actually go. Empty in every build a
@@ -131,7 +127,7 @@ public final class AndroidProviders {
     let overrides = EndpointOverrides()
     endpointOverrides = overrides
     let stored = Self.readSelection(root.appendingPathComponent("provider-selection.json"))
-    _manager = Self.makeManager(
+    manager = Self.makeManager(
       store: credentials, overrides: overrides, model: modelBox, selection: stored)
     let store = OpenRouterModelStore(
       cacheURL: root.appendingPathComponent("OpenRouterModels.json"))
@@ -150,8 +146,8 @@ public final class AndroidProviders {
     }
   }
 
-  /// One manager, however many times it has to be built. `persistingIn` is
-  /// nil on purpose — see `persistingSelection`.
+  /// The one manager this facade owns. `persistingIn` is nil on purpose —
+  /// see `persistingSelection`.
   private static func makeManager(
     store: SecretCredentialStore,
     overrides: EndpointOverrides,
@@ -612,17 +608,13 @@ public final class AndroidProviders {
 
   /// Back to "nothing chosen", here and on disk.
   ///
-  /// `ProviderManager` has no way to un-choose — `setActive` is the only door
-  /// in and it always names a kind — so the facade builds a fresh manager
-  /// over the same store, factory and model. It forgets what this session had
-  /// checked, which the next sweep re-establishes. KIT FOLLOW-UP: a
-  /// `clearSelection()` on `ProviderManager` would make this a one-liner and
-  /// keep those results.
+  /// The kit un-chooses in place, so everything this session learned about
+  /// the *other* kinds — a key already checked, and how long ago — survives
+  /// a disconnect. The file goes through `writeSelection`, the one door to
+  /// disk, so the two cannot disagree about what "nothing chosen" looks
+  /// like on the next launch.
   private func dropSelection() {
-    managerLock.lock()
-    _manager = Self.makeManager(
-      store: credentialStore, overrides: endpointOverrides, model: onDevice, selection: nil)
-    managerLock.unlock()
+    manager.clearSelection()
     writeSelection(nil)
   }
 

@@ -376,7 +376,9 @@ makes inside those calls, goes through one facade function that also writes
 `provider-selection.json`; the manager's own `persistingIn` is nil, because
 `UserDefaults` on Android is a plist in a directory nobody owns. `disconnect`
 takes the key, the cached check, and — when it named that card — the selection
-with it. The screen's on-open sweep is `validateIfStale(kind, 300)`: a
+with it, through the kit's `ProviderManager.clearSelection()`: only the
+disconnected kind is forgotten, so the other cards keep what this session
+already checked and are not re-billed a validation call. The screen's on-open sweep is `validateIfStale(kind, 300)`: a
 credential check posts a paid one-token completion, and walking in and out of
 Settings must not repeat it.
 
@@ -396,11 +398,12 @@ runs `AskService` against `AndroidProviders`' active provider. The index is
 built off the critical path: `prepareAsk` starts it when the book opens, on a
 detached task, and a question asked before it lands waits on that same task
 rather than starting a second one. Neither builds it at all when the book
-would route whole-book anyway — decided on `AdaptiveContextStrategy`'s own
-numbers (a non-local provider, and a text inside 60% of its context budget),
-because that tier never asks for a passage. That rule is *copied* from the
-strategy, so a test pins the two together (`KIT FOLLOW-UP` in `Ask.swift`)
-until the kit exposes the decision itself.
+would route whole-book anyway — because that tier never asks for a passage.
+The prediction is the strategy's own: `AndroidLibrary.routesWholeBook` calls
+`AdaptiveContextStrategy.routesWholeBook` with the inputs the strategy gets,
+including the shared `ReadingLengthCache`, so there is no second copy of the
+rule to drift. A test still checks the prediction against the tier actually
+taken, end to end.
 
 An index and the build filling it are **one entry** in that LRU: evicting
 drops both, and a question always takes the index from the same entry it

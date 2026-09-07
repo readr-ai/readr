@@ -1002,22 +1002,48 @@ class KitBridgeTest {
      * Taking away the key of the model Ask was pointed at leaves nothing
      * chosen — here and on disk. A selection naming a card with no credential
      * behind it would say "Ask uses GPT-5.6 — not connected" for ever.
+     *
+     * And the un-choosing is confined to the kind that lost its key: the
+     * OTHER card, checked a moment ago and still holding its key, is still
+     * "Connected" afterwards. Dropping the selection by rebuilding the
+     * manager used to forget every check this session had made, so a
+     * disconnect quietly re-billed a one-token validation call on every
+     * other provider the reader had connected.
      */
     @Test
-    fun disconnectDropsTheSelectionItNamed() = runTest(timeout = TEST_TIMEOUT) {
-        FakeChatServer().use { server ->
-            kit.providers.overrideEndpoint("openAI", server.origin)
-            kit.providers.saveAPIKey("openAI", "sk-test-not-a-real-key")
-            kit.providers.connect("openAI").await()
-            assertEquals("openAI", providerSettings().selection?.kind)
+    fun disconnectDropsTheSelectionItNamedAndNothingElse() = runTest(timeout = TEST_TIMEOUT) {
+        FakeChatServer().use { keeper ->
+            kit.providers.overrideEndpoint("anthropic", keeper.origin)
+            kit.providers.saveAPIKey("anthropic", "sk-ant-not-a-real-key")
+            kit.providers.connect("anthropic").await()
 
-            kit.providers.disconnect("openAI")
-            val after = providerSettings()
-            assertNull("the choice goes with the key", after.selection)
-            assertNull(after.explicitSelection)
-            assertEquals("Ask uses no model yet — connect one below.", after.askUsesLine)
-            assertFalse("and it is not waiting on disk for the next launch", File(root, "provider-selection.json").exists())
-            assertFalse("nothing to ask with", kit.providers.hasAnyProvider())
+            FakeChatServer().use { server ->
+                kit.providers.overrideEndpoint("openAI", server.origin)
+                kit.providers.saveAPIKey("openAI", "sk-test-not-a-real-key")
+                kit.providers.connect("openAI").await()
+                assertEquals("openAI", providerSettings().selection?.kind)
+                assertEquals(
+                    ValidationStatus.ACTIVE,
+                    providerSettings().vendors.single { it.id == "anthropic" }.kinds.single().status.state,
+                )
+
+                kit.providers.disconnect("openAI")
+                val after = providerSettings()
+                assertNull("the choice goes with the key", after.selection)
+                assertNull(after.explicitSelection)
+                assertEquals("Ask uses no model yet — connect one below.", after.askUsesLine)
+                assertFalse("and it is not waiting on disk for the next launch", File(root, "provider-selection.json").exists())
+                val other = after.vendors.single { it.id == "anthropic" }.kinds.single()
+                assertTrue("the other key is untouched", other.hasCredential)
+                assertEquals(
+                    "the other card was checked this session and stays checked",
+                    ValidationStatus.ACTIVE,
+                    other.status.state,
+                )
+                // Un-choosing is un-choosing: the other key is still there,
+                // but nothing is pointed at it until the reader says so.
+                assertFalse("nothing chosen to ask with", kit.providers.hasAnyProvider())
+            }
         }
     }
 
@@ -1272,11 +1298,12 @@ class KitBridgeTest {
      * that fits the provider's whole-book budget rides along entire and is
      * never chunked, and one that does not is indexed first and says so.
      *
-     * KIT FOLLOW-UP: `AndroidLibrary.routesWholeBook` is a *copy* of
-     * `AdaptiveContextStrategy`'s rule, and nothing in the kit fails when the
-     * two drift apart — the symptom is an index built for a question that
-     * never reads it, or a question answered from an index nobody built. This
-     * pins the copy from the outside until the kit exposes the decision.
+     * `AndroidLibrary.routesWholeBook` now asks
+     * `AdaptiveContextStrategy.routesWholeBook` rather than restating it, so
+     * the two cannot drift; this stays as the end-to-end check that the
+     * prediction and the tier actually taken agree — the symptom of a
+     * disagreement is an index built for a question that never reads it, or
+     * a question answered from an index nobody built.
      *
      * The two fixtures straddle the ceiling (60% of the budget) rather than
      * the providers straddling the book: every provider this build offers —
