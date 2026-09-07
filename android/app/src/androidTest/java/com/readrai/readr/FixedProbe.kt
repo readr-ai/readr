@@ -12,7 +12,8 @@ class FixedProbe(private val answer: String) : OnDeviceProbe {
     override fun readiness(): String = answer
 
     companion object {
+        /** The bare tokens the facade parses; the sentence is the kit's. */
         val READY = FixedProbe("ready")
-        val UNSUPPORTED = FixedProbe("unsupported:Gemini Nano isn't available on this phone.")
+        val UNSUPPORTED = FixedProbe("unsupported")
     }
 }

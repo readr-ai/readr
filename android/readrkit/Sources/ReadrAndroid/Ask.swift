@@ -7,16 +7,20 @@ import ReadrKit
 /// throws, `Int64` rather than `Int`) apply to this protocol as much as to
 /// `SecretStore`.
 ///
-/// The order is fixed: `contextAssembled` (possibly twice — once with
-/// `"indexing"` while the book's index is being built, then with the routing
-/// tier), then `citations` when the tier has any, then a `token` per streamed
-/// delta, then exactly one of `completed` or `failed`. A cancelled ask calls
-/// neither of the last two: the Kotlin side asked for the stop and already
-/// knows what state it is in.
+/// The order is fixed: `indexing` when the book's index has to be built
+/// first, then `contextAssembled` with the routing tier, then `citations`
+/// when the tier has any, then a `token` per streamed delta, then exactly one
+/// of `completed` or `failed`. A cancelled ask calls neither of the last two:
+/// the Kotlin side asked for the stop and already knows what state it is in.
 public protocol AskSink {
-  /// `"indexing"`, or the kit's `AssembledContext.Tier` raw value —
-  /// `"retrieval"` or `"wholeBook"`.
-  func contextAssembled(_ tier: String)
+  /// The book's retrieval index is being built; the answer waits on it. Its
+  /// own call rather than a pseudo-tier, so `contextAssembled` only ever
+  /// carries a tier the router actually chose.
+  func indexing()
+  /// `{"tier":"retrieval"|"wholeBook","providesCitations":Bool}` — the kit's
+  /// `AssembledContext.Tier` and what it says about itself, so the panel's
+  /// caption follows the kit rather than re-deriving the rule.
+  func contextAssembled(_ json: String)
   /// `[{locator, quotedText, chapterIndex?, utf16Offset?}]`. Only the
   /// retrieval tier has any.
   func citations(_ json: String)
@@ -39,7 +43,12 @@ final class AskSinkBox: @unchecked Sendable {
 
   init(_ sink: any AskSink) { self.sink = sink }
 
-  func contextAssembled(_ tier: String) { sink.contextAssembled(tier) }
+  func indexing() { sink.indexing() }
+  func contextAssembled(_ tier: AssembledContext.Tier) {
+    let wire = AskTierWire(tier: tier.rawValue, providesCitations: tier.providesCitations)
+    guard let data = try? AndroidLibrary.encoder().encode(wire) else { return }
+    sink.contextAssembled(String(decoding: data, as: UTF8.self))
+  }
   func citations(_ json: String) { sink.citations(json) }
   func token(_ text: String) { sink.token(text) }
   func completed(_ text: String) { sink.completed(text) }
@@ -97,6 +106,15 @@ struct AskSelectionWire: Decodable {
   var utf16End: Int
 }
 
+/// The routing tier, and what it promises. `providesCitations` is the kit's
+/// own answer (`AssembledContext.Tier.providesCitations`): the whole-book
+/// tier retrieves no passages, so a caption that offered citations there
+/// would promise a SOURCES row that never comes.
+struct AskTierWire: Codable {
+  var tier: String
+  var providesCitations: Bool
+}
+
 /// A `Citation` with its offset in UTF-16, which is what a "Show in book"
 /// tap needs. `chapterIndex`/`utf16Offset` are absent for a citation with no
 /// passage behind it.
@@ -114,6 +132,11 @@ struct AskTurnWire: Codable {
   /// `AssembledContext.Tier` raw value; anything else reads as `retrieval`.
   var tier: String?
   var citations: [AskCitationWire]?
+  /// Whether this turn was answered under a frontier. A scoped question is
+  /// not shown the answers to unscoped ones — the no-spoilers promise covers
+  /// the history the model reads, not only the passages it is handed — and
+  /// a turn that does not say reads as unscoped, which is the safe direction.
+  var scoped: Bool?
 }
 
 /// `ReadingPositionSummary` flattened: the caption the Ask sheet shows over a
@@ -126,6 +149,44 @@ struct AskPositionWire: Codable {
   var chapterCount: Int
   var percent: Int
   var titleIsFallback: Bool
+}
+
+/// One block of an answer, as the sheet draws it: the kit's `AnswerBlock`
+/// flattened for Kotlin. `kind` is one of paragraph, heading, quote, code,
+/// list, rule; the optional fields carry the payload of the kinds that have
+/// one, and a list's items arrive with the marker already rendered ("2.").
+struct AnswerBlockWire: Codable {
+  struct Item: Codable {
+    var marker: String
+    var text: String
+  }
+
+  var kind: String
+  var text: String?
+  var level: Int?
+  var language: String?
+  var paragraphs: [String]?
+  var ordered: Bool?
+  var items: [Item]?
+
+  init(_ block: AnswerBlock) {
+    switch block {
+    case .paragraph(let text):
+      kind = "paragraph"; self.text = text
+    case .heading(let level, let text):
+      kind = "heading"; self.level = level; self.text = text
+    case .quote(let paragraphs):
+      kind = "quote"; self.paragraphs = paragraphs
+    case .code(let language, let text):
+      kind = "code"; self.language = language; self.text = text
+    case .list(let ordered, let items):
+      kind = "list"
+      self.ordered = ordered
+      self.items = items.map { Item(marker: $0.marker, text: $0.text) }
+    case .rule:
+      kind = "rule"
+    }
+  }
 }
 
 // MARK: - Runs in flight
@@ -203,10 +264,50 @@ final class AskIndexes: @unchecked Sendable {
   private let lock = NSLock()
   private var indexes: [UUID: HybridRAGIndex] = [:]
   private var order: [UUID] = []
+  /// The build running for a book, so a question asked while the reader was
+  /// still on page one waits on that work rather than starting it again.
+  private var builds: [UUID: Task<Void, Error>] = [:]
   private let capacity = 2
 
   func index(for bookID: UUID) -> HybridRAGIndex {
     lock.lock(); defer { lock.unlock() }
+    return locked(bookID)
+  }
+
+  /// The build for `book`, started if none is running. One task per book: the
+  /// reader opening a book starts it off the critical path, and a question a
+  /// moment later awaits the same task.
+  @discardableResult
+  func build(for book: Book) -> Task<Void, Error> {
+    lock.lock()
+    if let running = builds[book.id] { lock.unlock(); return running }
+    let index = locked(book.id)
+    let task = Task<Void, Error>.detached(priority: .utility) { [weak self] in
+      defer { self?.finished(book.id) }
+      if await index.isBuilt(bookID: book.id) { return }
+      try await index.build(for: book, embeddings: LocalEmbeddingProvider())
+    }
+    builds[book.id] = task
+    lock.unlock()
+    return task
+  }
+
+  func forget(_ bookID: UUID) {
+    lock.lock()
+    order.removeAll { $0 == bookID }
+    indexes[bookID] = nil
+    let build = builds.removeValue(forKey: bookID)
+    lock.unlock()
+    build?.cancel()
+  }
+
+  private func finished(_ bookID: UUID) {
+    lock.lock(); defer { lock.unlock() }
+    builds[bookID] = nil
+  }
+
+  /// The index for a book, made if there is none — the caller holds the lock.
+  private func locked(_ bookID: UUID) -> HybridRAGIndex {
     order.removeAll { $0 == bookID }
     order.append(bookID)
     if let index = indexes[bookID] { return index }
@@ -217,12 +318,6 @@ final class AskIndexes: @unchecked Sendable {
       indexes[oldest] = nil
     }
     return index
-  }
-
-  func forget(_ bookID: UUID) {
-    lock.lock(); defer { lock.unlock() }
-    order.removeAll { $0 == bookID }
-    indexes[bookID] = nil
   }
 }
 
@@ -289,7 +384,7 @@ extension AndroidLibrary {
       book = try self.book(bookID)
       scope = try askScope(scopeJSON, in: book)
       selection = try askSelection(selectionJSON, in: book)
-      history = askHistory(historyJSON, in: book)
+      history = askHistory(historyJSON, in: book, scoped: scope.isScoped)
     } catch {
       box.failed(error)
       return 0
@@ -300,17 +395,24 @@ extension AndroidLibrary {
     let registry = askRuns
     let indexes = askIndexes
     let lengths = readingLengths
+    let wholeBook = routesWholeBook(book, scope: scope, provider: provider.info)
     let task = Task { [book, scope, selection, history] in
       defer { registry.finish(handle) }
       do {
         let index = indexes.index(for: book.id)
-        if await index.isBuilt(bookID: book.id) == false {
+        // The index is only worth having for the tier that reads it. A book
+        // that fits the provider's whole-book budget rides along entire, and
+        // the router never asks for a passage — chunking and embedding it
+        // would be seconds of work no answer would use.
+        if !wholeBook, await index.isBuilt(bookID: book.id) == false {
           guard !run.isCancelled, !Task.isCancelled else { return }
           // Chunking and embedding a long book is seconds, not milliseconds,
           // and it happens before the router has anything to say — so the
-          // panel is told that this is what the wait is.
-          box.contextAssembled("indexing")
-          try await index.build(for: book, embeddings: LocalEmbeddingProvider())
+          // panel is told that this is what the wait is. `prepareAsk` may
+          // have started this work when the book opened; then this waits on
+          // that task rather than doing it twice.
+          box.indexing()
+          try await indexes.build(for: book).value
         }
         let service = AskService(
           strategy: AdaptiveContextStrategy(index: index, lengths: lengths),
@@ -323,7 +425,7 @@ extension AndroidLibrary {
           guard !run.isCancelled, !Task.isCancelled else { return }
           switch event {
           case let .contextAssembled(tier):
-            box.contextAssembled(tier.rawValue)
+            box.contextAssembled(tier)
           case let .citations(citations):
             box.citations(self.askCitationsJSON(citations, in: book))
           case let .token(delta):
@@ -342,6 +444,44 @@ extension AndroidLibrary {
     run.attach(task)
     return handle
   }
+
+  /// Start building the book's retrieval index, unless a question about it
+  /// would never use one.
+  ///
+  /// Called when the book opens, and returns at once: the work runs on a
+  /// detached task, and the reader pays for it while they are reading page
+  /// one rather than after they have typed a question. Nothing is reported —
+  /// a build that does not finish is simply built (and waited for) by `ask`.
+  ///
+  /// The estimate is made against the whole book, which is the most a
+  /// question can ever ship: a book that fits the active provider's
+  /// whole-book budget routes there under every scope, so there is nothing to
+  /// index.
+  public func prepareAsk(_ bookID: String, providers: AndroidProviders) {
+    guard let book = try? self.book(bookID) else { return }
+    guard let provider = (try? providers.manager.activeProvider()) ?? nil else { return }
+    guard !routesWholeBook(book, scope: .wholeBook, provider: provider.info) else { return }
+    askIndexes.build(for: book)
+  }
+
+  /// Whether `AdaptiveContextStrategy` would send the text itself rather than
+  /// retrieve passages — decided on the same numbers it uses: a non-local
+  /// provider, and a text that fits `wholeBookBudgetFraction` of the model's
+  /// context budget. A scoped question measures only what has been read, and
+  /// a reader who has read nothing routes whole-book with nothing in it.
+  func routesWholeBook(_ book: Book, scope: ReadingScope, provider: ProviderInfo) -> Bool {
+    guard !provider.isLocal else { return false }
+    let budget = Int(Double(provider.contextBudget) * Self.wholeBookBudgetFraction)
+    guard let frontier = scope.frontier else { return book.estimatedTokenCount <= budget }
+    let read = readingLengths.table(for: book).charactersRead(upTo: frontier)
+    guard read > 0 else { return true }
+    return estimateTokens(characterCount: read) <= budget
+  }
+
+  /// `AdaptiveContextStrategy`'s own default: the share of the context budget
+  /// a book may occupy before the router switches to retrieval, leaving the
+  /// rest for the conversation and the answer.
+  static var wholeBookBudgetFraction: Double { 0.6 }
 
   /// Stop the ask `handle` names. The sink hears nothing more from it — no
   /// `completed`, no `failed`. An unknown handle (an ask that already landed)
@@ -414,26 +554,37 @@ extension AndroidLibrary {
     }
     let chapter = try chapter(book, Int64(wire.chapterIndex))
     let table = offsetTables.table(for: book, chapterIndex: wire.chapterIndex)
-    let characters = Array(chapter.text)
-    let lower = min(max(0, table.characterOffset(ofUTF16: wire.utf16Start)), characters.count)
-    let upper = min(max(lower, table.characterOffset(ofUTF16: wire.utf16End)), characters.count)
+    // Through the table in both directions: to characters, so a selection
+    // that lands inside a grapheme still cuts on one, and back to UTF-16 to
+    // index the string itself. Making an `[Character]` of the chapter to
+    // slice a sentence out of it copies the whole chapter, on the main path
+    // of every selection question.
+    let lower = table.characterOffset(ofUTF16: wire.utf16Start)
+    let upper = max(lower, table.characterOffset(ofUTF16: wire.utf16End))
     let contextLower = max(0, lower - Self.selectionContextCharacters)
-    let contextUpper = min(characters.count, upper + Self.selectionContextCharacters)
+    let contextUpper = min(table.characterCount, upper + Self.selectionContextCharacters)
+    let text = chapter.text
+    func position(_ characterOffset: Int) -> String.Index {
+      String.Index(utf16Offset: table.utf16Offset(ofCharacter: characterOffset), in: text)
+    }
     return Selection(
       chapterID: chapter.id,
-      quotedText: lower < upper ? String(characters[lower..<upper]) : "",
-      surroundingText: String(characters[contextLower..<contextUpper]),
+      quotedText: lower < upper ? String(text[position(lower)..<position(upper)]) : "",
+      surroundingText: String(text[position(contextLower)..<position(contextUpper)]),
       chapterTitle: chapter.title)
   }
 
   /// The conversation so far. A turn that will not decode is dropped rather
   /// than failing the question: history is context, and a question the reader
   /// just typed must not be refused over a transcript entry.
-  func askHistory(_ json: String, in book: Book) -> [ConversationTurn] {
+  func askHistory(_ json: String, in book: Book, scoped: Bool) -> [ConversationTurn] {
     guard !json.isEmpty,
           let wire = try? JSONDecoder().decode([AskTurnWire].self, from: Data(json.utf8))
     else { return [] }
-    return wire.map { turn in
+    // A scoped question is answered from what the reader has read — including
+    // in the conversation behind it, so an earlier whole-book answer cannot
+    // walk a spoiler back in through the history.
+    return wire.filter { !scoped || $0.scoped == true }.map { turn in
       ConversationTurn(
         question: turn.question,
         answer: Answer(
@@ -480,10 +631,21 @@ extension AndroidLibrary {
     return String(decoding: data, as: UTF8.self)
   }
 
-  /// Characters of context either side of a selected passage. A little wider
-  /// than the Apple reader's 240 — a phone selection is usually a sentence,
-  /// and the paragraph around it is what makes the question answerable.
-  static var selectionContextCharacters: Int { 300 }
+  /// Characters of context either side of a selected passage — the Apple
+  /// reader's 240, so a question about the same passage is anchored the same
+  /// way on both platforms.
+  static var selectionContextCharacters: Int { 240 }
+
+  /// The answer's Markdown as the blocks the sheet draws — the kit's own
+  /// `AnswerMarkdown`, so a heading, a numbered list or a code fence is cut
+  /// out of the stream by the same parser the Apple panel uses rather than by
+  /// a second, smaller one written in Kotlin. Runs on every streamed token,
+  /// and is tolerant of half-written input for that reason.
+  public func answerBlocksJSON(_ markdown: String) -> String {
+    let wire = AnswerMarkdown.blocks(from: markdown).map(AnswerBlockWire.init)
+    guard let data = try? Self.encoder().encode(wire) else { return "[]" }
+    return String(decoding: data, as: UTF8.self)
+  }
 }
 
 // MARK: - What the Ask sheet needs to know about the provider
@@ -498,14 +660,17 @@ extension AndroidProviders {
     manager.selection?.kind.isOnDevice ?? false
   }
 
-  /// TEST ONLY. Sends every request for `kind` to `url`'s origin instead of
-  /// the vendor's, keeping the path the provider built — so an instrumented
-  /// test can point the OpenAI-shaped provider at a server it runs itself
-  /// (`http://127.0.0.1:<port>` answers `/v1/chat/completions`). Pass "" to
-  /// put the vendor's own host back.
+  /// DEBUG AND TEST ONLY. Sends every request for `kind` to `url`'s origin
+  /// instead of the vendor's, keeping the path the provider built — so an
+  /// instrumented test can point the OpenAI-shaped provider at a server it
+  /// runs itself (`http://127.0.0.1:<port>` answers `/v1/chat/completions`).
+  /// Pass "" to put the vendor's own host back.
   ///
-  /// Nothing in the app calls this; it exists so the streaming path can be
-  /// tested end to end on a device without a key, a network, or a bill.
+  /// Only a loopback origin is accepted: this device, and this device only.
+  /// Nothing in the app calls it, but a hook that could redirect a
+  /// credentialed request to any host on the internet is not a hook worth
+  /// having at all — `10.0.2.2` is in the list because that is how an
+  /// emulator reaches the machine running it.
   public func overrideEndpoint(_ kind: String, url: String) throws {
     try readerFacing {
       let k = try self.providerKind(kind)
@@ -513,35 +678,42 @@ extension AndroidProviders {
         endpointOverrides.set(nil, for: k)
         return
       }
-      guard let origin = URL(string: url), origin.host != nil else {
+      guard let origin = URL(string: url), let host = origin.host else {
         throw AskRequestError.malformed("endpoint URL")
+      }
+      guard Self.loopbackHosts.contains(host.lowercased()) else {
+        throw AndroidBridgeError.endpointNotLoopback(host)
       }
       endpointOverrides.set(origin, for: k)
     }
   }
+
+  /// The only hosts an override may name.
+  static let loopbackHosts: Set<String> = ["127.0.0.1", "localhost", "10.0.2.2"]
 }
 
 /// Per-kind endpoint replacements, consulted by the provider factory. Empty
 /// in every build a reader runs; see `AndroidProviders.overrideEndpoint`.
 final class EndpointOverrides: @unchecked Sendable {
   private let lock = NSLock()
-  private var origins: [ProviderInfo.Kind: URL] = [:]
+  private var redirected: [ProviderInfo.Kind: OriginOverridingHTTPClient] = [:]
+  /// One session for the whole process, made once. `activeProvider()` builds
+  /// a provider on every question and every validation, and a `URLSession`
+  /// per provider is a connection pool per question — the sockets a
+  /// keep-alive would have reused are thrown away with it.
+  private let shared = URLSessionHTTPClient()
 
   func set(_ origin: URL?, for kind: ProviderInfo.Kind) {
     lock.lock(); defer { lock.unlock() }
-    origins[kind] = origin
+    redirected[kind] = origin.map { OriginOverridingHTTPClient(origin: $0, base: shared) }
   }
 
-  func origin(for kind: ProviderInfo.Kind) -> URL? {
-    lock.lock(); defer { lock.unlock() }
-    return origins[kind]
-  }
-
-  /// The transport a provider of `kind` should be built with: the ordinary
-  /// one, or a redirected one while an override stands.
+  /// The transport a provider of `kind` should be built with: the shared one,
+  /// or the redirect standing for this kind — which sends through the same
+  /// shared session.
   func client(for kind: ProviderInfo.Kind) -> HTTPClient {
-    guard let origin = origin(for: kind) else { return URLSessionHTTPClient() }
-    return OriginOverridingHTTPClient(origin: origin)
+    lock.lock(); defer { lock.unlock() }
+    return redirected[kind] ?? shared
   }
 }
 
@@ -551,9 +723,12 @@ final class EndpointOverrides: @unchecked Sendable {
 /// and a local server receives it.
 struct OriginOverridingHTTPClient: HTTPClient {
   let origin: URL
-  private let base = URLSessionHTTPClient()
+  private let base: HTTPClient
 
-  init(origin: URL) { self.origin = origin }
+  init(origin: URL, base: HTTPClient) {
+    self.origin = origin
+    self.base = base
+  }
 
   func send(_ request: HTTPRequest) async throws -> HTTPResponse {
     try await base.send(redirected(request))

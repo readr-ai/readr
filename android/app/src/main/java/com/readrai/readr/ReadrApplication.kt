@@ -30,6 +30,17 @@ class ReadrApplication : Application() {
 
     suspend fun library(): LibraryRepository = withContext(Dispatchers.IO) { libraryRepository }
 
+    /**
+     * Remove a book, and the Ask conversation about it: its answers quote a
+     * book nobody can open any more, and a re-import is a new book with a new
+     * id in any case. The one place a book goes away, so the one place the
+     * transcript has to.
+     */
+    suspend fun removeBook(bookId: String) {
+        library().remove(bookId)
+        askConversations.forget(bookId)
+    }
+
     suspend fun providers(): ProvidersRepository = withContext(Dispatchers.IO) { providersRepository }
 
     suspend fun asks(): AskRepository = withContext(Dispatchers.IO) { askRepository }

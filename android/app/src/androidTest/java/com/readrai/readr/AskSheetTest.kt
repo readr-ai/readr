@@ -8,8 +8,11 @@ import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollToNode
+import androidx.compose.ui.test.performTextInput
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import com.readrai.readr.data.AskEvent
 import com.readrai.readr.data.AskFrontier
 import com.readrai.readr.data.AskRepository
 import com.readrai.readr.data.BookSummary
@@ -27,7 +30,10 @@ import com.readrai.readr.ui.reader.ReaderSettings
 import com.readrai.readr.ui.reader.ReaderViewModel
 import com.readrai.readr.ui.theme.ReadrTheme
 import java.io.File
+import kotlin.time.Duration.Companion.minutes
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.future.await
+import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -61,14 +67,12 @@ class AskSheetTest {
     @Before
     fun setUp() = runBlocking {
         root = File(context.cacheDir, "ask-test-${System.nanoTime()}").apply { mkdirs() }
-        kit = Kit.open(root, KeystoreSecretStore(context, alias = "readr.secrets.test"), NanoProbe(context))
+        context.deleteSharedPreferences(KeystoreSecretStore.fileName(TEST_ALIAS))
+        kit = Kit.open(root, KeystoreSecretStore(context, alias = TEST_ALIAS), NanoProbe(context))
         library = LibraryRepository(context, kit)
         asks = AskRepository(kit)
         settingsName = "ask-test-${System.nanoTime()}"
         settings = ReaderSettings(context, settingsName)
-        // The Keystore file is shared by alias, the library root is not: a key
-        // an earlier test left behind would make "nothing connected" untrue.
-        clearCredentials()
         val text = buildString {
             for (chapter in 1..3) {
                 append("# Chapter $chapter\n\n")
@@ -85,13 +89,11 @@ class AskSheetTest {
 
     @After
     fun tearDown() {
-        clearCredentials()
+        // The secrets file belongs to the test alias, so emptying it takes
+        // nothing of the reader's with it.
+        context.deleteSharedPreferences(KeystoreSecretStore.fileName(TEST_ALIAS))
         context.deleteSharedPreferences(settingsName)
         root.deleteRecursively()
-    }
-
-    private fun clearCredentials() {
-        for (kind in listOf("openAI", "anthropic", "openRouter")) runCatching { kit.providers.deleteCredential(kind) }
     }
 
     /** A provider pointed at `server`, connected and made active. */
@@ -203,5 +205,127 @@ class AskSheetTest {
             compose.waitUntil(180_000) { server.requests > asked }
             assertTrue("the error card is still the reader's answer", nodes("ask.error").isNotEmpty())
         }
+    }
+
+    /**
+     * A fast answer arrives whole. The sink is called from Swift's executor
+     * and cannot wait for a full buffer, so a channel that could fill would
+     * drop the middle of an answer — 500 deltas with no gap between them,
+     * into a collector doing work between each one, is what that would look
+     * like.
+     */
+    @Test
+    fun everyTokenOfAFastAnswerReachesTheReader() = runBlocking {
+        val deltas = (1..500).map { "w$it " }
+        FakeChatServer(deltas = deltas, gapMillis = 0).use { server ->
+            connect(server)
+            val received = StringBuilder()
+            var completed: String? = null
+            withTimeout(3.minutes) {
+                asks.ask(book.id, "What happens?", null, null, emptyList()).collect { event ->
+                    when (event) {
+                        is AskEvent.Token -> {
+                            received.append(event.text)
+                            // A collector with something to do between tokens:
+                            // the sheet laying out what it was just handed.
+                            delay(1)
+                        }
+                        is AskEvent.Completed -> completed = event.text
+                        is AskEvent.Failed -> throw AssertionError("the answer failed: ${event.message}")
+                        else -> Unit
+                    }
+                }
+            }
+            assertEquals(deltas.joinToString(""), received.toString())
+            assertEquals(received.toString(), completed)
+        }
+    }
+
+    /**
+     * The grounding caption promises nothing about citations until the kit
+     * has routed something, and then says what THAT tier provides: this book
+     * is short enough to ride along whole, which retrieves no passages and
+     * therefore has no sources to offer.
+     */
+    @Test
+    fun theCaptionFollowsTheTierTheKitRouted() {
+        FakeChatServer().use { server ->
+            connect(server)
+            openSheet(askModel())
+            awaitTag("ask.grounding")
+            assertEquals(
+                "nothing routed yet, so nothing promised",
+                "Grounded in what you\u2019ve read so far.",
+                textOf("ask.grounding"),
+            )
+
+            compose.onNodeWithTag("ask.suggestion.0").performClick()
+            compose.waitUntil(180_000) {
+                compose.onAllNodes(hasText(FakeChatServer.DEFAULT_ANSWER, substring = true))
+                    .fetchSemanticsNodes().isNotEmpty()
+            }
+            val grounding = textOf("ask.grounding")
+            assertTrue("a whole-book answer has no passages to cite: $grounding", !grounding.contains("citations"))
+            assertTrue(grounding, grounding.contains("plus the model"))
+        }
+    }
+
+    /**
+     * A turn that failed says so where it failed. The composer's error card is
+     * cleared by the next question; a transcript that then showed the question
+     * with nothing under it would read as an app that lost the answer.
+     */
+    @Test
+    fun aFailedTurnKeepsItsReasonInTheTranscript() {
+        FakeChatServer(
+            status = 401,
+            errorBody = "{\"error\":{\"message\":\"Incorrect API key provided.\"}}",
+        ).use { server ->
+            connect(server)
+            openSheet(askModel())
+            awaitTag("ask.suggestion.0")
+            compose.onNodeWithTag("ask.suggestion.0").performClick()
+            awaitTag("ask.exchangeFailure.1", 180_000)
+
+            compose.onNodeWithTag("ask.field").performTextInput("And then what?")
+            compose.onNodeWithTag("ask.send").performClick()
+            compose.waitUntil(180_000) { nodes("ask.exchangeFailure.2").isNotEmpty() }
+            // Scrolled back to, because the transcript follows the newest
+            // answer down: the point is that it is still THERE, under the
+            // question it belongs to, once the composer's card has moved on.
+            compose.onNodeWithTag("ask.transcript")
+                .performScrollToNode(hasTestTag("ask.exchangeFailure.1"))
+            compose.onNodeWithTag("ask.exchangeFailure.1").assertIsDisplayed()
+        }
+    }
+
+    /**
+     * The answer's shape is the kit's: a numbered list keeps its numbers,
+     * because the same parser the Apple panel uses cut it.
+     */
+    @Test
+    fun anOrderedListInAnAnswerKeepsItsNumbers() {
+        FakeChatServer(
+            deltas = listOf("Two things happen:\n\n", "1. She follows him.\n", "2. She falls.\n"),
+        ).use { server ->
+            connect(server)
+            openSheet(askModel())
+            awaitTag("ask.suggestion.0")
+            compose.onNodeWithTag("ask.suggestion.0").performClick()
+            compose.waitUntil(180_000) {
+                compose.onAllNodes(hasText("She falls.", substring = true)).fetchSemanticsNodes().isNotEmpty()
+            }
+            for (marker in listOf("1.", "2.")) {
+                assertTrue(
+                    "the list lost its $marker marker",
+                    compose.onAllNodes(hasText(marker)).fetchSemanticsNodes().isNotEmpty(),
+                )
+            }
+        }
+    }
+
+    private companion object {
+        /** This suite's Keystore key, and its own secrets file. */
+        const val TEST_ALIAS = "readr.secrets.test"
     }
 }

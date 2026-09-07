@@ -17,10 +17,14 @@ import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.gestures.scrollBy
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
@@ -39,6 +43,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -53,12 +58,14 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.foundation.layout.PaddingValues
 import com.readrai.readr.data.AskCitation
 import com.readrai.readr.data.AskTier
 import com.readrai.readr.ui.theme.LocalReadingPalette
 import com.readrai.readr.ui.theme.Marginalia
 import com.readrai.readr.ui.theme.ReadingPalette
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.conflate
 
 /**
  * "Ask the book" — the Android side of `App/Ask/AskPanelView`.
@@ -100,7 +107,7 @@ fun AskSheet(
                 null -> Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
                     CircularProgressIndicator()
                 }
-                false -> NoProvider(palette, Modifier.weight(1f), onOpenProviders)
+                false -> NoProvider(model.setupGuidance, palette, Modifier.weight(1f), onOpenProviders)
                 true -> {
                     Transcript(model, palette, Modifier.weight(1f), onShowInBook = { chapter, offset ->
                         onShowInBook(chapter, offset)
@@ -140,7 +147,12 @@ private fun Header(model: AskViewModel, palette: ReadingPalette) {
  * the same actionable empty state the Apple panel shows.
  */
 @Composable
-private fun NoProvider(palette: ReadingPalette, modifier: Modifier, onOpenProviders: () -> Unit) {
+private fun NoProvider(
+    guidance: String,
+    palette: ReadingPalette,
+    modifier: Modifier,
+    onOpenProviders: () -> Unit,
+) {
     Column(
         modifier.fillMaxWidth().padding(28.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp, Alignment.CenterVertically),
@@ -154,10 +166,11 @@ private fun NoProvider(palette: ReadingPalette, modifier: Modifier, onOpenProvid
             textAlign = TextAlign.Center,
         )
         Text(
-            SETUP_GUIDANCE,
+            guidance,
             style = MaterialTheme.typography.bodyMedium,
             color = palette.muted,
             textAlign = TextAlign.Center,
+            modifier = Modifier.testTag("ask.setupGuidance"),
         )
         Spacer(Modifier.height(4.dp))
         Box(
@@ -180,27 +193,49 @@ private fun Transcript(
     modifier: Modifier,
     onShowInBook: (Int, Int) -> Unit,
 ) {
-    val scroll = rememberScrollState()
-    // Follow the answer down as it grows, so the reader is not chasing it.
-    LaunchedEffect(model.exchanges.size, model.exchanges.lastOrNull()?.answerText) {
-        scroll.animateScrollTo(scroll.maxValue)
+    val listState = rememberLazyListState()
+    // A list, not a column in a scroller: a long conversation would otherwise
+    // measure and lay out every answer in it on every streamed token.
+    // Followed down as it grows — once per new turn, and on the answer's
+    // length through a CONFLATED flow, so a fast stream produces one scroll
+    // per frame rather than one per delta.
+    LaunchedEffect(model.exchanges.size) { listState.scrollToEnd() }
+    LaunchedEffect(listState) {
+        snapshotFlow { model.exchanges.lastOrNull()?.answerText?.length ?: 0 }
+            .conflate()
+            .collect { listState.scrollToEnd() }
     }
-    Column(
-        modifier
-            .fillMaxWidth()
-            .verticalScroll(scroll)
-            .padding(horizontal = 20.dp)
-            .padding(top = 14.dp, bottom = 10.dp),
+    LazyColumn(
+        modifier.fillMaxWidth().padding(horizontal = 20.dp).testTag("ask.transcript"),
+        state = listState,
+        contentPadding = PaddingValues(top = 14.dp, bottom = 10.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        ContextHeader(model, palette)
-        for (exchange in model.exchanges) {
-            ExchangeView(exchange, palette, onShowInBook)
+        item(key = "context") { ContextHeader(model, palette) }
+        // Keyed by the turn's own id, so a re-composition moves nothing: the
+        // answer growing in the last one must not re-key the ones above it.
+        items(model.exchanges, key = { it.id }) { exchange ->
+            ExchangeView(exchange, palette, model::blocks, onShowInBook)
         }
         if (model.isStreaming && model.exchanges.lastOrNull()?.answerText.isNullOrEmpty()) {
-            ThinkingDots(palette.iris)
+            item(key = "thinking") { ThinkingDots(palette.iris) }
         }
     }
+}
+
+/**
+ * The bottom of the last item, not its top: `scrollToItem` aligns an item's
+ * start with the viewport's, which on an answer taller than the sheet would
+ * leave the words being written below the fold.
+ */
+private suspend fun LazyListState.scrollToEnd() {
+    val last = layoutInfo.totalItemsCount - 1
+    if (last < 0) return
+    scrollToItem(last)
+    val info = layoutInfo
+    val item = info.visibleItemsInfo.lastOrNull { it.index == last } ?: return
+    val overflow = item.size - (info.viewportEndOffset - info.viewportStartOffset)
+    if (overflow > 0) scrollBy(overflow.toFloat())
 }
 
 /**
@@ -242,11 +277,8 @@ private fun ContextHeader(model: AskViewModel, palette: ReadingPalette) {
     }
 }
 
-private fun headline(model: AskViewModel): String = when {
-    model.openedForRecap && model.isScoped -> "Recap up to where you are"
-    model.isScoped -> "Ask about what you've read so far"
-    else -> "Ask anything about this book"
-}
+private fun headline(model: AskViewModel): String =
+    if (model.isScoped) "Ask about what you've read so far" else "Ask anything about this book"
 
 /**
  * "Up to where I am" or "Whole book": two scopes to pick between, not a
@@ -284,11 +316,32 @@ private fun ScopePicker(model: AskViewModel, palette: ReadingPalette) {
 }
 
 @Composable
-private fun ExchangeView(exchange: AskExchange, palette: ReadingPalette, onShowInBook: (Int, Int) -> Unit) {
+private fun ExchangeView(
+    exchange: AskExchange,
+    palette: ReadingPalette,
+    blocks: (String) -> List<AnswerBlock>,
+    onShowInBook: (Int, Int) -> Unit,
+) {
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         SentQuestion(exchange.question, palette)
+        val failure = exchange.failure
         if (exchange.answerText.isNotBlank()) {
-            Answer(exchange.answerText, palette)
+            Answer(exchange.answerText, palette, blocks)
+        }
+        if (failure != null) {
+            // Under the question it belongs to, and for good: the composer's
+            // error card is cleared by the next question, and a transcript
+            // that then shows a question with nothing under it says the app
+            // lost the answer rather than that this one failed.
+            Column(
+                Modifier.testTag("ask.exchangeFailure.${exchange.id}"),
+                verticalArrangement = Arrangement.spacedBy(3.dp),
+            ) {
+                Text(failure, style = MaterialTheme.typography.bodyMedium, color = palette.muted)
+                exchange.failureRecovery?.takeIf { it.isNotBlank() }?.let {
+                    Text(it, fontSize = 12.sp, color = palette.faint)
+                }
+            }
         } else if (exchange.isEmpty) {
             // The stream ended with nothing worth showing. A blank bubble over
             // a Sources list reads as a broken app; say what happened.
@@ -302,8 +355,8 @@ private fun ExchangeView(exchange: AskExchange, palette: ReadingPalette, onShowI
         val citations = exchange.citations
         when {
             exchange.answerText.isBlank() -> Unit
-            exchange.tier == AskTier.RETRIEVAL && citations.isNotEmpty() ->
-                Sources(citations, palette, onShowInBook)
+            exchange.tier == AskTier.RETRIEVAL && !citations.isEmpty ->
+                Sources(citations.items, palette, onShowInBook)
             exchange.tier == AskTier.WHOLE_BOOK -> WholeBookNote(exchange.scoped, palette)
         }
     }
@@ -329,12 +382,15 @@ private fun SentQuestion(text: String, palette: ReadingPalette) {
 }
 
 @Composable
-private fun Answer(markdown: String, palette: ReadingPalette) {
+private fun Answer(markdown: String, palette: ReadingPalette, blocks: (String) -> List<AnswerBlock>) {
+    // Parsed once per distinct answer text rather than once per composition:
+    // the kit does the splitting, and the call crosses the bridge.
+    val parsed = remember(markdown) { blocks(markdown) }
     Column(
         Modifier.fillMaxWidth().testTag("ask.answer"),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        for (block in AnswerMarkdown.blocks(markdown)) {
+        for (block in parsed) {
             when (block) {
                 is AnswerBlock.Paragraph -> Text(
                     AnswerMarkdown.inline(block.text),
@@ -342,12 +398,26 @@ private fun Answer(markdown: String, palette: ReadingPalette) {
                     color = palette.ink,
                     lineHeight = 21.sp,
                 )
-                is AnswerBlock.Bullets -> Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                is AnswerBlock.Heading -> Text(
+                    AnswerMarkdown.inline(block.text),
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    color = palette.ink,
+                    lineHeight = 21.sp,
+                )
+                is AnswerBlock.Items -> Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     for (item in block.items) {
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Text("•", style = MaterialTheme.typography.bodyMedium, color = palette.muted)
+                            // The marker the kit rendered — "•" for a bullet,
+                            // "2." for the second item of a numbered list, so
+                            // an ordered list keeps its numbers.
                             Text(
-                                AnswerMarkdown.inline(item),
+                                item.marker,
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = palette.muted,
+                            )
+                            Text(
+                                AnswerMarkdown.inline(item.text),
                                 style = MaterialTheme.typography.bodyMedium,
                                 color = palette.ink,
                                 lineHeight = 21.sp,
@@ -356,6 +426,22 @@ private fun Answer(markdown: String, palette: ReadingPalette) {
                     }
                 }
                 is AnswerBlock.Quote -> QuotedText(block.paragraphs.joinToString("\n\n"), palette, Modifier)
+                is AnswerBlock.Code -> Text(
+                    block.text,
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 12.sp,
+                    lineHeight = 18.sp,
+                    color = palette.ink,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(palette.elevated)
+                        .horizontalScroll(rememberScrollState())
+                        .padding(10.dp),
+                )
+                AnswerBlock.Rule -> Box(
+                    Modifier.fillMaxWidth().height(1.dp).background(palette.line)
+                )
             }
         }
     }
@@ -578,7 +664,11 @@ private fun groundingCaption(model: AskViewModel): String {
         else -> "this book"
     }
     if (model.answersFromBookOnly) return "Answers come from $grounding only."
-    if (model.tier == AskTier.WHOLE_BOOK) return "Grounded in $grounding — plus the model’s wider knowledge."
+    // Nothing has been routed yet: promise the grounding, which is true of
+    // either tier, and say nothing about citations until the kit has said
+    // whether this answer will have any.
+    val cites = model.providesCitations ?: return "Grounded in $grounding."
+    if (!cites) return "Grounded in $grounding — plus the model’s wider knowledge."
     return "Grounded in $grounding with citations — plus the model’s wider knowledge."
 }
 
@@ -654,14 +744,6 @@ private fun ThinkingDots(color: Color) {
         }
     }
 }
-
-/**
- * The only setup sentence this side writes, phrased from the doors this build
- * actually has — an API key, or the model built into the phone. Mirrors
- * `SettingsModel.setupGuidance(toDo:)`, which does the same on Apple.
- */
-private const val SETUP_GUIDANCE =
-    "Add an API key or use the model built into this phone to ask questions."
 
 /** An open book, drawn by the font rather than bundled as an icon. */
 private const val BOOK_GLYPH = "📖"

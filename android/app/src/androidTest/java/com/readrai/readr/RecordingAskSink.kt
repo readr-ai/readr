@@ -2,6 +2,12 @@ package com.readrai.readr
 
 import com.readrai.readr.kit.AskSink
 import java.util.concurrent.CopyOnWriteArrayList
+import kotlin.time.Duration
+import kotlin.time.Duration.Companion.minutes
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * An [AskSink] that writes down what the facade told it, and when.
@@ -21,7 +27,8 @@ class RecordingAskSink : AskSink {
 
     val calls = CopyOnWriteArrayList<Call>()
 
-    override fun contextAssembled(tier: String) { calls += Call(TIER, tier) }
+    override fun indexing() { calls += Call(INDEXING, "") }
+    override fun contextAssembled(json: String) { calls += Call(TIER, json) }
     override fun citations(json: String) { calls += Call(CITATIONS, json) }
     override fun token(text: String) { calls += Call(TOKEN, text) }
     override fun completed(text: String) { calls += Call(COMPLETED, text) }
@@ -29,20 +36,30 @@ class RecordingAskSink : AskSink {
 
     fun of(kind: String): List<Call> = calls.filter { it.kind == kind }
 
-    /** Waits for at least `count` calls of `kind`; false if they never come. */
-    fun await(kind: String, count: Int = 1, timeoutMillis: Long = 60_000): Boolean {
-        val deadline = System.currentTimeMillis() + timeoutMillis
-        while (System.currentTimeMillis() < deadline) {
-            if (of(kind).size >= count) return true
-            Thread.sleep(25)
+    /**
+     * Waits for at least `count` calls of `kind`; false if they never come.
+     *
+     * Suspending, and on `Dispatchers.Default` on purpose: inside `runTest`
+     * a bare `delay` runs on the virtual clock and would skip the whole wait
+     * without a millisecond passing, while `Thread.sleep` blocks the test's
+     * only thread — which is where the collection it is waiting for runs.
+     */
+    suspend fun await(kind: String, count: Int = 1, timeout: Duration = 3.minutes): Boolean =
+        withContext(Dispatchers.Default) {
+            withTimeoutOrNull(timeout) {
+                while (of(kind).size < count) delay(25)
+                true
+            } ?: false
         }
-        return false
-    }
+
+    /** The tier JSON of the last routing, decoded by the caller. */
+    fun lastTierJSON(): String = of(TIER).lastOrNull()?.text ?: ""
 
     /** Everything recorded, for an assertion message worth reading. */
     override fun toString(): String = calls.joinToString("; ") { "${it.kind}=${it.text.take(60)}" }
 
     companion object {
+        const val INDEXING = "indexing"
         const val TIER = "tier"
         const val CITATIONS = "citations"
         const val TOKEN = "token"

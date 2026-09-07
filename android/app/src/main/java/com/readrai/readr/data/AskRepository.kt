@@ -3,8 +3,13 @@ package com.readrai.readr.data
 import com.readrai.readr.kit.AskSink
 import com.readrai.readr.kit.Kit
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.buffer
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.withContext
@@ -54,6 +59,13 @@ data class AskTurn(
     val answerText: String,
     val tier: String? = null,
     val citations: List<AskCitation> = emptyList(),
+    /**
+     * Whether this turn was answered under a frontier. The facade drops
+     * unscoped turns from the history of a scoped question — the no-spoilers
+     * promise covers what the model reads, not only the passages it is
+     * handed — so the scope has to travel with the turn.
+     */
+    val scoped: Boolean = false,
 )
 
 /**
@@ -80,13 +92,21 @@ data class AskPosition(
 sealed interface AskEvent {
     /** The book's retrieval index is being built; the answer waits on it. */
     data object Indexing : AskEvent
-    /** The router settled: `retrieval` or `wholeBook`. */
-    data class Routed(val tier: String) : AskEvent
+    /**
+     * The router settled. [tier] is `retrieval` or `wholeBook`, and
+     * [providesCitations] is the kit's own answer about that tier — the
+     * caption follows it rather than re-deriving the rule here.
+     */
+    data class Routed(val tier: String, val providesCitations: Boolean) : AskEvent
     data class Citations(val citations: List<AskCitation>) : AskEvent
     data class Token(val text: String) : AskEvent
     data class Completed(val text: String) : AskEvent
     data class Failed(val message: String, val recovery: String?) : AskEvent
 }
+
+/** Mirrors ReadrAndroid's `AskTierWire`: the tier, and what it promises. */
+@Serializable
+private data class TierWire(val tier: String, val providesCitations: Boolean = false)
 
 /** The routing tiers the facade reports, by their kit raw values. */
 object AskTier {
@@ -119,8 +139,13 @@ class AskRepository(private val kit: Kit) {
         history: List<AskTurn>,
     ): Flow<AskEvent> = callbackFlow {
         val sink = object : AskSink {
-            override fun contextAssembled(tier: String) {
-                trySend(if (tier == INDEXING) AskEvent.Indexing else AskEvent.Routed(tier))
+            override fun indexing() {
+                trySend(AskEvent.Indexing)
+            }
+
+            override fun contextAssembled(json: String) {
+                val wire = runCatching { kitJson.decodeFromString<TierWire>(json) }.getOrNull() ?: return
+                trySend(AskEvent.Routed(wire.tier, wire.providesCitations))
             }
 
             override fun citations(json: String) {
@@ -150,14 +175,53 @@ class AskRepository(private val kit: Kit) {
         // The facade may refuse before it starts anything (no provider): it
         // says so through the sink and hands back 0, and the flow is already
         // closed by the time this returns.
-        val handle = withContext(Dispatchers.IO) {
-            kit.library.ask(bookId, question, scopeJson, selectionJson, historyJson, kit.providers, sink)
+        //
+        // `NonCancellable`: this call hands back the handle that owns the
+        // Swift task, and a cancellation that landed while it was in flight
+        // would drop that handle on the floor — leaving a stream running with
+        // nothing able to stop it. It runs to completion, and a collector
+        // that went away meanwhile is answered with the stop it missed.
+        var handle = 0L
+        var refusal: Throwable? = null
+        try {
+            handle = withContext(Dispatchers.IO + NonCancellable) {
+                kit.library.ask(bookId, question, scopeJson, selectionJson, historyJson, kit.providers, sink)
+            }
+        } catch (e: Throwable) {
+            refusal = e
         }
+        if (!currentCoroutineContext().isActive && handle != 0L) kit.library.cancelAsk(handle)
+        refusal?.let { close(it) }
+        // Reached however the start went, so the ask is always stopped when
+        // the collection ends.
         awaitClose { if (handle != 0L) kit.library.cancelAsk(handle) }
-    }.flowOn(Dispatchers.IO)
+    }
+        // Unlimited, not the default 64: the sink is called from Swift's
+        // executor and cannot suspend, so a `trySend` that finds the buffer
+        // full DROPS the token — a fast provider streaming a long answer into
+        // a main thread busy laying out the sheet would lose the middle of it.
+        .buffer(Channel.UNLIMITED)
+        .flowOn(Dispatchers.IO)
 
     /** Whether Ask has a model to put a question to at all. */
     suspend fun hasProvider(): Boolean = withContext(Dispatchers.IO) { kit.providers.hasAnyProvider() }
+
+    /**
+     * The answer's Markdown cut into blocks by the kit's own parser, as JSON.
+     * Not suspending: it is called from the composition as an answer streams,
+     * memoised per distinct text, and it neither touches the disk nor the
+     * network — it is a parse.
+     */
+    fun answerBlocksJSON(markdown: String): String = kit.library.answerBlocksJSON(markdown)
+
+    /**
+     * The kit's empty-state sentence — "Add an API key or use the model built
+     * into this phone to ask questions." — naming only the doors this build
+     * has, on this phone.
+     */
+    suspend fun setupGuidance(toDo: String): String = withContext(Dispatchers.IO) {
+        kit.providers.setupGuidance(toDo)
+    }
 
     /**
      * Whether the model Ask would use runs on the phone itself — which is
@@ -173,8 +237,4 @@ class AskRepository(private val kit: Kit) {
                 ?.let { runCatching { kitJson.decodeFromString<AskPosition>(it) }.getOrNull() }
         }
 
-    private companion object {
-        /** The facade's stand-in tier while a book's index is being built. */
-        const val INDEXING = "indexing"
-    }
 }

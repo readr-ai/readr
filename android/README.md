@@ -154,8 +154,16 @@ either end. The anchor is the first visible chunk's first fully visible line,
 reported only when it actually changes; nothing clears a selection there but a
 new chapter.
 
+The chrome is two bars, as the iOS reader's compact layout has it: what you
+are reading up top (back, title, ✦ Ask, Aa, highlights) and what you do with
+the book along the bottom, under the thumb (contents, the bookmark ribbon,
+find in book). Seven controls in one bar left the title nothing and put the
+two most used at the far end of a reach. Both bars come and go together with
+a tap on the page.
+
 The bar is chrome over the window, not over the page: while it is shown the
-surface sits below it, so the page is shorter than with the chrome hidden.
+surface sits below the top bar and above the bottom one, so the page is
+shorter than with the chrome hidden.
 Those are two geometries the reader flips between all day, which is what the
 multi-slot `PaginationCache` is for; the place is the anchor and the page
 index is re-derived from it, so nothing jumps when the geometry changes.
@@ -170,7 +178,8 @@ iOS app uses — `readingTheme`, `readingFontSize`, `readingFont`,
 
 `ui/settings/` is the provider screen, and every sentence on it comes from
 the kit: `AndroidProviders` (the facade) answers one `providersJSON()` with
-the ask-uses line, the active selection and a card per vendor, built from
+the ask-uses line, the active selection (and the reader's own explicit one),
+the status line each card shows, and a card per vendor, built from
 `ProviderVendor.displayed(forKinds:)` over the four methods this build has —
 Gemini Nano, OpenAI, OpenRouter and Anthropic. ChatGPT's subscription path
 and Ollama are not offered here (an unofficial backend, and a loopback server
@@ -179,14 +188,35 @@ There is no browser sign-in yet, so the card badges and connect hints say
 "API key" rather than repeating the kit's "sign in or key".
 
 Gemini Nano's readiness is Kotlin's to answer: `kit/NanoProbe` implements the
-facade's `OnDeviceProbe` and reports `ready` / `unavailable:<reason>` /
-`unsupported:<reason>` as one string (a bridged protocol method may not throw
-or return an optional). It is asked on every read of the selection, so the
-phone's own model is the default *while* the phone can run it and the reader
-is back to "nothing chosen" the moment it cannot. Today it answers from
-Android 14+ and an installed, non-stub `com.google.android.aicore`; the real
-ML Kit check and the model itself land in A3c, and until then the provider is
-a placeholder that reports readiness and refuses to answer.
+facade's `OnDeviceProbe` and reports one bare token — `ready`, `unavailable`
+or `unsupported` (a bridged protocol method may not throw or return an
+optional). The *sentence* a reader sees is the kit's
+(`ProviderManager.ProviderError.notConfigured(.geminiNano)`), supplied by the
+facade, so Kotlin writes no copy. It is asked on every read of the selection —
+cached for five seconds, since one settings payload asks several times — so
+the phone's own model is the default *while* the phone can run it and the
+reader is back to "nothing chosen" the moment it cannot.
+
+What the probe can see is the system: Android 14+ and an installed, non-stub
+`com.google.android.aicore` (declared in the manifest's `<queries>`, or
+Android 11+ hides the package). It still answers `unsupported` until A3c
+brings ML Kit's own check and the model: this build cannot drive Nano, and a
+card that could be made active would point Ask at a provider that can only
+refuse. A card is offerable at all only when a check came back *ready* (an
+on-device one) or a key is stored (a cloud one).
+
+Saving a key does not choose a provider: `AndroidProviders.connect` runs the
+kit's own rule — `requestActivation` then `validateAndActivate` — so an
+unproven key may take a slot nothing usable holds, an accepted key (or one
+whose check could not complete) may take it from a working provider, and a
+rejected key never does. Every selection write, including the ones the manager
+makes inside those calls, goes through one facade function that also writes
+`provider-selection.json`; the manager's own `persistingIn` is nil, because
+`UserDefaults` on Android is a plist in a directory nobody owns. `disconnect`
+takes the key, the cached check, and — when it named that card — the selection
+with it. The screen's on-open sweep is `validateIfStale(kind, 300)`: a
+credential check posts a paid one-token completion, and walking in and out of
+Settings must not repeat it.
 
 ## Ask
 
@@ -200,15 +230,29 @@ rather than starting again.
 The whole pipeline is the kit's. `AndroidLibrary.ask` builds a per-book
 `HybridRAGIndex` over `LocalEmbeddingProvider` (an LRU of two — the book in
 hand and the one before it), routes through `AdaptiveContextStrategy`, and
-runs `AskService` against `AndroidProviders`' active provider. Streaming
-crosses the bridge the way the spike found works: a Swift protocol Kotlin
-implements (`AskSink`), called from the streaming task — `contextAssembled`,
+runs `AskService` against `AndroidProviders`' active provider. The index is
+built off the critical path: `prepareAsk` starts it when the book opens, on a
+detached task, and a question asked before it lands waits on that same task
+rather than starting a second one. Neither builds it at all when the book
+would route whole-book anyway — decided on `AdaptiveContextStrategy`'s own
+numbers (a non-local provider, and a text inside 60% of its context budget),
+because that tier never asks for a passage.
+
+Streaming crosses the bridge the way the spike found works: a Swift protocol
+Kotlin implements (`AskSink`), called from the streaming task — `indexing`
+when there is a build to wait for, then `contextAssembled` with
+`{tier, providesCitations}` (the kit's own answer about the tier, so the
+sheet's caption never promises citations the whole-book tier cannot deliver),
 then `citations`, then a `token` per delta, then exactly one of `completed`
 or `failed`. `ask` hands back an `Int64` handle and `cancelAsk` stops that
 task; a cancelled ask reports **neither** ending, because the Kotlin side
 asked for the stop and owns what the sheet shows from there. `AskRepository`
-turns those calls into a `Flow`, and collecting it on the main thread is what
-puts them on the main thread. Scope, selection and history cross as JSON with
+turns those calls into a `Flow` with an **unlimited** buffer — the sink cannot
+suspend, so a full channel would drop the middle of a fast answer — starts the
+ask under `NonCancellable` (the call hands back the handle that owns the Swift
+task, and losing it would leave a stream nothing could stop), and always
+reaches `awaitClose`. Collecting it on the main thread is what puts the events
+on the main thread. Scope, selection and history cross as JSON with
 every offset in UTF-16, converted per chapter exactly as everything else is
 (`TextOffsets.swift`).
 
@@ -228,12 +272,22 @@ retrieval, no citation list" note instead of a SOURCES row, and an on-device
 model is promised no wider knowledge than the book. A citation that carries a
 chapter and an offset offers "Show in book", which jumps and dismisses.
 
-`AnswerMarkdown.kt` is the answer renderer — paragraphs, `- ` bullets,
-`>` quotes and `**bold**`, tolerant of half-streamed input, and no
-dependency. `AndroidProviders.overrideEndpoint` is test-only: it swaps the
-origin of a vendor's requests for a local one (keeping the path the provider
-built), which is how the instrumented tests stream a real SSE answer from a
-`ServerSocket` on the device without a key or a network.
+`AnswerMarkdown.kt` is the answer renderer, and the *structure* is the kit's:
+`AndroidLibrary.answerBlocksJSON` wraps `AnswerMarkdown.blocks(from:)`, so
+paragraphs, headings, quotes, code and ordered/unordered lists are cut by the
+same parser the Apple panel uses (tolerant of half-streamed input, because it
+runs on every token). Inline `**bold**` stays here, which is the half the kit
+deliberately leaves to the platform. The transcript is a keyed `LazyColumn`
+over `@Immutable` exchanges, and streamed deltas are coalesced into at most
+one state write per 50 ms.
+
+`AndroidProviders.overrideEndpoint` is a debug and test hook: it swaps the
+origin of a vendor's requests for a **loopback** one — `127.0.0.1`,
+`localhost` or `10.0.2.2`, and anything else is refused — keeping the path the
+provider built, which is how the instrumented tests stream a real SSE answer
+from a `ServerSocket` on the device without a key or a network. One shared
+`URLSession` sits behind every provider the factory builds, redirected or not,
+so resolving a provider per question does not throw away a connection pool.
 
 ## Layout on device
 
@@ -244,7 +298,11 @@ facade's own file, since `UserDefaults` on Android is a plist in a directory
 nobody owns) and `filesDir/OpenRouterModels.json` (the cached catalogue).
 Provider secrets: AES-GCM under an Android Keystore key that is usable only
 while the device is unlocked, ciphertext in `secrets` preferences — never
-plaintext on disk. The app holds `INTERNET` for one reason: the provider the
+plaintext on disk. One file per Keystore alias (`secrets.<alias>` for anything
+but the reader's own key), so an instrumented test writing under a test alias
+cannot leave unreadable entries in the reader's file, nor delete the reader's
+keys tidying up after itself. Presence is answered from the preferences file
+(`SecretStore.has`), so drawing the settings screen never decrypts a key. The app holds `INTERNET` for one reason: the provider the
 reader connected. Nothing else is called.
 
 Every packaged Swift library is checked against the facade's `DT_NEEDED`

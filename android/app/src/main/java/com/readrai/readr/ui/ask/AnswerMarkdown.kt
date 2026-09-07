@@ -1,117 +1,94 @@
 package com.readrai.readr.ui.ask
 
+import androidx.compose.runtime.Immutable
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.withStyle
+import com.readrai.readr.data.kitJson
+import kotlinx.serialization.Serializable
 
 /**
- * One block of a model's answer — the Android half of the kit's
- * `AnswerBlock`, cut to what this sheet draws.
+ * One block of a model's answer — the kit's `AnswerBlock`, as it crosses the
+ * bridge.
  *
  * Models answer in Markdown whether or not you ask them to, and a raw `Text`
  * shows the punctuation instead of the formatting: asterisks around every
  * bold phrase, a `-` in front of every bullet. Block structure is what a
- * plain string loses, so it is recovered here and the sheet draws each block
- * in its own style.
+ * plain string loses, and recovering it is the kit's job — `AnswerMarkdown`
+ * in `Sources/ReadrKit` — so an answer is cut into blocks by the same parser
+ * on both platforms rather than by a second, smaller one written here.
  */
+@Immutable
 sealed interface AnswerBlock {
     /** Body text. Soft-wrapped source lines are already joined. */
     data class Paragraph(val text: String) : AnswerBlock
 
-    /** A `-` list. One entry per item. */
-    data class Bullets(val items: List<String>) : AnswerBlock
+    data class Heading(val level: Int, val text: String) : AnswerBlock
 
-    /** A `>` quotation — the one thing the kit's prompt asks a model to quote with. */
+    /** A `>` quotation. One entry per paragraph inside the quote. */
     data class Quote(val paragraphs: List<String>) : AnswerBlock
+
+    /** A fenced code block, verbatim — no inline markup inside. */
+    data class Code(val language: String?, val text: String) : AnswerBlock
+
+    /** A list, ordered or not. Each item's marker is already rendered ("2."). */
+    data class Items(val ordered: Boolean, val items: List<Item>) : AnswerBlock
+
+    /** A thematic break. */
+    data object Rule : AnswerBlock
+
+    data class Item(val marker: String, val text: String)
 }
 
+/** Mirrors ReadrAndroid's `AnswerBlockWire`. */
+@Serializable
+private data class BlockWire(
+    val kind: String,
+    val text: String? = null,
+    val level: Int? = null,
+    val language: String? = null,
+    val paragraphs: List<String>? = null,
+    val ordered: Boolean? = null,
+    val items: List<ItemWire>? = null,
+)
+
+@Serializable
+private data class ItemWire(val marker: String, val text: String)
+
 /**
- * Splits a Markdown answer into the blocks the sheet draws, and turns
- * `**bold**` into a span.
+ * The answer renderer's Kotlin half: the kit's blocks decoded, and `**bold**`
+ * turned into a span.
  *
- * Deliberately small — paragraphs, `- ` bullets and `>` quotes, which is what
- * an answer to a question about a book actually contains (the kit's system
- * prompt asks for no headings, no code, and at most one blockquote). It runs
- * on every streamed token, so PARTIAL input is the normal case: a half-typed
- * `**` renders as the text so far rather than swallowing the rest of the
- * answer.
+ * Inline markup stays this side on purpose — the kit leaves it in the block
+ * text, because it is the platform's own job to draw. Everything structural
+ * (headings, lists, quotes, code, rules) comes from the kit, which is
+ * tolerant of PARTIAL input because it runs on every streamed token.
  */
 object AnswerMarkdown {
 
-    fun blocks(markdown: String): List<AnswerBlock> {
-        val blocks = mutableListOf<AnswerBlock>()
-        val paragraph = mutableListOf<String>()
-        val bullets = mutableListOf<String>()
-        val quote = mutableListOf<String>()
-
-        fun flushParagraph() {
-            if (paragraph.isNotEmpty()) {
-                blocks += AnswerBlock.Paragraph(paragraph.joinToString(" "))
-                paragraph.clear()
+    /**
+     * Decodes `AndroidLibrary.answerBlocksJSON`. A payload that will not
+     * decode renders as the text itself rather than as nothing at all.
+     */
+    fun blocks(json: String, fallback: String): List<AnswerBlock> {
+        val wire = runCatching { kitJson.decodeFromString<List<BlockWire>>(json) }.getOrNull()
+            ?: return listOf(AnswerBlock.Paragraph(fallback))
+        return wire.mapNotNull { block ->
+            when (block.kind) {
+                "paragraph" -> block.text?.let { AnswerBlock.Paragraph(it) }
+                "heading" -> block.text?.let { AnswerBlock.Heading(block.level ?: 1, it) }
+                "quote" -> block.paragraphs?.let { AnswerBlock.Quote(it) }
+                "code" -> block.text?.let { AnswerBlock.Code(block.language, it) }
+                "list" -> AnswerBlock.Items(
+                    ordered = block.ordered ?: false,
+                    items = block.items.orEmpty().map { AnswerBlock.Item(it.marker, it.text) },
+                )
+                "rule" -> AnswerBlock.Rule
+                else -> null
             }
         }
-
-        fun flushBullets() {
-            if (bullets.isNotEmpty()) {
-                blocks += AnswerBlock.Bullets(bullets.toList())
-                bullets.clear()
-            }
-        }
-
-        fun flushQuote() {
-            if (quote.isNotEmpty()) {
-                blocks += AnswerBlock.Quote(quote.toList())
-                quote.clear()
-            }
-        }
-
-        fun flush() {
-            flushParagraph(); flushBullets(); flushQuote()
-        }
-
-        for (raw in markdown.replace("\r\n", "\n").split('\n')) {
-            val line = raw.trim()
-            when {
-                line.isEmpty() -> flush()
-
-                line.startsWith(">") -> {
-                    flushParagraph(); flushBullets()
-                    val text = line.trimStart('>').trim()
-                    if (text.isNotEmpty()) quote += text
-                }
-
-                bulletText(line) != null -> {
-                    flushParagraph(); flushQuote()
-                    bullets += bulletText(line)!!
-                }
-
-                // A heading is not something the prompt asks for, but a model
-                // may still emit one; it reads as a line of body text rather
-                // than as its own punctuation.
-                line.startsWith("#") -> {
-                    flush()
-                    val text = line.trimStart('#').trim()
-                    if (text.isNotEmpty()) blocks += AnswerBlock.Paragraph(text)
-                }
-
-                else -> {
-                    flushBullets(); flushQuote()
-                    paragraph += line
-                }
-            }
-        }
-        flush()
-        return blocks
-    }
-
-    /** `-`, `*` or `+` followed by a space; null for anything else. */
-    private fun bulletText(line: String): String? {
-        val marker = line.firstOrNull() ?: return null
-        if (marker !in "-*+") return null
-        if (line.getOrNull(1) != ' ') return null
-        return line.drop(2).trim().ifEmpty { null }
     }
 
     /**

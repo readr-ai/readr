@@ -24,8 +24,13 @@ import javax.crypto.spec.GCMParameterSpec
  * Failures are logged by exception class (never by value) so a bug report can
  * tell "no credential stored" from "the key was invalidated".
  */
-class KeystoreSecretStore(context: Context, private val alias: String = "readr.secrets") : SecretStore {
-    private val prefs = context.applicationContext.getSharedPreferences("secrets", Context.MODE_PRIVATE)
+class KeystoreSecretStore(context: Context, private val alias: String = DEFAULT_ALIAS) : SecretStore {
+    // One file per Keystore key. The alias is what the ciphertext can be read
+    // back with, so a store under a test alias writing into the app's own
+    // "secrets" file leaves entries there that the reader's key cannot
+    // decrypt — and a test that clears up after itself would be deleting the
+    // reader's provider keys.
+    private val prefs = context.applicationContext.getSharedPreferences(fileName(alias), Context.MODE_PRIVATE)
 
     override fun write(key: String, value: String): Boolean = try {
         val cipher = Cipher.getInstance(TRANSFORMATION)
@@ -54,6 +59,15 @@ class KeystoreSecretStore(context: Context, private val alias: String = "readr.s
 
     override fun remove(key: String): Boolean = prefs.edit().remove(key).commit()
 
+    /**
+     * Whether there is an entry, without decrypting it. Settings asks this of
+     * every provider on every read of the screen; going through [read] would
+     * be a Keystore round trip per card for an answer the preferences file
+     * already has, and would hand the value out to learn nothing but that it
+     * exists.
+     */
+    override fun has(key: String): Boolean = prefs.contains(key)
+
     private fun secretKey(): SecretKey {
         val keyStore = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
         (keyStore.getEntry(alias, null) as? KeyStore.SecretKeyEntry)?.let { return it.secretKey }
@@ -69,9 +83,21 @@ class KeystoreSecretStore(context: Context, private val alias: String = "readr.s
         return generator.generateKey()
     }
 
-    private companion object {
-        const val TAG = "Readr.Secrets"
-        const val ANDROID_KEYSTORE = "AndroidKeyStore"
-        const val TRANSFORMATION = "AES/GCM/NoPadding"
+    companion object {
+        /** The reader's own key, and the file it writes: `secrets`. */
+        const val DEFAULT_ALIAS = "readr.secrets"
+
+        /**
+         * The preferences file a store under `alias` writes. One file per
+         * Keystore key: ciphertext written under one key cannot be read back
+         * with another, so a second store sharing the file would leave
+         * entries in it that the first cannot decrypt — and clearing up after
+         * itself would take the reader's own keys with it.
+         */
+        fun fileName(alias: String): String = if (alias == DEFAULT_ALIAS) "secrets" else "secrets.$alias"
+
+        private const val TAG = "Readr.Secrets"
+        private const val ANDROID_KEYSTORE = "AndroidKeyStore"
+        private const val TRANSFORMATION = "AES/GCM/NoPadding"
     }
 }

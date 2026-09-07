@@ -5,9 +5,8 @@ import org.swift.swiftkit.core.SwiftArena
 
 /**
  * The process's handle on ReadrKit. Wraps the jextract-generated
- * `com.readrai.readr.kit.AndroidLibrary` / `AndroidCredentials` /
- * `AndroidProviders` facades (native Swift, cross-compiled from the repo's
- * `Sources/ReadrKit`).
+ * `com.readrai.readr.kit.AndroidLibrary` and `AndroidProviders` facades
+ * (native Swift, cross-compiled from the repo's `Sources/ReadrKit`).
  *
  * Opening loads the Swift runtime and reads the whole library file, so call
  * `open` off the main thread; the arena owns the Swift objects for the life
@@ -16,7 +15,6 @@ import org.swift.swiftkit.core.SwiftArena
 class Kit private constructor(
     @Suppress("unused") private val arena: SwiftArena,
     val library: AndroidLibrary,
-    val credentials: AndroidCredentials,
     val providers: AndroidProviders,
 ) {
     companion object {
@@ -29,9 +27,8 @@ class Kit private constructor(
         fun open(root: File, secrets: SecretStore, probe: OnDeviceProbe): Kit {
             val arena = SwiftArena.ofAuto()
             val library = AndroidLibrary.init(root.absolutePath, arena)
-            val credentials = AndroidCredentials.init(secrets, arena)
             val providers = AndroidProviders.init(secrets, root.absolutePath, probe, arena)
-            return Kit(arena, library, credentials, providers)
+            return Kit(arena, library, providers)
         }
     }
 }

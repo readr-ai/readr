@@ -204,6 +204,17 @@ class LibraryRepository(private val context: Context, private val kit: Kit) {
         refresh()
     }
 
+    /**
+     * Start building Ask's retrieval index for this book, unless a question
+     * about it would never use one (a book that fits the active provider's
+     * whole-book budget rides along entire). Returns as soon as the work is
+     * queued: the kit runs it on its own task, and a question asked before it
+     * lands waits on the same work rather than starting it again.
+     */
+    suspend fun prepareAsk(bookId: String) = withContext(Dispatchers.IO) {
+        kit.library.prepareAsk(bookId, kit.providers)
+    }
+
     class ImportFailed(message: String) : Exception(message)
 
     private fun displayName(uri: Uri): String =

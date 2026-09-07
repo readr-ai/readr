@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.size
@@ -118,6 +119,15 @@ val readerRegularWidth = 600.dp
 /** The facing-page gutter — one hairline, as `PagedChapterView.spineWidth` on iOS. */
 private val spineWidth = 1.dp
 
+/**
+ * The bottom bar's height. The reader's controls do not fit one bar on a
+ * phone: seven of them squeeze the title to nothing and put the two most
+ * used (Contents and Search) at the far end of a thumb's reach. Split as the
+ * iOS reader's compact layout splits them — what you are reading up top, what
+ * you do with the book along the bottom.
+ */
+private val bottomBarHeight = 56.dp
+
 /** Swipe distance that turns a page, matching the iOS drag threshold. */
 private val turnSwipeDistance = 40.dp
 
@@ -196,6 +206,10 @@ fun ReaderScreen(
                 // why the reading place is the anchor rather than a page
                 // number: the page index is re-derived and nothing jumps.
                 chromeInset = if (showChrome) TopAppBarDefaults.TopAppBarExpandedHeight else 0.dp,
+                // The bottom bar takes its own height off the page the same
+                // way the top one does, and gives it back when the chrome
+                // goes: two geometries, which is what the cache is for.
+                bottomInset = if (showChrome) bottomBarHeight else 0.dp,
                 onWide = { wideSurface = it },
                 onChromeToggle = { showChrome = !showChrome },
                 onAsk = { target ->
@@ -235,30 +249,57 @@ fun ReaderScreen(
                 },
                 actions = {
                     if (ready != null) {
-                        // The one AI moment in the bar, and the only iris in it.
+                        // What is being read, and how it reads: the one AI
+                        // moment (the only iris in the bar), the type, and the
+                        // marks the reader has made.
                         IconButton(
                             onClick = { openAsk(null) },
                             modifier = Modifier.testTag("reader.ask").semantics { contentDescription = "Ask the book" },
                         ) {
                             Text(Marginalia.aiGlyph, fontSize = 17.sp, color = palette.iris)
                         }
-                        IconButton(onClick = { sheet = ReaderSheet.Contents }, modifier = Modifier.testTag("reader.toc")) {
-                            Icon(Icons.AutoMirrored.Filled.List, contentDescription = "Table of contents")
-                        }
-                        IconButton(onClick = { sheet = ReaderSheet.Search }, modifier = Modifier.testTag("reader.search")) {
-                            Icon(Icons.Filled.Search, contentDescription = "Find in book")
-                        }
-                        BookmarkAction(model, palette)
-                        IconButton(onClick = { sheet = ReaderSheet.Highlights }, modifier = Modifier.testTag("reader.notes").semantics { contentDescription = "Highlights" }) {
-                            MarkerGlyph(palette.ink)
-                        }
                         IconButton(onClick = { sheet = ReaderSheet.Appearance }, modifier = Modifier.testTag("reader.appearance").semantics { contentDescription = "Appearance" }) {
                             Text("Aa", fontFamily = FontFamily.Serif, fontSize = 17.sp, color = palette.ink)
+                        }
+                        IconButton(onClick = { sheet = ReaderSheet.Highlights }, modifier = Modifier.testTag("reader.notes").semantics { contentDescription = "Highlights" }) {
+                            MarkerGlyph(palette.ink)
                         }
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = palette.background.copy(alpha = 0.96f), titleContentColor = palette.ink),
             )
+        }
+
+        // Getting around the book: where you are going, where you were, and
+        // what you are looking for — under the thumb, and gone with the rest
+        // of the chrome when the reader taps the page.
+        AnimatedVisibility(
+            visible = showChrome,
+            modifier = Modifier.align(Alignment.BottomCenter).zIndex(1f),
+            enter = fadeIn(),
+            exit = fadeOut(),
+        ) {
+            val ready = model.state as? ReaderViewModel.State.Ready
+            if (ready != null) {
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .background(palette.background.copy(alpha = 0.96f))
+                        .navigationBarsPadding()
+                        .height(bottomBarHeight)
+                        .testTag("reader.bottomBar"),
+                    horizontalArrangement = Arrangement.SpaceEvenly,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    IconButton(onClick = { sheet = ReaderSheet.Contents }, modifier = Modifier.testTag("reader.toc")) {
+                        Icon(Icons.AutoMirrored.Filled.List, contentDescription = "Table of contents", tint = palette.ink)
+                    }
+                    BookmarkAction(model, palette)
+                    IconButton(onClick = { sheet = ReaderSheet.Search }, modifier = Modifier.testTag("reader.search")) {
+                        Icon(Icons.Filled.Search, contentDescription = "Find in book", tint = palette.ink)
+                    }
+                }
+            }
         }
 
         val ready = model.state as? ReaderViewModel.State.Ready
@@ -432,6 +473,7 @@ private fun PageSurface(
     palette: ReadingPalette,
     settings: ReaderSettings,
     chromeInset: Dp,
+    bottomInset: Dp,
     onWide: (Boolean) -> Unit,
     onChromeToggle: () -> Unit,
     /** The capsule's ✦ Ask: open Ask on the passage the reader selected. */
@@ -445,7 +487,9 @@ private fun PageSurface(
     val context = LocalContext.current
     val lastColor by settings.lastHighlightColor.collectAsState()
 
-    BoxWithConstraints(Modifier.fillMaxSize().safeDrawingPadding().padding(top = chromeInset)) {
+    BoxWithConstraints(
+        Modifier.fillMaxSize().safeDrawingPadding().padding(top = chromeInset, bottom = bottomInset)
+    ) {
         val wide = maxWidth >= readerRegularWidth
         LaunchedEffect(wide) { onWide(wide) }
         val compact = !wide

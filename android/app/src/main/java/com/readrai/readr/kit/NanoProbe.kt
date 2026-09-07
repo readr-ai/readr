@@ -9,15 +9,13 @@ import android.os.Build
  * the only thing that decides whether the "On this phone" card offers a model
  * or explains why it cannot.
  *
- * This slice answers from what the *system* has, not from the model itself:
- * Android 14 or newer, and AICore actually installed. That is enough to rule
- * the card out honestly on every phone that could never run it. A phone that
- * passes both tests says `unavailable` — "checking" — rather than `ready`,
- * because whether the model is downloaded and this app is allowed to use it
- * is an ML Kit question, and A3c is where it gets asked.
+ * The answer is a bare token: the sentence the reader sees is the kit's, and
+ * lives in the facade, so this class never writes copy. What it can see is
+ * the *system*: Android 14 or newer, and AICore actually installed (the app
+ * declares that package in `<queries>`, or Android hides it).
  *
  * The stub matters: Firebase Test Lab devices (and some emulator images) ship
- * an `com.google.android.aicore` package that exists and does nothing, with
+ * a `com.google.android.aicore` package that exists and does nothing, with
  * "stub" in its version name. Treating it as present would put a card on the
  * screen promising a model that is not there.
  */
@@ -25,12 +23,20 @@ class NanoProbe(context: Context) : OnDeviceProbe {
     private val packages = context.applicationContext.packageManager
 
     override fun readiness(): String = when {
-        Build.VERSION.SDK_INT < Build.VERSION_CODES.UPSIDE_DOWN_CAKE -> UNSUPPORTED
-        !hasAICore() -> UNSUPPORTED
-        else -> CHECKING
+        !hasSystemSupport() -> UNSUPPORTED
+        // A3C REPLACES THIS BRANCH: it asks ML Kit whether the model is
+        // downloaded and this app may drive it, and answers READY when it is.
+        // Until then even a phone that could run Nano reports `unsupported` —
+        // this build cannot drive the model, and any softer answer would let
+        // the card be made active and point Ask at a provider that can only
+        // refuse to answer.
+        else -> UNSUPPORTED
     }
 
-    /** AICore installed, and not the do-nothing stub some images carry. */
+    /** Android 14+, and AICore installed — not the do-nothing stub. */
+    private fun hasSystemSupport(): Boolean =
+        Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE && hasAICore()
+
     private fun hasAICore(): Boolean {
         val info = try {
             packages.getPackageInfo(AICORE_PACKAGE, 0)
@@ -44,11 +50,11 @@ class NanoProbe(context: Context) : OnDeviceProbe {
         const val AICORE_PACKAGE = "com.google.android.aicore"
 
         /**
-         * Both sentences are reader-facing: the kit hands them straight to
-         * the card as the status line, so they say what is true of the phone
-         * rather than naming an API.
+         * One of the three tokens the facade parses — `ready`,
+         * `unavailable`, `unsupported`. Not a sentence: what a reader is told
+         * about a phone that cannot run its own model is the kit's line,
+         * shared with the Apple app.
          */
-        const val UNSUPPORTED = "unsupported:Gemini Nano isn't available on this phone."
-        const val CHECKING = "unavailable:Checking Gemini Nano…"
+        const val UNSUPPORTED = "unsupported"
     }
 }

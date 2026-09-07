@@ -14,6 +14,7 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import com.readrai.readr.data.LibraryRepository
 import com.readrai.readr.data.ProvidersRepository
 import com.readrai.readr.kit.KeystoreSecretStore
 import com.readrai.readr.kit.Kit
@@ -47,21 +48,23 @@ class ProvidersScreenTest {
     private lateinit var root: File
     private lateinit var kit: Kit
     private lateinit var repository: ProvidersRepository
+    private lateinit var library: LibraryRepository
 
     @Before
     fun setUp() {
         root = File(context.cacheDir, "settings-test-${System.nanoTime()}").apply { mkdirs() }
-        kit = Kit.open(root, KeystoreSecretStore(context, alias = "readr.secrets.test"), NanoProbe(context))
+        // Everything this test touches is its own: a scratch library root, and
+        // the secrets file belonging to the test Keystore alias. Nothing here
+        // reads or writes the reader's library or the reader's provider keys.
+        context.deleteSharedPreferences(KeystoreSecretStore.fileName(TEST_ALIAS))
+        kit = Kit.open(root, KeystoreSecretStore(context, alias = TEST_ALIAS), NanoProbe(context))
         repository = ProvidersRepository(kit)
-        // A card left over from an earlier run would make "not connected"
-        // untrue before the test has done anything: the Keystore file is
-        // shared by alias, the library root is not.
-        for (kind in listOf("openAI", "anthropic", "openRouter")) runCatching { kit.providers.deleteCredential(kind) }
+        library = LibraryRepository(context, kit)
     }
 
     @After
     fun tearDown() {
-        for (kind in listOf("openAI", "anthropic", "openRouter")) runCatching { kit.providers.deleteCredential(kind) }
+        context.deleteSharedPreferences(KeystoreSecretStore.fileName(TEST_ALIAS))
         root.deleteRecursively()
     }
 
@@ -88,13 +91,19 @@ class ProvidersScreenTest {
 
     @Test
     fun theGearOnTheShelfOpensSettings() {
-        val app = context.applicationContext as ReadrApplication
         compose.setContent {
             ReadrTheme {
                 val nav = rememberNavController()
                 NavHost(nav, startDestination = "library") {
                     composable("library") {
-                        LibraryScreen(LibraryViewModel(app), onOpen = {}, onSettings = { nav.navigate("settings") })
+                        // Over the scratch library, not the app's own: opening
+                        // Settings from the shelf must not seed or read the
+                        // books on the phone this test is running on.
+                        LibraryScreen(
+                            LibraryViewModel { library },
+                            onOpen = {},
+                            onSettings = { nav.navigate("settings") },
+                        )
                     }
                     composable("settings") {
                         ProvidersScreen(ProvidersViewModel { repository }) { nav.popBackStack() }
@@ -157,7 +166,8 @@ class ProvidersScreenTest {
     /**
      * The phone's own card explains itself instead of vanishing: no emulator
      * carries AICore, so it says so — in the kit's words — and offers a
-     * re-check rather than a key field.
+     * re-check rather than a key field. Nothing here can be made active,
+     * because only a check that came back *ready* offers that.
      */
     @Test
     fun theOnThisPhoneCardExplainsItself() {
@@ -171,5 +181,10 @@ class ProvidersScreenTest {
             "a model this phone cannot run is never offered as the one to use",
             nodes("settings.makeActive.geminiNano").isEmpty(),
         )
+    }
+
+    private companion object {
+        /** This suite's Keystore key, and its own secrets file. */
+        const val TEST_ALIAS = "readr.secrets.test"
     }
 }

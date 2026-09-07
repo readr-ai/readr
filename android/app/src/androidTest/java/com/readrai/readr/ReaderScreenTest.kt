@@ -18,6 +18,7 @@ import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.longClick
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.swipeLeft
@@ -291,7 +292,7 @@ class ReaderScreenTest {
         // Tapping the highlighted word opens the capsule on it; ✕ takes the highlight away.
         compose.onNodeWithTag("reader.page").performTouchInput { click(center) }
         awaitTag("annotation.remove")
-        compose.onNodeWithTag("annotation.remove").performClick()
+        compose.onNodeWithTag("annotation.remove").performScrollTo().performClick()
         compose.waitUntil(10_000) { highlights().isEmpty() }
         awaitNoTag("annotation.capsule")
     }
@@ -331,7 +332,7 @@ class ReaderScreenTest {
         open()
         compose.onNodeWithTag("reader.page").performTouchInput { longClick(center) }
         awaitTag("annotation.capsule")
-        compose.onNodeWithTag("annotation.copy").performClick()
+        compose.onNodeWithTag("annotation.copy").performScrollTo().performClick()
         awaitNoTag("annotation.capsule")
         val copied = clipboardText()
         assertTrue("something was copied", copied.isNotBlank())
@@ -353,7 +354,7 @@ class ReaderScreenTest {
         open()
         compose.onNodeWithTag("reader.page").performTouchInput { longClick(center) }
         awaitTag("annotation.capsule")
-        compose.onNodeWithTag("annotation.note").performClick()
+        compose.onNodeWithTag("annotation.note").performScrollTo().performClick()
 
         // "Note" highlights the passage first — a note has to live on a highlight.
         awaitTag("note.editor")
@@ -382,13 +383,31 @@ class ReaderScreenTest {
         open()
         compose.onNodeWithTag("reader.page").performTouchInput { longClick(center) }
         awaitTag("annotation.capsule")
-        compose.onNodeWithTag("annotation.note").performClick()
+        compose.onNodeWithTag("annotation.note").performScrollTo().performClick()
         awaitTag("note.editor")
         compose.waitUntil(10_000) { highlights().size == 1 }
 
         compose.onNodeWithTag("note.cancel").performClick()
         compose.waitUntil(10_000) { highlights().isEmpty() }
         awaitNoTag("note.editor")
+    }
+
+    /**
+     * 360 dp is the narrowest screen anyone reads Readr on, and the capsule's
+     * seven controls do not fit across it. Nothing is dropped: the row
+     * scrolls, and every control is still reachable and still tappable.
+     */
+    @Test
+    fun everyCapsuleControlIsReachableOnANarrowScreen() {
+        open(width = 360.dp)
+        compose.onNodeWithTag("reader.page").performTouchInput { longClick(center) }
+        awaitTag("annotation.capsule")
+        for (tag in listOf("annotation.color.yellow", "annotation.color.pink", "annotation.ask", "annotation.note")) {
+            compose.onNodeWithTag(tag).performScrollTo().assertIsDisplayed()
+        }
+        compose.onNodeWithTag("annotation.copy").performScrollTo().performClick()
+        awaitNoTag("annotation.capsule")
+        assertTrue("the last control in the row still copies", clipboardText().isNotBlank())
     }
 
     @Test

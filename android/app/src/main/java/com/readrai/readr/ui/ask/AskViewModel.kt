@@ -2,6 +2,7 @@ package com.readrai.readr.ui.ask
 
 import android.util.Log
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -36,7 +37,19 @@ fun rememberAskViewModel(bookId: String): AskViewModel {
     }
 }
 
+/**
+ * The passages one answer leaned on, wrapped so the exchange around them can
+ * be `@Immutable`: a bare `List` is not a stable type to Compose, and an
+ * exchange holding one is re-composed on every state write in the sheet
+ * whether or not anything about it changed.
+ */
+@Immutable
+data class AskCitations(val items: List<AskCitation> = emptyList()) {
+    val isEmpty: Boolean get() = items.isEmpty()
+}
+
 /** One question and the answer streaming into it. */
+@Immutable
 data class AskExchange(
     val id: Long,
     /** Shown as sent the moment it is sent, not when the answer starts. */
@@ -49,10 +62,21 @@ data class AskExchange(
     val scoped: Boolean,
     val answerText: String = "",
     val tier: String? = null,
-    val citations: List<AskCitation> = emptyList(),
-    val failed: Boolean = false,
+    /** What the routed tier promises, in the kit's own words. */
+    val providesCitations: Boolean? = null,
+    val citations: AskCitations = AskCitations(),
+    /**
+     * Why this turn has no answer — the kit's sentence, kept ON the exchange
+     * so it stays under the question it belongs to. The composer's error card
+     * can be cleared by the next question; the transcript must still say what
+     * happened to this one.
+     */
+    val failure: String? = null,
+    val failureRecovery: String? = null,
     val isStreaming: Boolean = true,
 ) {
+    val failed: Boolean get() = failure != null
+
     /** Nothing to show and nothing coming. */
     val isEmpty: Boolean get() = answerText.isBlank() && !isStreaming && !failed
 }
@@ -89,6 +113,16 @@ class AskConversations {
 
     @Synchronized
     fun forBook(bookId: String): AskConversation = byBook.getOrPut(bookId) { AskConversation(bookId) }
+
+    /**
+     * Drop a book's transcript. A removed book takes its conversation with
+     * it: the answers quote a book nobody can open any more, and a re-import
+     * is a new book with a new id in any case.
+     */
+    @Synchronized
+    fun forget(bookId: String) {
+        byBook.remove(bookId)
+    }
 }
 
 /**
@@ -105,8 +139,6 @@ data class AskRequest(
      * control is not offered.
      */
     val frontier: AskFrontier? = null,
-    /** Sent on the sheet's behalf as soon as there is a provider (the recap chip). */
-    val initialQuestion: String? = null,
 )
 
 /**
@@ -155,6 +187,10 @@ class AskViewModel(
     var answersFromBookOnly by mutableStateOf(false)
         private set
 
+    /** The kit's "what to do about it" sentence for the empty state. */
+    var setupGuidance by mutableStateOf("")
+        private set
+
     /** The passage this opening pointed the conversation at, or null. */
     var selection by mutableStateOf<AskSelection?>(null)
         private set
@@ -162,9 +198,6 @@ class AskViewModel(
         private set
     /** "Chapter 7 of 24 · 31% · The Whale" — the kit's own line. */
     var position by mutableStateOf<AskPosition?>(null)
-        private set
-    /** True while the latest opening was a recap, for the sheet's headline. */
-    var openedForRecap by mutableStateOf(false)
         private set
 
     /**
@@ -182,7 +215,6 @@ class AskViewModel(
 
     private var repository: AskRepository? = null
     private var streamJob: Job? = null
-    private var pendingQuestion: String? = null
 
     /** What the next question is allowed to see. */
     val scopedFrontier: AskFrontier? get() = frontier?.takeIf { !wholeBook }
@@ -192,14 +224,20 @@ class AskViewModel(
     val tier: String? get() = exchanges.lastOrNull { it.tier != null }?.tier
 
     /**
+     * What the last routed tier promises about citations, in the kit's own
+     * answer — null until something has actually been routed, which is what
+     * keeps the caption from promising anything before then.
+     */
+    val providesCitations: Boolean?
+        get() = exchanges.lastOrNull { it.providesCitations != null }?.providesCitations
+
+    /**
      * Point the conversation at a new opening. The transcript stays; a stale
      * error does not — it was about the last question, not this opening.
      */
     fun open(request: AskRequest) {
         selection = request.selection
         frontier = request.frontier
-        openedForRecap = request.initialQuestion != null
-        pendingQuestion = request.initialQuestion
         errorMessage = null
         errorRecovery = null
         position = null
@@ -217,13 +255,13 @@ class AskViewModel(
         isOpen = false
     }
 
-    /** Re-resolve the provider, then send anything the opening asked for. */
+    /** Re-resolve the provider, and the sentence the empty state shows. */
     fun refresh() {
         viewModelScope.launch {
             val repo = repository() ?: return@launch
             hasProvider = runCatching { repo.hasProvider() }.getOrDefault(false)
             answersFromBookOnly = runCatching { repo.answersFromBookOnly() }.getOrDefault(false)
-            sendPendingIfReady()
+            setupGuidance = runCatching { repo.setupGuidance("ask questions") }.getOrDefault("")
         }
     }
 
@@ -235,8 +273,6 @@ class AskViewModel(
         errorRecovery = null
         lastRequest = null
         lastQuestion = null
-        pendingQuestion = null
-        openedForRecap = false
     }
 
     /** Stop the stream in flight. The answer keeps whatever arrived. */
@@ -262,15 +298,13 @@ class AskViewModel(
     }
 
     /**
-     * Send the question an opening asked for (the recap), once there is a
-     * provider and no stream in flight — so a recap opened over a running
-     * answer goes out when that answer is done, not never.
+     * The answer's blocks, cut by the kit's own Markdown parser. Memoised by
+     * the caller against the text it was given, so a streamed answer is parsed
+     * once per state write rather than once per composition.
      */
-    fun sendPendingIfReady() {
-        val question = pendingQuestion ?: return
-        if (hasProvider != true || isStreaming) return
-        pendingQuestion = null
-        submit(question)
+    fun blocks(markdown: String): List<AnswerBlock> {
+        val repo = repository ?: return listOf(AnswerBlock.Paragraph(markdown))
+        return AnswerMarkdown.blocks(repo.answerBlocksJSON(markdown), fallback = markdown)
     }
 
     /** Static starters, worded for the scope and the passage. */
@@ -319,48 +353,82 @@ class AskViewModel(
             return
         }
         isStreaming = true
-        val history = historyBefore(id, scoped)
+        val history = historyBefore(id)
+        // Deltas arrive a few characters at a time and each one would
+        // otherwise be a state write, a re-parse of the answer and a re-layout
+        // of the sheet. They are joined here and written at most this often,
+        // which is still faster than anyone reads.
+        val pending = StringBuilder()
+        var lastWrite = 0L
+        fun flush() {
+            if (pending.isEmpty()) return
+            val delta = pending.toString()
+            pending.setLength(0)
+            update(id) { it.copy(answerText = it.answerText + delta) }
+        }
         try {
             repo.ask(bookId, trimmed, request.frontier, request.selection, history).collect { event ->
                 when (event) {
                     AskEvent.Indexing -> indexing = true
                     is AskEvent.Routed -> {
                         indexing = false
-                        update(id) { it.copy(tier = event.tier) }
+                        update(id) { it.copy(tier = event.tier, providesCitations = event.providesCitations) }
                     }
-                    is AskEvent.Citations -> update(id) { it.copy(citations = event.citations) }
-                    is AskEvent.Token -> update(id) { it.copy(answerText = it.answerText + event.text) }
+                    is AskEvent.Citations -> update(id) { it.copy(citations = AskCitations(event.citations)) }
+                    is AskEvent.Token -> {
+                        pending.append(event.text)
+                        val now = System.currentTimeMillis()
+                        if (now - lastWrite >= COALESCE_MILLIS) {
+                            lastWrite = now
+                            flush()
+                        }
+                    }
                     // Authoritative final text — it covers providers that do
                     // not stream incremental deltas.
-                    is AskEvent.Completed -> update(id) { it.copy(answerText = event.text) }
-                    is AskEvent.Failed -> fail(id, event.message, event.recovery)
+                    is AskEvent.Completed -> {
+                        pending.setLength(0)
+                        update(id) { it.copy(answerText = event.text) }
+                    }
+                    is AskEvent.Failed -> {
+                        flush()
+                        fail(id, event.message, event.recovery)
+                    }
                 }
             }
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
+            // The class, never the message: an exception on this path can
+            // carry a URL or a payload, and a log is not a place for either.
             Log.w(TAG, "ask failed: ${e.javaClass.simpleName}")
-            fail(id, e.message?.takeIf { it.isNotBlank() } ?: COULD_NOT_OPEN, null)
+            fail(id, COULD_NOT_OPEN, null)
         } finally {
+            flush()
             isStreaming = false
             indexing = false
             update(id) { it.copy(isStreaming = false) }
         }
-        sendPendingIfReady()
     }
 
     /**
      * The answered turns before `id`, oldest first. A failed or empty turn
-     * carries no answer and is left out; so is a whole-book turn when THIS
-     * question is scoped — the no-spoilers promise covers the history the
-     * model reads, not only the passages it is handed.
+     * carries no answer and is left out; each surviving turn says whether it
+     * was answered under a scope, and the facade drops the unscoped ones from
+     * a scoped question's history.
      */
-    private fun historyBefore(id: Long, scoped: Boolean): List<AskTurn> =
+    private fun historyBefore(id: Long): List<AskTurn> =
         conversation.exchanges
             .takeWhile { it.id != id }
             .filter { !it.failed && it.answerText.isNotBlank() }
-            .filter { !scoped || it.scoped }
-            .map { AskTurn(it.question, it.answerText, it.tier ?: AskTier.RETRIEVAL, it.citations) }
+            .map {
+                AskTurn(
+                    question = it.question,
+                    answerText = it.answerText,
+                    tier = it.tier ?: AskTier.RETRIEVAL,
+                    citations = it.citations.items,
+                    scoped = it.scoped,
+                )
+            }
 
     private suspend fun repository(): AskRepository? {
         repository?.let { return it }
@@ -369,7 +437,7 @@ class AskViewModel(
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            Log.w(TAG, "ask repository failed: ${e.message}")
+            Log.w(TAG, "ask repository failed: ${e.javaClass.simpleName}")
             hasProvider = false
             null
         }
@@ -391,7 +459,7 @@ class AskViewModel(
     private fun fail(id: Long, message: String, recovery: String?) {
         errorMessage = message
         errorRecovery = recovery
-        update(id) { it.copy(failed = true, isStreaming = false) }
+        update(id) { it.copy(failure = message, failureRecovery = recovery, isStreaming = false) }
     }
 
     companion object {
@@ -404,5 +472,8 @@ class AskViewModel(
         /** The only sentence this class writes, and only when the kit is unreachable. */
         private const val COULD_NOT_OPEN = "Readr couldn't reach the model. Try asking again."
         private const val TAG = "Readr.Ask"
+
+        /** One state write per frame or two, however fast the tokens come. */
+        private const val COALESCE_MILLIS = 50L
     }
 }

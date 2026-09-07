@@ -23,9 +23,15 @@ import com.readrai.readr.kit.KeystoreSecretStore
 import com.readrai.readr.kit.KitLimits
 import com.readrai.readr.kit.Kit
 import com.readrai.readr.kit.NanoProbe
+import com.readrai.readr.ui.ask.AnswerBlock
+import com.readrai.readr.ui.ask.AnswerMarkdown
 import java.io.File
+import kotlin.time.Duration.Companion.minutes
+import kotlin.time.Duration.Companion.seconds
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.future.await
-import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.test.runTest
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -47,33 +53,46 @@ class KitBridgeTest {
     @Before
     fun setUp() {
         root = File(context.cacheDir, "kit-test-${System.nanoTime()}").apply { mkdirs() }
-        kit = Kit.open(root, KeystoreSecretStore(context, alias = "readr.secrets.test"), NanoProbe(context))
-        // The library root is fresh per test; the Keystore preferences behind
-        // the alias are not, so a key an earlier test stored would still be
-        // there. Start every test with nothing connected.
-        clearCredentials()
+        // The library root is fresh per test, and so is the secrets file: the
+        // test alias has a file of its own (never the reader's "secrets"), and
+        // emptying it here is what makes "nothing connected" true whatever an
+        // earlier test stored.
+        clearTestSecrets()
+        kit = openKit()
     }
 
     /** A second handle on the same library, as a relaunch would open it. */
-    private fun reopen(probe: com.readrai.readr.kit.OnDeviceProbe = NanoProbe(context)): Kit =
-        Kit.open(root, KeystoreSecretStore(context, alias = "readr.secrets.test"), probe)
+    private fun reopen(probe: com.readrai.readr.kit.OnDeviceProbe = NanoProbe(context)): Kit = openKit(probe)
+
+    private fun openKit(probe: com.readrai.readr.kit.OnDeviceProbe = NanoProbe(context)): Kit =
+        Kit.open(root, KeystoreSecretStore(context, alias = TEST_ALIAS), probe)
+
+    private fun clearTestSecrets() {
+        context.deleteSharedPreferences(KeystoreSecretStore.fileName(TEST_ALIAS))
+    }
 
     private fun providerSettings(from: Kit = kit): ProviderSettings =
         kitJson.decodeFromString(from.providers.providersJSON())
 
     @After
     fun tearDown() {
-        clearCredentials()
+        clearTestSecrets()
         root.deleteRecursively()
     }
 
-    private fun clearCredentials() {
-        for (kind in listOf("openAI", "anthropic", "openRouter")) runCatching { kit.providers.deleteCredential(kind) }
-    }
-
     private companion object {
+        /** This suite's Keystore key — and, since PR A3, its own secrets file. */
+        const val TEST_ALIAS = "readr.secrets.test"
+
         /** Every question in this file is about the whole book. */
         const val WHOLE_BOOK_SCOPE = "{\"wholeBook\":true}"
+
+        /**
+         * Real time, not the virtual clock: these tests wait on a real
+         * embedding pass and a real socket, and the default 60 seconds is not
+         * enough for a cold emulator.
+         */
+        val TEST_TIMEOUT = 3.minutes
 
         /** Filler with enough of a subject that retrieval has something to find. */
         const val WONDERLAND =
@@ -98,7 +117,7 @@ class KitBridgeTest {
     }
 
     @Test
-    fun importsPlainTextAndKeepsPosition() = runTest {
+    fun importsPlainTextAndKeepsPosition() = runTest(timeout = TEST_TIMEOUT) {
         val file = File(root, "notes.txt").apply { writeText("Chapter one\n\nIt was a bright cold day in April.\n\nChapter two\n\nThe clocks were striking thirteen.") }
         val json = kit.library.importPlainText(file.absolutePath, "Notes").await()
         val book = kitJson.decodeFromString<BookSummary>(json)
@@ -117,7 +136,7 @@ class KitBridgeTest {
     }
 
     @Test
-    fun importsTheBundledEpub() = runTest {
+    fun importsTheBundledEpub() = runTest(timeout = TEST_TIMEOUT) {
         val original = File(root, "alice.epub")
         context.assets.open("alice-in-wonderland.epub").use { i -> original.outputStream().use { i.copyTo(it) } }
         val extracted = File(root, "alice")
@@ -135,7 +154,7 @@ class KitBridgeTest {
     }
 
     @Test
-    fun positionsCrossTheBridgeInUTF16() = runTest {
+    fun positionsCrossTheBridgeInUTF16() = runTest(timeout = TEST_TIMEOUT) {
         // "Café 👍": the kit counts 6 characters, Kotlin 7 code units.
         val file = File(root, "cafe.txt").apply { writeText("Café 👍 ok, then more words follow here.") }
         val book = kitJson.decodeFromString<BookSummary>(kit.library.importPlainText(file.absolutePath, "Café").await())
@@ -160,7 +179,7 @@ class KitBridgeTest {
     }
 
     @Test
-    fun chapterLayoutAndContentsSpeakUTF16() = runTest {
+    fun chapterLayoutAndContentsSpeakUTF16() = runTest(timeout = TEST_TIMEOUT) {
         val original = File(root, "alice.epub")
         context.assets.open("alice-in-wonderland.epub").use { i -> original.outputStream().use { i.copyTo(it) } }
         val extracted = File(root, "alice")
@@ -207,7 +226,7 @@ class KitBridgeTest {
      * point of converting it.
      */
     @Test
-    fun inlineImagesPointAtTheirPlaceholdersInUTF16() = runTest {
+    fun inlineImagesPointAtTheirPlaceholdersInUTF16() = runTest(timeout = TEST_TIMEOUT) {
         val book = importEpub(IllustratedBook.write(File(root, "illustrated.epub")), "illustrated")
         assertEquals(IllustratedBook.TITLE, book.title)
         var found = 0
@@ -240,7 +259,7 @@ class KitBridgeTest {
      * book with no archive behind it says so with a null rather than a "".
      */
     @Test
-    fun chaptersCarryTheirSourcePathWhenTheyHaveOne() = runTest {
+    fun chaptersCarryTheirSourcePathWhenTheyHaveOne() = runTest(timeout = TEST_TIMEOUT) {
         val alice = aliceBook()
         val chapters = kitJson.decodeFromString<List<ChapterSummary>>(kit.library.chaptersJSON(alice.id))
         assertEquals("OEBPS/ch1.xhtml", chapters[0].sourcePath)
@@ -259,7 +278,7 @@ class KitBridgeTest {
      * chapter it opens.
      */
     @Test
-    fun aBookWithNoPicturesOrNotesAnswersWithEmptyLists() = runTest {
+    fun aBookWithNoPicturesOrNotesAnswersWithEmptyLists() = runTest(timeout = TEST_TIMEOUT) {
         val alice = aliceBook()
         for (index in 0 until alice.chapterCount) {
             assertTrue(kitJson.decodeFromString<List<ChapterImage>>(kit.library.chapterImagesJSON(alice.id, index.toLong())).isEmpty())
@@ -281,7 +300,7 @@ class KitBridgeTest {
 
     /** Both kinds of link cross the bridge whole: a URL out, a path and fragment in. */
     @Test
-    fun linkSpansCarryWhereTheyPoint() = runTest {
+    fun linkSpansCarryWhereTheyPoint() = runTest(timeout = TEST_TIMEOUT) {
         val book = importEpub(IllustratedBook.write(File(root, "linked.epub")), "linked")
         val layout = kitJson.decodeFromString<ChapterLayout>(kit.library.chapterLayoutJSON(book.id, 0L))
         val links = layout.spans.filter { it.kind == "link" }
@@ -313,7 +332,7 @@ class KitBridgeTest {
     }
 
     @Test
-    fun contentsFallBackToTheSpineWithoutATableOfContents() = runTest {
+    fun contentsFallBackToTheSpineWithoutATableOfContents() = runTest(timeout = TEST_TIMEOUT) {
         val file = File(root, "plain.txt").apply { writeText("Just one long chapter of prose with no headings at all.") }
         val book = kitJson.decodeFromString<BookSummary>(kit.library.importPlainText(file.absolutePath, "Plain").await())
         val contents = kitJson.decodeFromString<Contents>(kit.library.contentsJSON(book.id))
@@ -323,7 +342,7 @@ class KitBridgeTest {
     }
 
     @Test
-    fun seedsTheSampleOnce() = runTest {
+    fun seedsTheSampleOnce() = runTest(timeout = TEST_TIMEOUT) {
         assertTrue(kit.library.needsSampleSeed())
         val original = File(root, "alice.epub")
         context.assets.open("alice-in-wonderland.epub").use { i -> original.outputStream().use { i.copyTo(it) } }
@@ -337,15 +356,23 @@ class KitBridgeTest {
         assertEquals(1, kitJson.decodeFromString<List<BookSummary>>(kit.library.booksJSON()).size)
     }
 
+    /**
+     * A key goes in and comes out again through the provider facade — the one
+     * door to a credential there is. What comes back is never the key itself:
+     * the card says a key is *there*, and nothing on this side of the bridge
+     * can ask what it says.
+     */
     @Test
-    fun credentialsRoundTripThroughTheKit() {
-        assertFalse(kit.credentials.hasCredential("anthropic"))
-        kit.credentials.saveAPIKey("anthropic", "sk-ant-test")
-        assertTrue(kit.credentials.hasCredential("anthropic"))
-        assertEquals("sk-ant-test", kit.credentials.apiKey("anthropic"))
-        kit.credentials.deleteCredential("anthropic")
-        assertFalse(kit.credentials.hasCredential("anthropic"))
+    fun keysRoundTripThroughTheProviderFacade() {
+        assertFalse(hasCredential("anthropic"))
+        kit.providers.saveAPIKey("anthropic", "sk-ant-test")
+        assertTrue(hasCredential("anthropic"))
+        kit.providers.disconnect("anthropic")
+        assertFalse(hasCredential("anthropic"))
     }
+
+    private fun hasCredential(kind: String, from: Kit = kit): Boolean =
+        providerSettings(from).vendors.flatMap { it.kinds }.single { it.kind == kind }.hasCredential
 
     @Test
     fun extractorRejectsPathTraversal() {
@@ -381,7 +408,7 @@ class KitBridgeTest {
     }
 
     @Test
-    fun highlightsRoundTripInUTF16() = runTest {
+    fun highlightsRoundTripInUTF16() = runTest(timeout = TEST_TIMEOUT) {
         val book = twoChapterBook()
         val text = kit.library.chapterText(book.id, 0)
         // "Café 👍": 6 characters to the kit, 7 code units to Kotlin.
@@ -422,7 +449,7 @@ class KitBridgeTest {
      * one `update` a caller has to feed both halves of.
      */
     @Test
-    fun colourAndNoteAreEditedApart() = runTest {
+    fun colourAndNoteAreEditedApart() = runTest(timeout = TEST_TIMEOUT) {
         val book = twoChapterBook()
         val made = kitJson.decodeFromString<Highlight>(kit.library.addHighlight(book.id, 0L, 0L, 4L, "purple", ""))
         assertEquals(HighlightColor.PURPLE, made.markerColor)
@@ -440,7 +467,7 @@ class KitBridgeTest {
     }
 
     @Test
-    fun highlightsComeBackInReadingOrder() = runTest {
+    fun highlightsComeBackInReadingOrder() = runTest(timeout = TEST_TIMEOUT) {
         val book = twoChapterBook()
         val second = kitJson.decodeFromString<Highlight>(kit.library.addHighlight(book.id, 1L, 0L, 6L, "yellow", ""))
         val firstLate = kitJson.decodeFromString<Highlight>(kit.library.addHighlight(book.id, 0L, 8L, 11L, "pink", "note"))
@@ -452,7 +479,7 @@ class KitBridgeTest {
     }
 
     @Test
-    fun anEmptySelectionIsRefusedInPlainLanguage() = runTest {
+    fun anEmptySelectionIsRefusedInPlainLanguage() = runTest(timeout = TEST_TIMEOUT) {
         val book = twoChapterBook()
         try {
             kit.library.addHighlight(book.id, 0L, 3L, 3L, "yellow", "")
@@ -467,7 +494,7 @@ class KitBridgeTest {
     }
 
     @Test
-    fun anUnknownColourIsRefusedInPlainLanguage() = runTest {
+    fun anUnknownColourIsRefusedInPlainLanguage() = runTest(timeout = TEST_TIMEOUT) {
         val book = twoChapterBook()
         try {
             kit.library.addHighlight(book.id, 0L, 0L, 4L, "chartreuse", "")
@@ -491,7 +518,7 @@ class KitBridgeTest {
     }
 
     @Test
-    fun bookmarksCarryASnippetAndSortByPlace() = runTest {
+    fun bookmarksCarryASnippetAndSortByPlace() = runTest(timeout = TEST_TIMEOUT) {
         val book = twoChapterBook()
         val secondChapterText = kit.library.chapterText(book.id, 1)
         // Bookmarked out of order: the list is sorted by where they are, not when.
@@ -521,7 +548,7 @@ class KitBridgeTest {
     }
 
     @Test
-    fun annotationsOnAnUnknownBookOrChapterAreReaderFacing() = runTest {
+    fun annotationsOnAnUnknownBookOrChapterAreReaderFacing() = runTest(timeout = TEST_TIMEOUT) {
         val book = twoChapterBook()
         try {
             kit.library.highlightsJSON("not-a-book")
@@ -569,7 +596,7 @@ class KitBridgeTest {
     }
 
     @Test
-    fun searchFindsEveryMatchInReadingOrder() = runTest {
+    fun searchFindsEveryMatchInReadingOrder() = runTest(timeout = TEST_TIMEOUT) {
         val book = rabbitBook()
         val hits = kitJson.decodeFromString<List<SearchResult>>(kit.library.searchJSON(book.id, "rabbit", 100L))
         assertEquals("two in chapter 2, one in chapter 4", 3, hits.size)
@@ -603,7 +630,7 @@ class KitBridgeTest {
      * time the match arrives.
      */
     @Test
-    fun searchOffsetsCrossTheBridgeInUTF16() = runTest {
+    fun searchOffsetsCrossTheBridgeInUTF16() = runTest(timeout = TEST_TIMEOUT) {
         val book = twoChapterBook()
         val text = kit.library.chapterText(book.id, 0)
         val hit = kitJson.decodeFromString<List<SearchResult>>(kit.library.searchJSON(book.id, "prose", 100L)).single()
@@ -619,7 +646,7 @@ class KitBridgeTest {
     }
 
     @Test
-    fun searchOnAnUnknownBookIsReaderFacing() = runTest {
+    fun searchOnAnUnknownBookIsReaderFacing() = runTest(timeout = TEST_TIMEOUT) {
         try {
             kit.library.searchJSON("not-a-book", "rabbit", 100L)
             assertTrue("expected a failure", false)
@@ -720,7 +747,7 @@ class KitBridgeTest {
      * status code.
      */
     @Test
-    fun aKeyThatIsNotAcceptedSettlesOnASentence() = runTest {
+    fun aKeyThatIsNotAcceptedSettlesOnASentence() = runTest(timeout = TEST_TIMEOUT) {
         kit.providers.saveAPIKey("openAI", "sk-test")
         val status = kitJson.decodeFromString<ValidationStatus>(kit.providers.validate("openAI").await())
         assertFalse("a made-up key is never active: $status", status.isActive)
@@ -761,11 +788,140 @@ class KitBridgeTest {
      * emulator has no AICore, and what it says so with is the kit's sentence.
      */
     @Test
-    fun theOnDeviceCardSaysWhyThisPhoneCannotRunIt() = runTest {
+    fun theOnDeviceCardSaysWhyThisPhoneCannotRunIt() = runTest(timeout = TEST_TIMEOUT) {
         val status = kitJson.decodeFromString<ValidationStatus>(kit.providers.validate("geminiNano").await())
         assertEquals(ValidationStatus.INVALID, status.state)
         assertEquals("Gemini Nano isn't available on this phone.", status.reason)
         assertFalse("an unrunnable model is never the active one", kit.providers.hasAnyProvider())
+    }
+
+    /**
+     * Saving a key is not the same as choosing a provider, and the choosing
+     * is the kit's: `connect` proves the credential and applies
+     * `requestActivation` + `validateAndActivate`. A key nothing else was
+     * using takes the slot — and the choice is written down, so the next
+     * launch still has it.
+     */
+    @Test
+    fun connectActivatesAKeyThatChecksOut() = runTest(timeout = TEST_TIMEOUT) {
+        FakeChatServer().use { server ->
+            kit.providers.overrideEndpoint("openAI", server.origin)
+            kit.providers.saveAPIKey("openAI", "sk-test-not-a-real-key")
+            val status = kitJson.decodeFromString<ValidationStatus>(kit.providers.connect("openAI").await())
+            assertEquals(ValidationStatus.ACTIVE, status.state)
+
+            val settings = providerSettings()
+            assertEquals("openAI", settings.selection?.kind)
+            assertEquals("the reader's own choice, not a default", "openAI", settings.explicitSelection?.kind)
+            assertTrue(settings.vendors.single { it.id == "openai" }.kinds.single().isActive)
+            assertTrue("an activation the manager made itself is still written down", File(root, "provider-selection.json").isFile)
+            assertEquals("openAI", providerSettings(from = reopen()).selection?.kind)
+        }
+    }
+
+    /**
+     * A check that could not complete is not a rejection: the provider was
+     * down, not the key wrong, and the kit activates anyway so Ask works
+     * again the moment the outage clears.
+     */
+    @Test
+    fun connectActivatesEvenWhenTheCheckCouldNotComplete() = runTest(timeout = TEST_TIMEOUT) {
+        FakeChatServer(
+            status = 503,
+            errorBody = "{\"error\":{\"message\":\"The server is temporarily unavailable.\"}}",
+        ).use { server ->
+            kit.providers.overrideEndpoint("openAI", server.origin)
+            kit.providers.saveAPIKey("openAI", "sk-test-not-a-real-key")
+            val status = kitJson.decodeFromString<ValidationStatus>(kit.providers.connect("openAI").await())
+            assertEquals(status.state, ValidationStatus.UNAVAILABLE, status.state)
+            assertEquals("a provider outage never condemns a key", "openAI", providerSettings().selection?.kind)
+            assertTrue(File(root, "provider-selection.json").isFile)
+        }
+    }
+
+    /** But a key the provider actually rejected never takes the slot from one that works. */
+    @Test
+    fun aRejectedKeyLeavesTheWorkingProviderInPlace() = runTest(timeout = TEST_TIMEOUT) {
+        FakeChatServer().use { working ->
+            kit.providers.overrideEndpoint("openAI", working.origin)
+            kit.providers.saveAPIKey("openAI", "sk-test-not-a-real-key")
+            kit.providers.connect("openAI").await()
+            assertEquals("openAI", providerSettings().selection?.kind)
+        }
+        FakeChatServer(
+            status = 401,
+            errorBody = "{\"error\":{\"message\":\"Incorrect API key provided.\"}}",
+        ).use { rejecting ->
+            kit.providers.overrideEndpoint("anthropic", rejecting.origin)
+            kit.providers.saveAPIKey("anthropic", "sk-ant-not-a-real-key")
+            val status = kitJson.decodeFromString<ValidationStatus>(kit.providers.connect("anthropic").await())
+            assertEquals(ValidationStatus.INVALID, status.state)
+            assertEquals("openAI", providerSettings().selection?.kind)
+        }
+    }
+
+    /**
+     * Taking away the key of the model Ask was pointed at leaves nothing
+     * chosen — here and on disk. A selection naming a card with no credential
+     * behind it would say "Ask uses GPT-5.6 — not connected" for ever.
+     */
+    @Test
+    fun disconnectDropsTheSelectionItNamed() = runTest(timeout = TEST_TIMEOUT) {
+        FakeChatServer().use { server ->
+            kit.providers.overrideEndpoint("openAI", server.origin)
+            kit.providers.saveAPIKey("openAI", "sk-test-not-a-real-key")
+            kit.providers.connect("openAI").await()
+            assertEquals("openAI", providerSettings().selection?.kind)
+
+            kit.providers.disconnect("openAI")
+            val after = providerSettings()
+            assertNull("the choice goes with the key", after.selection)
+            assertNull(after.explicitSelection)
+            assertEquals("Ask uses no model yet — connect one below.", after.askUsesLine)
+            assertFalse("and it is not waiting on disk for the next launch", File(root, "provider-selection.json").exists())
+            assertFalse("nothing to ask with", kit.providers.hasAnyProvider())
+        }
+    }
+
+    /**
+     * The debug endpoint hook points at this device or at nothing. It exists
+     * so a test can stream a real answer from a socket it owns; a hook that
+     * could send a credentialed request to any host on the internet would not
+     * be worth having.
+     */
+    @Test
+    fun anEndpointOverrideOnlyEverPointsAtThisDevice() {
+        for (loopback in listOf("http://127.0.0.1:8080", "http://localhost:8080", "http://10.0.2.2:8080")) {
+            kit.providers.overrideEndpoint("openAI", loopback)
+        }
+        kit.providers.overrideEndpoint("openAI", "")
+
+        for (elsewhere in listOf("https://example.com", "http://192.168.1.10:8080", "https://127.0.0.1.evil.test")) {
+            try {
+                kit.providers.overrideEndpoint("openAI", elsewhere)
+                assertTrue("expected $elsewhere to be refused", false)
+            } catch (e: Exception) {
+                assertEquals("Readr can only be pointed at a server on this device.", e.message)
+            }
+        }
+    }
+
+    /**
+     * An answer's shape comes from the kit's own Markdown parser, so a
+     * numbered list keeps its numbers rather than being flattened into
+     * paragraphs by a smaller parser written on this side.
+     */
+    @Test
+    fun answerBlocksComeFromTheKitsOwnParser() {
+        val blocks = AnswerMarkdown.blocks(
+            kit.library.answerBlocksJSON("Two things happen:\n\n1. She follows him.\n2. She falls.\n"),
+            fallback = "",
+        )
+        assertEquals(AnswerBlock.Paragraph("Two things happen:"), blocks.first())
+        val list = blocks.last() as AnswerBlock.Items
+        assertTrue("an ordered list stays ordered", list.ordered)
+        assertEquals(listOf("1.", "2."), list.items.map { it.marker })
+        assertEquals(listOf("She follows him.", "She falls."), list.items.map { it.text })
     }
 
     // MARK: Ask (A3b)
@@ -804,7 +960,7 @@ class KitBridgeTest {
      * delivered AS THEY ARRIVE, one completion at the end.
      */
     @Test
-    fun askStreamsAnAnswerAndCitesTheBook() = runTest {
+    fun askStreamsAnAnswerAndCitesTheBook() = runTest(timeout = TEST_TIMEOUT) {
         val book = longBook()
         FakeChatServer().use { server ->
             connect(server)
@@ -814,7 +970,7 @@ class KitBridgeTest {
                 WHOLE_BOOK_SCOPE, "", "", kit.providers, sink,
             )
             assertTrue("an ask that started has a handle to cancel", handle != 0L)
-            assertTrue("no answer arrived: $sink", sink.await(RecordingAskSink.COMPLETED, timeoutMillis = 180_000))
+            assertTrue("no answer arrived: $sink", sink.await(RecordingAskSink.COMPLETED))
 
             assertEquals("one delta per chunk the server sent: $sink", 3, sink.of(RecordingAskSink.TOKEN).size)
             // Streamed, not buffered: the first token was in the reader's
@@ -830,7 +986,11 @@ class KitBridgeTest {
             // A book this long cannot ride along whole, so the answer is
             // grounded in retrieved passages — and every one of them says
             // where in the book it came from, in Kotlin's own offsets.
-            assertEquals("retrieval", sink.of(RecordingAskSink.TIER).last().text)
+            // The tier crosses the bridge with what it promises, so the sheet
+            // never offers a SOURCES row the routing cannot fill.
+            val routed = sink.lastTierJSON()
+            assertTrue("a routed tier is reported: $routed", routed.contains("\"tier\":\"retrieval\""))
+            assertTrue("with the kit's own answer about it: $routed", routed.contains("\"providesCitations\":true"))
             val citations = kitJson.decodeFromString<List<AskCitation>>(
                 sink.of(RecordingAskSink.CITATIONS).last().text
             )
@@ -851,7 +1011,7 @@ class KitBridgeTest {
      * once, and never alongside a completion.
      */
     @Test
-    fun askSaysWhatTheProviderSaidWhenTheKeyIsRejected() = runTest {
+    fun askSaysWhatTheProviderSaidWhenTheKeyIsRejected() = runTest(timeout = TEST_TIMEOUT) {
         val book = longBook()
         FakeChatServer(
             status = 401,
@@ -860,7 +1020,7 @@ class KitBridgeTest {
             connect(server)
             val sink = RecordingAskSink()
             kit.library.ask(book.id, "Who is the White Rabbit?", WHOLE_BOOK_SCOPE, "", "", kit.providers, sink)
-            assertTrue("no failure arrived: $sink", sink.await(RecordingAskSink.FAILED, timeoutMillis = 180_000))
+            assertTrue("no failure arrived: $sink", sink.await(RecordingAskSink.FAILED))
 
             val failure = sink.of(RecordingAskSink.FAILED).single()
             assertTrue(
@@ -880,19 +1040,19 @@ class KitBridgeTest {
      * what the panel shows, so neither ending is reported.
      */
     @Test
-    fun cancellingAnAskEndsItSilently() {
-        // Not `runTest`: this one waits in real time for chunks that must
-        // never arrive, which a virtual clock would skip straight past.
-        val book = runBlocking { longBook() }
+    fun cancellingAnAskEndsItSilently() = runTest(timeout = TEST_TIMEOUT) {
+        val book = longBook()
         FakeChatServer(gapMillis = 1_500).use { server ->
             connect(server)
             val sink = RecordingAskSink()
             val handle = kit.library.ask(book.id, "What is down the hole?", WHOLE_BOOK_SCOPE, "", "", kit.providers, sink)
-            assertTrue("nothing streamed to cancel: $sink", sink.await(RecordingAskSink.TOKEN, timeoutMillis = 180_000))
+            assertTrue("nothing streamed to cancel: $sink", sink.await(RecordingAskSink.TOKEN))
             kit.library.cancelAsk(handle)
 
-            // Well past everything the server still had to send.
-            Thread.sleep(5_000)
+            // Well past everything the server still had to send — on the real
+            // clock, since `runTest`'s virtual one would skip straight past
+            // the chunks that must never arrive.
+            withContext(Dispatchers.Default) { delay(5.seconds) }
             assertTrue("a cancelled ask must not complete: $sink", sink.of(RecordingAskSink.COMPLETED).isEmpty())
             assertTrue("a cancelled ask is not a failure: $sink", sink.of(RecordingAskSink.FAILED).isEmpty())
         }
@@ -900,7 +1060,7 @@ class KitBridgeTest {
 
     /** Nothing connected: one sentence, and no stream started. */
     @Test
-    fun askWithoutAProviderSaysSoWithoutStarting() = runTest {
+    fun askWithoutAProviderSaysSoWithoutStarting() = runTest(timeout = TEST_TIMEOUT) {
         val file = File(root, "short.txt").apply { writeText("# One\n\nA short book about nothing much at all.\n") }
         val book = kitJson.decodeFromString<BookSummary>(
             kit.library.importPlainText(file.absolutePath, "Short").await()
@@ -921,7 +1081,7 @@ class KitBridgeTest {
      * told and exactly what the Apple panel shows.
      */
     @Test
-    fun theScopeCaptionIsTheKitsOwnLine() = runTest {
+    fun theScopeCaptionIsTheKitsOwnLine() = runTest(timeout = TEST_TIMEOUT) {
         val text = buildString {
             for (chapter in 1..4) {
                 append("# Chapter $chapter\n\n")

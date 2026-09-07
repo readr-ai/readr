@@ -46,6 +46,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -71,7 +74,6 @@ fun ProvidersScreen(model: ProvidersViewModel, onBack: () -> Unit) {
     val palette = LocalReadingPalette.current
     val settings by model.settings.collectAsState()
     val checking by model.checking.collectAsState()
-    val chosen by model.chosenModels.collectAsState()
     val refreshing by model.refreshingModels.collectAsState()
     val message by model.message.collectAsState()
     val snackbar = remember { SnackbarHostState() }
@@ -115,7 +117,7 @@ fun ProvidersScreen(model: ProvidersViewModel, onBack: () -> Unit) {
                 modifier = Modifier.testTag("settings.askUses"),
             )
             for (vendor in current.vendors) {
-                VendorCard(vendor, model, checking, chosen, refreshing)
+                VendorCard(vendor, model, checking, refreshing)
             }
             Spacer(Modifier.size(6.dp))
             SectionLabel("PRIVACY")
@@ -143,7 +145,6 @@ private fun VendorCard(
     vendor: ProviderVendorCard,
     model: ProvidersViewModel,
     checking: Set<String>,
-    chosen: Map<String, String>,
     refreshing: Boolean,
 ) {
     val palette = LocalReadingPalette.current
@@ -170,7 +171,7 @@ private fun VendorCard(
             )
         }
         for (kind in vendor.kinds) {
-            KindRow(kind, vendor, model, checking, chosen, refreshing)
+            KindRow(kind, vendor, model, checking, refreshing)
         }
     }
 }
@@ -195,11 +196,16 @@ private fun KindRow(
     vendor: ProviderVendorCard,
     model: ProvidersViewModel,
     checking: Set<String>,
-    chosen: Map<String, String>,
     refreshing: Boolean,
 ) {
     val palette = LocalReadingPalette.current
     val busy = kind.kind in checking
+    // The model this row is showing. On the card Ask already uses, a pick
+    // applies at once — that is the reader changing the model Ask uses. On any
+    // other card it stays here until "Make active" commits it, so browsing a
+    // list cannot quietly redirect Ask. Keyed on the kit's own answer, so an
+    // activation anywhere resets the row to what actually happened.
+    var picked by remember(kind.kind, kind.activeModelID) { mutableStateOf(kind.activeModelID) }
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         // Only when the card offers a choice — a lone way in needs no label to
         // tell it apart from itself.
@@ -221,7 +227,7 @@ private fun KindRow(
                 // a radio button but is decorative, and the model picker alone
                 // is undiscoverable.
                 TextButton(
-                    onClick = { model.makeActive(kind.kind) },
+                    onClick = { model.makeActive(kind.kind, picked) },
                     modifier = Modifier.testTag("settings.makeActive.${kind.kind}"),
                 ) { Text("Make active") }
             }
@@ -248,7 +254,10 @@ private fun KindRow(
         // The on-device model is whatever the phone ships — one entry, nothing
         // to pick, and its id is not a name anyone chose.
         if (!kind.isOnDevice) {
-            ModelPicker(kind, chosen[kind.kind] ?: kind.activeModelID) { model.chooseModel(kind.kind, it) }
+            ModelPicker(kind, picked) { id ->
+                picked = id
+                if (kind.isActive) model.makeActive(kind.kind, id)
+            }
             if (kind.kind == OPEN_ROUTER) {
                 TextButton(
                     onClick = { model.refreshOpenRouterModels() },
@@ -275,6 +284,14 @@ private fun APIKeyField(kind: ProviderKindCard, model: ProvidersViewModel) {
             label = { Text(if (kind.hasCredential) "Replace API key" else "API key") },
             singleLine = true,
             visualTransformation = PasswordVisualTransformation(),
+            // A key is not prose: no autocorrect to "fix" it, no suggestion
+            // strip holding it, and the keyboard's own Done rather than a
+            // newline it cannot use.
+            keyboardOptions = KeyboardOptions(
+                keyboardType = KeyboardType.Password,
+                autoCorrectEnabled = false,
+                imeAction = ImeAction.Done,
+            ),
             modifier = Modifier.fillMaxWidth().testTag("settings.apiKey.${kind.kind}"),
         )
         Button(
@@ -329,35 +346,23 @@ private fun contextLabel(budget: Int): String =
     if (budget >= 1_000_000) "${budget / 1_000_000}M context" else "${(budget + 500) / 1_000}K context"
 
 /**
- * The status line under a card's title — the kit's own sentence for anything
- * that went wrong, and short neutral words for everything else.
+ * The status line under a card's title. Both sentences are the kit's: the
+ * settled one it wrote into the card, and the one it wrote for a check this
+ * screen has started and the kit does not know about yet.
  */
-private fun statusText(kind: ProviderKindCard, busy: Boolean): String {
-    if (busy || kind.status.isValidating) return if (kind.isOnDevice) "Checking this phone…" else "Validating…"
-    return when (kind.status.state) {
-        ValidationStatus.ACTIVE -> "Connected"
-        ValidationStatus.INVALID -> kind.status.reason ?: "Not connected"
-        ValidationStatus.UNAVAILABLE -> kind.status.reason ?: "Temporarily unavailable"
-        // Never checked this session. The on-device model is always about to
-        // be probed; a stored key shows as connected until a live check
-        // settles it one way or the other.
-        else -> when {
-            kind.isOnDevice -> "Checking this phone…"
-            kind.hasCredential -> "Connected"
-            else -> "Not connected"
-        }
-    }
-}
+private fun statusText(kind: ProviderKindCard, busy: Boolean): String =
+    if (busy || kind.status.isValidating) kind.checkingLine else kind.statusLine
 
 /**
  * Whether this card can be pointed at at all. A stored key can: even one the
  * provider just rejected is the reader's to replace, and choosing it is a
- * choice they are allowed to make. A phone that cannot run its own model is
- * not — there is no key to fix, so offering to switch to it would promise
- * something that can only fail.
+ * choice they are allowed to make. The phone's own model can only be offered
+ * once a check says it is *ready* — there is no key to fix, and every other
+ * state (never checked, still checking, unsupported) would put Ask on a
+ * provider that can only refuse.
  */
 private fun canBeMadeActive(kind: ProviderKindCard): Boolean =
-    if (kind.isOnDevice) kind.status.state != ValidationStatus.INVALID else kind.hasCredential
+    if (kind.isOnDevice) kind.status.isActive else kind.hasCredential
 
 /** A rejected key is red; a transient failure is amber — it may still be good. */
 @Composable

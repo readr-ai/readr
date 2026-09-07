@@ -11,7 +11,10 @@ import kotlinx.serialization.Serializable
 data class ProviderSettings(
     /** "Ask uses Claude Opus 5 · Claude (Anthropic)", or why it uses nothing. */
     val askUsesLine: String,
+    /** What Ask will use: the reader's choice, else the phone's own model. */
     val selection: ProviderSelection? = null,
+    /** What the reader actually chose — null while nothing has been picked. */
+    val explicitSelection: ProviderSelection? = null,
     val vendors: List<ProviderVendorCard> = emptyList(),
 )
 
@@ -40,6 +43,10 @@ data class ProviderKindCard(
     val hasCredential: Boolean,
     val isActive: Boolean,
     val status: ValidationStatus,
+    /** The line under the card's title, written by the kit. */
+    val statusLine: String = "",
+    /** What that line reads while a check started here is still running. */
+    val checkingLine: String = "",
     val models: List<ModelChoice> = emptyList(),
     val activeModelID: String,
 )
@@ -88,8 +95,34 @@ class ProvidersRepository(private val kit: Kit) {
         kit.providers.saveAPIKey(kind, apiKey)
     }
 
-    suspend fun deleteCredential(kind: String) = withContext(Dispatchers.IO) {
-        kit.providers.deleteCredential(kind)
+    /**
+     * Prove a stored key and let it take the active slot if the kit's rule
+     * allows. The whole activation policy lives there — an unproven key may
+     * take a slot nothing usable holds, an accepted one may take it from a
+     * working provider, a rejected one never does — so nothing on this side
+     * decides who Ask points at.
+     */
+    suspend fun connect(kind: String): ValidationStatus = withContext(Dispatchers.IO) {
+        kitJson.decodeFromString(kit.providers.connect(kind).await())
+    }
+
+    /**
+     * Check a kind again unless a *successful* check is younger than
+     * [maxAgeSeconds]. The screen's on-open sweep: a credential check posts a
+     * one-token completion, and repeating it every visit would spend the
+     * reader's money to learn nothing.
+     */
+    suspend fun validateIfStale(kind: String, maxAgeSeconds: Long): ValidationStatus =
+        withContext(Dispatchers.IO) {
+            kitJson.decodeFromString(kit.providers.validateIfStale(kind, maxAgeSeconds).await())
+        }
+
+    /**
+     * Take a key away — and, when it was the model Ask had been pointed at,
+     * the selection with it.
+     */
+    suspend fun disconnect(kind: String) = withContext(Dispatchers.IO) {
+        kit.providers.disconnect(kind)
     }
 
     /**
@@ -105,9 +138,22 @@ class ProvidersRepository(private val kit: Kit) {
         kit.providers.setActive(kind, modelID)
     }
 
-    /** OpenRouter's catalogue: the disk copy, the network, or the curated slice. */
-    suspend fun refreshOpenRouterModels(): List<ModelChoice> = withContext(Dispatchers.IO) {
-        kitJson.decodeFromString(kit.providers.refreshOpenRouterModels().await())
+    /**
+     * OpenRouter's catalogue: the disk copy, the network, or the curated
+     * slice. The rows come back on the next [settings] read — there is one
+     * place the screen gets its model list from, and this is not it.
+     */
+    suspend fun refreshOpenRouterModels() = withContext(Dispatchers.IO) {
+        kit.providers.refreshOpenRouterModels().await()
+    }
+
+    /**
+     * The kit's sentence for an empty state — "Add an API key or use the
+     * model built into this phone to ask questions." — naming only the doors
+     * this build has, on this phone.
+     */
+    suspend fun setupGuidance(toDo: String): String = withContext(Dispatchers.IO) {
+        kit.providers.setupGuidance(toDo)
     }
 
     /** Whether Ask has a model to put a question to at all. */
