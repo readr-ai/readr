@@ -48,6 +48,9 @@ enum AndroidBridgeError: LocalizedError, CustomStringConvertible {
   case unknownBook(String)
   case unknownProviderKind(String)
   case invalidChapter(Int)
+  case unknownHighlight(String)
+  case unknownBookmark(String)
+  case unknownHighlightColor(String)
 
   var errorDescription: String? {
     switch self {
@@ -55,6 +58,9 @@ enum AndroidBridgeError: LocalizedError, CustomStringConvertible {
     case .unknownBook: return "This book is no longer in your library."
     case .unknownProviderKind: return "That provider isn't supported on this device."
     case .invalidChapter: return "That chapter doesn't exist in this book."
+    case .unknownHighlight: return "That highlight is no longer in your library."
+    case .unknownBookmark: return "That bookmark is no longer in your library."
+    case .unknownHighlightColor: return "That highlight colour isn't available."
     }
   }
 
@@ -66,6 +72,9 @@ enum AndroidBridgeError: LocalizedError, CustomStringConvertible {
     case .unknownBook(let id): return "no book with id \(id)"
     case .unknownProviderKind(let kind): return "unknown provider kind \(kind)"
     case .invalidChapter(let index): return "no chapter at index \(index)"
+    case .unknownHighlight(let id): return "no highlight with id \(id)"
+    case .unknownBookmark(let id): return "no bookmark with id \(id)"
+    case .unknownHighlightColor(let name): return "unknown highlight color \(name)"
     }
   }
 }

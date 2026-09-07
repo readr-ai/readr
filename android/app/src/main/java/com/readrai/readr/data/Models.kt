@@ -60,4 +60,46 @@ data class ContentsRow(val id: Int, val title: String, val chapterIndex: Int, va
 @Serializable
 data class Contents(val rows: List<ContentsRow>, val isFallback: Boolean)
 
+/** Mirrors ReadrAndroid's `HighlightSummary`: a text highlight with UTF-16 offsets. */
+@Serializable
+data class Highlight(
+    val id: String,
+    val chapterIndex: Int,
+    val utf16Start: Int,
+    val utf16End: Int,
+    val quotedText: String,
+    val note: String? = null,
+    val color: String,
+    val createdAt: String,
+) {
+    val markerColor: HighlightColor get() = HighlightColor.fromKey(color)
+}
+
+/** Mirrors ReadrAndroid's `BookmarkSummary`. PDF-page bookmarks never cross the bridge. */
+@Serializable
+data class Bookmark(
+    val id: String,
+    val chapterIndex: Int,
+    val utf16Offset: Int,
+    val snippet: String,
+    val createdAt: String,
+)
+
+/**
+ * The kit's `HighlightColor`, by raw value. A colour the kit adds later
+ * decodes as yellow rather than crashing an older build's Highlights sheet —
+ * the same fallback `Highlight.markerColor` makes on the Swift side.
+ */
+enum class HighlightColor(val key: String) {
+    YELLOW("yellow"),
+    GREEN("green"),
+    BLUE("blue"),
+    PINK("pink"),
+    PURPLE("purple");
+
+    companion object {
+        fun fromKey(key: String): HighlightColor = entries.firstOrNull { it.key == key } ?: YELLOW
+    }
+}
+
 val kitJson = Json { ignoreUnknownKeys = true }

@@ -3,10 +3,13 @@ package com.readrai.readr
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.readrai.readr.data.BookSummary
+import com.readrai.readr.data.Bookmark
 import com.readrai.readr.data.ChapterLayout
 import com.readrai.readr.data.ChapterSummary
 import com.readrai.readr.data.Contents
 import com.readrai.readr.data.EpubExtractor
+import com.readrai.readr.data.Highlight
+import com.readrai.readr.data.HighlightColor
 import com.readrai.readr.data.ReadingPosition
 import com.readrai.readr.data.kitJson
 import com.readrai.readr.kit.KeystoreSecretStore
@@ -18,6 +21,8 @@ import kotlinx.coroutines.test.runTest
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -186,6 +191,152 @@ class KitBridgeTest {
             assertTrue("expected rejection", false)
         } catch (e: EpubExtractor.Rejected) {
             assertFalse("entry names never reach the reader", e.message!!.contains("escape.txt"))
+        }
+    }
+
+    /** A two-chapter Markdown book, chapter 0 opening on a non-ASCII grapheme. */
+    private suspend fun twoChapterBook(): BookSummary {
+        val file = File(root, "annotated.md").apply {
+            writeText(
+                """
+                # One
+
+                Café 👍 and quite a lot more prose in the first chapter here.
+
+                # Two
+
+                Second chapter opens here
+                and wraps onto another line with plenty of words.
+                """.trimIndent()
+            )
+        }
+        return kitJson.decodeFromString(kit.library.importPlainText(file.absolutePath, "Annotated").await())
+    }
+
+    @Test
+    fun highlightsRoundTripInUTF16() = runTest {
+        val book = twoChapterBook()
+        val text = kit.library.chapterText(book.id, 0)
+        // "Café 👍": 6 characters to the kit, 7 code units to Kotlin.
+        val made = kitJson.decodeFromString<Highlight>(
+            kit.library.addHighlight(book.id, 0L, 0L, 7L, "green", "")
+        )
+        assertEquals(0, made.chapterIndex)
+        assertEquals(0, made.utf16Start)
+        assertEquals(7, made.utf16End)
+        assertEquals(text.substring(made.utf16Start, made.utf16End), made.quotedText)
+        assertEquals("Café 👍", made.quotedText)
+        assertNull("an empty note is no note", made.note)
+        assertEquals("green", made.color)
+        assertEquals(HighlightColor.GREEN, made.markerColor)
+        assertTrue("ISO-8601 with fractional seconds", made.createdAt.matches(Regex(".*T.*\\.\\d{3}(Z|[+-]\\d{2}:\\d{2})")))
+
+        assertEquals(listOf(made), kitJson.decodeFromString<List<Highlight>>(kit.library.highlightsJSON(book.id)))
+
+        // A note and a recolour, then the note cleared again.
+        kit.library.updateHighlight(made.id, "purple", "worth quoting")
+        val noted = kitJson.decodeFromString<List<Highlight>>(kit.library.highlightsJSON(book.id)).single()
+        assertEquals("worth quoting", noted.note)
+        assertEquals(HighlightColor.PURPLE, noted.markerColor)
+        assertEquals("the range is untouched by an edit", made.utf16Start to made.utf16End, noted.utf16Start to noted.utf16End)
+        kit.library.updateHighlight(made.id, "blue", "")
+        val cleared = kitJson.decodeFromString<List<Highlight>>(kit.library.highlightsJSON(book.id)).single()
+        assertNull(cleared.note)
+        assertEquals(HighlightColor.BLUE, cleared.markerColor)
+
+        kit.library.removeHighlight(made.id)
+        assertEquals("[]", kit.library.highlightsJSON(book.id))
+    }
+
+    @Test
+    fun highlightsComeBackInReadingOrder() = runTest {
+        val book = twoChapterBook()
+        val second = kitJson.decodeFromString<Highlight>(kit.library.addHighlight(book.id, 1L, 0L, 6L, "yellow", ""))
+        val firstLate = kitJson.decodeFromString<Highlight>(kit.library.addHighlight(book.id, 0L, 8L, 11L, "pink", "note"))
+        val firstEarly = kitJson.decodeFromString<Highlight>(kit.library.addHighlight(book.id, 0L, 0L, 4L, "yellow", ""))
+        val listed = kitJson.decodeFromString<List<Highlight>>(kit.library.highlightsJSON(book.id))
+        assertEquals(listOf(firstEarly.id, firstLate.id, second.id), listed.map { it.id })
+        assertEquals(listOf(0, 0, 1), listed.map { it.chapterIndex })
+        assertEquals("note", listed[1].note)
+    }
+
+    @Test
+    fun anEmptySelectionIsRefusedInPlainLanguage() = runTest {
+        val book = twoChapterBook()
+        try {
+            kit.library.addHighlight(book.id, 0L, 3L, 3L, "yellow", "")
+            assertTrue("expected a refusal", false)
+        } catch (e: Exception) {
+            val message = e.message ?: ""
+            assertFalse("no Swift case names: $message", message.contains("emptySelection"))
+            assertFalse("no type-and-case shape: $message", message.contains("("))
+            assertTrue(message, message.startsWith("Nothing was selected to highlight."))
+        }
+        assertEquals("[]", kit.library.highlightsJSON(book.id))
+    }
+
+    @Test
+    fun anUnknownColourIsRefusedInPlainLanguage() = runTest {
+        val book = twoChapterBook()
+        try {
+            kit.library.addHighlight(book.id, 0L, 0L, 4L, "chartreuse", "")
+            assertTrue("expected a refusal", false)
+        } catch (e: Exception) {
+            assertEquals("That highlight colour isn't available.", e.message)
+        }
+        try {
+            kit.library.updateHighlight("not-a-highlight", "yellow", "")
+            assertTrue("expected a refusal", false)
+        } catch (e: Exception) {
+            assertEquals("That highlight is no longer in your library.", e.message)
+        }
+        assertEquals("[]", kit.library.highlightsJSON(book.id))
+    }
+
+    @Test
+    fun bookmarksCarryASnippetAndSortByPlace() = runTest {
+        val book = twoChapterBook()
+        val secondChapterText = kit.library.chapterText(book.id, 1)
+        // Bookmarked out of order: the list is sorted by where they are, not when.
+        val later = kitJson.decodeFromString<Bookmark>(kit.library.addBookmark(book.id, 1L, 0L))
+        val earlier = kitJson.decodeFromString<Bookmark>(kit.library.addBookmark(book.id, 0L, 7L))
+
+        assertEquals(1, later.chapterIndex)
+        assertEquals(0, later.utf16Offset)
+        assertEquals(secondChapterText.take(60).replace('\n', ' ').trim(), later.snippet)
+        assertEquals(60, later.snippet.length)
+        assertFalse("newlines become spaces", later.snippet.contains('\n'))
+        assertEquals(later.snippet, later.snippet.trim())
+
+        assertEquals(0, earlier.chapterIndex)
+        assertEquals(7, earlier.utf16Offset)
+        assertTrue(earlier.snippet, earlier.snippet.startsWith("and quite a lot more prose"))
+
+        val listed = kitJson.decodeFromString<List<Bookmark>>(kit.library.bookmarksJSON(book.id))
+        assertEquals(listOf(earlier.id, later.id), listed.map { it.id })
+        assertEquals(listOf(0, 1), listed.map { it.chapterIndex })
+        assertNotNull(listed.first().createdAt)
+
+        kit.library.removeBookmark(earlier.id)
+        assertEquals(listOf(later.id), kitJson.decodeFromString<List<Bookmark>>(kit.library.bookmarksJSON(book.id)).map { it.id })
+        kit.library.removeBookmark(later.id)
+        assertEquals("[]", kit.library.bookmarksJSON(book.id))
+    }
+
+    @Test
+    fun annotationsOnAnUnknownBookOrChapterAreReaderFacing() = runTest {
+        val book = twoChapterBook()
+        try {
+            kit.library.highlightsJSON("not-a-book")
+            assertTrue("expected a failure", false)
+        } catch (e: Exception) {
+            assertEquals("This book is no longer in your library.", e.message)
+        }
+        try {
+            kit.library.addBookmark(book.id, 9L, 0L)
+            assertTrue("expected a failure", false)
+        } catch (e: Exception) {
+            assertEquals("That chapter doesn't exist in this book.", e.message)
         }
     }
 

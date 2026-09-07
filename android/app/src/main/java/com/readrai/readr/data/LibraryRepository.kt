@@ -106,6 +106,51 @@ class LibraryRepository(private val context: Context, private val kit: Kit) {
         }
     }
 
+    // MARK: Annotations — every offset is UTF-16, as Compose reports it.
+
+    /** The book's highlights in reading order: chapter, then where each starts. */
+    suspend fun highlights(bookId: String): List<Highlight> = withContext(Dispatchers.IO) {
+        kitJson.decodeFromString(kit.library.highlightsJSON(bookId))
+    }
+
+    /** Highlights the selected range and returns the new highlight. A blank `note` stores none. */
+    suspend fun addHighlight(
+        bookId: String,
+        chapterIndex: Int,
+        utf16Start: Int,
+        utf16End: Int,
+        color: HighlightColor = HighlightColor.YELLOW,
+        note: String? = null,
+    ): Highlight = withContext(Dispatchers.IO) {
+        kitJson.decodeFromString(
+            kit.library.addHighlight(
+                bookId, chapterIndex.toLong(), utf16Start.toLong(), utf16End.toLong(), color.key, note.orEmpty()
+            )
+        )
+    }
+
+    /** Recolours a highlight and sets its note; a null or blank note clears it. */
+    suspend fun updateHighlight(id: String, color: HighlightColor, note: String?) = withContext(Dispatchers.IO) {
+        kit.library.updateHighlight(id, color.key, note.orEmpty())
+    }
+
+    suspend fun removeHighlight(id: String) = withContext(Dispatchers.IO) {
+        kit.library.removeHighlight(id)
+    }
+
+    /** The book's text bookmarks, sorted by chapter then offset. */
+    suspend fun bookmarks(bookId: String): List<Bookmark> = withContext(Dispatchers.IO) {
+        kitJson.decodeFromString(kit.library.bookmarksJSON(bookId))
+    }
+
+    suspend fun addBookmark(bookId: String, chapterIndex: Int, utf16Offset: Int): Bookmark = withContext(Dispatchers.IO) {
+        kitJson.decodeFromString(kit.library.addBookmark(bookId, chapterIndex.toLong(), utf16Offset.toLong()))
+    }
+
+    suspend fun removeBookmark(id: String) = withContext(Dispatchers.IO) {
+        kit.library.removeBookmark(id)
+    }
+
     suspend fun remove(bookId: String) = withContext(Dispatchers.IO) {
         kit.library.removeBook(bookId)
         refresh()
