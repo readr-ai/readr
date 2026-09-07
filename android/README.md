@@ -215,9 +215,9 @@ There is no browser sign-in yet, so the card badges and connect hints say
 ### On this phone: Gemini Nano
 
 The phone's own model is Kotlin's to drive, because AICore is an Android API.
-`kit/NanoModel` implements the facade's `OnDeviceModel` — one object for both
-questions the facade has: whether this phone can run the model, and what it
-says when asked something.
+`kit/NanoModel` implements the facade's `OnDeviceModel` — one object for all
+three questions the facade has: whether this phone can run the model, how much
+it can hold, and what it says when asked something.
 
 **Readiness** is one bare token, never a sentence: `ready`, `unavailable` (with
 an optional reason code after a colon — `unavailable:downloading`) or
@@ -228,7 +228,36 @@ cannot run it, `OnDevice.swift`'s own line for one still downloading — so
 Kotlin writes no reader-facing copy. It is asked on every read of the
 selection, cached for five seconds since one settings payload asks several
 times, so the phone's own model is the default *while* the phone can run it and
-the reader is back to "nothing chosen" the moment it cannot.
+the reader is back to "nothing chosen" the moment it cannot. "Check again"
+throws the cached answer away first, so it really asks the phone.
+
+A phone whose model is `DOWNLOADABLE` — offered, but not on the device — is
+one `download()` away from ready, and ML Kit fetches nothing until an app asks.
+So `readiness` asks, once, and reports `unavailable:downloading` either way:
+saying "still downloading" without starting one left a reader watching a card
+that would never change. The **progress is deliberately ignored**. AICore owns
+the schedule from there — when to fetch, over which network, on whose
+battery — and a percentage this app cannot influence is not something a reader
+can act on. A download that fails is not a crash: the next readiness read asks
+AICore again.
+
+**The window** is not the budget. `windowTokens()` is what the runtime reports
+(`GenerativeModel.getTokenLimit()`, asked once and cached, `0` when it cannot
+say — the facade then falls back to 4,096, the figure Apple's FoundationModels
+answers with). `ProviderCatalog.geminiNanoModels`' `contextBudget` of 2,000 is
+a different number entirely: how much of the book `AdaptiveContextStrategy` may
+*gather*, deliberately below the window so that the passages still leave room
+for the conversation, the instructions and the answer. Spent as if it were the
+window, a five-turn conversation over a long book was answered from passages
+`SmallModelPrompt.fit` had trimmed away.
+
+**Every call into ML Kit runs on a leash.** `checkStatus`, `getTokenLimit` and
+the cancellation join all bind to AICore, and a phone with a broken or
+half-installed one can sit inside that bind without ever suspending — which a
+coroutine timeout cannot interrupt. Each runs on a thread of its own and is
+waited for with a bounded `join` (five seconds; two for a cancel), so the Swift
+caller — a cooperative thread, and sometimes a settings screen — is never held
+longer than that.
 
 **Eligibility**, plainly: Android 14 or newer; a flagship whose
 `com.google.android.aicore` is installed and is not the do-nothing stub
@@ -248,19 +277,59 @@ reader is holding — are never sent anywhere. The app's `INTERNET` permission i
 for the cloud provider a reader connected, and the on-device path makes no
 request at all.
 
+#### What `genai-prompt` brings, and what it is licensed under
+
+`com.google.mlkit:genai-prompt:1.0.0-beta4` is pinned, and it is **not open
+source**: it, `genai-common` and `mlkit:common` ship under Google's
+[ML Kit Terms of Service](https://developers.google.com/ml-kit/terms), a
+proprietary licence. The rest of what it pulls in is
+`play-services-basement`/`-base`/`-tasks` (Android SDK Licence),
+`firebase-components`/`-annotations`/`-encoders`/`-encoders-json` and Guava
+(Apache 2.0), `genai-schema`, and `datatransport:transport-api`. That is the
+whole Google closure on the runtime classpath, and it is written down here
+because an app that promises the on-device path sends nothing anywhere owes the
+reader a plain answer about what it links against.
+
+**Two datatransport modules are excluded on purpose** (`app/build.gradle.kts`):
+`transport-backend-cct` and `transport-runtime`, Google's own event-upload
+stack. Merging them put `ACCESS_NETWORK_STATE`, a `TransportBackendDiscovery`
+service naming the CCT logging backend, a `JobInfoSchedulerService` and an
+alarm receiver into Readr's manifest — an upload path a reader can read in the
+permission list, for events this app never sends. Readr registers no transport;
+with both excluded the permission and all three components are gone from the
+merged manifest, ML Kit's initialiser still runs, and `NanoModel.readiness()`
+still answers on an emulator without throwing (`NanoModelTest`). Anything ML
+Kit itself needs from datatransport would fail loudly at build time, and
+`transport-api` — interfaces only — is still there.
+
 **Answering** is the kit's recipe and Kotlin's model call, exactly the split
 the Apple app's `FoundationModelsProvider` makes. `NanoProvider` (Swift) runs
 `SmallModelPrompt.plan` — the tier, the one-word off-topic classifier hop, the
-answer-style rules, and the window arithmetic against the catalogue's budget —
-then generates through `NanoModel` and feeds the cumulative snapshots into
+answer-style rules, and the window arithmetic against the model's own window —
+then generates through `NanoModel` and feeds the answer into
 `SnapshotAnswerStream`, which is what decides the reader sees settled sentences
 only, no repeats (`RepetitionGuard`), and nothing pasted out of the passages.
-Snapshots are cumulative on the wire because that is what the kit reads;
-ML Kit streams the new text, so `NanoModel` accumulates before it calls back.
-Instructions ride in ML Kit's system slot where the model has one
-(`isSystemPromptAvailable`) and are folded into the prompt where it does not.
-Cancelling the ask cancels the generation, and a cancelled generation reports
-neither ending.
+The classifier hop is **greedy** and three tokens wide — it is a routing
+decision, and warmth there only turns one word into another — while the answer
+keeps a temperature of 0.5, because greedy decoding is what sends a small model
+round the same sentence. `isSystemPromptAvailable` is asked once per client:
+instructions ride in ML Kit's system slot where the model has one and are
+folded into the prompt where it does not.
+
+**Deltas travel; Swift accumulates.** ML Kit's callback is `onNewText`, and the
+argument is read as what its name says — the new text. `OnDeviceSink.delta`
+adds it to the answer so far, because `SnapshotAnswerStream` reads the whole
+answer, and the accumulating happens once, on the side that owns the shape. The
+AAR carries no javadoc and publishes neither a sources nor a javadoc jar, so
+the name is the whole documentation; the one hedge is a chunk that begins with
+everything already sent and is longer, which is a cumulative snapshot and would
+double every word — its tail is taken instead, and the fact is logged once.
+
+**Cancelling.** `cancel` returns only once the Kotlin job is cancelled and the
+sink can no longer be called (`cancelAndJoin`, bounded), which is what lets the
+facade let go of that sink. A cancelled generation reports **neither** ending —
+and ML Kit's own `CANCELLED` is read the same way, as no report at all, since a
+reader who stopped an answer must not then be shown a failure.
 
 `OnDeviceSink` is the one callback that travels Swift → Kotlin, so unlike
 `SecretStore`, `AskSink` and `OnDeviceModel` it is a **class** rather than a
@@ -268,6 +337,17 @@ protocol: jextract can only carry a concrete jextracted type into a
 Java-implemented method. Failures come back through it as reason codes
 (`background`, `busy`, `declined`, `tooLong`, `unavailable`) that the facade
 turns into sentences.
+
+Its **lifetime is the facade's**, and stated rather than assumed:
+`OnDeviceModelBox` keeps a strong reference to each live generation's sink and
+drops it when an ending arrives or when `cancel` comes back. jextract's
+generated thunk allocates an `UnsafeMutablePointer<OnDeviceSink>` per call and
+hands the address to a Java wrapper registered with swift-java's *auto* arena;
+it exposes no way to free that allocation, and when the wrapper is collected
+the arena calls `SwiftObjects.destroy` on the value it points at. So without a
+reference of our own the object's life would be the Java wrapper's, decided by
+a garbage collector — which is not a thing a late callback can be reasoned
+about against.
 
 ### Keys, and what choosing a provider means
 

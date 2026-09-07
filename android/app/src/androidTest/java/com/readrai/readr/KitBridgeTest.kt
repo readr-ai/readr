@@ -111,6 +111,13 @@ class KitBridgeTest {
          */
         val TEST_TIMEOUT = 3.minutes
 
+        /**
+         * `ProviderCatalog.geminiNanoModels`' budget: how much of the book
+         * `AdaptiveContextStrategy` may gather for the phone's own model. It
+         * is not, and must not be used as, the model's context window.
+         */
+        const val ASSEMBLY_BUDGET_TOKENS = 2_000L
+
         /** Filler with enough of a subject that retrieval has something to find. */
         const val WONDERLAND =
             "Alice was beginning to get very tired of sitting by her sister on the bank, and of having nothing to do: " +
@@ -1312,7 +1319,14 @@ class KitBridgeTest {
         // Real time: `runTest`'s virtual clock would skip straight past the
         // words that must never arrive.
         withContext(Dispatchers.Default) { delay(4.seconds) }
-        assertTrue("the model was still writing when it was stopped", model.stoppedMidAnswer.get())
+        // The two facts kept apart: the cancel REACHED the model, and it
+        // reached it while the model was still writing. A generation that had
+        // simply run out of words would satisfy neither.
+        assertTrue(
+            "cancel never reached the generation",
+            model.cancelledWhileGenerating.get(),
+        )
+        assertEquals("a stopped generation never ends on its own", 0, model.generationsEnded.get())
         assertTrue("a cancelled ask must not complete: $sink", sink.of(RecordingAskSink.COMPLETED).isEmpty())
         assertTrue("a cancelled ask is not a failure: $sink", sink.of(RecordingAskSink.FAILED).isEmpty())
     }
@@ -1346,7 +1360,7 @@ class KitBridgeTest {
         val sink = RecordingAskSink()
         nano.library.ask(
             book.id,
-            "Why ".repeat(2_000) + "does Alice follow the White Rabbit?",
+            "Why ".repeat(6_000) + "does Alice follow the White Rabbit?",
             WHOLE_BOOK_SCOPE, "", "", nano.providers, sink,
         )
         assertTrue("no failure arrived: $sink", sink.await(RecordingAskSink.FAILED))
@@ -1361,6 +1375,75 @@ class KitBridgeTest {
         for (leak in listOf("DoesNotFit", "ReadrKit.", "NanoError", "Optional(")) {
             assertFalse("no Swift internals in \"${failure.text}\"", failure.text.contains(leak))
         }
+    }
+
+    /**
+     * The window the plan is made against is the MODEL's, not the
+     * catalogue's assembly budget.
+     *
+     * `contextBudget` (2,000) says how much of the book
+     * `AdaptiveContextStrategy` may gather; it is deliberately smaller than
+     * the window, so that what it gathers still leaves room for the
+     * conversation, the instructions and the answer. Spent as if it were the
+     * window, those things had to come out of it — and a five-turn
+     * conversation over a long book was answered from passages
+     * `SmallModelPrompt.fit` had trimmed away, or not answered at all.
+     *
+     * Asked twice, so the difference is the window and nothing else: a phone
+     * reporting 4,096 (what Apple's on-device model answers, and the
+     * facade's own fallback) against one reporting the assembly budget.
+     */
+    @Test
+    fun theWindowIsThePhonesOwnAndNotTheAssemblyBudget() = runTest(timeout = TEST_TIMEOUT) {
+        val book = longBook()
+        val turns = fiveAnsweredTurns()
+
+        val phone = FakeOnDeviceModel()
+        assertEquals("the fake states a phone's real window", 4_096L, phone.windowTokens())
+        val answered = askOnDevice(book, turns, phone)
+        assertTrue("a five-turn conversation must fit a real window: $answered", answered.of(RecordingAskSink.FAILED).isEmpty())
+        assertTrue("no answer arrived: $answered", answered.of(RecordingAskSink.COMPLETED).isNotEmpty())
+        val whole = phone.answerPrompts.single()
+
+        // The same ask on a phone that reports the assembly budget as its
+        // window: this is the bug, kept where it can be seen.
+        val squeezed = FakeOnDeviceModel(window = ASSEMBLY_BUDGET_TOKENS)
+        askOnDevice(book, turns, squeezed)
+        val cut = squeezed.answerPrompts.firstOrNull()
+        assertTrue(
+            "the assembly budget as a window left the passages alone " +
+                "(${whole.length} characters, cut to ${cut?.length})",
+            cut == null || cut.length < whole.length,
+        )
+    }
+
+    /** One on-device ask, run to its ending on a kit of its own. */
+    private suspend fun askOnDevice(
+        book: BookSummary,
+        historyJSON: String,
+        model: FakeOnDeviceModel,
+    ): RecordingAskSink {
+        val nano = reopen(model)
+        val sink = RecordingAskSink()
+        nano.library.ask(
+            book.id, "What does Alice find at the bottom?",
+            WHOLE_BOOK_SCOPE, "", historyJSON, nano.providers, sink,
+        )
+        assertTrue(
+            "neither an answer nor a failure arrived: $sink",
+            sink.await(RecordingAskSink.COMPLETED) || sink.of(RecordingAskSink.FAILED).isNotEmpty(),
+        )
+        return sink
+    }
+
+    /**
+     * Five answered turns, as the sheet keeps them — enough conversation that
+     * the passages and the history together need more than the assembly
+     * budget, which is exactly the shape the bug showed up in.
+     */
+    private fun fiveAnsweredTurns(): String = (1..5).joinToString(",", "[", "]") { turn ->
+        """{"question":"What happens in part $turn?",""" +
+            """"answerText":"$WONDERLAND","tier":"retrieval","scoped":false}"""
     }
 
     private fun occurrences(text: String, part: String): Int {

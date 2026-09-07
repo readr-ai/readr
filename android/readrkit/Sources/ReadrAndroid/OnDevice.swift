@@ -14,14 +14,16 @@ import ReadrKit
 /// initialiser is deliberately not public: Kotlin receives sinks, never makes
 /// them.
 ///
-/// `snapshot` is CUMULATIVE — the whole answer so far, not the new piece —
-/// because that is what `SnapshotAnswerStream` is built to read, and it is
-/// what Apple's on-device model hands its provider. Kotlin accumulates ML
-/// Kit's incremental chunks so both platforms feed the kit the same shape.
+/// `delta` is the NEW text only — what ML Kit's `onNewText` hands over — and
+/// the cumulative snapshot `SnapshotAnswerStream` reads is built HERE, on the
+/// Swift side. The wire carries the smaller thing and the accumulation
+/// happens once, in the language that owns the shape; Kotlin no longer
+/// guesses at what the kit wants.
 ///
-/// Exactly one ending: `completed` with the final text, or `failed`. A
-/// generation Kotlin was asked to cancel reports neither — the caller asked
-/// for the stop and owns what happens next.
+/// Exactly one ending: `completed` with the whole final text (ML Kit's own,
+/// which may differ from the deltas' sum), or `failed`. A generation Kotlin
+/// was asked to cancel reports neither — the caller asked for the stop and
+/// owns what happens next.
 ///
 /// `failed` carries a REASON CODE, never a sentence: `background`, `busy`,
 /// `declined`, `tooLong`, `unavailable`, or "" for anything else. The words
@@ -35,28 +37,50 @@ public final class OnDeviceSink: @unchecked Sendable {
   private let continuation: AsyncThrowingStream<OnDeviceStep, Error>.Continuation
   private let lock = NSLock()
   private var ended = false
+  /// The answer so far, built from the deltas. Guarded by `lock`, because
+  /// nothing promises Kotlin calls back on one thread.
+  private var accumulated = ""
+  /// Told when this generation is over, so whoever is holding the sink alive
+  /// for the callback's sake can let it go. Called once, outside the lock.
+  private let onEnd: (@Sendable () -> Void)?
 
-  init(_ continuation: AsyncThrowingStream<OnDeviceStep, Error>.Continuation) {
+  init(
+    _ continuation: AsyncThrowingStream<OnDeviceStep, Error>.Continuation,
+    onEnd: (@Sendable () -> Void)? = nil
+  ) {
     self.continuation = continuation
+    self.onEnd = onEnd
   }
 
-  public func snapshot(_ text: String) {
-    guard !hasEnded else { return }
-    continuation.yield(.snapshot(text))
+  /// The new text, appended to what came before. An empty delta says nothing
+  /// and is dropped rather than waking the reader's stream for no change.
+  public func delta(_ text: String) {
+    guard !text.isEmpty else { return }
+    lock.lock()
+    guard !ended else { lock.unlock(); return }
+    accumulated += text
+    let snapshot = accumulated
+    lock.unlock()
+    continuation.yield(.snapshot(snapshot))
   }
 
   public func completed(_ text: String) {
     guard end() else { return }
     continuation.yield(.completed(text))
     continuation.finish()
+    onEnd?()
   }
 
   public func failed(_ message: String) {
     guard end() else { return }
     continuation.finish(throwing: NanoError.forCode(message))
+    onEnd?()
   }
 
-  private var hasEnded: Bool {
+  /// True once an ending has been reported. Read by the box that holds this
+  /// sink: a stream torn down after the model already finished must not be
+  /// read as the reader cancelling it.
+  var hasEnded: Bool {
     lock.lock(); defer { lock.unlock() }
     return ended
   }
@@ -84,16 +108,29 @@ public final class OnDeviceSink: @unchecked Sendable {
 /// because a bridged protocol method may not throw and may not return an
 /// optional.
 ///
+/// `windowTokens()` is the model's REAL context window, as the runtime
+/// reports it — not the catalogue's assembly budget, which is only how much
+/// of the book the strategy is allowed to gather. `0` means "cannot say",
+/// and the facade falls back to a documented figure. Asked once per
+/// generation, and cached on both sides: it does not change under a running
+/// process.
+///
 /// `generate` starts a generation and returns at once with a handle; the
-/// answer arrives through `sink`. `cancel` stops the generation that handle
-/// names, and an unknown handle is a no-op.
+/// answer arrives through `sink` as deltas. `temperature` is the decoding
+/// warmth — `0` is greedy, which is what the kit's one-word classifier hop
+/// asks for. `cancel` stops the generation that handle names, and an unknown
+/// handle is a no-op; it RETURNS ONLY once that generation is cancelled and
+/// its sink can no longer be called, so the caller may let the sink go the
+/// moment it comes back.
 ///
 /// Boundary rules (see `Package.swift`): `Int64` rather than `Int`, no
 /// optionals, no throws.
 public protocol OnDeviceModel {
   func readiness() -> String
+  func windowTokens() -> Int64
   func generate(
-    _ instructions: String, prompt: String, maxOutputTokens: Int64, sink: OnDeviceSink
+    _ instructions: String, prompt: String, maxOutputTokens: Int64, temperature: Double,
+    sink: OnDeviceSink
   ) -> Int64
   func cancel(_ handle: Int64)
 }
@@ -208,7 +245,23 @@ final class OnDeviceModelBox: @unchecked Sendable {
   private let model: any OnDeviceModel
   private let lock = NSLock()
   private var cached: (readiness: OnDeviceReadiness, at: Date)?
+  private var cachedWindow: Int?
   private let now: () -> Date
+
+  /// Sinks belonging to generations still in flight, by a Swift-side id.
+  ///
+  /// The sink is a Swift object whose address Kotlin holds through a
+  /// jextract wrapper registered with swift-java's AUTO arena: when that
+  /// wrapper is collected the arena calls `SwiftObjects.destroy` on the
+  /// pointed-at value, and the generated thunk exposes no way to free (or
+  /// keep) that allocation from here — the pointer it allocates per call is
+  /// never deallocated either. So the lifetime is ours to state: a strong
+  /// reference lives here for exactly as long as a callback can still
+  /// arrive, and is dropped when the generation reports an ending or when
+  /// `cancel` comes back.
+  private let generationLock = NSLock()
+  private var sinks: [Int64: OnDeviceSink] = [:]
+  private var nextGeneration: Int64 = 1
 
   /// How long an answer stands. The selection is resolved through the model on
   /// every read — building one settings payload asks several times — and each
@@ -235,12 +288,44 @@ final class OnDeviceModelBox: @unchecked Sendable {
 
   var isReady: Bool { readiness == .ready }
 
-  /// Forget the cached answer, so the next read really asks the phone. What
+  /// The model's real context window, in tokens.
+  ///
+  /// The catalogue's `contextBudget` is not this number: it is how much of
+  /// the book `AdaptiveContextStrategy` may gather, deliberately smaller so
+  /// the passages leave room for the question, the conversation and the
+  /// answer. Handing it to `SmallModelPrompt.plan` as the WINDOW made a
+  /// five-turn conversation look like one that does not fit, and trimmed
+  /// passages the model had room for.
+  ///
+  /// Only a positive answer is believed, and only a positive answer is
+  /// remembered: a runtime that cannot say yet (the model still downloading)
+  /// gets asked again next time.
+  var window: Int {
+    lock.lock()
+    if let cachedWindow { lock.unlock(); return cachedWindow }
+    lock.unlock()
+    let reported = Int(model.windowTokens())
+    guard reported > 0 else { return Self.fallbackWindow }
+    lock.lock()
+    cachedWindow = reported
+    lock.unlock()
+    return reported
+  }
+
+  /// What to assume when the runtime will not say: the figure Apple's
+  /// FoundationModels reports on the phones Readr's on-device tier was
+  /// measured against, and not a guess above it — a fallback set too small
+  /// only costs passages, while one set too large costs a failed answer.
+  static let fallbackWindow = 4_096
+
+  /// Forget the cached answers, so the next read really asks the phone. What
   /// "Check again" is for: a reader who has just installed the model is
-  /// telling us the last answer is out of date.
+  /// telling us the last answer is out of date — and a model that was not
+  /// there a moment ago could not report a window either.
   func invalidate() {
     lock.lock(); defer { lock.unlock() }
     cached = nil
+    cachedWindow = nil
   }
 
   private var cachedReadiness: OnDeviceReadiness? {
@@ -275,31 +360,69 @@ final class OnDeviceModelBox: @unchecked Sendable {
   /// final text. Cancelling the sequence (dropping its iterator, or cancelling
   /// the task reading it) cancels the Kotlin generation.
   func generate(
-    instructions: String, prompt: String, maxOutputTokens: Int
+    instructions: String, prompt: String, maxOutputTokens: Int, temperature: Double
   ) -> AsyncThrowingStream<OnDeviceStep, Error> {
     AsyncThrowingStream { continuation in
-      let sink = OnDeviceSink(continuation)
+      // Held BEFORE Kotlin is called: a model that answers on the calling
+      // thread reports its ending inside `generate`, and a sink released
+      // before it was ever held is a sink nothing was holding.
+      let id = reserveGeneration()
+      let sink = OnDeviceSink(continuation) { [weak self] in self?.release(id) }
+      hold(sink, as: id)
       let handle = model.generate(
         instructions, prompt: prompt,
-        maxOutputTokens: Int64(max(1, maxOutputTokens)), sink: sink)
-      continuation.onTermination = { _ in
-        // The sink is held until the generation is over: Kotlin calls back
-        // into it from its own thread, and letting it go early would leave a
-        // running generation writing into nothing.
-        withExtendedLifetime(sink) { self.model.cancel(handle) }
+        maxOutputTokens: Int64(max(1, maxOutputTokens)), temperature: temperature, sink: sink)
+      continuation.onTermination = { [self] _ in
+        // A stream taken down after the model finished is not the reader
+        // stopping an answer: the sink has already said its ending, and
+        // there is nothing left to cancel.
+        guard !sink.hasEnded else {
+          release(id)
+          return
+        }
+        // `cancel` comes back only once the Kotlin job is cancelled and the
+        // sink can no longer be called — up to a couple of seconds. Off the
+        // cooperative thread this termination runs on, and the sink is held
+        // until it returns.
+        Thread.detachNewThread { [self] in
+          model.cancel(handle)
+          release(id)
+        }
       }
     }
+  }
+
+  private func reserveGeneration() -> Int64 {
+    generationLock.lock(); defer { generationLock.unlock() }
+    let id = nextGeneration
+    nextGeneration &+= 1
+    return id
+  }
+
+  private func hold(_ sink: OnDeviceSink, as id: Int64) {
+    generationLock.lock(); defer { generationLock.unlock() }
+    sinks[id] = sink
+  }
+
+  private func release(_ id: Int64) {
+    generationLock.lock(); defer { generationLock.unlock() }
+    sinks[id] = nil
   }
 
   /// The classifier's one short, passage-free call. What it asks and how its
   /// answer is read are `SmallModelPrompt`'s, shared with every other small
   /// model Readr talks to; only the call is here. A failure comes back as an
   /// empty reply, which the kit reads as "unsure" — the path with citations.
+  ///
+  /// Greedy, and three tokens wide: this is a routing decision, not writing,
+  /// and the same call on Apple's model is `sampling: .greedy,
+  /// maximumResponseTokens: 3`. Warmth here only turns one word into another.
   func classify(instructions: String, prompt: String) async -> String {
     var reply = ""
     do {
       for try await step in generate(
-        instructions: instructions, prompt: prompt, maxOutputTokens: Self.classifierTokens
+        instructions: instructions, prompt: prompt,
+        maxOutputTokens: Self.classifierTokens, temperature: Self.greedy
       ) {
         switch step {
         case .snapshot(let text), .completed(let text): reply = text
@@ -312,7 +435,15 @@ final class OnDeviceModelBox: @unchecked Sendable {
   }
 
   /// One word — BOOK or GENERAL — and no room to write an essay about it.
-  static let classifierTokens = 8
+  static let classifierTokens = 3
+
+  /// No sampling at all: the likeliest token, every time.
+  static let greedy = 0.0
+
+  /// Some warmth for the answer itself. Greedy decoding is what sends a small
+  /// model round the same sentence, which is the loop `RepetitionGuard` then
+  /// has to cut; the same figure the Apple provider uses.
+  static let answerTemperature = 0.5
 }
 
 // MARK: - The provider
@@ -331,6 +462,10 @@ struct NanoProvider: LLMProvider, OnDeviceReadinessReporting {
   /// The numbers every small model starts from, measured against Apple's
   /// FoundationModels. Nano has not been measured on its own hardware yet —
   /// see the note on `ProviderCatalog.geminiNanoModels`.
+  ///
+  /// The window these are spent inside is `model.window` — what the runtime
+  /// reports — and NOT `info.contextBudget`, which is the assembly budget
+  /// `AdaptiveContextStrategy` gathers passages against.
   static let budget = SmallModelPrompt.Budget.onDevice
 
   func countTokens(_ text: String) throws -> Int { TokenCounter.estimate(text) }
@@ -346,7 +481,10 @@ struct NanoProvider: LLMProvider, OnDeviceReadinessReporting {
           // calls and nothing else.
           let plan = try await SmallModelPrompt.plan(
             request: request,
-            window: info.contextBudget,
+            // The model's own window, not the catalogue's assembly budget:
+            // `contextBudget` says how much of the book to GATHER, and using
+            // it as the window trimmed passages that fitted perfectly well.
+            window: model.window,
             budget: Self.budget
           ) { instructions, prompt in
             await model.classify(instructions: instructions, prompt: prompt)
@@ -358,15 +496,17 @@ struct NanoProvider: LLMProvider, OnDeviceReadinessReporting {
           }
           try Task.checkCancellation()
 
-          // Snapshots are cumulative; the kit's chunks are deltas.
-          // `SnapshotAnswerStream` is the converter, and it decides what a
-          // reader sees — settled sentences only, no repeats, nothing pasted
-          // out of the passages.
+          // Kotlin sends deltas; `OnDeviceSink` adds them up, because
+          // `SnapshotAnswerStream` reads the whole answer so far. It is the
+          // converter back to the kit's chunks, and it decides what a reader
+          // sees — settled sentences only, no repeats, nothing pasted out of
+          // the passages.
           var shown = SnapshotAnswerStream(source: plan.copiedSentenceSource)
           streaming: for try await step in model.generate(
             instructions: plan.instructions,
             prompt: plan.prompt,
-            maxOutputTokens: plan.answerTokens
+            maxOutputTokens: plan.answerTokens,
+            temperature: OnDeviceModelBox.answerTemperature
           ) {
             try Task.checkCancellation()
             let output: SnapshotAnswerStream.Output

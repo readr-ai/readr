@@ -5,6 +5,7 @@ import com.readrai.readr.kit.OnDeviceSink
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 
 /**
@@ -14,11 +15,11 @@ import java.util.concurrent.atomic.AtomicLong
  * [com.readrai.readr.kit.NanoModel] rightly answers `unsupported` there. So a
  * phone that CAN run the model has to be stated rather than found — and with
  * it the whole on-device path: the kit's prompt plan, its classifier hop, the
- * cumulative snapshots `SnapshotAnswerStream` reads, the repetition guard, and
- * the cancellation that has to reach a running generation.
+ * deltas the facade adds up, the repetition guard, and the cancellation that
+ * has to reach a running generation.
  *
- * The answer is delivered the way a real runtime delivers one: growing
- * snapshots, on a thread of its own, a word at a time.
+ * The answer is delivered the way a real runtime delivers one: the new words
+ * only, on a thread of its own, one at a time.
  */
 class FakeOnDeviceModel(
     private val answer: String = DEFAULT_ANSWER,
@@ -27,61 +28,80 @@ class FakeOnDeviceModel(
     private val gapMillis: Long = 40,
     /** What the kit's one-word classifier call comes back with. */
     private val classification: String = "BOOK",
+    /** The window this "phone" reports, in tokens. `0` is "cannot say". */
+    private val window: Long = DEFAULT_WINDOW,
 ) : OnDeviceModel {
 
     /** Every instruction string the kit sent, in order. */
     val instructions = CopyOnWriteArrayList<String>()
-    /** Every prompt the kit sent, in order. */
+    /** Every prompt the kit sent, in order — the classifier's included. */
     val prompts = CopyOnWriteArrayList<String>()
+    /** The prompts for the ANSWER, without the classifier's short hop. */
+    val answerPrompts = CopyOnWriteArrayList<String>()
     /** The answer-generation token caps the kit asked for. */
     val caps = CopyOnWriteArrayList<Long>()
+    /** The decoding warmth asked for, per call, in order. */
+    val temperatures = CopyOnWriteArrayList<Double>()
 
     /**
-     * True once a generation that was still running was cancelled. Not merely
-     * "cancel was called": the facade also tears down a stream that has
-     * already ended, and that is not the reader stopping an answer.
+     * True once `cancel` arrived for a generation that was STILL RUNNING.
+     * Deliberately not "cancel was called": the facade also tears a stream
+     * down after it ended, and that is not the reader stopping an answer.
      */
-    val stoppedMidAnswer = AtomicBoolean(false)
+    val cancelledWhileGenerating = AtomicBoolean(false)
+
+    /** How many generations ran to their own end — a separate fact entirely. */
+    val generationsEnded = AtomicInteger(0)
 
     private val handles = AtomicLong(1)
     private val threads = ConcurrentHashMap<Long, Thread>()
+    private val generating = ConcurrentHashMap.newKeySet<Long>()
     private val stopped = ConcurrentHashMap.newKeySet<Long>()
 
     override fun readiness(): String = state
+
+    override fun windowTokens(): Long = window
 
     override fun generate(
         instructions: String,
         prompt: String,
         maxOutputTokens: Long,
+        temperature: Double,
         sink: OnDeviceSink,
     ): Long {
         val handle = handles.getAndIncrement()
         this.instructions += instructions
         prompts += prompt
+        temperatures += temperature
         // The kit's classifier: one short, passage-free call answered in one
         // word. It never streams, and it is not the answer under test.
         if (instructions.startsWith(CLASSIFIER_MARKER)) {
             sink.completed(classification)
             return handle
         }
+        answerPrompts += prompt
         caps += maxOutputTokens
+        generating += handle
         val thread = Thread {
-            val soFar = StringBuilder()
-            for (word in answer.split(" ")) {
-                if (handle in stopped) return@Thread
-                try {
-                    Thread.sleep(gapMillis)
-                } catch (e: InterruptedException) {
-                    return@Thread
+            try {
+                val words = answer.split(" ")
+                for ((index, word) in words.withIndex()) {
+                    if (handle in stopped) return@Thread
+                    try {
+                        Thread.sleep(gapMillis)
+                    } catch (e: InterruptedException) {
+                        return@Thread
+                    }
+                    if (handle in stopped) return@Thread
+                    // Deltas, as the protocol says: the new text and no more.
+                    sink.delta(if (index == 0) word else " $word")
                 }
                 if (handle in stopped) return@Thread
-                if (soFar.isNotEmpty()) soFar.append(' ')
-                soFar.append(word)
-                // Cumulative, as the protocol says: the whole answer so far.
-                sink.snapshot(soFar.toString())
+                sink.completed(answer)
+                generationsEnded.incrementAndGet()
+            } finally {
+                generating -= handle
             }
-            if (handle in stopped) return@Thread
-            sink.completed(soFar.toString())
         }
         thread.isDaemon = true
         threads[handle] = thread
@@ -89,17 +109,31 @@ class FakeOnDeviceModel(
         return handle
     }
 
+    /**
+     * Stops, and — as the protocol requires — comes back only once the
+     * generation's thread is done and the sink can no longer be called.
+     */
     override fun cancel(handle: Long) {
         stopped += handle
+        if (handle in generating) cancelledWhileGenerating.set(true)
         val thread = threads.remove(handle) ?: return
-        if (thread.isAlive) stoppedMidAnswer.set(true)
         thread.interrupt()
+        thread.join(CANCEL_JOIN_MS)
     }
 
     companion object {
         /** The bare tokens the facade parses; the sentence is the kit's. */
         const val READY = "ready"
         const val UNSUPPORTED = "unsupported"
+
+        /**
+         * What a phone that can run the model reports. The same figure Apple's
+         * FoundationModels answers with, and the facade's own fallback.
+         */
+        const val DEFAULT_WINDOW = 4_096L
+
+        /** Bounded, so a wedged fake fails a test rather than hanging it. */
+        const val CANCEL_JOIN_MS = 2_000L
 
         /** Two settled sentences, so the stream has an order to keep. */
         const val FIRST_SENTENCE = "Alice follows the White Rabbit down a hole."

@@ -68,7 +68,25 @@ dependencies {
     // StreamingCallback, GenAiException). It ships no native library of its
     // own — the model lives in AICore — so the jniLibs packaging above, and
     // the 16 KB page alignment the Swift runtime needs, are untouched.
-    implementation(libs.mlkit.genai.prompt)
+    implementation(libs.mlkit.genai.prompt) {
+        // Google's own telemetry, not the model. `genai-prompt` declares the
+        // datatransport stack, and merging it put `ACCESS_NETWORK_STATE`, a
+        // `TransportBackendDiscovery` service naming the CCT (Google logging)
+        // backend, a `JobInfoSchedulerService` and an alarm receiver into
+        // Readr's manifest — an upload path an app that promises "nothing
+        // leaves the phone" should not be carrying, least of all silently in
+        // a permission a reader can read.
+        //
+        // Readr registers no transport and logs no events, so nothing here is
+        // ever called. Taking the backend away leaves the runtime with
+        // nowhere to send to; taking the runtime with it is what actually
+        // takes the permission and the three components off the manifest, and
+        // ML Kit's own initialiser and `NanoModel.readiness()` are unmoved by
+        // it (`NanoModelTest`, on an emulator, which is the only ML Kit path
+        // CI can run).
+        exclude(group = "com.google.android.datatransport", module = "transport-backend-cct")
+        exclude(group = "com.google.android.datatransport", module = "transport-runtime")
+    }
     debugImplementation(libs.androidx.ui.tooling)
     debugImplementation(libs.androidx.ui.test.manifest)
     androidTestImplementation(libs.androidx.junit)
