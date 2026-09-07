@@ -11,6 +11,7 @@ import com.readrai.readr.data.EpubExtractor
 import com.readrai.readr.data.Highlight
 import com.readrai.readr.data.HighlightColor
 import com.readrai.readr.data.ReadingPosition
+import com.readrai.readr.data.SearchResult
 import com.readrai.readr.data.kitJson
 import com.readrai.readr.kit.KeystoreSecretStore
 import com.readrai.readr.kit.KitLimits
@@ -367,6 +368,97 @@ class KitBridgeTest {
             assertTrue("expected a failure", false)
         } catch (e: Exception) {
             assertEquals("That chapter doesn't exist in this book.", e.message)
+        }
+    }
+
+    /**
+     * A four-chapter book whose second and fourth chapters are the only ones
+     * that speak of rabbits — in three different cases, so what comes back
+     * proves the search is case-insensitive and in reading order.
+     */
+    private suspend fun rabbitBook(): BookSummary {
+        val file = File(root, "warren.md").apply {
+            writeText(
+                """
+                # One
+
+                Nothing of the sort happens in the opening chapter at all.
+
+                # Two
+
+                The white Rabbit ran past her, and a rabbit in a waistcoat is
+                a strange thing to meet before lunch.
+
+                # Three
+
+                Still nothing here, only a long walk and some weather.
+
+                # Four
+
+                RABBIT, she said aloud, and the word went nowhere.
+                """.trimIndent()
+            )
+        }
+        return kitJson.decodeFromString(kit.library.importPlainText(file.absolutePath, "Warren").await())
+    }
+
+    @Test
+    fun searchFindsEveryMatchInReadingOrder() = runTest {
+        val book = rabbitBook()
+        val hits = kitJson.decodeFromString<List<SearchResult>>(kit.library.searchJSON(book.id, "rabbit", 100L))
+        assertEquals("two in chapter 2, one in chapter 4", 3, hits.size)
+        assertEquals("ids number the results", listOf(0, 1, 2), hits.map { it.id })
+        assertEquals("reading order, chapter by chapter", listOf(1, 1, 3), hits.map { it.chapterIndex })
+
+        for (hit in hits) {
+            val text = kit.library.chapterText(book.id, hit.chapterIndex.toLong())
+            assertTrue(
+                "offset ${hit.utf16Offset} points at the match: '${text.substring(hit.utf16Offset, hit.utf16Offset + 6)}'",
+                text.substring(hit.utf16Offset, hit.utf16Offset + 6).equals("rabbit", ignoreCase = true),
+            )
+            assertTrue("every hit quotes its line", hit.snippet.isNotBlank())
+            assertTrue("the snippet carries the match", hit.snippet.contains("rabbit", ignoreCase = true))
+        }
+        // Within a chapter, in the order they are read.
+        assertTrue("earlier match first", hits[0].utf16Offset < hits[1].utf16Offset)
+
+        // Nothing typed is nothing found — not everything.
+        assertEquals("[]", kit.library.searchJSON(book.id, "", 100L))
+        assertEquals("[]", kit.library.searchJSON(book.id, "   \n ", 100L))
+        assertEquals("[]", kit.library.searchJSON(book.id, "hippogriff", 100L))
+        // And the limit is honoured.
+        assertEquals(1, kitJson.decodeFromString<List<SearchResult>>(kit.library.searchJSON(book.id, "rabbit", 1L)).size)
+    }
+
+    /**
+     * The offsets a search reports are the ones Kotlin can index with, which
+     * is not the count the kit keeps: this chapter opens on an accent and an
+     * emoji, so the two coordinate systems have already drifted apart by the
+     * time the match arrives.
+     */
+    @Test
+    fun searchOffsetsCrossTheBridgeInUTF16() = runTest {
+        val book = twoChapterBook()
+        val text = kit.library.chapterText(book.id, 0)
+        val hit = kitJson.decodeFromString<List<SearchResult>>(kit.library.searchJSON(book.id, "prose", 100L)).single()
+        assertEquals(0, hit.chapterIndex)
+        assertEquals("prose", text.substring(hit.utf16Offset, hit.utf16Offset + 5))
+        // "Café 👍" is 6 characters to the kit and 7 code units to Kotlin, so
+        // an unconverted offset would land one short of the word.
+        assertTrue("past the emoji", hit.utf16Offset > text.indexOf("👍"))
+
+        val opening = kitJson.decodeFromString<List<SearchResult>>(kit.library.searchJSON(book.id, "café", 100L)).single()
+        assertEquals(0, opening.utf16Offset)
+        assertEquals("Café", text.substring(0, 4))
+    }
+
+    @Test
+    fun searchOnAnUnknownBookIsReaderFacing() = runTest {
+        try {
+            kit.library.searchJSON("not-a-book", "rabbit", 100L)
+            assertTrue("expected a failure", false)
+        } catch (e: Exception) {
+            assertEquals("This book is no longer in your library.", e.message)
         }
     }
 

@@ -21,6 +21,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.List
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -71,7 +72,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import kotlin.math.abs
 
-private enum class ReaderSheet { Contents, Appearance, Highlights }
+private enum class ReaderSheet { Contents, Search, Appearance, Highlights }
 
 /** How long a reader-facing message stays up before it fades of its own accord. */
 private const val MESSAGE_MILLIS = 4_000L
@@ -144,6 +145,9 @@ fun ReaderScreen(model: ReaderViewModel, settings: ReaderSettings, onBack: () ->
                         IconButton(onClick = { sheet = ReaderSheet.Contents }, modifier = Modifier.testTag("reader.toc")) {
                             Icon(Icons.AutoMirrored.Filled.List, contentDescription = "Table of contents")
                         }
+                        IconButton(onClick = { sheet = ReaderSheet.Search }, modifier = Modifier.testTag("reader.search")) {
+                            Icon(Icons.Filled.Search, contentDescription = "Find in book")
+                        }
                         BookmarkAction(model, palette)
                         IconButton(onClick = { sheet = ReaderSheet.Highlights }, modifier = Modifier.testTag("reader.notes").semantics { contentDescription = "Highlights" }) {
                             MarkerGlyph(palette.ink)
@@ -167,6 +171,16 @@ fun ReaderScreen(model: ReaderViewModel, settings: ReaderSettings, onBack: () ->
                 onPick = { row -> sheet = null; model.jump(row.chapterIndex, row.utf16Offset) },
                 onPickBookmark = { bookmark -> sheet = null; model.jump(bookmark.chapterIndex, bookmark.utf16Offset) },
                 onRemoveBookmark = { bookmark -> model.removeBookmark(bookmark.id) },
+                onDismiss = { sheet = null },
+            )
+            ReaderSheet.Search -> if (ready != null) SearchSheet(
+                query = model.searchQuery,
+                results = model.searchResults,
+                searching = model.searching,
+                capped = model.searchCapped,
+                chapters = ready.chapters,
+                onQueryChange = model::search,
+                onPick = { result -> sheet = null; model.jump(result.chapterIndex, result.utf16Offset) },
                 onDismiss = { sheet = null },
             )
             ReaderSheet.Appearance -> AppearanceSheet(appearance = appearance, onChange = settings::update, onDismiss = { sheet = null })

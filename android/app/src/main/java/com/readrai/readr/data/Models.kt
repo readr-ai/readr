@@ -60,6 +60,21 @@ data class ContentsRow(val id: Int, val title: String, val chapterIndex: Int, va
 @Serializable
 data class Contents(val rows: List<ContentsRow>, val isFallback: Boolean)
 
+/**
+ * Mirrors ReadrAndroid's `SearchHit`: one in-book match, `utf16Offset` into
+ * the chapter text as Kotlin indexes it. `chapterTitle` is what the kit found
+ * on the chapter — absent for books that title none, in which case the reader
+ * falls back to the chapter list it already has.
+ */
+@Serializable
+data class SearchResult(
+    val id: Int,
+    val chapterIndex: Int,
+    val chapterTitle: String? = null,
+    val utf16Offset: Int,
+    val snippet: String,
+)
+
 /** Mirrors ReadrAndroid's `HighlightSummary`: a text highlight with UTF-16 offsets. */
 @Serializable
 data class Highlight(

@@ -106,6 +106,17 @@ class LibraryRepository(private val context: Context, private val kit: Kit) {
         }
     }
 
+    /**
+     * Every match for `query` in the book, in reading order and capped at
+     * [SEARCH_LIMIT]. Case-insensitive, and a blank query matches nothing —
+     * the kit decides both, so a phrase found here is the phrase the Apple
+     * reader finds too.
+     */
+    suspend fun search(bookId: String, query: String, limit: Int = SEARCH_LIMIT): List<SearchResult> =
+        withContext(Dispatchers.IO) {
+            kitJson.decodeFromString(kit.library.searchJSON(bookId, query, limit.toLong()))
+        }
+
     // MARK: Annotations — every offset is UTF-16, as Compose reports it.
 
     /** The book's highlights in reading order: chapter, then where each starts. */
@@ -174,6 +185,9 @@ class LibraryRepository(private val context: Context, private val kit: Kit) {
 
     companion object {
         const val SAMPLE_ASSET = "alice-in-wonderland.epub"
+
+        /** The kit's own `BookSearcher.resultCap`: more hits than anyone scans in a list. */
+        const val SEARCH_LIMIT = 100
         private const val TAG = "Readr.Library"
 
         /**

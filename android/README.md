@@ -68,7 +68,11 @@ A note lives on a highlight: "Note" on a plain selection highlights it in the
 colour last used and opens `NoteEditor`, and cancelling there takes that
 highlight away again. `HighlightsSheet` is the book's highlights in reading
 order — colour chips, a search over quote and note, and a card that jumps to
-the passage. The ribbon in the bar bookmarks *the visible page* (the first
+the passage. `SearchSheet` is find-in-book: the kit's `BookSearcher` over every chapter, a
+fifth of a second after the typing stops, each hit shown as its chapter over
+the line it sits on with the searched-for words in bold. The query and its
+results live in `ReaderViewModel`, so the sheet reopens where it was left.
+The ribbon in the bar bookmarks *the visible page* (the first
 bookmark whose offset falls in the page's range is "the" one), and the
 Contents sheet lists bookmarks above the table of contents, marking the rows
 whose stretch of the book holds one.

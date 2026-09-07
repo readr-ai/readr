@@ -14,11 +14,14 @@ import com.readrai.readr.data.Contents
 import com.readrai.readr.data.Highlight
 import com.readrai.readr.data.HighlightColor
 import com.readrai.readr.data.LibraryRepository
+import com.readrai.readr.data.SearchResult
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
 /**
@@ -75,6 +78,22 @@ class ReaderViewModel(private val library: suspend () -> LibraryRepository, val 
     var visible by mutableStateOf<VisiblePage?>(null)
         private set
 
+    /**
+     * The in-book search: what was typed, what came back, and whether a scan
+     * is still running. It lives here rather than in the sheet so closing the
+     * sheet and opening it again shows the last search instead of a blank
+     * field — the reader who jumped to a hit usually wants the next one.
+     */
+    var searchQuery by mutableStateOf("")
+        private set
+    var searchResults by mutableStateOf<List<SearchResult>>(emptyList())
+        private set
+    var searching by mutableStateOf(false)
+        private set
+
+    /** True when the scan stopped at the cap, so the list is the first hits, not all of them. */
+    val searchCapped: Boolean get() = searchResults.size >= LibraryRepository.SEARCH_LIMIT
+
     /** The note being written, or null when no editor is open. */
     var noteDraft by mutableStateOf<NoteDraft?>(null)
         private set
@@ -95,6 +114,7 @@ class ReaderViewModel(private val library: suspend () -> LibraryRepository, val 
     private val cache = PaginationCache()
     private var saveJob: Job? = null
     private var loadJob: Job? = null
+    private var searchJob: Job? = null
 
     /** The place last written (or read) from the store; a save is skipped when nothing moved. */
     private var persisted: Pair<Int, Int>? = null
@@ -200,6 +220,45 @@ class ReaderViewModel(private val library: suspend () -> LibraryRepository, val 
         wantsChapterEnd = false
         anchor = pagination.pages.lastOrNull()?.rangeStart ?: 0
         saveNow()
+    }
+
+    // MARK: Search — the whole book, a fifth of a second after the typing
+    // stops. Every keystroke cancels the scan before it: the kit checks for
+    // cancellation between chapters, and a cancelled scan's partial results
+    // belong to a query that is no longer on screen, so they are dropped.
+
+    fun search(query: String) {
+        searchQuery = query
+        searchJob?.cancel()
+        val needle = query.trim()
+        if (needle.isEmpty()) {
+            searchResults = emptyList()
+            searching = false
+            return
+        }
+        searching = true
+        searchJob = viewModelScope.launch {
+            try {
+                delay(SEARCH_DEBOUNCE_MS)
+                val repo = repository ?: return@launch
+                val found = repo.search(bookId, needle)
+                // The scan outlived its query if a keystroke cancelled it
+                // while the bridge was busy; what came back is not an answer
+                // to what is typed now.
+                ensureActive()
+                searchResults = found
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w(TAG, "search failed: ${e.message}")
+                searchResults = emptyList()
+                say("Couldn't search this book.")
+            } finally {
+                // Only the search still standing says the searching is over;
+                // a superseded one leaves the newer scan's spinner alone.
+                if (isActive) searching = false
+            }
+        }
     }
 
     // MARK: Annotations. Every offset is UTF-16 into the chapter text, as
@@ -377,6 +436,9 @@ class ReaderViewModel(private val library: suspend () -> LibraryRepository, val 
 
     companion object {
         const val SAVE_DEBOUNCE_MS = 1000L
+
+        /** How long the typing rests before the book is scanned. */
+        const val SEARCH_DEBOUNCE_MS = 200L
         private const val TAG = "Readr.Reader"
     }
 }

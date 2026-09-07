@@ -378,6 +378,37 @@ class ReaderScreenTest {
         compose.waitUntil(5_000) { runBlocking { repository.position(book.id)?.chapterIndex } == 2 }
     }
 
+    /**
+     * Find in book: a phrase that occurs in one chapter only, and the row for
+     * it takes the reader to exactly the place the kit reported.
+     */
+    @Test
+    fun searchJumpsToTheMatchItFound() {
+        val model = open()
+        assertEquals("Chapter 1", kicker())
+
+        compose.onNodeWithTag("reader.search").performClick()
+        awaitTag("reader.search.field")
+        // "3.17" numbers a paragraph of the third chapter and appears nowhere else.
+        compose.onNodeWithTag("reader.search.field").performTextInput("3.17")
+        awaitTag("reader.search.result.0")
+
+        val hit = model.searchResults.first()
+        assertEquals("the only chapter that says it", 1, model.searchResults.size)
+        assertEquals(2, hit.chapterIndex)
+        val chapterText = runBlocking { repository.chapterText(book.id, 2) }
+        assertEquals("3.17", chapterText.substring(hit.utf16Offset, hit.utf16Offset + 4))
+
+        compose.onNodeWithTag("reader.search.result.0").performClick()
+        compose.waitUntil(10_000) { kickerOrEmpty() == "Chapter 3" }
+        awaitNoTag("reader.search.field")
+        assertEquals("the reader is at the match", hit.utf16Offset, model.anchor)
+        // And the search is still there when the sheet comes back.
+        compose.onNodeWithTag("reader.search").performClick()
+        awaitTag("reader.search.result.0")
+        assertEquals("3.17", model.searchQuery)
+    }
+
     @Test
     fun largerTextMakesMorePages() {
         open()
