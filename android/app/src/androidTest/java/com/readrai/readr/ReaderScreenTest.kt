@@ -105,11 +105,26 @@ class ReaderScreenTest {
         compose.onNodeWithTag("reader.page").performTouchInput { click(Offset(width * fraction, height / 2f)) }
     }
 
+    /** A tap high on the page, where a highlight over the chapter's opening lies. */
+    private fun tapMarked(fraction: Float) {
+        compose.onNodeWithTag("reader.page").performTouchInput { click(Offset(width * fraction, height * 0.1f)) }
+    }
+
     private fun nodes(tag: String) = compose.onAllNodes(androidx.compose.ui.test.hasTestTag(tag)).fetchSemanticsNodes()
     private fun awaitTag(tag: String) = compose.waitUntil(10_000) { nodes(tag).isNotEmpty() }
     private fun awaitNoTag(tag: String) = compose.waitUntil(10_000) { nodes(tag).isEmpty() }
     private fun highlights() = runBlocking { repository.highlights(book.id) }
     private fun bookmarks() = runBlocking { repository.bookmarks(book.id) }
+
+    /** What the system clipboard holds; read on the main thread, as the service requires. */
+    private fun clipboardText(): String {
+        var text = ""
+        InstrumentationRegistry.getInstrumentation().runOnMainSync {
+            val clipboard = context.getSystemService(android.content.ClipboardManager::class.java)
+            text = clipboard?.primaryClip?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.text?.toString().orEmpty()
+        }
+        return text
+    }
 
     /** The kicker, or "" while a chapter is loading — safe to poll from `waitUntil`. */
     private fun kickerOrEmpty(): String =
@@ -218,6 +233,58 @@ class ReaderScreenTest {
         compose.onNodeWithTag("annotation.remove").performClick()
         compose.waitUntil(10_000) { highlights().isEmpty() }
         awaitNoTag("annotation.capsule")
+    }
+
+    /**
+     * The outer quarters are the page-turn zones, and a mark under the finger
+     * does not take them over — only the middle half of the surface opens a
+     * capsule on a tap. Long-press selection stays available everywhere.
+     */
+    @Test
+    fun aTapInTheTurnZoneTurnsThePageEvenOverAHighlight() {
+        // A highlight over the chapter's opening, wide enough to be under the
+        // finger on the first pages whatever the geometry.
+        val marked = runBlocking { repository.addHighlight(book.id, 0, 0, 3_000, HighlightColor.YELLOW) }
+        open()
+        assertEquals(1, pageNumber())
+
+        // Near the top so the finger is over the marked lines, and in the outer
+        // tenth so it is in a turn zone — forward, then back again.
+        tapMarked(0.9f)
+        compose.waitUntil(10_000) { pageNumber() == 2 }
+        assertTrue("no capsule opened on the way", nodes("annotation.capsule").isEmpty())
+
+        tapMarked(0.1f)
+        compose.waitUntil(10_000) { pageNumber() == 1 }
+        assertTrue("nor on the way back", nodes("annotation.capsule").isEmpty())
+        assertEquals(listOf(marked.id), highlights().map { it.id })
+    }
+
+    /**
+     * What the capsule copies is the kit's own chapter text, sliced at the
+     * chapter offsets — not the page's styled string, which draws every
+     * paragraph break as a space.
+     */
+    @Test
+    fun theCapsuleCopiesTheChapterTextItself() {
+        open()
+        compose.onNodeWithTag("reader.page").performTouchInput { longClick(center) }
+        awaitTag("annotation.capsule")
+        compose.onNodeWithTag("annotation.copy").performClick()
+        awaitNoTag("annotation.capsule")
+        val copied = clipboardText()
+        assertTrue("something was copied", copied.isNotBlank())
+
+        // The same word again, this time as a highlight, so the kit reports the
+        // offsets the capsule was working in.
+        compose.onNodeWithTag("reader.page").performTouchInput { longClick(center) }
+        awaitTag("annotation.capsule")
+        compose.onNodeWithTag("annotation.color.green").performClick()
+        compose.waitUntil(10_000) { highlights().isNotEmpty() }
+        val created = highlights().single()
+        val chapterText = runBlocking { repository.chapterText(book.id, created.chapterIndex) }
+        assertEquals(chapterText.substring(created.utf16Start, created.utf16End), copied)
+        assertEquals(created.quotedText, copied)
     }
 
     @Test

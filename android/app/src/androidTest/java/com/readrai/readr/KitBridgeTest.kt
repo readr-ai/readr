@@ -234,18 +234,42 @@ class KitBridgeTest {
         assertEquals(listOf(made), kitJson.decodeFromString<List<Highlight>>(kit.library.highlightsJSON(book.id)))
 
         // A note and a recolour, then the note cleared again.
-        kit.library.updateHighlight(made.id, "purple", "worth quoting")
+        kit.library.setHighlightNote(book.id, made.id, "worth quoting")
+        kit.library.setHighlightColor(book.id, made.id, "purple")
         val noted = kitJson.decodeFromString<List<Highlight>>(kit.library.highlightsJSON(book.id)).single()
         assertEquals("worth quoting", noted.note)
         assertEquals(HighlightColor.PURPLE, noted.markerColor)
         assertEquals("the range is untouched by an edit", made.utf16Start to made.utf16End, noted.utf16Start to noted.utf16End)
-        kit.library.updateHighlight(made.id, "blue", "")
+        kit.library.setHighlightNote(book.id, made.id, "")
         val cleared = kitJson.decodeFromString<List<Highlight>>(kit.library.highlightsJSON(book.id)).single()
         assertNull(cleared.note)
-        assertEquals(HighlightColor.BLUE, cleared.markerColor)
+        assertEquals("clearing the note leaves the colour", HighlightColor.PURPLE, cleared.markerColor)
 
-        kit.library.removeHighlight(made.id)
+        kit.library.removeHighlight(book.id, made.id)
         assertEquals("[]", kit.library.highlightsJSON(book.id))
+    }
+
+    /**
+     * Colour and note are separate edits, and each one leaves the other
+     * exactly as it was — the reason the facade has two methods rather than
+     * one `update` a caller has to feed both halves of.
+     */
+    @Test
+    fun colourAndNoteAreEditedApart() = runTest {
+        val book = twoChapterBook()
+        val made = kitJson.decodeFromString<Highlight>(kit.library.addHighlight(book.id, 0L, 0L, 4L, "purple", ""))
+        assertEquals(HighlightColor.PURPLE, made.markerColor)
+
+        kit.library.setHighlightNote(book.id, made.id, "in the margin")
+        val noted = kitJson.decodeFromString<List<Highlight>>(kit.library.highlightsJSON(book.id)).single()
+        assertEquals("in the margin", noted.note)
+        assertEquals("a note leaves the colour alone", HighlightColor.PURPLE, noted.markerColor)
+
+        kit.library.setHighlightColor(book.id, made.id, "green")
+        val recoloured = kitJson.decodeFromString<List<Highlight>>(kit.library.highlightsJSON(book.id)).single()
+        assertEquals(HighlightColor.GREEN, recoloured.markerColor)
+        assertEquals("a recolour leaves the note alone", "in the margin", recoloured.note)
+        assertEquals(made.quotedText, recoloured.quotedText)
     }
 
     @Test
@@ -285,7 +309,13 @@ class KitBridgeTest {
             assertEquals("That highlight colour isn't available.", e.message)
         }
         try {
-            kit.library.updateHighlight("not-a-highlight", "yellow", "")
+            kit.library.setHighlightColor(book.id, "not-a-highlight", "yellow")
+            assertTrue("expected a refusal", false)
+        } catch (e: Exception) {
+            assertEquals("That highlight is no longer in your library.", e.message)
+        }
+        try {
+            kit.library.setHighlightNote(book.id, "not-a-highlight", "hello")
             assertTrue("expected a refusal", false)
         } catch (e: Exception) {
             assertEquals("That highlight is no longer in your library.", e.message)
@@ -317,9 +347,9 @@ class KitBridgeTest {
         assertEquals(listOf(0, 1), listed.map { it.chapterIndex })
         assertNotNull(listed.first().createdAt)
 
-        kit.library.removeBookmark(earlier.id)
+        kit.library.removeBookmark(book.id, earlier.id)
         assertEquals(listOf(later.id), kitJson.decodeFromString<List<Bookmark>>(kit.library.bookmarksJSON(book.id)).map { it.id })
-        kit.library.removeBookmark(later.id)
+        kit.library.removeBookmark(book.id, later.id)
         assertEquals("[]", kit.library.bookmarksJSON(book.id))
     }
 

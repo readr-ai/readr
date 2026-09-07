@@ -71,7 +71,9 @@ fun ContentsSheet(
     // The CONTENTS header, and above it the bookmarks section when there is one,
     // sit before row `id`, so that row is item `id + leading`.
     val leading = if (bookmarks.isEmpty()) 1 else bookmarks.size + 2
-    LaunchedEffect(currentRow, leading) { if (currentRow > 0) listState.scrollToItem(currentRow + leading) }
+    // Once, as the sheet opens. Keying this on the row or on `leading` would
+    // scroll the list out from under the reader every time a bookmark went.
+    LaunchedEffect(Unit) { if (currentRow >= 0) listState.scrollToItem(currentRow + leading) }
 
     ModalBottomSheet(onDismissRequest = onDismiss, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = false), containerColor = palette.elevated) {
         LazyColumn(state = listState, modifier = Modifier.fillMaxWidth().padding(bottom = 24.dp).testTag("contents.list")) {

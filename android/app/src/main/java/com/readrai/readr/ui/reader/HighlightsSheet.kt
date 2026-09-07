@@ -10,11 +10,9 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material3.DropdownMenu
@@ -37,7 +35,6 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
@@ -71,17 +68,11 @@ fun HighlightsSheet(
     val palette = LocalReadingPalette.current
     // Colour keys rather than the enum: a plain list of strings is what
     // `rememberSaveable` can put in a Bundle without a saver of its own.
-    var active by rememberSaveable { mutableStateOf(HighlightColor.entries.map { it.key }) }
+    var activeKeys by rememberSaveable { mutableStateOf(HighlightColor.entries.map { it.key }) }
     var query by rememberSaveable { mutableStateOf("") }
 
-    val shown = remember(highlights, active, query) {
-        val needle = query.trim()
-        highlights.filter { highlight ->
-            highlight.color in active &&
-                (needle.isEmpty() || highlight.quotedText.contains(needle, ignoreCase = true) ||
-                    highlight.note.orEmpty().contains(needle, ignoreCase = true))
-        }
-    }
+    val active = remember(activeKeys) { activeKeys.map { HighlightColor.fromKey(it) }.toSet() }
+    val shown = remember(highlights, active, query) { visibleHighlights(highlights, active, query) }
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -119,25 +110,18 @@ fun HighlightsSheet(
             }
             item {
                 Column(Modifier.padding(horizontal = 20.dp, vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
                         HighlightColor.entries.forEach { color ->
-                            val on = color.key in active
-                            Box(
-                                Modifier
-                                    .size(36.dp)
-                                    .clickable { active = if (on) active - color.key else active + color.key }
-                                    .semantics { contentDescription = "${color.displayName} highlights"; selected = on }
-                                    .testTag("notes.filter.${color.key}"),
-                                contentAlignment = Alignment.Center,
-                            ) {
-                                if (on) Box(Modifier.size(25.dp).border(1.5.dp, palette.ink.copy(alpha = 0.65f), CircleShape))
-                                Box(
-                                    Modifier
-                                        .size(19.dp)
-                                        .background(Marginalia.markerSwatch(color).copy(alpha = if (on) 1f else 0.3f), CircleShape)
-                                        .border(1.dp, Color.Black.copy(alpha = 0.12f), CircleShape),
-                                )
-                            }
+                            val on = color in active
+                            MarkerDot(
+                                color = color,
+                                selected = on,
+                                size = 19.dp,
+                                onClick = { activeKeys = if (on) activeKeys - color.key else activeKeys + color.key },
+                                label = "${color.displayName} highlights",
+                                fadeWhenOff = true,
+                                modifier = Modifier.testTag("notes.filter.${color.key}"),
+                            )
                         }
                     }
                     SearchField(query, { query = it }, palette.ink, palette.faint, palette.page, palette.line)
@@ -163,6 +147,23 @@ fun HighlightsSheet(
                 )
             }
         }
+    }
+}
+
+/**
+ * The highlights the sheet shows: the ones whose colour is switched on, and
+ * whose quote or note carries the search text. The colour is compared as the
+ * enum, not the stored string, so a highlight written by a newer build in a
+ * colour this one has never heard of still shows — under Yellow, exactly as
+ * [Highlight.markerColor] draws it. Reading order comes from the bridge;
+ * nothing is sorted here.
+ */
+fun visibleHighlights(highlights: List<Highlight>, active: Set<HighlightColor>, query: String): List<Highlight> {
+    val needle = query.trim()
+    return highlights.filter { highlight ->
+        highlight.markerColor in active &&
+            (needle.isEmpty() || highlight.quotedText.contains(needle, ignoreCase = true) ||
+                highlight.note.orEmpty().contains(needle, ignoreCase = true))
     }
 }
 

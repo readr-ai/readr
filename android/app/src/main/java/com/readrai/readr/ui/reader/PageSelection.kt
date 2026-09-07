@@ -79,42 +79,63 @@ class PageSelectionState {
         range = TextRange(minOf(anchor.min, offset), maxOf(anchor.max, offset))
     }
 
-    /** Dragging a handle. The ends never cross: the selection keeps at least one character. */
-    fun moveHandle(handle: SelectionHandle, position: Offset, handleOffsetPx: Float) {
+    /**
+     * Dragging a handle. The ends never cross: the selection keeps at least
+     * one character. The finger's y is taken back through the same half-radius
+     * the handle is drawn below the line ([handleCenters]) — and a hair
+     * further, since a y sitting exactly on a line's foot belongs to the line
+     * *below* it — then clamped into the laid-out text. So grabbing a handle
+     * where it is drawn resolves to the character it was already on, on the
+     * last line and on every line before it.
+     */
+    fun moveHandle(handle: SelectionHandle, position: Offset, radiusPx: Float) {
         val layout = layout ?: return
         val current = range ?: return
         val length = layout.layoutInput.text.length
-        val offset = layout.getOffsetForPosition(position - Offset(0f, handleOffsetPx))
+        val y = (position.y - radiusPx * HANDLE_DROP - 1f).coerceIn(0f, maxOf(0f, layout.size.height - 1f))
+        val offset = layout.getOffsetForPosition(Offset(position.x, y))
         range = when (handle) {
             SelectionHandle.Start -> TextRange(offset.coerceIn(0, current.max - 1), current.max)
             SelectionHandle.End -> TextRange(current.min, offset.coerceIn(current.min + 1, length))
         }
     }
 
-    /** Where the two handles sit, kept inside the page so both stay touchable on the last line. */
+    /**
+     * Where the two handles sit: half a radius below the line's foot, so the
+     * dot hangs off the text rather than over it. Only the *drawn* position is
+     * clamped into the page — [moveHandle] undoes the same half radius, so
+     * what is drawn and what a finger maps back to stay one and the same.
+     */
     fun handleCenters(radiusPx: Float, heightPx: Float): Pair<Offset, Offset>? {
         val layout = layout ?: return null
         val range = range?.takeIf { !it.collapsed } ?: return null
         fun center(offset: Int): Offset {
             val rect = layout.getCursorRect(offset)
-            return Offset(rect.left, (rect.bottom + radiusPx * 0.5f).coerceIn(radiusPx, maxOf(radiusPx, heightPx - radiusPx)))
+            val y = rect.bottom + radiusPx * HANDLE_DROP
+            return Offset(rect.left, y.coerceIn(radiusPx, maxOf(radiusPx, heightPx - radiusPx)))
         }
         return center(range.min) to center(range.max)
+    }
+
+    companion object {
+        /** How far below the line's foot the handle's centre sits, in radii. */
+        const val HANDLE_DROP = 0.5f
     }
 }
 
 /**
  * Selecting on the page: long-press for the word under the finger, drag on to
  * extend, and two handles to adjust. Taps are offered to `onTap` with the
- * page-local offset under the finger; only a tap it claims is consumed, so an
- * ordinary tap still reaches the reader's page-turn zones behind this.
+ * page-local offset under the finger and where the finger landed; only a tap
+ * it claims is consumed, so an ordinary tap still reaches the reader's
+ * page-turn zones behind this.
  */
 @Composable
 fun Modifier.pageSelection(
     key: Any?,
     state: PageSelectionState,
     palette: ReadingPalette,
-    onTap: (Int) -> Boolean,
+    onTap: (Int, Offset) -> Boolean,
 ): Modifier {
     val tap by rememberUpdatedState(onTap)
     val density = LocalDensity.current
@@ -152,7 +173,7 @@ fun Modifier.pageSelection(
                         if (change == null) {
                             settled = true
                         } else if (!change.pressed) {
-                            if (tap(characterUnder(layout, change.position))) change.consume()
+                            if (tap(characterUnder(layout, change.position), change.position)) change.consume()
                             settled = true
                         } else if ((change.position - down.position).getDistance() > viewConfiguration.touchSlop) {
                             settled = true

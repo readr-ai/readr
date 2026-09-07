@@ -121,25 +121,36 @@ extension AndroidLibrary {
     }
   }
 
-  /// Recolours a highlight and sets (or, with "", clears) its note.
-  public func updateHighlight(_ highlightID: String, color: String, note: String) throws {
+  /// Recolours a highlight, leaving its note exactly as it was. Colour and
+  /// note are separate edits because the caller rarely knows both: recolouring
+  /// from a stale list would otherwise write back a note the reader has since
+  /// changed.
+  public func setHighlightColor(_ bookID: String, highlightID: String, color: String) throws {
     try readerFacing {
       guard let markerColor = HighlightColor(rawValue: color) else {
         throw AndroidBridgeError.unknownHighlightColor(color)
       }
-      guard let highlight = findHighlight(highlightID) else {
-        throw AndroidBridgeError.unknownHighlight(highlightID)
-      }
-      var updated = HighlightService().setNote(note.isEmpty ? nil : note, on: highlight)
+      var updated = try highlight(bookID, highlightID)
       updated.color = markerColor
       try store.updateHighlight(updated)
     }
   }
 
-  /// Removes a highlight. Removing one that is already gone succeeds — two
-  /// taps on the same delete button are not an error worth showing.
-  public func removeHighlight(_ highlightID: String) throws {
+  /// Sets (or, with "", clears) a highlight's note, leaving its colour and
+  /// range as they were — `HighlightService.setNote` touches the note alone.
+  public func setHighlightNote(_ bookID: String, highlightID: String, note: String) throws {
     try readerFacing {
+      let existing = try highlight(bookID, highlightID)
+      try store.updateHighlight(HighlightService().setNote(note.isEmpty ? nil : note, on: existing))
+    }
+  }
+
+  /// Removes a highlight from the book that holds it. Removing one that is
+  /// already gone succeeds — two taps on the same delete button are not an
+  /// error worth showing.
+  public func removeHighlight(_ bookID: String, highlightID: String) throws {
+    try readerFacing {
+      _ = try book(bookID)
       guard let uuid = UUID(uuidString: highlightID) else {
         throw AndroidBridgeError.unknownHighlight(highlightID)
       }
@@ -189,9 +200,11 @@ extension AndroidLibrary {
     }
   }
 
-  /// Removes a bookmark; removing one already gone succeeds.
-  public func removeBookmark(_ bookmarkID: String) throws {
+  /// Removes a bookmark from the book that holds it; removing one already
+  /// gone succeeds.
+  public func removeBookmark(_ bookID: String, bookmarkID: String) throws {
     try readerFacing {
+      _ = try book(bookID)
       guard let uuid = UUID(uuidString: bookmarkID) else {
         throw AndroidBridgeError.unknownBookmark(bookmarkID)
       }
@@ -213,14 +226,15 @@ extension AndroidLibrary {
       .trimmingCharacters(in: .whitespaces)
   }
 
-  /// The stored highlight with this id, wherever it lives. The store keys
-  /// highlights by book and `updateHighlight` needs the whole record back, so
-  /// an edit starts by finding it.
-  private func findHighlight(_ id: String) -> Highlight? {
-    guard let uuid = UUID(uuidString: id) else { return nil }
-    for book in store.allBooks() {
-      if let match = store.highlights(for: book.id).first(where: { $0.id == uuid }) { return match }
-    }
-    return nil
+  /// The stored highlight with this id in this book. The store keys
+  /// highlights by book and an edit needs the whole record back, so an edit
+  /// starts by finding it — in the one book that can hold it, never by
+  /// walking the library.
+  private func highlight(_ bookID: String, _ highlightID: String) throws -> Highlight {
+    let book = try book(bookID)
+    guard let uuid = UUID(uuidString: highlightID),
+          let match = store.highlights(for: book.id).first(where: { $0.id == uuid })
+    else { throw AndroidBridgeError.unknownHighlight(highlightID) }
+    return match
   }
 }

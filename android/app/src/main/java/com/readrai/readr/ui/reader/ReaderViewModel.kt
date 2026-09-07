@@ -38,6 +38,9 @@ class ReaderViewModel(private val library: suspend () -> LibraryRepository, val 
 
     class LoadedChapter(val index: Int, val text: String, val layout: ChapterLayout)
 
+    /** A drawn page and the chapter it came from — the pair, never the page alone. */
+    data class VisiblePage(val chapterIndex: Int, val page: Page)
+
     var state by mutableStateOf<State>(State.Loading)
         private set
     var chapterIndex by mutableIntStateOf(-1)
@@ -49,21 +52,27 @@ class ReaderViewModel(private val library: suspend () -> LibraryRepository, val 
     var chapterError by mutableStateOf<String?>(null)
         private set
 
-    /** The book's highlights, so the page can draw the ones it covers. Reloaded after every change. */
+    /**
+     * The book's highlights, in reading order. A change is spliced in here
+     * rather than reloaded: the bridge already told us what it wrote, and a
+     * reload per tap would re-read every highlight in the book.
+     */
     var highlights by mutableStateOf<List<Highlight>>(emptyList())
         private set
 
-    /** The book's bookmarks, in reading order. Reloaded after every change. */
+    /** The book's bookmarks, in reading order, kept in step the same way. */
     var bookmarks by mutableStateOf<List<Bookmark>>(emptyList())
         private set
 
     /**
-     * The page on screen. The reader's bar bookmarks *the page*, not the
-     * anchor, so the page it is looking at has to be visible up there; the
-     * page surface reports it as it renders, and clears it while a chapter
-     * is being laid out.
+     * The page on screen and the chapter it was laid out from. The reader's
+     * bar bookmarks *the page*, not the anchor, so the page it is looking at
+     * has to be visible up there; the page surface reports it as it renders,
+     * and a jump or a crossing clears it until the new chapter's pages exist.
+     * The chapter travels with the page because for one composition after a
+     * jump the pages still belong to the chapter just left.
      */
-    var visiblePage by mutableStateOf<Page?>(null)
+    var visible by mutableStateOf<VisiblePage?>(null)
         private set
 
     /** The note being written, or null when no editor is open. */
@@ -72,6 +81,14 @@ class ReaderViewModel(private val library: suspend () -> LibraryRepository, val 
 
     /** A short-lived reader-facing message — an annotation that would not save. */
     var message by mutableStateOf<String?>(null)
+        private set
+
+    /**
+     * How many messages have been shown. The same sentence twice running is
+     * two messages, and the screen's dismissal timer keys on this rather than
+     * on the words, so the second one still gets its full turn.
+     */
+    var messageCount by mutableIntStateOf(0)
         private set
 
     private var repository: LibraryRepository? = null
@@ -103,8 +120,7 @@ class ReaderViewModel(private val library: suspend () -> LibraryRepository, val 
             persisted = chapterIndex to anchor
             state = State.Ready(book.title, chapters, contents)
             loadChapter()
-            reloadHighlights(repo)
-            reloadBookmarks(repo)
+            reload(repo)
         } catch (e: Exception) {
             state = State.Failed(e.message ?: "Couldn't open this book.")
         }
@@ -141,6 +157,7 @@ class ReaderViewModel(private val library: suspend () -> LibraryRepository, val 
         if (index !in ready.chapters.indices) return
         wantsChapterEnd = false
         anchor = maxOf(0, utf16Offset)
+        visible = null
         if (index != chapterIndex) {
             chapterIndex = index
             loadChapter()
@@ -166,6 +183,7 @@ class ReaderViewModel(private val library: suspend () -> LibraryRepository, val 
         var index = chapterIndex + direction
         while (index in ready.chapters.indices && !ready.chapters[index].isLinear) index += direction
         if (index !in ready.chapters.indices) return false
+        visible = null
         if (direction > 0) {
             jump(index, 0)
         } else {
@@ -187,24 +205,36 @@ class ReaderViewModel(private val library: suspend () -> LibraryRepository, val 
     // MARK: Annotations. Every offset is UTF-16 into the chapter text, as
     // Compose reports it; the page converts its own offsets with `textStart`.
 
-    /** Highlights the selected range. The list is reloaded so the page redraws with it. */
+    /** Highlights the selected range; the new highlight takes its place in the list. */
     fun addHighlight(chapterIndex: Int, utf16Start: Int, utf16End: Int, color: HighlightColor) {
-        annotate("Couldn't save that highlight.") { repo ->
-            repo.addHighlight(bookId, chapterIndex, utf16Start, utf16End, color, note = null)
-        }
+        mutating(
+            "Couldn't save that highlight.",
+            { repo -> repo.addHighlight(bookId, chapterIndex, utf16Start, utf16End, color, note = null) },
+        ) { created -> highlights = highlights.plusInReadingOrder(created) }
     }
 
-    /** Recolours a highlight, keeping whatever note it carries. */
+    /** Recolours a highlight; the bridge leaves whatever note it carries alone. */
     fun recolor(id: String, color: HighlightColor) {
-        val note = highlights.firstOrNull { it.id == id }?.note
-        annotate("Couldn't change that highlight.") { repo -> repo.updateHighlight(id, color, note) }
+        mutating(
+            "Couldn't change that highlight.",
+            { repo -> repo.setHighlightColor(bookId, id, color) },
+        ) { highlights = highlights.map { if (it.id == id) it.copy(color = color.key) else it } }
     }
 
     fun removeHighlight(id: String) {
-        annotate("Couldn't remove that highlight.") { repo -> repo.removeHighlight(id) }
+        mutating(
+            "Couldn't remove that highlight.",
+            { repo -> repo.removeHighlight(bookId, id) },
+        ) { highlights = highlights.filterNot { it.id == id } }
     }
 
     fun clearMessage() { message = null }
+
+    /** Says something to the reader; every saying is its own, however it reads. */
+    private fun say(text: String) {
+        message = text
+        messageCount++
+    }
 
     // MARK: Notes. A note always belongs to a highlight, so "Note" on a plain
     // selection highlights it first, in the colour last used, and remembers
@@ -213,18 +243,12 @@ class ReaderViewModel(private val library: suspend () -> LibraryRepository, val 
 
     /** "Note" on a selection: highlight it, then open the editor on what was created. */
     fun noteOnSelection(chapterIndex: Int, utf16Start: Int, utf16End: Int, color: HighlightColor) {
-        val repo = repository ?: return
-        viewModelScope.launch {
-            try {
-                val created = repo.addHighlight(bookId, chapterIndex, utf16Start, utf16End, color, note = null)
-                reloadHighlights(repo)
-                noteDraft = NoteDraft(created.id, created.quotedText, created.note.orEmpty(), createdForNote = true)
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                Log.w(TAG, "note highlight failed: ${e.message}")
-                message = "Couldn't save that highlight."
-            }
+        mutating(
+            "Couldn't save that highlight.",
+            { repo -> repo.addHighlight(bookId, chapterIndex, utf16Start, utf16End, color, note = null) },
+        ) { created ->
+            highlights = highlights.plusInReadingOrder(created)
+            noteDraft = NoteDraft(created.id, created.quotedText, created.note.orEmpty(), createdForNote = true)
         }
     }
 
@@ -237,10 +261,11 @@ class ReaderViewModel(private val library: suspend () -> LibraryRepository, val 
     fun saveNote(text: String) {
         val draft = noteDraft ?: return
         noteDraft = null
-        val color = highlights.firstOrNull { it.id == draft.highlightId }?.markerColor ?: HighlightColor.YELLOW
-        annotate("Couldn't save that note.") { repo ->
-            repo.updateHighlight(draft.highlightId, color, text.trim().ifBlank { null })
-        }
+        val note = text.trim().ifBlank { null }
+        mutating(
+            "Couldn't save that note.",
+            { repo -> repo.setHighlightNote(bookId, draft.highlightId, note) },
+        ) { highlights = highlights.map { if (it.id == draft.highlightId) it.copy(note = note) else it } }
     }
 
     /** Cancels the note; a highlight made only to carry it goes with it. */
@@ -253,58 +278,55 @@ class ReaderViewModel(private val library: suspend () -> LibraryRepository, val 
     // MARK: Bookmarks — a place in the book, kept as a chapter and an offset.
 
     fun addBookmark(chapterIndex: Int, utf16Offset: Int) {
-        bookmark("Couldn't save that bookmark.") { repo -> repo.addBookmark(bookId, chapterIndex, utf16Offset) }
+        mutating(
+            "Couldn't save that bookmark.",
+            { repo -> repo.addBookmark(bookId, chapterIndex, utf16Offset) },
+        ) { created -> bookmarks = bookmarks.plusInReadingOrder(created) }
     }
 
     fun removeBookmark(id: String) {
-        bookmark("Couldn't remove that bookmark.") { repo -> repo.removeBookmark(id) }
+        mutating(
+            "Couldn't remove that bookmark.",
+            { repo -> repo.removeBookmark(bookId, id) },
+        ) { bookmarks = bookmarks.filterNot { it.id == id } }
     }
 
     /** The page surface reporting what it is drawing, so the bar can bookmark it. */
-    fun showing(page: Page?) { visiblePage = page }
+    fun showing(chapterIndex: Int, page: Page?) {
+        visible = page?.let { VisiblePage(chapterIndex, it) }
+    }
 
-    private fun annotate(failure: String, work: suspend (LibraryRepository) -> Unit) =
-        mutate(failure, work) { repo -> reloadHighlights(repo) }
-
-    private fun bookmark(failure: String, work: suspend (LibraryRepository) -> Unit) =
-        mutate(failure, work) { repo -> reloadBookmarks(repo) }
-
-    private fun mutate(
-        failure: String,
-        work: suspend (LibraryRepository) -> Unit,
-        reload: suspend (LibraryRepository) -> Unit,
-    ) {
+    /**
+     * One annotation change: `work` writes it through the bridge and `then`
+     * splices what came back into the list in hand, so a tap costs one call
+     * rather than a call and a reload of the whole book. Only a failure goes
+     * back for the lists — what is on screen may no longer be what is stored.
+     */
+    private fun <T> mutating(failure: String, work: suspend (LibraryRepository) -> T, then: (T) -> Unit) {
         val repo = repository ?: return
         viewModelScope.launch {
             try {
-                work(repo)
-                reload(repo)
+                then(work(repo))
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
                 Log.w(TAG, "annotation failed: ${e.message}")
-                message = failure
+                reload(repo)
+                say(failure)
             }
         }
     }
 
-    private suspend fun reloadHighlights(repo: LibraryRepository) {
+    /** Both lists from the store: on open, and to resync after a change that would not save. */
+    private suspend fun reload(repo: LibraryRepository) {
         try {
             highlights = repo.highlights(bookId)
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            Log.w(TAG, "highlights load failed: ${e.message}")
-        }
-    }
-
-    private suspend fun reloadBookmarks(repo: LibraryRepository) {
-        try {
             bookmarks = repo.bookmarks(bookId)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            Log.w(TAG, "bookmarks load failed: ${e.message}")
+            Log.w(TAG, "annotations load failed: ${e.message}")
+            say("Couldn't load your highlights and bookmarks.")
         }
     }
 
@@ -358,3 +380,15 @@ class ReaderViewModel(private val library: suspend () -> LibraryRepository, val 
         private const val TAG = "Readr.Reader"
     }
 }
+
+/**
+ * The list with `made` in it, in the order the bridge would have returned:
+ * chapter, then where it starts, then when it was made. The sort is stable
+ * and the new one is appended, so it lands after anything it ties with —
+ * which is where the bridge, sorting on `createdAt` last, would put it too.
+ */
+private fun List<Highlight>.plusInReadingOrder(made: Highlight): List<Highlight> =
+    (this + made).sortedWith(compareBy({ it.chapterIndex }, { it.utf16Start }))
+
+private fun List<Bookmark>.plusInReadingOrder(made: Bookmark): List<Bookmark> =
+    (this + made).sortedWith(compareBy({ it.chapterIndex }, { it.utf16Offset }))

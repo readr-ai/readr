@@ -116,9 +116,11 @@ fun ReaderScreen(model: ReaderViewModel, settings: ReaderSettings, onBack: () ->
         }
 
         // Annotation trouble is the reader's business, briefly and then gone.
+        // Keyed on the count, not the words: the same sentence twice running
+        // is two messages, and the second gets its own four seconds.
         val message = model.message
-        LaunchedEffect(message) {
-            if (message != null) { delay(MESSAGE_MILLIS); model.clearMessage() }
+        LaunchedEffect(model.messageCount) {
+            if (model.message != null) { delay(MESSAGE_MILLIS); model.clearMessage() }
         }
         if (message != null) {
             Snackbar(
@@ -190,20 +192,22 @@ fun ReaderScreen(model: ReaderViewModel, settings: ReaderSettings, onBack: () ->
 /**
  * The ribbon in the bar. "The current bookmark" is the first one in this
  * chapter whose place lies on the visible page; tapping adds one at the page's
- * first drawn character, or takes that one away.
+ * first drawn character, or takes that one away. A page from the chapter just
+ * left is no page at all — the ribbon waits, disabled, until the chapter being
+ * read is the chapter on screen.
  */
 @Composable
 private fun BookmarkAction(model: ReaderViewModel, palette: ReadingPalette) {
-    val page = model.visiblePage
-    val chapterIndex = model.chapterIndex
-    val current = page?.let { p ->
-        model.bookmarks.firstOrNull { it.chapterIndex == chapterIndex && it.utf16Offset >= p.rangeStart && it.utf16Offset < p.rangeEnd }
+    val visible = model.visible?.takeIf { it.chapterIndex == model.chapterIndex }
+    val current = visible?.let { on ->
+        model.bookmarks.firstOrNull { it.chapterIndex == on.chapterIndex && it.utf16Offset in on.page }
     }
     IconButton(
         onClick = {
-            if (current != null) model.removeBookmark(current.id) else page?.let { model.addBookmark(chapterIndex, it.textStart) }
+            if (current != null) model.removeBookmark(current.id)
+            else visible?.let { model.addBookmark(it.chapterIndex, it.page.textStart) }
         },
-        enabled = page != null,
+        enabled = visible != null,
         modifier = Modifier
             .testTag("reader.bookmarks")
             .semantics { contentDescription = if (current != null) "Remove bookmark" else "Bookmark this page" },
@@ -264,6 +268,10 @@ private fun PageSurface(
             Triple(textWidth.toInt(), pageHeight.toInt(), column.toDp())
         }
         val (textWidthPx, pageHeightPx, columnWidth) = geometry
+        // The text column is centred on the surface, so a distance from the
+        // column's middle is a distance from the surface's — which is what the
+        // page-turn zones are measured in.
+        val surfaceWidthPx = with(density) { maxWidth.toPx() }
 
         val pageKey = chapter?.let { PageKey(it.index, textWidthPx, pageHeightPx, density.density, density.fontScale, layoutKey) }
         val pageSet by produceState<PageSet?>(initialValue = null, chapter, pageKey) {
@@ -276,7 +284,7 @@ private fun PageSurface(
                 model.pageSet(key) {
                     val styled = ChapterStyling.styled(loaded.text, loaded.layout.spans, layoutKey)
                     val measurer = TextMeasurer(fontFamilyResolver, density, layoutDirection, cacheSize = 0)
-                    PageSet(styled, Pagination(LayoutPaginator.paginate(styled, measureStyle, textWidthPx, pageHeightPx, measurer)))
+                    PageSet(loaded.index, styled, Pagination(LayoutPaginator.paginate(styled, measureStyle, textWidthPx, pageHeightPx, measurer)))
                 }
             }
         }
@@ -285,8 +293,10 @@ private fun PageSurface(
 
         val pages = set?.pagination?.pages ?: emptyList()
         val pageIndex = set?.pagination?.pageIndex(model.anchor) ?: 0
-        // The bar bookmarks the page, so it has to know which page is on screen.
-        LaunchedEffect(pages, pageIndex) { model.showing(pages.getOrNull(pageIndex)) }
+        // The bar bookmarks the page, so it has to know which page is on screen
+        // — and which chapter that page belongs to, which is the set's, never
+        // the ViewModel's: after a jump they differ for one composition.
+        LaunchedEffect(set, pageIndex) { model.showing(set?.chapterIndex ?: -1, pages.getOrNull(pageIndex)) }
         // The gesture handlers below are keyed on the page set, which a turn
         // does not change, so they read the turn through updated state rather
         // than closing over this composition's page index.
@@ -324,7 +334,13 @@ private fun PageSurface(
                     var dragged = 0f
                     detectHorizontalDragGestures(
                         onDragStart = { dragged = 0f },
-                        onDragEnd = { if (!annotating() && abs(dragged) > swipeDistancePx) turn(if (dragged < 0) 1 else -1) },
+                        onDragEnd = {
+                            // A swipe with a selection or a capsule up puts it away
+                            // rather than turning the page out from under it.
+                            if (abs(dragged) > swipeDistancePx) {
+                                if (annotating()) dismiss() else turn(if (dragged < 0) 1 else -1)
+                            }
+                        },
                         onDragCancel = { dragged = 0f },
                     ) { _, amount -> dragged += amount }
                 },
@@ -354,21 +370,33 @@ private fun PageSurface(
                         set == null -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator(color = palette.muted) }
                         pages.isNotEmpty() -> {
                             val page = pages[pageIndex]
-                            val chapterIndex = model.chapterIndex
-                            val marked = model.highlights.filter { it.chapterIndex == chapterIndex }
-                            val content = remember(set, pageIndex, palette, marked) {
-                                ChapterStyling.pageText(set.styled, page.textStart, page.textEnd, palette, marked)
+                            // Everything below belongs to the chapter the *pages* came
+                            // from; `model.chapterIndex` may already be the next one.
+                            val chapterIndex = set.chapterIndex
+                            val onPage = model.highlights.filter {
+                                it.chapterIndex == chapterIndex && it.utf16Start < page.textEnd && it.utf16End > page.textStart
                             }
-                            val edited = editedId?.let { id -> marked.firstOrNull { it.id == id } }
+                            val content = remember(set, pageIndex, palette, onPage) {
+                                ChapterStyling.pageText(set.styled, page.textStart, page.textEnd, palette, onPage)
+                            }
+                            // The quote is the kit's own text: the styled string draws
+                            // every newline as a space, and a copied passage keeps its
+                            // paragraph breaks.
+                            val chapterText = chapter?.takeIf { it.index == chapterIndex }?.text
+                            val edited = editedId?.let { id -> onPage.firstOrNull { it.id == id } }
                             val range = selection.range
                             val target: AnnotationTarget? = when {
                                 edited != null -> AnnotationTarget.Existing(edited)
-                                range != null && !range.collapsed -> AnnotationTarget.Selected(
-                                    chapterIndex = chapterIndex,
-                                    utf16Start = page.textStart + range.min,
-                                    utf16End = page.textStart + range.max,
-                                    quotedText = content.text.substring(range.min.coerceIn(0, content.length), range.max.coerceIn(0, content.length)),
-                                )
+                                range != null && !range.collapsed && chapterText != null -> {
+                                    val start = (page.textStart + range.min).coerceIn(0, chapterText.length)
+                                    val end = (page.textStart + range.max).coerceIn(start, chapterText.length)
+                                    AnnotationTarget.Selected(
+                                        chapterIndex = chapterIndex,
+                                        utf16Start = start,
+                                        utf16End = end,
+                                        quotedText = chapterText.substring(start, end),
+                                    )
+                                }
                                 else -> null
                             }
                             Text(
@@ -380,15 +408,23 @@ private fun PageSurface(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .testTag("reader.page")
-                                    .pageSelection(key = content, state = selection, palette = palette) { pageOffset ->
+                                    .pageSelection(
+                                        key = listOf(set, pageIndex, palette, onPage),
+                                        state = selection,
+                                        palette = palette,
+                                    ) { pageOffset, position ->
                                         // A tap puts the capsule away, or opens it on the highlight under the finger;
-                                        // anything else is left to the page-turn zones behind.
+                                        // anything else is left to the page-turn zones behind. A highlight only
+                                        // claims the middle half of the surface: in the outer quarters the reader
+                                        // is turning the page, whatever happens to be marked under the finger.
                                         if (target != null) {
                                             dismiss()
                                             true
+                                        } else if (abs(position.x - textWidthPx / 2f) >= surfaceWidthPx * 0.25f) {
+                                            false
                                         } else {
                                             val offset = page.textStart + pageOffset
-                                            val hit = marked.firstOrNull { offset >= it.utf16Start && offset < it.utf16End }
+                                            val hit = onPage.firstOrNull { offset >= it.utf16Start && offset < it.utf16End }
                                             if (hit != null) { editedId = hit.id; true } else false
                                         }
                                     },

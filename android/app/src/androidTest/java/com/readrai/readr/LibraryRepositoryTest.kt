@@ -91,17 +91,18 @@ class LibraryRepositoryTest {
         assertEquals(HighlightColor.PINK, made.markerColor)
         assertEquals(listOf(made), repository.highlights(book.id))
 
-        repository.updateHighlight(made.id, HighlightColor.BLUE, "the opening line")
+        repository.setHighlightNote(book.id, made.id, "the opening line")
+        repository.setHighlightColor(book.id, made.id, HighlightColor.BLUE)
         val edited = repository.highlights(book.id).single()
         assertEquals("the opening line", edited.note)
         assertEquals(HighlightColor.BLUE, edited.markerColor)
-        repository.removeHighlight(made.id)
+        repository.removeHighlight(book.id, made.id)
         assertTrue(repository.highlights(book.id).isEmpty())
 
         val bookmark = repository.addBookmark(book.id, 0, 0)
         assertTrue(bookmark.snippet, bookmark.snippet.startsWith("It was a bright cold day"))
         assertEquals(listOf(bookmark), repository.bookmarks(book.id))
-        repository.removeBookmark(bookmark.id)
+        repository.removeBookmark(book.id, bookmark.id)
         assertTrue(repository.bookmarks(book.id).isEmpty())
     }
 

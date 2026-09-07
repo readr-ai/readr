@@ -173,29 +173,25 @@ object ChapterStyling {
     }
 
     /**
-     * The slice of the styled chapter a page draws, coloured for the theme.
-     * A page that opens in the middle of a paragraph must not indent its
-     * first line differently from the line it was measured as — a
-     * continuation line — so that paragraph's fragment takes its rest-line
-     * indent for its first line too.
-     */
-    fun pageText(chapter: StyledChapter, textStart: Int, textEnd: Int, palette: ReadingPalette): AnnotatedString =
-        pageText(chapter, textStart, textEnd, palette, emptyList())
-
-    /**
-     * The page with its highlights drawn on it. A highlight is a background
-     * field over its glyphs — and an underline when it carries a note — never
-     * an inserted glyph, so marking a passage cannot move a line break and
-     * the page stays the page that was measured. `highlights` are the ones
-     * for this chapter (offsets are chapter-wide UTF-16); ones that miss the
-     * page contribute nothing, and ones that straddle its edges are clipped.
+     * The slice of the styled chapter a page draws, coloured for the theme
+     * and with its highlights drawn on it. A page that opens in the middle of
+     * a paragraph must not indent its first line differently from the line it
+     * was measured as — a continuation line — so that paragraph's fragment
+     * takes its rest-line indent for its first line too.
+     *
+     * A highlight is a background field over its glyphs — and an underline
+     * when it carries a note — never an inserted glyph, so marking a passage
+     * cannot move a line break and the page stays the page that was measured.
+     * `highlights` are the ones for this chapter (offsets are chapter-wide
+     * UTF-16); ones that miss the page contribute nothing, and ones that
+     * straddle its edges are clipped.
      */
     fun pageText(
         chapter: StyledChapter,
         textStart: Int,
         textEnd: Int,
         palette: ReadingPalette,
-        highlights: List<Highlight>,
+        highlights: List<Highlight> = emptyList(),
     ): AnnotatedString {
         val slice = chapter.text.subSequence(textStart, textEnd)
         val midParagraph = textStart > 0 && !chapter.startsParagraph(textStart)

@@ -78,10 +78,27 @@ class ChapterStylingTest {
     }
 
     @Test
-    fun theOldSignatureStillDrawsAPlainPage() {
+    fun aPageWithoutHighlightsIsThePlainPage() {
         val page = ChapterStyling.pageText(styled, 0, firstEnd, palette)
         assertTrue(fields(page).isEmpty())
         assertEquals(firstEnd, page.length)
+    }
+
+    /**
+     * Why a quote is sliced from the chapter and never from the page: the two
+     * strings agree character for character except at the newlines, which the
+     * page draws as spaces. Copying from the page would quietly flatten a
+     * paragraph break into a space.
+     */
+    @Test
+    fun theStyledPageDiffersFromTheChapterOnlyAtItsNewlines() {
+        val drawn = styled.text.text
+        assertEquals("every offset still means what it means to the kit", text.length, drawn.length)
+        for (i in text.indices) {
+            if (text[i] == '\n') assertEquals("newline at $i", ' ', drawn[i])
+            else assertEquals("character at $i", text[i], drawn[i])
+        }
+        assertTrue("the fixture has a paragraph break to lose", text.contains('\n'))
     }
 
     @Test

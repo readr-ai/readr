@@ -80,7 +80,9 @@ anchors and spans all follow that rule.
 
 Appearance (`ReaderSettings`) is plain `SharedPreferences` under the keys the
 iOS app uses — `readingTheme`, `readingFontSize`, `readingFont`,
-`readingLineSpacing`, `readingJustified`.
+`readingLineSpacing`, `readingJustified`, and `lastHighlightColor` (the colour
+"Note" reaches for, deliberately outside `ReaderAppearance` so it can never
+re-paginate a chapter).
 
 ## Layout on device
 

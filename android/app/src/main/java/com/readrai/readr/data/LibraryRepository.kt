@@ -129,13 +129,18 @@ class LibraryRepository(private val context: Context, private val kit: Kit) {
         )
     }
 
-    /** Recolours a highlight and sets its note; a null or blank note clears it. */
-    suspend fun updateHighlight(id: String, color: HighlightColor, note: String?) = withContext(Dispatchers.IO) {
-        kit.library.updateHighlight(id, color.key, note.orEmpty())
+    /** Recolours a highlight, leaving its note alone. */
+    suspend fun setHighlightColor(bookId: String, id: String, color: HighlightColor) = withContext(Dispatchers.IO) {
+        kit.library.setHighlightColor(bookId, id, color.key)
     }
 
-    suspend fun removeHighlight(id: String) = withContext(Dispatchers.IO) {
-        kit.library.removeHighlight(id)
+    /** Sets a highlight's note, leaving its colour alone; a null or blank note clears it. */
+    suspend fun setHighlightNote(bookId: String, id: String, note: String?) = withContext(Dispatchers.IO) {
+        kit.library.setHighlightNote(bookId, id, note.orEmpty())
+    }
+
+    suspend fun removeHighlight(bookId: String, id: String) = withContext(Dispatchers.IO) {
+        kit.library.removeHighlight(bookId, id)
     }
 
     /** The book's text bookmarks, sorted by chapter then offset. */
@@ -147,8 +152,8 @@ class LibraryRepository(private val context: Context, private val kit: Kit) {
         kitJson.decodeFromString(kit.library.addBookmark(bookId, chapterIndex.toLong(), utf16Offset.toLong()))
     }
 
-    suspend fun removeBookmark(id: String) = withContext(Dispatchers.IO) {
-        kit.library.removeBookmark(id)
+    suspend fun removeBookmark(bookId: String, id: String) = withContext(Dispatchers.IO) {
+        kit.library.removeBookmark(bookId, id)
     }
 
     suspend fun remove(bookId: String) = withContext(Dispatchers.IO) {
