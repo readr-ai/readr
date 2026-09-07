@@ -18,6 +18,8 @@ import com.readrai.readr.ui.library.LibraryScreen
 import com.readrai.readr.ui.library.LibraryViewModel
 import com.readrai.readr.ui.reader.ReaderScreen
 import com.readrai.readr.ui.reader.ReaderViewModel
+import com.readrai.readr.ui.settings.ProvidersScreen
+import com.readrai.readr.ui.settings.ProvidersViewModel
 import com.readrai.readr.ui.theme.Marginalia
 import com.readrai.readr.ui.theme.ReadrTheme
 
@@ -45,7 +47,15 @@ private fun ReadrNavHost(app: ReadrApplication) {
     NavHost(nav, startDestination = "library") {
         composable("library") {
             val model: LibraryViewModel = viewModel { LibraryViewModel(app) }
-            LibraryScreen(model) { book -> nav.navigate("book/${book.id}") }
+            LibraryScreen(
+                model,
+                onOpen = { book -> nav.navigate("book/${book.id}") },
+                onSettings = { nav.navigate("settings") },
+            )
+        }
+        composable("settings") {
+            val model: ProvidersViewModel = viewModel { ProvidersViewModel { app.providers() } }
+            ProvidersScreen(model) { nav.popBackStack() }
         }
         // The route carries only the id (a UUID, safe in a path); everything
         // else is looked up by id so the back stack never holds stale titles.

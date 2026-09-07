@@ -7,6 +7,7 @@ import com.readrai.readr.data.HighlightColor
 import com.readrai.readr.data.LibraryRepository
 import com.readrai.readr.kit.KeystoreSecretStore
 import com.readrai.readr.kit.Kit
+import com.readrai.readr.kit.NanoProbe
 import java.io.File
 import kotlinx.coroutines.test.runTest
 import org.junit.After
@@ -27,7 +28,7 @@ class LibraryRepositoryTest {
     @Before
     fun setUp() {
         root = File(context.cacheDir, "repo-test-${System.nanoTime()}").apply { mkdirs() }
-        repository = LibraryRepository(context, Kit.open(root, KeystoreSecretStore(context, alias = "readr.secrets.test")))
+        repository = LibraryRepository(context, Kit.open(root, KeystoreSecretStore(context, alias = "readr.secrets.test"), NanoProbe(context)))
     }
 
     @After

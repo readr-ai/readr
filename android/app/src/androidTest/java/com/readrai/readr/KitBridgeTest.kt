@@ -12,12 +12,15 @@ import com.readrai.readr.data.EpubExtractor
 import com.readrai.readr.data.Footnote
 import com.readrai.readr.data.Highlight
 import com.readrai.readr.data.HighlightColor
+import com.readrai.readr.data.ProviderSettings
+import com.readrai.readr.data.ValidationStatus
 import com.readrai.readr.data.ReadingPosition
 import com.readrai.readr.data.SearchResult
 import com.readrai.readr.data.kitJson
 import com.readrai.readr.kit.KeystoreSecretStore
 import com.readrai.readr.kit.KitLimits
 import com.readrai.readr.kit.Kit
+import com.readrai.readr.kit.NanoProbe
 import java.io.File
 import kotlinx.coroutines.future.await
 import kotlinx.coroutines.test.runTest
@@ -41,11 +44,29 @@ class KitBridgeTest {
     @Before
     fun setUp() {
         root = File(context.cacheDir, "kit-test-${System.nanoTime()}").apply { mkdirs() }
-        kit = Kit.open(root, KeystoreSecretStore(context, alias = "readr.secrets.test"))
+        kit = Kit.open(root, KeystoreSecretStore(context, alias = "readr.secrets.test"), NanoProbe(context))
+        // The library root is fresh per test; the Keystore preferences behind
+        // the alias are not, so a key an earlier test stored would still be
+        // there. Start every test with nothing connected.
+        clearCredentials()
     }
 
+    /** A second handle on the same library, as a relaunch would open it. */
+    private fun reopen(probe: com.readrai.readr.kit.OnDeviceProbe = NanoProbe(context)): Kit =
+        Kit.open(root, KeystoreSecretStore(context, alias = "readr.secrets.test"), probe)
+
+    private fun providerSettings(from: Kit = kit): ProviderSettings =
+        kitJson.decodeFromString(from.providers.providersJSON())
+
     @After
-    fun tearDown() { root.deleteRecursively() }
+    fun tearDown() {
+        clearCredentials()
+        root.deleteRecursively()
+    }
+
+    private fun clearCredentials() {
+        for (kind in listOf("openAI", "anthropic", "openRouter")) runCatching { kit.providers.deleteCredential(kind) }
+    }
 
     @Test
     fun describesItself() {
@@ -587,6 +608,146 @@ class KitBridgeTest {
         } catch (e: Exception) {
             assertEquals("This book is no longer in your library.", e.message)
         }
+    }
+
+
+    // MARK: AI providers (A3a)
+
+    /**
+     * The settings screen is built entirely from this one answer, so what it
+     * lists is what the reader can reach: the four ways in this build has,
+     * grouped by company, with the phone's own model leading — and neither
+     * Apple's system model nor an Ollama server anywhere in it.
+     */
+    @Test
+    fun providerSettingsListEveryWayInThisBuildHas() {
+        val settings = providerSettings()
+        assertEquals(
+            listOf("android", "openai", "openrouter", "anthropic"),
+            settings.vendors.map { it.id },
+        )
+        assertEquals("the phone's own model leads", "On this phone", settings.vendors.first().title)
+        assertEquals(
+            listOf("geminiNano", "openAI", "openRouter", "anthropic"),
+            settings.vendors.flatMap { card -> card.kinds.map { it.kind } },
+        )
+        // ChatGPT's subscription path and Ollama are not offered here.
+        assertFalse(settings.vendors.flatMap { it.kinds }.any { it.kind == "chatGPT" || it.kind == "local" })
+        assertEquals("On-device", settings.vendors.first().badge)
+        assertTrue("a key-only build never advertises a sign-in", settings.vendors.drop(1).all { it.badge == "API key" })
+
+        assertEquals("Ask uses no model yet — connect one below.", settings.askUsesLine)
+        assertNull(settings.selection)
+
+        val openAI = settings.vendors.single { it.id == "openai" }.kinds.single()
+        assertTrue(openAI.usesAPIKey)
+        assertFalse(openAI.isOnDevice)
+        assertFalse(openAI.hasCredential)
+        assertEquals(ValidationStatus.UNKNOWN, openAI.status.state)
+        assertTrue("every card offers models to pick from", openAI.models.isNotEmpty())
+        assertTrue(openAI.models.any { it.id == openAI.activeModelID })
+        assertTrue("a model is named, never shown as its wire id", openAI.models.all { it.name.isNotBlank() && it.name != it.id })
+        assertEquals("Paste an API key to connect.", settings.vendors.single { it.id == "openai" }.hint)
+    }
+
+    @Test
+    fun aSavedKeyShowsOnItsCard() {
+        kit.providers.saveAPIKey("openAI", "sk-test")
+        val openAI = providerSettings().vendors.single { it.id == "openai" }.kinds.single()
+        assertTrue(openAI.hasCredential)
+        assertNull("connected cards stop telling you how to connect", providerSettings().vendors.single { it.id == "openai" }.hint)
+
+        kit.providers.deleteCredential("openAI")
+        assertFalse(providerSettings().vendors.single { it.id == "openai" }.kinds.single().hasCredential)
+    }
+
+    /** The chosen model is the app's own file, not UserDefaults — so it is still there next launch. */
+    @Test
+    fun theActiveSelectionSurvivesARelaunch() {
+        kit.providers.saveAPIKey("openAI", "sk-test")
+        kit.providers.setActive("openAI", "gpt-5.6-terra")
+        assertTrue(File(root, "provider-selection.json").isFile)
+
+        val relaunched = providerSettings(from = reopen())
+        assertEquals("openAI", relaunched.selection?.kind)
+        assertEquals("gpt-5.6-terra", relaunched.selection?.modelID)
+        assertTrue(relaunched.askUsesLine, relaunched.askUsesLine.contains("GPT-5.6 Terra"))
+        val openAI = relaunched.vendors.single { it.id == "openai" }.kinds.single()
+        assertTrue(openAI.isActive)
+        assertEquals("gpt-5.6-terra", openAI.activeModelID)
+    }
+
+    @Test
+    fun aBlankKeyIsRefusedInPlainLanguage() {
+        try {
+            kit.providers.saveAPIKey("openAI", "   ")
+            assertTrue("expected a refusal", false)
+        } catch (e: Exception) {
+            assertEquals("Paste an API key to connect.", e.message)
+        }
+        assertFalse(providerSettings().vendors.single { it.id == "openai" }.kinds.single().hasCredential)
+
+        // A kind this phone does not have is refused the same way.
+        try {
+            kit.providers.saveAPIKey("appleIntelligence", "sk-test")
+            assertTrue("expected a refusal", false)
+        } catch (e: Exception) {
+            assertEquals("That provider isn't supported on this device.", e.message)
+        }
+    }
+
+    /**
+     * A key that no provider will accept settles somewhere other than active,
+     * and says why in a sentence — never a Swift case name, never a raw
+     * status code.
+     */
+    @Test
+    fun aKeyThatIsNotAcceptedSettlesOnASentence() = runTest {
+        kit.providers.saveAPIKey("openAI", "sk-test")
+        val status = kitJson.decodeFromString<ValidationStatus>(kit.providers.validate("openAI").await())
+        assertFalse("a made-up key is never active: $status", status.isActive)
+        assertTrue(status.state, status.state == ValidationStatus.INVALID || status.state == ValidationStatus.UNAVAILABLE)
+        val reason = status.reason ?: ""
+        assertTrue("a settled check says why", reason.isNotBlank())
+        for (leak in listOf("Optional(", "invalid(", "unavailable(", "HTTPError", "ValidationState", "ReadrKit.")) {
+            assertFalse("no Swift internals in \"$reason\"", reason.contains(leak))
+        }
+        assertEquals("the card reads it back", status, providerSettings().vendors.single { it.id == "openai" }.kinds.single().status)
+    }
+
+    /**
+     * The phone's own model is the answer while the reader has chosen
+     * nothing — but only on a phone that can actually run it. The probe is
+     * asked on every read, so one library says different things on two
+     * different phones.
+     */
+    @Test
+    fun aPhoneThatCanRunNanoStartsWithIt() {
+        val ready = reopen(FixedProbe.READY)
+        assertTrue(ready.providers.hasAnyProvider())
+        val settings = providerSettings(from = ready)
+        assertEquals("geminiNano", settings.selection?.kind)
+        assertEquals("gemini-nano", settings.selection?.modelID)
+        assertTrue(settings.askUsesLine, settings.askUsesLine.startsWith("Ask uses Gemini Nano"))
+        assertTrue(settings.vendors.first().kinds.single().isActive)
+
+        val cannot = reopen(FixedProbe.UNSUPPORTED)
+        assertFalse("nothing is chosen, and nothing is assumed", cannot.providers.hasAnyProvider())
+        val without = providerSettings(from = cannot)
+        assertNull(without.selection)
+        assertEquals("Ask uses no model yet — connect one below.", without.askUsesLine)
+    }
+
+    /**
+     * The phone's own card explains itself rather than disappearing: this
+     * emulator has no AICore, and what it says so with is the kit's sentence.
+     */
+    @Test
+    fun theOnDeviceCardSaysWhyThisPhoneCannotRunIt() = runTest {
+        val status = kitJson.decodeFromString<ValidationStatus>(kit.providers.validate("geminiNano").await())
+        assertEquals(ValidationStatus.INVALID, status.state)
+        assertEquals("Gemini Nano isn't available on this phone.", status.reason)
+        assertFalse("an unrunnable model is never the active one", kit.providers.hasAnyProvider())
     }
 
     @Test

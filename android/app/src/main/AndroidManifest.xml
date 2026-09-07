@@ -1,5 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Only the provider the reader connected is ever called: an API-key
+         check and an Ask question go to that host and nowhere else. The
+         on-device path makes no request at all. -->
+    <uses-permission android:name="android.permission.INTERNET" />
+
     <application
         android:name=".ReadrApplication"
         android:allowBackup="false"

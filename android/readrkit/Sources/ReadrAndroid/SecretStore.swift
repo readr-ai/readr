@@ -51,6 +51,10 @@ enum AndroidBridgeError: LocalizedError, CustomStringConvertible {
   case unknownHighlight(String)
   case unknownBookmark(String)
   case unknownHighlightColor(String)
+  /// Save pressed with nothing in the field.
+  case emptyAPIKey
+  /// Ask reached the phone's own model before A3c taught it to answer.
+  case onDeviceModelNotReady
 
   var errorDescription: String? {
     switch self {
@@ -61,6 +65,8 @@ enum AndroidBridgeError: LocalizedError, CustomStringConvertible {
     case .unknownHighlight: return "That highlight is no longer in your library."
     case .unknownBookmark: return "That bookmark is no longer in your library."
     case .unknownHighlightColor: return "That highlight colour isn't available."
+    case .emptyAPIKey: return "Paste an API key to connect."
+    case .onDeviceModelNotReady: return "Gemini Nano isn't ready on this phone yet."
     }
   }
 
@@ -75,6 +81,8 @@ enum AndroidBridgeError: LocalizedError, CustomStringConvertible {
     case .unknownHighlight(let id): return "no highlight with id \(id)"
     case .unknownBookmark(let id): return "no bookmark with id \(id)"
     case .unknownHighlightColor(let name): return "unknown highlight color \(name)"
+    case .emptyAPIKey: return "empty API key"
+    case .onDeviceModelNotReady: return "on-device provider is a placeholder until A3c"
     }
   }
 }

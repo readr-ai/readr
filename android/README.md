@@ -166,12 +166,39 @@ iOS app uses — `readingTheme`, `readingFontSize`, `readingFont`,
 `lastHighlightColor` (the colour "Note" reaches for, deliberately outside
 `ReaderAppearance` so it can never re-paginate a chapter).
 
+## AI providers
+
+`ui/settings/` is the provider screen, and every sentence on it comes from
+the kit: `AndroidProviders` (the facade) answers one `providersJSON()` with
+the ask-uses line, the active selection and a card per vendor, built from
+`ProviderVendor.displayed(forKinds:)` over the four methods this build has —
+Gemini Nano, OpenAI, OpenRouter and Anthropic. ChatGPT's subscription path
+and Ollama are not offered here (an unofficial backend, and a loopback server
+no phone runs), and Apple's system model is not a thing an Android phone has.
+There is no browser sign-in yet, so the card badges and connect hints say
+"API key" rather than repeating the kit's "sign in or key".
+
+Gemini Nano's readiness is Kotlin's to answer: `kit/NanoProbe` implements the
+facade's `OnDeviceProbe` and reports `ready` / `unavailable:<reason>` /
+`unsupported:<reason>` as one string (a bridged protocol method may not throw
+or return an optional). It is asked on every read of the selection, so the
+phone's own model is the default *while* the phone can run it and the reader
+is back to "nothing chosen" the moment it cannot. Today it answers from
+Android 14+ and an installed, non-stub `com.google.android.aicore`; the real
+ML Kit check and the model itself land in A3c, and until then the provider is
+a placeholder that reports readiness and refuses to answer.
+
 ## Layout on device
 
 `filesDir/library.json` (FileLibraryStore), `filesDir/Books/<uuid>.epub|txt`
-(originals), `filesDir/Covers/`, `filesDir/.sample-seeded`. Provider secrets:
-AES-GCM under an Android Keystore key that is usable only while the device is
-unlocked, ciphertext in `secrets` preferences — never plaintext on disk.
+(originals), `filesDir/Covers/`, `filesDir/.sample-seeded`,
+`filesDir/provider-selection.json` (the chosen provider and model — the
+facade's own file, since `UserDefaults` on Android is a plist in a directory
+nobody owns) and `filesDir/OpenRouterModels.json` (the cached catalogue).
+Provider secrets: AES-GCM under an Android Keystore key that is usable only
+while the device is unlocked, ciphertext in `secrets` preferences — never
+plaintext on disk. The app holds `INTERNET` for one reason: the provider the
+reader connected. Nothing else is called.
 
 Every packaged Swift library is checked against the facade's `DT_NEEDED`
 entries (transitively) at build time, so a new Foundation module the kit
