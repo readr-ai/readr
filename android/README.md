@@ -105,11 +105,32 @@ Swift facade converts to and from the kit's character offsets with the
 chapter text in hand (`TextOffsets.swift`). Positions, contents rows,
 anchors and spans all follow that rule.
 
+Three layouts, keyed as `readerLayout` (the kit's `PageLayout`): a single
+page, two facing pages, or a scroll. In a spread the column block is at most
+two measures wide, the two columns share it minus a 1 dp spine in
+`palette.line`, a spread starts on an even page index and a turn advances by
+two, and the label reads "Pages 3–4 of 11" (the last spread of an odd chapter
+draws the spine and an empty facing page, so the spine stays centred). Each
+column is its own `Text` with its own layout, so selection, links and the
+capsule work on both. Two pages are offered only from 600 dp of width — the
+same test that picks the regular insets — and on a narrower window a stored
+`doublePage` *reads* as a single page without the preference being rewritten.
+The scroll draws the whole chapter in one `Text` at the same column width:
+no page label, a 2 dp progress track for the book and what is left of the
+chapter, chapter buttons at either end, and the anchor is the first fully
+visible line.
+
+The bar is chrome over the window, not over the page: while it is shown the
+surface sits below it, so the page is shorter than with the chrome hidden.
+Those are two geometries the reader flips between all day, which is what the
+multi-slot `PaginationCache` is for; the place is the anchor and the page
+index is re-derived from it, so nothing jumps when the geometry changes.
+
 Appearance (`ReaderSettings`) is plain `SharedPreferences` under the keys the
 iOS app uses — `readingTheme`, `readingFontSize`, `readingFont`,
-`readingLineSpacing`, `readingJustified`, and `lastHighlightColor` (the colour
-"Note" reaches for, deliberately outside `ReaderAppearance` so it can never
-re-paginate a chapter).
+`readingLineSpacing`, `readingJustified`, `readerLayout`, and
+`lastHighlightColor` (the colour "Note" reaches for, deliberately outside
+`ReaderAppearance` so it can never re-paginate a chapter).
 
 ## Layout on device
 

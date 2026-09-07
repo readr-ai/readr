@@ -1,7 +1,15 @@
 package com.readrai.readr
 
 import android.net.Uri
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.requiredWidth
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.SemanticsNodeInteraction
 import androidx.compose.ui.test.assertIsDisplayed
@@ -13,7 +21,11 @@ import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.swipeLeft
+import androidx.compose.ui.test.swipeUp
 import androidx.compose.ui.text.style.TextDecoration
+import androidx.compose.ui.unit.Density
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.dp
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.readrai.readr.data.BookSummary
@@ -24,6 +36,7 @@ import com.readrai.readr.kit.KeystoreSecretStore
 import com.readrai.readr.kit.Kit
 import com.readrai.readr.ui.reader.ChapterStyling
 import com.readrai.readr.ui.reader.LayoutKey
+import com.readrai.readr.ui.reader.PageLayout
 import com.readrai.readr.ui.reader.ReaderScreen
 import com.readrai.readr.ui.reader.ReaderSettings
 import com.readrai.readr.ui.reader.ReaderViewModel
@@ -82,12 +95,36 @@ class ReaderScreenTest {
         root.deleteRecursively()
     }
 
-    private fun open(): ReaderViewModel = open(book.id)
-
-    private fun open(id: String): ReaderViewModel {
+    /**
+     * The reader, optionally in a window of a stated width. The emulator's
+     * screen is a phone's, so a tablet-width window is composed at a density
+     * that puts those dp inside the physical screen: the reader really does
+     * get a window that wide (`requiredWidth`), and every injected tap still
+     * lands inside the window it is dispatched to.
+     *
+     * `paged` waits for the page label; a scroll has none, so it waits for the
+     * text instead.
+     */
+    private fun open(id: String = book.id, width: Dp? = null, paged: Boolean = true): ReaderViewModel {
         val model = ReaderViewModel({ repository }, id)
-        compose.setContent { ReadrTheme { ReaderScreen(model, settings, onBack = {}) } }
-        waitForPages()
+        compose.setContent {
+            ReadrTheme {
+                if (width == null) {
+                    ReaderScreen(model, settings, onBack = {})
+                } else {
+                    BoxWithConstraints(Modifier.fillMaxSize()) {
+                        val outer = LocalDensity.current
+                        val scale = minOf(1f, maxWidth / width)
+                        CompositionLocalProvider(LocalDensity provides Density(outer.density * scale, outer.fontScale)) {
+                            Box(Modifier.requiredWidth(width).fillMaxHeight()) {
+                                ReaderScreen(model, settings, onBack = {})
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if (paged) waitForPages() else awaitTag("reader.page")
         return model
     }
 
@@ -108,10 +145,21 @@ class ReaderScreenTest {
         .firstOrNull()?.config?.get(SemanticsProperties.Text)?.joinToString { it.text } ?: ""
     private fun pageCount(): Int = Regex("Page \\d+ of (\\d+)").find(label())?.groupValues?.get(1)?.toInt() ?: -1
     private fun pageNumber(): Int = Regex("Page (\\d+) of").find(label())?.groupValues?.get(1)?.toInt() ?: -1
+
+    /** The label's count of pages, however the spread is worded ("Page 3 of 11", "Pages 3–4 of 11"). */
+    private fun totalPages(): Int = Regex("of (\\d+)").find(label())?.groupValues?.get(1)?.toInt() ?: -1
+
+    /** Just the pages part of the label, without the "· ~N min left" tail. */
+    private fun spreadLabel(): String = label().substringBefore(" ·")
     private fun kicker(): String = compose.onNodeWithTag("reader.kicker").fetchSemanticsNode().config[SemanticsProperties.ContentDescription].first()
 
     private fun tapPage(fraction: Float) {
         compose.onNodeWithTag("reader.page").performTouchInput { click(Offset(width * fraction, height / 2f)) }
+    }
+
+    /** A tap measured across the whole reading surface — where the page-turn zones are. */
+    private fun tapSurface(fraction: Float) {
+        compose.onNodeWithTag("reader.surface").performTouchInput { click(Offset(width * fraction, height / 2f)) }
     }
 
     /** A tap high on the page, where a highlight over the chapter's opening lies. */
@@ -525,6 +573,107 @@ class ReaderScreenTest {
         awaitTag("reader.message")
         assertEquals("That link doesn't lead anywhere in this book.", model.message)
         assertEquals("and the reader has not moved", titles[0], kicker())
+    }
+
+    /**
+     * The bar is not an overlay: the page is shorter while the chrome is up,
+     * so hiding it re-paginates the chapter. The reading place is the anchor,
+     * not a page number, so showing the chrome again lands on the same page —
+     * and on a pagination that came out of the cache, not the measurer.
+     */
+    @Test
+    fun togglingTheChromeTwiceKeepsThePlaceAndMeasuresNothingAgain() {
+        val model = open()
+        // Off the first page, where a jump would show.
+        tapPage(0.9f)
+        compose.waitUntil(5_000) { pageNumber() == 2 }
+        val anchor = model.anchor
+        val page = pageNumber()
+        val pages = pageCount()
+
+        tapPage(0.5f) // the chrome away: a taller page, and a chapter of fewer of them
+        compose.waitUntil(10_000) { pageCount() != pages }
+        assertTrue("a page without the bar over it holds more", pageCount() < pages)
+        val measured = model.paginationHits
+
+        tapPage(0.5f) // and back to the geometry it started in
+        compose.waitUntil(10_000) { pageCount() == pages }
+        assertEquals("the reader is where it was", anchor, model.anchor)
+        assertEquals(page, pageNumber())
+        assertTrue("the first pagination came back from the cache", model.paginationHits > measured)
+    }
+
+    /**
+     * A wide window reads like an open book: two facing pages, labelled as
+     * one spread, turning two at a time.
+     */
+    @Test
+    fun aWideWindowShowsTwoFacingPagesAndTurnsBoth() {
+        settings.update { it.copy(layout = PageLayout.DoublePage) }
+        val model = open(width = 700.dp)
+        val total = totalPages()
+        assertTrue("a chapter of 24 paragraphs spans several spreads", total > 3)
+        assertEquals("Pages 1–2 of $total", spreadLabel())
+        compose.onNodeWithTag("reader.page.facing").assertIsDisplayed()
+
+        // A turn in the surface's right-hand zone moves the whole spread.
+        tapSurface(0.9f)
+        compose.waitUntil(10_000) { spreadLabel() == "Pages 3–4 of $total" }
+        assertTrue("and the place moved with it", model.anchor > 0)
+        assertEquals("Chapter 1", kicker())
+    }
+
+    /**
+     * The scroll layout has no pages to number: the chapter runs continuously,
+     * and where the reader stops is remembered like any other place.
+     */
+    @Test
+    fun theScrollLayoutHasNoPageLabelAndRemembersWhereItStopped() {
+        settings.update { it.copy(layout = PageLayout.Scroll) }
+        val model = open(paged = false)
+        assertEquals("Chapter 1", kicker())
+        assertTrue("nothing is paginated, so nothing is numbered", nodes("reader.pageLabel").isEmpty())
+        assertEquals(0, model.anchor)
+
+        compose.onNodeWithTag("reader.scroll").performTouchInput { swipeUp() }
+        compose.waitUntil(10_000) { model.anchor > 0 }
+        compose.waitUntil(10_000) { runBlocking { repository.position(book.id)?.utf16Offset ?: 0 } > 0 }
+        val saved = runBlocking { repository.position(book.id)!! }
+        assertEquals(0, saved.chapterIndex)
+        assertEquals(model.anchor, saved.utf16Offset)
+    }
+
+    /**
+     * A layout is a one-shot choice, not something to compare: the sheet gets
+     * out of the way so the reader sees what they picked. (Theme, size and
+     * spacing keep it open — `largerTextMakesMorePages` reads that.)
+     */
+    @Test
+    fun pickingALayoutClosesTheAppearanceSheet() {
+        open()
+        compose.onNodeWithTag("reader.appearance").performClick()
+        awaitTag("appearance.layout.scroll")
+        compose.onNodeWithTag("appearance.layout.scroll").performClick()
+
+        awaitNoTag("appearance.layout.scroll")
+        assertEquals(PageLayout.Scroll, settings.appearance.value.layout)
+        awaitTag("reader.scroll")
+        assertTrue("and the chapter is one continuous text now", nodes("reader.pageLabel").isEmpty())
+    }
+
+    /**
+     * A spread needs a wide window. On a phone a stored `doublePage` reads as
+     * a single page — and the preference is left alone, so the same book on a
+     * larger screen still opens as a book.
+     */
+    @Test
+    fun aNarrowWindowReadsAStoredSpreadAsASinglePage() {
+        settings.update { it.copy(layout = PageLayout.DoublePage) }
+        open(width = 360.dp)
+        assertEquals(1, pageNumber())
+        assertTrue("no facing page on a phone", nodes("reader.page.facing").isEmpty())
+        assertEquals("Page 1 of ${totalPages()}", spreadLabel())
+        assertEquals("and the preference is untouched", PageLayout.DoublePage, settings.appearance.value.layout)
     }
 
     @Test

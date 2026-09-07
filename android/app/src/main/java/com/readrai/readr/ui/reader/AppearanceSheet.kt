@@ -12,7 +12,9 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -36,16 +38,35 @@ import com.readrai.readr.ui.theme.LocalReadingPalette
 import com.readrai.readr.ui.theme.Marginalia
 
 /**
- * The "Aa" sheet: text size and theme, font, spacing, justification — the
- * iOS Appearance popover's sections that apply on Android. Changes preview
- * live behind the sheet.
+ * The "Aa" sheet: text size and theme, font, spacing, justification, and the
+ * reading layout — the iOS Appearance popover's sections that apply on
+ * Android. Changes preview live behind the sheet; picking a *layout* closes
+ * it instead, as the popover does, since a layout is a one-shot choice the
+ * reader wants to see rather than compare.
+ *
+ * `offersDoublePage` is the reader's own width test: a facing-page spread is
+ * offered only on a wide window (the surface reports it — see `ReaderScreen`).
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun AppearanceSheet(appearance: ReaderAppearance, onChange: ((ReaderAppearance) -> ReaderAppearance) -> Unit, onDismiss: () -> Unit) {
+fun AppearanceSheet(
+    appearance: ReaderAppearance,
+    onChange: ((ReaderAppearance) -> ReaderAppearance) -> Unit,
+    onDismiss: () -> Unit,
+    offersDoublePage: Boolean = false,
+) {
     val palette = LocalReadingPalette.current
     ModalBottomSheet(onDismissRequest = onDismiss, containerColor = palette.elevated) {
-        Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp).padding(bottom = 28.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
+        // Five sections outgrow a landscape phone's height — the sheet scrolls
+        // rather than cutting the last one off where nothing can reach it.
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 20.dp)
+                .padding(bottom = 28.dp),
+            verticalArrangement = Arrangement.spacedBy(18.dp),
+        ) {
             Section("TEXT & THEME") {
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                     IconButton(
@@ -106,6 +127,23 @@ fun AppearanceSheet(appearance: ReaderAppearance, onChange: ((ReaderAppearance) 
                     Text("Justify text", style = MaterialTheme.typography.bodyMedium, color = palette.ink)
                     Spacer(Modifier.weight(1f))
                     Switch(checked = appearance.justified, onCheckedChange = { on -> onChange { it.copy(justified = on) } }, modifier = Modifier.testTag("appearance.justify"))
+                }
+            }
+            Section("LAYOUT") {
+                // A narrow window is offered scroll and single page only, and a
+                // stored `doublePage` shows as single page there — the reader
+                // is told what they are getting, and the preference survives.
+                val offered = PageLayout.entries.filter { it != PageLayout.DoublePage || offersDoublePage }
+                val current = appearance.layout.on(offersDoublePage)
+                SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+                    offered.forEachIndexed { index, layout ->
+                        SegmentedButton(
+                            selected = layout == current,
+                            onClick = { onChange { it.copy(layout = layout) }; onDismiss() },
+                            shape = SegmentedButtonDefaults.itemShape(index, offered.size),
+                            modifier = Modifier.testTag("appearance.layout.${layout.key}"),
+                        ) { Text(layout.displayName, maxLines = 1) }
+                    }
                 }
             }
         }

@@ -225,10 +225,7 @@ class ReaderViewModel(private val library: suspend () -> LibraryRepository, val 
      * of the book.
      */
     fun overflow(direction: Int): Boolean {
-        val ready = state as? State.Ready ?: return false
-        var index = chapterIndex + direction
-        while (index in ready.chapters.indices && !ready.chapters[index].isLinear) index += direction
-        if (index !in ready.chapters.indices) return false
+        val index = neighbour(direction) ?: return false
         visible = null
         if (direction > 0) {
             jump(index, 0)
@@ -238,6 +235,19 @@ class ReaderViewModel(private val library: suspend () -> LibraryRepository, val 
             loadChapter()
         }
         return true
+    }
+
+    /**
+     * The linear chapter this one runs into going `direction`, skipping the
+     * non-linear ones on the way, or null at either end of the book. The
+     * scroll layout's chapter buttons ask so they can stand down at the
+     * covers; [overflow] asks so a page turn past the end knows where to go.
+     */
+    fun neighbour(direction: Int): Int? {
+        val ready = state as? State.Ready ?: return null
+        var index = chapterIndex + direction
+        while (index in ready.chapters.indices && !ready.chapters[index].isLinear) index += direction
+        return index.takeIf { it in ready.chapters.indices }
     }
 
     /** Once the pages exist, a backward crossing lands on the last page's start, and that is what is saved. */
@@ -448,6 +458,9 @@ class ReaderViewModel(private val library: suspend () -> LibraryRepository, val 
     /** Pages for `key`, computed once; `compute` runs on the caller's thread. */
     fun pageSet(key: PageKey, compute: () -> PageSet): PageSet =
         cache.get(key) ?: compute().also { cache.put(key, it) }
+
+    /** How many paginations came out of the cache instead of the measurer — see [PaginationCache]. */
+    val paginationHits: Int get() = cache.hits
 
     private fun scheduleSave() {
         saveJob?.cancel()
