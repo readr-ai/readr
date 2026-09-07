@@ -21,6 +21,11 @@ adb push "$BUNDLE/ndk-sysroot/usr/lib/x86_64-linux-android/libc++_shared.so" /da
 adb shell 'cd /data/local/tmp/readr && TMPDIR=/data/local/tmp/readr/tmp HOME=/data/local/tmp/readr LD_LIBRARY_PATH=/data/local/tmp/readr/lib ./ReadrKitPackageTests.xctest; echo XCTEST_EXIT=$?' | tee kit-tests.log
 grep -q '^XCTEST_EXIT=0' kit-tests.log
 grep -q "Test Suite 'All tests' passed" kit-tests.log
-! grep -qE 'with [1-9][0-9]* failures' kit-tests.log
+# `! grep` would be ignored by `set -e` (bash exempts negated commands), so
+# spell the gate out.
+if grep -qE 'with [1-9][0-9]* failures' kit-tests.log; then
+  echo "kit tests reported failures" >&2
+  exit 1
+fi
 
 cd android && ./gradlew :app:connectedDebugAndroidTest
