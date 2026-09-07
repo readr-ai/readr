@@ -171,7 +171,8 @@ class PlatformSpeechBackend(context: Context, private val events: NarrationEvent
     /**
      * The installed voices, network ones left out (see the class note). Android
      * gives a voice a machine name — `en-us-x-sfg#female_1-local` — so the
-     * readable half is its locale, with the variant after it when there is one.
+     * readable half is its locale, with whatever tells it from its siblings
+     * after it (see [variant]).
      */
     override fun voicesJSON(): String {
         val tts = engine?.takeIf { ready } ?: return "[]"
@@ -310,9 +311,25 @@ class PlatformSpeechBackend(context: Context, private val events: NarrationEvent
 
     private fun displayName(voice: Voice): String {
         val locale = voice.locale.getDisplayName(voice.locale).ifBlank { voice.locale.toLanguageTag() }
-        val variant = voice.name.substringAfter('#', "").substringBefore("-local")
-            .replace('_', ' ').trim()
-        return if (variant.isEmpty()) locale else "$locale ($variant)"
+        val variant = variant(voice.name)
+        return if (variant.isEmpty()) locale else "$locale · $variant"
+    }
+
+    /**
+     * What tells one installed voice from another. Android gives a voice a
+     * machine name and no human one, in two common shapes:
+     * `en-us-x-sfg#female_1-local`, where a `#` marks the variant, and
+     * `en-us-x-tpd-local`, where nothing does and the `x-` token is all there
+     * is. Google's engine ships nine local English voices of the second shape,
+     * and the picker showed nine rows all reading "English (United States)"
+     * until this took it into account: a list whose rows cannot be told apart
+     * is not a picker.
+     */
+    private fun variant(name: String): String {
+        val marked = name.substringAfter('#', "")
+        val raw = if (marked.isNotEmpty()) marked else name.substringAfter("-x-", "")
+        return raw.substringBefore("-local").substringBefore("-network")
+            .replace('_', ' ').replace('-', ' ').trim()
     }
 
     // MARK: The platform's reports, all of them on the main looper

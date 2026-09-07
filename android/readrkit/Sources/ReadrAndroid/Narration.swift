@@ -72,6 +72,38 @@ private struct VoiceWire: Codable {
   }
 }
 
+/// One voice as the picker lists it, in `VoiceSelector`'s order.
+private struct VoiceOptionWire: Codable {
+  var id: String
+  var name: String
+  var language: String
+  var quality: String
+  var isDefault: Bool
+  /// The voice the kit would choose for this book with nothing stored — the
+  /// row the picker marks, which need not be the row that is checked.
+  var isRecommended: Bool
+}
+
+/// Everything the Appearance sheet's Voice row draws — see `voicesJSON()`.
+private struct VoicePickerWire: Codable {
+  var voices: [VoiceOptionWire]
+  var otherVoices: [VoiceOptionWire]
+  var recommendedID: String?
+  var selectedID: String?
+  var selectedName: String?
+  /// What the row says when the phone has no voice data at all. The facade's
+  /// words, like every other sentence a reader could be stopped by here.
+  var emptyText: String
+}
+
+/// What the media session publishes — see `nowPlayingJSON()`.
+private struct NowPlayingWire: Codable {
+  var title: String
+  var authors: String
+  var chapterTitles: [String]
+  var chapterIndex: Int
+}
+
 // MARK: - What the reader's card is told
 
 /// Where narration is, as the Compose card follows it. Kotlin implements it;
@@ -586,22 +618,81 @@ public final class AndroidNarration {
     return String(decoding: data, as: UTF8.self)
   }
 
-  /// The voices worth offering for this book, best first — the kit's own
-  /// ordering (`VoiceSelector`) over what the phone has installed. Asked of
-  /// the backend each time, so a voice the reader downloads mid-book shows up
-  /// without the session being rebuilt.
+  /// Everything the Appearance sheet's Voice row draws, in one call: the
+  /// voices for the book's own language first, everything else behind "Other
+  /// voices", which of them is reading, and the sentence to show when the
+  /// phone has no voice data at all.
+  ///
+  /// Every ordering here is the kit's `VoiceSelector` — the same ranking the
+  /// Apple picker lists and the same rule `resolveVoiceIfNeeded` chooses by,
+  /// so the row the picker marks as recommended is the one that would read
+  /// the book if the reader chose nothing. Kotlin re-ranks nothing.
+  ///
+  /// Asked of the backend each time, so a voice the reader downloads mid-book
+  /// shows up without the session being rebuilt.
   public func voicesJSON() -> String {
     let installed = Self.installedVoices(backend.voicesJSON())
-    let offered = VoiceSelector().voices(
-      matching: book?.metadata.language, in: installed.voices,
-      systemDefault: installed.systemDefault)
-    let wire = offered.map {
-      VoiceWire(
-        id: $0.id, name: $0.name, language: $0.language,
-        quality: Self.name(of: $0.quality), isDefault: $0.id == installed.systemDefault)
+    let systemDefault = installed.systemDefault
+    let selector = VoiceSelector()
+    let language = Self.pickerLanguage(of: book)
+    // `voices(matching:)` answers the book's language, or everything when it
+    // matches nothing — so the second group is whatever the first left over,
+    // ranked by the same rule. Empty, then, exactly when the first group is
+    // already the whole list.
+    let forBook = selector.voices(
+      matching: language, in: installed.voices, systemDefault: systemDefault)
+    let taken = Set(forBook.map(\.id))
+    let others = selector.voices(
+      matching: nil, in: installed.voices.filter { !taken.contains($0.id) },
+      systemDefault: systemDefault)
+    // What the kit would pick with no stored preference: the row the picker
+    // marks, which is not necessarily the row that is checked.
+    let recommended = selector.voice(
+      for: language, in: installed.voices, preferring: nil, systemDefault: systemDefault)
+    let selectedID = controller?.settings.voiceID
+    let selected = selectedID.flatMap { id in installed.voices.first { $0.id == id } } ?? recommended
+    func option(_ voice: SpeechVoice) -> VoiceOptionWire {
+      VoiceOptionWire(
+        id: voice.id, name: voice.name, language: voice.language,
+        quality: Self.name(of: voice.quality), isDefault: voice.id == systemDefault,
+        isRecommended: voice.id == recommended?.id)
     }
-    guard let data = try? AndroidLibrary.encoder().encode(wire) else { return "[]" }
+    let wire = VoicePickerWire(
+      voices: forBook.map(option), otherVoices: others.map(option),
+      recommendedID: recommended?.id, selectedID: selectedID, selectedName: selected?.name,
+      emptyText: Self.noVoicesText)
+    guard let data = try? AndroidLibrary.encoder().encode(wire) else { return "" }
     return String(decoding: data, as: UTF8.self)
+  }
+
+  /// What the media session publishes: the book, who wrote it, and its
+  /// chapters — the session's playlist, so the notification's ⏭ and ⏮ move by
+  /// the book's own chapters. Titles are the kit's `chapterDisplayTitle`, so
+  /// nothing on the Kotlin side writes a heading.
+  ///
+  /// Asked once a listening session (the book cannot change under one) and
+  /// again whenever the chapter does, which is the only field that moves.
+  public func nowPlayingJSON() -> String {
+    guard let book else { return "" }
+    let wire = NowPlayingWire(
+      title: book.metadata.title,
+      authors: book.metadata.authors.joined(separator: ", "),
+      chapterTitles: book.chapters.indices.map { book.chapterDisplayTitle($0) },
+      chapterIndex: controller?.position?.chapterIndex ?? 0)
+    guard let data = try? AndroidLibrary.encoder().encode(wire) else { return "" }
+    return String(decoding: data, as: UTF8.self)
+  }
+
+  /// The language the picker groups by. A book that declares none — most
+  /// plain text, plenty of EPUBs — would otherwise offer every voice the
+  /// phone has in every language, which is not a picker so much as a wall;
+  /// the reader's own locale is the better guess, since a book whose language
+  /// nobody recorded is most likely in the one they read in. This is
+  /// `prepareVoices(for:)`'s rule on Apple, and it is the picker's alone:
+  /// `resolveVoiceIfNeeded` still leaves an unlabelled book to the engine's
+  /// own default rather than guessing which voice should read it.
+  private static func pickerLanguage(of book: Book?) -> String {
+    book?.metadata.language ?? Locale.current.identifier
   }
 
   // MARK: Publishing
@@ -797,6 +888,13 @@ public final class AndroidNarration {
   private static let engineFailed = "engineFailed"
   private static let engineFailedText =
     "Paused \u{2014} the phone\u{2019}s voice couldn\u{2019}t read that."
+
+  /// The phone has no voice data at all, so there is nothing to pick from.
+  /// The facade's words too — and they name the door out, as the Apple
+  /// picker's "More voices" note does.
+  private static let noVoicesText =
+    "No voices installed \u{2014} add one in Settings \u{203A} Accessibility "
+    + "\u{203A} Text-to-speech output."
 
   /// Muted footnote markers leave runs of spaces in a segment's text (the
   /// substitution is length-preserving by design, so offsets stay true).

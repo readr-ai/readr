@@ -34,6 +34,8 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.readrai.readr.ui.listen.NarrationModel
+import com.readrai.readr.ui.listen.VoiceRow
 import com.readrai.readr.ui.theme.LocalReadingPalette
 import com.readrai.readr.ui.theme.Marginalia
 
@@ -46,6 +48,11 @@ import com.readrai.readr.ui.theme.Marginalia
  *
  * `offersDoublePage` is the reader's own width test: a facing-page spread is
  * offered only on a wide window (the surface reports it — see `ReaderScreen`).
+ *
+ * `narration` brings the sixth section, Voice: the narrator is chosen here
+ * rather than on the Listen card, as the Apple app's Aa popover has it, so a
+ * reader can pick one before the first Listen. Absent — a preview, a screen
+ * with no book behind it — the section is simply not drawn.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -54,6 +61,7 @@ fun AppearanceSheet(
     onChange: ((ReaderAppearance) -> ReaderAppearance) -> Unit,
     onDismiss: () -> Unit,
     offersDoublePage: Boolean = false,
+    narration: NarrationModel? = null,
 ) {
     val palette = LocalReadingPalette.current
     ModalBottomSheet(onDismissRequest = onDismiss, containerColor = palette.elevated) {
@@ -129,6 +137,7 @@ fun AppearanceSheet(
                     Switch(checked = appearance.justified, onCheckedChange = { on -> onChange { it.copy(justified = on) } }, modifier = Modifier.testTag("appearance.justify"))
                 }
             }
+            if (narration != null) Section("VOICE") { VoiceRow(narration) }
             Section("LAYOUT") {
                 // A narrow window is offered scroll and single page only, and a
                 // stored `doublePage` shows as single page there — the reader
