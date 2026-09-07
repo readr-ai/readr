@@ -59,6 +59,7 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.Path
@@ -80,6 +81,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.zIndex
 import com.readrai.readr.data.AskFrontier
 import com.readrai.readr.data.AskSelection
@@ -90,6 +92,9 @@ import com.readrai.readr.ui.ask.AskRequest
 import com.readrai.readr.ui.ask.AskSheet
 import com.readrai.readr.ui.ask.AskViewModel
 import com.readrai.readr.ui.ask.rememberAskViewModel
+import com.readrai.readr.ui.listen.ListenCard
+import com.readrai.readr.ui.listen.NarrationModel
+import com.readrai.readr.ui.listen.rememberNarrationModel
 import com.readrai.readr.ui.theme.LocalReadingPalette
 import com.readrai.readr.ui.theme.Marginalia
 import com.readrai.readr.ui.theme.ReadingPalette
@@ -149,6 +154,7 @@ fun ReaderScreen(
     model: ReaderViewModel,
     settings: ReaderSettings,
     ask: AskViewModel = rememberAskViewModel(model.bookId),
+    narration: NarrationModel = rememberNarrationModel(model.bookId),
     /** Where the sheet's "Open AI Providers" goes; coming back refreshes it. */
     onOpenProviders: () -> Unit = {},
     onBack: () -> Unit,
@@ -157,6 +163,17 @@ fun ReaderScreen(
     val palette = LocalReadingPalette.current
     var showChrome by rememberSaveable { mutableStateOf(true) }
     var sheet by rememberSaveable { mutableStateOf<ReaderSheet?>(null) }
+    val density = LocalDensity.current
+    /** The Listen card's own height, taken off the page rather than laid over it. */
+    var listenInset by remember { mutableStateOf(0.dp) }
+    /**
+     * "Listen from here" started inside the sentence the reader pointed at,
+     * which may be on the page *before* the one they are looking at. Hold the
+     * page there until the voice reaches it, so the reader is not thrown back
+     * a page by a control that promised to read from where they were.
+     */
+    var holdsPageForSelectionStart by remember { mutableStateOf(false) }
+    var heldSentenceStart by remember { mutableStateOf<Int?>(null) }
     // The surface's own width test, reported up so the Appearance sheet offers
     // the same layouts the reader can actually draw. The sheet cannot measure
     // it for itself — a modal sheet is capped at 640 dp however wide the
@@ -180,9 +197,94 @@ fun ReaderScreen(
         return AskFrontier(model.chapterIndex.coerceAtLeast(0), maxOf(0, maxOf(read, selectionEnd ?: 0)))
     }
 
+    /**
+     * While the voice reads, Ask with no selection is about the sentence being
+     * read — "what does this mean" means the one the reader just heard. Null
+     * when the voice is not reading this chapter, or has been paused by the
+     * reader, who may have read on by eye since: a question then is about the
+     * book, not a sentence from pages back. (Paused by Ask itself still counts.)
+     */
+    fun narratedSentence(): AskSelection? {
+        if (!narration.countsAsReading) return null
+        val sentence = narration.currentSentence() ?: return null
+        if (sentence.chapterIndex != model.chapterIndex) return null
+        val text = model.chapter?.takeIf { it.index == sentence.chapterIndex }?.text ?: return null
+        val start = sentence.utf16Start.coerceIn(0, text.length)
+        val end = sentence.utf16End.coerceIn(start, text.length)
+        if (end <= start) return null
+        return AskSelection(sentence.chapterIndex, start, end, text.substring(start, end))
+    }
+
     fun openAsk(selection: AskSelection?) {
         showChrome = true
-        ask.open(AskRequest(selection = selection, frontier = frontierNow(selection?.utf16End)))
+        // Listening to the next page while reading an answer about this one is
+        // nobody's wish; dismissing the sheet gives the voice back.
+        narration.pauseForAsk()
+        val about = selection ?: narratedSentence()
+        ask.open(AskRequest(selection = about, frontier = frontierNow(about?.utf16End)))
+    }
+
+    /** The one place narration is started from this screen. */
+    fun startListening(chapterIndex: Int, utf16Offset: Int, anchor: String) {
+        holdsPageForSelectionStart = anchor == NarrationModel.SENTENCE_CONTAINING
+        heldSentenceStart = null
+        narration.listen(chapterIndex, utf16Offset, anchor)
+    }
+
+    fun toggleListening() {
+        if (narration.isActive) {
+            narration.stopListening()
+            model.stopFollowingVoice()
+        } else {
+            // The reading anchor, so the voice picks up at the top of the page
+            // in front of the reader rather than at the chapter's start.
+            startListening(model.chapterIndex, model.anchor, NarrationModel.NEXT_SENTENCE_START)
+        }
+    }
+
+    /**
+     * A jump the reader made (Contents, a search hit, a bookmark). A voice that
+     * was reading goes with them — and if it was paused when they jumped, it
+     * is paused again on the new chapter rather than starting to read.
+     */
+    fun jumpTaking(narrationTo: Int, utf16Offset: Int) {
+        val wasActive = narration.isActive
+        val wasUnderway = narration.isUnderway
+        model.jump(narrationTo, utf16Offset)
+        if (!wasActive) return
+        startListening(narrationTo, utf16Offset, NarrationModel.NEXT_SENTENCE_START)
+        if (!wasUnderway) narration.pause()
+    }
+
+    /**
+     * Keep the page under the voice. Narration reports each sentence it moves
+     * to; setting the anchor re-derives the visible page from it, so the page
+     * turns exactly when the reading crosses onto the next one — and the place
+     * that gets written down is where the reader actually listened to.
+     */
+    DisposableEffect(narration, model) {
+        narration.onPosition = { chapterIndex, utf16Offset, sentenceStart ->
+            if (chapterIndex != model.chapterIndex) {
+                model.jump(chapterIndex, sentenceStart)
+            } else {
+                var held = false
+                if (holdsPageForSelectionStart) {
+                    // Still inside the selected sentence and behind the page the
+                    // reader is on: hold. Anything else releases the hold.
+                    if (utf16Offset < model.anchor &&
+                        (heldSentenceStart == null || heldSentenceStart == sentenceStart)
+                    ) {
+                        heldSentenceStart = sentenceStart
+                        held = true
+                    } else {
+                        holdsPageForSelectionStart = false
+                        heldSentenceStart = null
+                    }
+                }
+                if (!held) model.followVoice(utf16Offset, sentenceStart)
+            }
+        }
+        onDispose { narration.onPosition = null }
     }
 
     Box(Modifier.fillMaxSize().background(palette.page)) {
@@ -212,7 +314,10 @@ fun ReaderScreen(
                 // The bottom bar takes its own height off the page the same
                 // way the top one does, and gives it back when the chrome
                 // goes: two geometries, which is what the cache is for.
-                bottomInset = if (showChrome) bottomBarHeight else 0.dp,
+                // …and so does the Listen card, which is an inset of the
+                // reading surface and never a slab over it: the page turns
+                // itself to follow the voice, so nothing may cover the words.
+                bottomInset = (if (showChrome) bottomBarHeight else 0.dp) + listenInset,
                 onWide = { wideSurface = it },
                 onChromeToggle = { showChrome = !showChrome },
                 onAsk = { target ->
@@ -222,6 +327,12 @@ fun ReaderScreen(
                         utf16End = target.utf16End,
                         quotedText = target.quotedText,
                     ))
+                },
+                onListen = { target ->
+                    startListening(
+                        target.chapterIndex, target.utf16Start,
+                        NarrationModel.SENTENCE_CONTAINING,
+                    )
                 },
             )
         }
@@ -285,6 +396,27 @@ fun ReaderScreen(
             )
         }
 
+        // The now-reading card, above the bottom bar and below the page it
+        // insets. Its measured height goes back into the surface as
+        // `listenInset`, so the words are never underneath it.
+        LaunchedEffect(narration.isActive) { if (!narration.isActive) listenInset = 0.dp }
+        if (narration.isActive) {
+            val ready = model.state as? ReaderViewModel.State.Ready
+            val chapterTitle = ready?.chapters?.getOrNull(narration.chapterIndex)?.title
+                ?: ready?.chapters?.getOrNull(model.chapterIndex)?.title
+            ListenCard(
+                narration = narration,
+                palette = palette,
+                chapterTitle = chapterTitle,
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .zIndex(1f)
+                    .navigationBarsPadding()
+                    .padding(bottom = if (showChrome) bottomBarHeight else 0.dp)
+                    .onSizeChanged { listenInset = with(density) { it.height.toDp() } },
+            )
+        }
+
         // Getting around the book: where you are going, where you were, and
         // what you are looking for — under the thumb, and gone with the rest
         // of the chrome when the reader taps the page.
@@ -310,6 +442,16 @@ fun ReaderScreen(
                         Icon(Icons.AutoMirrored.Filled.List, contentDescription = "Table of contents", tint = palette.ink)
                     }
                     BookmarkAction(model, palette)
+                    IconButton(
+                        onClick = { toggleListening() },
+                        modifier = Modifier
+                            .testTag("reader.listen")
+                            .semantics {
+                                contentDescription = if (narration.isActive) "Stop listening" else "Listen"
+                            },
+                    ) {
+                        ListenGlyph(if (narration.isActive) palette.iris else palette.ink)
+                    }
                     IconButton(onClick = { sheet = ReaderSheet.Search }, modifier = Modifier.testTag("reader.search")) {
                         Icon(Icons.Filled.Search, contentDescription = "Find in book", tint = palette.ink)
                     }
@@ -324,8 +466,8 @@ fun ReaderScreen(
                 chapters = ready.chapters,
                 bookmarks = model.bookmarks,
                 currentChapter = model.chapterIndex,
-                onPick = { row -> sheet = null; model.jump(row.chapterIndex, row.utf16Offset) },
-                onPickBookmark = { bookmark -> sheet = null; model.jump(bookmark.chapterIndex, bookmark.utf16Offset) },
+                onPick = { row -> sheet = null; jumpTaking(row.chapterIndex, row.utf16Offset) },
+                onPickBookmark = { bookmark -> sheet = null; jumpTaking(bookmark.chapterIndex, bookmark.utf16Offset) },
                 onRemoveBookmark = { bookmark -> model.removeBookmark(bookmark.id) },
                 onDismiss = { sheet = null },
             )
@@ -336,7 +478,7 @@ fun ReaderScreen(
                 capped = model.searchCapped,
                 chapters = ready.chapters,
                 onQueryChange = model::search,
-                onPick = { result -> sheet = null; model.jump(result.chapterIndex, result.utf16Offset) },
+                onPick = { result -> sheet = null; jumpTaking(result.chapterIndex, result.utf16Offset) },
                 onDismiss = { sheet = null },
             )
             ReaderSheet.Appearance -> AppearanceSheet(
@@ -368,7 +510,7 @@ fun ReaderScreen(
         if (ask.isOpen) {
             AskSheet(
                 model = ask,
-                onDismiss = { ask.close() },
+                onDismiss = { ask.close(); narration.resumeAfterAsk() },
                 onShowInBook = { chapterIndex, utf16Offset -> model.jump(chapterIndex, utf16Offset) },
                 onOpenProviders = onOpenProviders,
             )
@@ -417,6 +559,34 @@ private fun MarkerGlyph(color: Color) {
         }
         drawPath(nib, color, style = Stroke(width = 1.4.dp.toPx()))
         drawLine(color, Offset(w * 0.10f, h * 0.95f), Offset(w * 0.90f, h * 0.95f), strokeWidth = 2.dp.toPx())
+    }
+}
+
+/** A speaker with a wave — the bar's Listen mark, drawn like the others. */
+@Composable
+private fun ListenGlyph(color: Color) {
+    Canvas(Modifier.size(18.dp)) {
+        val w = size.width
+        val h = size.height
+        val cone = Path().apply {
+            moveTo(w * 0.06f, h * 0.36f)
+            lineTo(w * 0.26f, h * 0.36f)
+            lineTo(w * 0.52f, h * 0.10f)
+            lineTo(w * 0.52f, h * 0.90f)
+            lineTo(w * 0.26f, h * 0.64f)
+            lineTo(w * 0.06f, h * 0.64f)
+            close()
+        }
+        drawPath(cone, color)
+        drawArc(
+            color,
+            startAngle = -55f,
+            sweepAngle = 110f,
+            useCenter = false,
+            topLeft = Offset(w * 0.34f, h * 0.20f),
+            size = Size(w * 0.52f, h * 0.60f),
+            style = Stroke(width = 1.4.dp.toPx()),
+        )
     }
 }
 
@@ -493,6 +663,8 @@ private fun PageSurface(
     onChromeToggle: () -> Unit,
     /** The capsule's ✦ Ask: open Ask on the passage the reader selected. */
     onAsk: (AnnotationTarget) -> Unit,
+    /** The capsule's Listen: read aloud from the sentence the reader selected. */
+    onListen: (AnnotationTarget) -> Unit,
 ) {
     val chapter = model.chapter
     val density = LocalDensity.current
@@ -958,6 +1130,7 @@ private fun PageSurface(
                                         },
                                         onCopy = { clipboard.setText(AnnotatedString(target.quotedText)); dismiss() },
                                         onAsk = { asked -> onAsk(asked); dismiss() },
+                                        onListen = { from -> onListen(from); dismiss() },
                                         onNote = { noted ->
                                             when (noted) {
                                                 // A note needs a highlight to live on: make one in the

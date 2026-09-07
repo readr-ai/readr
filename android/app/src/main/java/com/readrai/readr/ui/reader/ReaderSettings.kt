@@ -107,6 +107,30 @@ class ReaderSettings(context: Context, name: String = PREFERENCES) {
         prefs.edit().putString(KEY_LAST_HIGHLIGHT_COLOR, color.key).apply()
     }
 
+    /**
+     * The speaking speed, under the iOS key, so a reader who listens on both
+     * gets the same pace. Kept outside [ReaderAppearance] for the same reason
+     * the last highlight colour is: nothing about it changes layout, so it
+     * must never reach a `LayoutKey` and re-paginate a chapter.
+     */
+    var narrationRate: Double
+        get() = prefs.getFloat(KEY_NARRATION_RATE, 1f).toDouble()
+        set(value) { prefs.edit().putFloat(KEY_NARRATION_RATE, value.toFloat()).apply() }
+
+    /**
+     * The chosen voice, under the iOS key — versioned there (`…ID2`) because
+     * the first build's choices could land on a novelty voice. Android has no
+     * novelty voices, but sharing the key keeps one preference file meaning
+     * one thing.
+     */
+    var narrationVoiceID: String?
+        get() = prefs.getString(KEY_NARRATION_VOICE, null)
+        set(value) {
+            prefs.edit().apply {
+                if (value == null) remove(KEY_NARRATION_VOICE) else putString(KEY_NARRATION_VOICE, value)
+            }.apply()
+        }
+
     fun update(transform: (ReaderAppearance) -> ReaderAppearance) {
         val next = transform(_appearance.value).let { it.copy(fontSize = it.fontSize.coerceIn(ReaderAppearance.fontSizeRange)) }
         _appearance.value = next
@@ -138,5 +162,7 @@ class ReaderSettings(context: Context, name: String = PREFERENCES) {
         const val KEY_JUSTIFIED = "readingJustified"
         const val KEY_LAYOUT = "readerLayout"
         const val KEY_LAST_HIGHLIGHT_COLOR = "lastHighlightColor"
+        const val KEY_NARRATION_RATE = "narrationRate"
+        const val KEY_NARRATION_VOICE = "narrationVoiceID2"
     }
 }

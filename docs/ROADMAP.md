@@ -339,11 +339,24 @@ bridge; `android/README.md` has the build recipe.
   page on wide screens, scroll layout — plus the reader's link policy (web,
   mail and telephone only) and a scroll drawn as chunks, not pages
 
-### Next
-- A3 Ask: provider settings, streamed Ask with citations, Gemini Nano tier.
+### A3 — Ask
+- [x] A3a: provider settings — the kit's own `providersJSON`, keys in the
+  Keystore, the kit's rule for what a saved key does to the selection
+- [x] A3b: Ask as a full-height sheet — streamed answers, located citations,
+  spoiler-scoped by default, the kit's Markdown blocks off the hot path.
   Decision (2026-09-07): phones without Nano get no no-key tier — the same
   position as iPhones older than 15.
-- A4 Listen: platform `TextToSpeech` engine, media session, Listen card
+- [ ] A3c: Gemini Nano through ML Kit — the readiness probe answers `ready`
+  and Ask can actually route to the phone's own model
+
+### A4 — Listen
+- [x] A4a: narration over the platform voice — the kit's `NarrationController`
+  behind a Kotlin `SpeechBackend` (Android has no pause, so a pause is a stop
+  plus a rebased re-speak), the now-reading card, the page following the voice,
+  Listen from a selection, and Ask pausing the voice
+- [ ] A4b: media session, lock-screen and headphone controls, a voice picker
+
+### Next
 - A5 PDF, A6 Readr Voice (research: CPU Kokoro measured marginal), A7 article
   studio + bug report, A8 Play production
 

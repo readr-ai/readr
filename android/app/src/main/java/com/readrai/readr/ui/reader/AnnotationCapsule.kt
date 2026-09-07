@@ -27,6 +27,7 @@ import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
@@ -131,6 +132,8 @@ fun AnnotationCapsule(
     onNote: ((AnnotationTarget) -> Unit)? = null,
     /** Opens Ask on this passage — the ✦ of the iOS selection menu. */
     onAsk: ((AnnotationTarget) -> Unit)? = null,
+    /** Reads aloud from here — "Listen from here" on the iOS selection menu. */
+    onListen: ((AnnotationTarget) -> Unit)? = null,
 ) {
     val editing = target as? AnnotationTarget.Existing
     Row(
@@ -198,6 +201,35 @@ fun AnnotationCapsule(
                 }
             }
         }
+        if (onListen != null) {
+            // "Listen from here" starts on the sentence the reader's finger is
+            // in, never the next one — the page rule would skip the very words
+            // they pointed at.
+            Row(
+                Modifier
+                    .height(touchTarget)
+                    .widthIn(min = touchTarget, max = labelledButtonWidth)
+                    .clip(RoundedCornerShape(50))
+                    .clickable { onListen(target) }
+                    .padding(horizontal = 6.dp)
+                    .testTag("annotation.listen")
+                    .semantics { contentDescription = "Listen from here" },
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(3.dp, Alignment.CenterHorizontally),
+            ) {
+                SpeakerGlyph(palette.muted)
+                if (LocalDensity.current.fontScale <= 1.25f) {
+                    Text(
+                        "Listen",
+                        fontSize = 13.sp,
+                        color = palette.ink,
+                        maxLines = 1,
+                        softWrap = false,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+        }
         if (onNote != null) {
             // The note glyph carries the meaning and the word confirms it, so
             // the button stays a thumb wide however large the reader's type is
@@ -242,6 +274,33 @@ fun AnnotationCapsule(
 
 private val AnnotationTarget.hasNote: Boolean
     get() = (this as? AnnotationTarget.Existing)?.highlight?.note.isNullOrBlank().not()
+
+/** A speaker cone — drawn, like the copy mark, because Material's core set has none. */
+@Composable
+private fun SpeakerGlyph(color: Color) {
+    Canvas(Modifier.size(14.dp)) {
+        val body = Path().apply {
+            moveTo(0f, size.height * 0.34f)
+            lineTo(size.width * 0.3f, size.height * 0.34f)
+            lineTo(size.width * 0.62f, 0f)
+            lineTo(size.width * 0.62f, size.height)
+            lineTo(size.width * 0.3f, size.height * 0.66f)
+            lineTo(0f, size.height * 0.66f)
+            close()
+        }
+        drawPath(body, color)
+        val stroke = Stroke(width = 1.2.dp.toPx())
+        drawArc(
+            color,
+            startAngle = -55f,
+            sweepAngle = 110f,
+            useCenter = false,
+            topLeft = Offset(size.width * 0.34f, size.height * 0.16f),
+            size = Size(size.width * 0.62f, size.height * 0.68f),
+            style = stroke,
+        )
+    }
+}
 
 /** Two stacked sheets — the copy mark, drawn rather than bundled (Material's core icon set has none). */
 @Composable

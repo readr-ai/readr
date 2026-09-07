@@ -8,6 +8,7 @@ import com.readrai.readr.ui.ask.AskConversations
 import com.readrai.readr.kit.KeystoreSecretStore
 import com.readrai.readr.kit.Kit
 import com.readrai.readr.kit.NanoProbe
+import com.readrai.readr.ui.listen.Narrations
 import com.readrai.readr.ui.reader.ReaderSettings
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -28,6 +29,16 @@ class ReadrApplication : Application() {
     /** Reader appearance; plain preferences, read on the main thread (one small file). */
     val readerSettings: ReaderSettings by lazy { ReaderSettings(this) }
 
+    /**
+     * The voice reading a book aloud — one book at a time, since there is one
+     * synthesizer on the phone. The kit is opened lazily behind a suspending
+     * accessor: the first Listen pays for the Swift runtime, not every reader
+     * who opens a book.
+     */
+    val narrations: Narrations by lazy { Narrations(this, { kitAsync() }, readerSettings) }
+
+    private suspend fun kitAsync(): Kit = withContext(Dispatchers.IO) { kit }
+
     suspend fun library(): LibraryRepository = withContext(Dispatchers.IO) { libraryRepository }
 
     /**
@@ -37,6 +48,7 @@ class ReadrApplication : Application() {
      * transcript has to.
      */
     suspend fun removeBook(bookId: String) {
+        narrations.forget(bookId)
         library().remove(bookId)
         askConversations.forget(bookId)
     }

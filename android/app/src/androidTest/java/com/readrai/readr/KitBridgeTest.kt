@@ -19,12 +19,17 @@ import com.readrai.readr.data.ValidationStatus
 import com.readrai.readr.data.ReadingPosition
 import com.readrai.readr.data.SearchResult
 import com.readrai.readr.data.kitJson
+import com.readrai.readr.kit.AndroidNarration
 import com.readrai.readr.kit.KeystoreSecretStore
 import com.readrai.readr.kit.KitLimits
 import com.readrai.readr.kit.Kit
 import com.readrai.readr.kit.NanoProbe
+import com.readrai.readr.kit.NarrationEvents
 import com.readrai.readr.ui.ask.AnswerBlock
 import com.readrai.readr.ui.ask.AnswerMarkdown
+import com.readrai.readr.ui.listen.NarrationSentence
+import com.readrai.readr.ui.listen.NarrationState
+import org.swift.swiftkit.core.SwiftArena
 import java.io.File
 import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
@@ -1233,4 +1238,234 @@ class KitBridgeTest {
             assertEquals("This book is no longer in your library.", e.message)
         }
     }
+
+    // MARK: Listen — the kit's narration over a synthesizer that only moves
+    // when a test says so, driven through the real facade.
+
+    /**
+     * The book every narration test reads: three chapters of three plain
+     * sentences, so a segment can be named by the words it starts with and
+     * checked against the chapter text it came out of.
+     */
+    private suspend fun narrationBook(): BookSummary {
+        val text = buildString {
+            for (chapter in 1..3) {
+                append("# Chapter $chapter\n\n")
+                append("Alpha $chapter is the first sentence here. ")
+                append("Beta $chapter is the second sentence here. ")
+                append("Gamma $chapter is the third sentence here.\n\n")
+            }
+        }
+        val file = File(root, "narration.txt").apply { writeText(text) }
+        return kitJson.decodeFromString(
+            kit.library.importPlainText(file.absolutePath, "Narrated").await()
+        )
+    }
+
+    /** The facade, its fake synthesizer and its observer. */
+    private class Session(
+        val narration: AndroidNarration,
+        val backend: FakeSpeechBackend,
+        val observer: RecordingNarrationObserver,
+    ) {
+        fun state(): NarrationState = kitJson.decodeFromString(onMain { narration.stateJSON() })
+    }
+
+    /**
+     * A listening session, built on the main thread — where the controller
+     * lives and where every call into it has to be made.
+     */
+    private fun session(bookId: String, settings: String = """{"rate":1.0}"""): Session = onMain {
+        val arena = SwiftArena.ofAuto()
+        val events = NarrationEvents.init(arena)
+        val backend = FakeSpeechBackend(events)
+        val observer = RecordingNarrationObserver()
+        Session(
+            AndroidNarration.init(kit.library, bookId, backend, events, observer, settings, arena),
+            backend,
+            observer,
+        )
+    }
+
+    /**
+     * Listen begins at the first sentence that *starts* at or after the page's
+     * anchor: the sentence straddling the page break began on the page before,
+     * and reading it would drag the page backwards to follow the voice. A
+     * selection means the sentence the reader's finger is in — the page rule
+     * would skip the very words they pointed at.
+     */
+    @Test
+    fun listenStartsAtTheFirstSentenceOfThePage() = runTest(timeout = TEST_TIMEOUT) {
+        val book = narrationBook()
+        val chapter = kit.library.chapterText(book.id, 0)
+        val inside = chapter.indexOf("is the second")
+
+        val page = session(book.id)
+        onMain { page.narration.start(0, inside.toLong(), "nextSentenceStart") }
+        assertTrue(
+            page.backend.lastText.orEmpty(),
+            page.backend.lastText.orEmpty().startsWith("Gamma 1"),
+        )
+        assertEquals("speaking", page.state().status)
+
+        val selected = session(book.id)
+        onMain { selected.narration.start(0, inside.toLong(), "sentenceContaining") }
+        assertTrue(
+            selected.backend.lastText.orEmpty(),
+            selected.backend.lastText.orEmpty().startsWith("Beta 1"),
+        )
+    }
+
+    /** A sentence spoken through moves the book on, and the card is told. */
+    @Test
+    fun finishingASentenceAdvancesTheBook() = runTest(timeout = TEST_TIMEOUT) {
+        val book = narrationBook()
+        val chapter = kit.library.chapterText(book.id, 0)
+        val session = session(book.id)
+        onMain { session.narration.start(0, chapter.indexOf("Alpha 1").toLong(), "sentenceContaining") }
+        assertTrue(session.backend.lastText.orEmpty().startsWith("Alpha 1"))
+
+        onMain { session.backend.finishCurrent() }
+        assertTrue(
+            session.backend.lastText.orEmpty(),
+            session.backend.lastText.orEmpty().startsWith("Beta 1"),
+        )
+        val state = session.state()
+        assertTrue(state.sentence, state.sentence.startsWith("Beta 1"))
+        assertEquals(chapter.indexOf("Beta 1"), state.utf16SentenceStart)
+        assertTrue(
+            "the observer heard the new sentence: ${session.observer.sentences}",
+            session.observer.sentences.any { it.startsWith("Beta 1") },
+        )
+    }
+
+    /**
+     * Word boundaries come back as chapter ranges, not offsets into the
+     * utterance: the page, the highlights and Ask all address the chapter.
+     */
+    @Test
+    fun wordBoundariesArriveAsChapterRanges() = runTest(timeout = TEST_TIMEOUT) {
+        val book = narrationBook()
+        val chapter = kit.library.chapterText(book.id, 0)
+        val start = chapter.indexOf("Beta 1")
+        val session = session(book.id)
+        onMain { session.narration.start(0, start.toLong(), "sentenceContaining") }
+        val sentence = session.backend.lastText.orEmpty()
+        val word = sentence.indexOf("second")
+        onMain { session.backend.speakWord(word, word + "second".length) }
+
+        val reported = session.observer.spoken.last()
+        assertEquals(0, reported.chapterIndex)
+        assertEquals(start + word, reported.utf16Start)
+        assertEquals("second", chapter.substring(reported.utf16Start, reported.utf16End))
+    }
+
+    /**
+     * A pause the reader asked for is not a hold: the card shows the sentence,
+     * not an explanation. (A hold is the engine setting the sentence down.)
+     */
+    @Test
+    fun pauseCarriesNoHoldReason() = runTest(timeout = TEST_TIMEOUT) {
+        val book = narrationBook()
+        val session = session(book.id)
+        onMain { session.narration.start(0, 0, "nextSentenceStart") }
+        onMain { session.narration.pause() }
+        val state = session.state()
+        assertEquals("paused", state.status)
+        assertNull(state.holdReason)
+        assertNull(state.holdText)
+        assertEquals("paused", onMain { session.backend.state() })
+    }
+
+    /** Skipping a chapter lands on the first sentence of the next linear one. */
+    @Test
+    fun skippingAChapterLandsOnTheNextOne() = runTest(timeout = TEST_TIMEOUT) {
+        val book = narrationBook()
+        val session = session(book.id)
+        onMain { session.narration.start(0, 0, "nextSentenceStart") }
+        onMain { session.narration.skipToNextChapter() }
+        val state = session.state()
+        assertEquals(1, state.chapterIndex)
+        assertEquals("the chapter's first sentence", 0, state.utf16SentenceStart)
+        assertTrue(state.sentence, state.sentence.startsWith("Alpha 2"))
+        assertTrue(
+            session.backend.lastText.orEmpty(),
+            session.backend.lastText.orEmpty().startsWith("Alpha 2"),
+        )
+    }
+
+    /**
+     * "End of chapter" stops where the chapter does — paused, with the place
+     * kept, so pressing play reads on rather than starting the book again.
+     */
+    @Test
+    fun sleepAtTheEndOfAChapterStopsThere() = runTest(timeout = TEST_TIMEOUT) {
+        val book = narrationBook()
+        val chapter = kit.library.chapterText(book.id, 0)
+        val session = session(book.id)
+        onMain { session.narration.start(0, chapter.indexOf("Gamma 1").toLong(), "sentenceContaining") }
+        onMain { session.narration.setSleepTimer("""{"mode":"endOfChapter"}""") }
+        assertEquals("endOfChapter", session.state().sleepTimer.mode)
+
+        val before = session.backend.spoken.size
+        onMain { session.backend.finishCurrent() }
+        val state = session.state()
+        assertEquals("paused", state.status)
+        assertEquals("nothing new was spoken", before, session.backend.spoken.size)
+        assertEquals("the timer disarmed itself", "off", state.sleepTimer.mode)
+        assertTrue("the place is kept", state.sentence.isNotEmpty())
+    }
+
+    /**
+     * The reader's speed reaches the engine on the *platform's* scale. Android
+     * documents that scale as proportional, and the facade's calibration is
+     * what makes the kit's AVFoundation-shaped curve come back out straight
+     * here — a 1.5× label really is a 1.5× rate.
+     */
+    @Test
+    fun speedReachesTheEngineOnItsOwnScale() = runTest(timeout = TEST_TIMEOUT) {
+        val book = narrationBook()
+        val session = session(book.id)
+        onMain { session.narration.start(0, 0, "nextSentenceStart") }
+        assertEquals(1.0, session.backend.spoken.last().rate, 0.01)
+
+        onMain { session.narration.setRate(1.5) }
+        assertEquals(1.5, session.backend.spoken.last().rate, 0.01)
+        onMain { session.narration.setRate(0.75) }
+        assertEquals(0.75, session.backend.spoken.last().rate, 0.01)
+        assertEquals(0.75, session.state().rate, 0.001)
+    }
+
+    /** What Ask quotes when it is opened with no selection while the voice reads. */
+    @Test
+    fun theSentenceBeingReadCrossesAsAChapterRange() = runTest(timeout = TEST_TIMEOUT) {
+        val book = narrationBook()
+        val chapter = kit.library.chapterText(book.id, 0)
+        val start = chapter.indexOf("Beta 1")
+        val session = session(book.id)
+        assertEquals("", onMain { session.narration.currentSentenceRangeJSON() })
+
+        onMain { session.narration.start(0, start.toLong(), "sentenceContaining") }
+        val range = kitJson.decodeFromString<NarrationSentence>(
+            onMain { session.narration.currentSentenceRangeJSON() }
+        )
+        assertEquals(0, range.chapterIndex)
+        assertEquals(start, range.utf16Start)
+        assertTrue(chapter.substring(range.utf16Start, range.utf16End).startsWith("Beta 1"))
+    }
+}
+
+/**
+ * Runs `body` on the main thread and hands its answer back.
+ *
+ * `NarrationController` is main-thread-confined — the reader's whole listening
+ * session is built and driven from the main looper — so a test that drove it
+ * from the instrumentation thread would be testing something the app never
+ * does.
+ */
+internal fun <T> onMain(body: () -> T): T {
+    val held = arrayOfNulls<Any>(1)
+    InstrumentationRegistry.getInstrumentation().runOnMainSync { held[0] = body() }
+    @Suppress("UNCHECKED_CAST")
+    return held[0] as T
 }
