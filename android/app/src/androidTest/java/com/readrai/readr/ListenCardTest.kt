@@ -75,6 +75,10 @@ class ListenCardTest {
 
     @Before
     fun setUp() = runBlocking {
+        // Listen asks for the notification the voice reads under the first
+        // time it starts; an unanswered system dialog would take the reader's
+        // window out from under the test.
+        grantNotifications()
         root = File(context.cacheDir, "listen-test-${System.nanoTime()}").apply { mkdirs() }
         kit = Kit.open(root, KeystoreSecretStore(context, alias = "readr.secrets.test"), NanoProbe(context))
         repository = LibraryRepository(context, kit)

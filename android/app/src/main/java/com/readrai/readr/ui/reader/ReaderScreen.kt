@@ -1,7 +1,12 @@
 package com.readrai.readr.ui.reader
 
+import android.Manifest
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
+import android.os.Build
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -83,6 +88,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.zIndex
+import androidx.core.content.ContextCompat
 import com.readrai.readr.data.AskFrontier
 import com.readrai.readr.data.AskSelection
 import com.readrai.readr.data.ChapterImages
@@ -181,6 +187,13 @@ fun ReaderScreen(
     // it for itself — a modal sheet is capped at 640 dp however wide the
     // window is — and a phone-width window must not be offered two pages.
     var wideSurface by rememberSaveable { mutableStateOf(false) }
+    // Asked once, and only when the reader actually presses Listen — see
+    // `askForNotifications`.
+    val appContext = LocalContext.current.applicationContext
+    var askedForNotifications by rememberSaveable { mutableStateOf(false) }
+    val notifications = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { /* Granted or not, the voice reads; nothing waits on this. */ }
 
     DisposableEffect(model) { onDispose { model.flush() } }
     // The voice outlives this composition on purpose — a rotation, or the trip
@@ -231,8 +244,29 @@ fun ReaderScreen(
         ask.open(AskRequest(selection = about, frontier = frontierNow(about?.utf16End)))
     }
 
+    /**
+     * The notification the voice reads under, asked for the first time Listen
+     * starts and never again — a permission sheet on the way into a book
+     * nobody has asked to hear yet would be a question out of nowhere.
+     *
+     * Refusing costs the reader nothing they can hear: a media-playback
+     * foreground service shows its own notification either way, so the voice
+     * keeps reading with the screen off and only the shade's other messages
+     * are lost. Nothing here waits for an answer.
+     */
+    fun askForNotifications() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU || askedForNotifications) return
+        askedForNotifications = true
+        val granted = ContextCompat.checkSelfPermission(
+            appContext, Manifest.permission.POST_NOTIFICATIONS,
+        ) == PackageManager.PERMISSION_GRANTED
+        if (granted) return
+        runCatching { notifications.launch(Manifest.permission.POST_NOTIFICATIONS) }
+    }
+
     /** The one place narration is started from this screen. */
     fun startListening(chapterIndex: Int, utf16Offset: Int, anchor: String) {
+        askForNotifications()
         holdsPageForSelectionStart = anchor == NarrationModel.SENTENCE_CONTAINING
         heldSentenceStart = null
         narration.listen(chapterIndex, utf16Offset, anchor)
@@ -427,7 +461,15 @@ fun ReaderScreen(
         // The now-reading card, above the bottom bar and below the page it
         // insets. Its measured height goes back into the surface as
         // `listenInset`, so the words are never underneath it.
-        LaunchedEffect(narration.isActive) { if (!narration.isActive) listenInset = 0.dp }
+        LaunchedEffect(narration.isActive) {
+            if (narration.isActive) return@LaunchedEffect
+            listenInset = 0.dp
+            // The voice can be stopped from outside this screen now — the
+            // notification's ✕, a headset button, a swipe of the app off the
+            // recents list — so the page stops following it here rather than
+            // only in `stopListening`.
+            model.stopFollowingVoice()
+        }
         if (narration.isActive) {
             val ready = model.state as? ReaderViewModel.State.Ready
             val chapterTitle = ready?.chapters?.getOrNull(narration.chapterIndex)?.title
@@ -518,6 +560,9 @@ fun ReaderScreen(
                 onChange = settings::update,
                 onDismiss = { sheet = null },
                 offersDoublePage = wideSurface,
+                // The narrator is chosen here, as it is in the Apple app's Aa
+                // popover — before the first Listen, if the reader likes.
+                narration = narration,
             )
             ReaderSheet.Highlights -> if (ready != null) HighlightsSheet(
                 highlights = model.highlights,

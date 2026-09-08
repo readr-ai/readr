@@ -48,6 +48,13 @@ object IllustratedBook {
      * in hand would show the wrong note and never travel.
      */
     const val CROSS_NOTE_CHAPTER = 5
+
+    /**
+     * The notes document, and the spine marks it `linear="no"`: reachable by
+     * following a link, skipped by continuous reading — and therefore not a
+     * track on the lock screen's chapter playlist either. The link tests still
+     * travel into it; only the walk refuses to.
+     */
     const val NOTES_CHAPTER = 6
     const val CROSS_NOTE_ID = "fn1"
     const val CROSS_NOTE_TEXT = "The note of chapter six, which is not the one the link points at."
@@ -210,7 +217,7 @@ object IllustratedBook {
     <itemref idref="ch4"/>
     <itemref idref="ch5"/>
     <itemref idref="ch6"/>
-    <itemref idref="notes"/>
+    <itemref idref="notes" linear="no"/>
   </spine>
 </package>"""
 }

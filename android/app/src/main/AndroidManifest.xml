@@ -1,9 +1,28 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
     <!-- Only the provider the reader connected is ever called: an API-key
          check and an Ask question go to that host and nowhere else. The
          on-device path makes no request at all. -->
     <uses-permission android:name="android.permission.INTERNET" />
+
+    <!-- Listen with the screen off. The service is a media-playback one and
+         nothing else: it exists for as long as a voice is reading and is
+         stopped with it. The notification permission is asked for the first
+         time Listen starts, and a reader who says no still gets the voice —
+         a media-playback foreground service shows its notification either
+         way, so refusing costs nothing but the shade's other messages. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <!-- media3-common declares this for ExoPlayer's bandwidth meter, which
+         nothing here builds: the sound is the phone's own synthesizer and
+         narration makes no request at all (PRIVACY.md). Taken back out, so
+         the app's permission list stays the one sentence it has always been. -->
+    <uses-permission
+        android:name="android.permission.ACCESS_NETWORK_STATE"
+        tools:node="remove" />
 
     <!-- The one package this app ever asks about: AICore, which is what the
          phone's own model runs inside. Android 11+ hides the package list
@@ -30,5 +49,34 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- The voice's own service: it holds the media session, so the
+             notification, the lock screen and a headset button reach the
+             narration the reader started. `exported` because those buttons
+             arrive from the system, and media3 routes ACTION_MEDIA_BUTTON
+             through the same service. -->
+        <service
+            android:name=".ui.listen.NarrationService"
+            android:exported="true"
+            android:foregroundServiceType="mediaPlayback">
+            <intent-filter>
+                <action android:name="androidx.media3.session.MediaSessionService" />
+                <action android:name="android.intent.action.MEDIA_BUTTON" />
+            </intent-filter>
+        </service>
+
+        <!-- Where a headset's play/pause lands. media3 routes it to the
+             session on the service above; declaring it is what gives the
+             system a target to send `ACTION_MEDIA_BUTTON` to, since the sound
+             is made by the text-to-speech engine's process and not this one —
+             so the framework does not otherwise recognise Readr as the app
+             that is playing. -->
+        <receiver
+            android:name="androidx.media3.session.MediaButtonReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MEDIA_BUTTON" />
+            </intent-filter>
+        </receiver>
     </application>
 </manifest>

@@ -355,7 +355,23 @@ bridge; `android/README.md` has the build recipe.
   gained `pausesInPlace` and the kit stops the engine and re-speaks the
   remainder itself), the now-reading card, the page following the voice,
   Listen from a selection, and Ask pausing the voice
-- [ ] A4b: media session, lock-screen and headphone controls, a voice picker
+- [x] A4b: the voice keeps reading with the screen off — a media3
+  `MediaSessionService` whose player is a description of the narration model
+  (the book and the chapter, never a line of the book; the chapters the kit
+  will narrate are the playlist, so the notification's ⏭/⏮ are chapters), audio
+  focus on speech rules with the *kit* holding the pause
+  (`NarrationHoldReason.audioInterrupted`, so a reader's own pause survives the
+  regain), the notification permission asked at the first Listen and degraded
+  gracefully; and the voice picker in the Appearance sheet, ordered and worded
+  entirely by the kit's `VoiceSelector` through the facade, filled on the tap
+  that opens it and pushed when the phone's engine reports in
+
+A4 is the book read aloud, end to end: the kit's `NarrationController` behind
+the platform synthesizer, the now-reading card and the page that follows the
+voice, Listen from a selection, Ask pausing it — and now the lock screen, the
+headset and the reader's own choice of narrator. Still open: the read-along
+underline, and moving the voice's display name into the facade (the one
+reader-facing string on the Android side Kotlin still composes).
 
 ### Next
 - A5 PDF, A6 Readr Voice (research: CPU Kokoro measured marginal), A7 article

@@ -131,6 +131,25 @@ class ReaderSettings(context: Context, name: String = PREFERENCES) {
             }.apply()
         }
 
+    /**
+     * What that voice is called, stored beside the id — Android's own key, not
+     * a shared one: the id is a machine name (`en-us-x-sfg#female_1-local`)
+     * and the readable half is composed from the phone's voice list, which
+     * only exists once the synthesizer has started up.
+     *
+     * The Voice row draws before any of that: without a name written down it
+     * had nothing to show but a blank, so the row said the reader had chosen
+     * no voice when they had chosen one two sessions ago.
+     */
+    var narrationVoiceName: String?
+        get() = prefs.getString(KEY_NARRATION_VOICE_NAME, null)
+        set(value) {
+            prefs.edit().apply {
+                if (value == null) remove(KEY_NARRATION_VOICE_NAME)
+                else putString(KEY_NARRATION_VOICE_NAME, value)
+            }.apply()
+        }
+
     fun update(transform: (ReaderAppearance) -> ReaderAppearance) {
         val next = transform(_appearance.value).let { it.copy(fontSize = it.fontSize.coerceIn(ReaderAppearance.fontSizeRange)) }
         _appearance.value = next
@@ -164,5 +183,6 @@ class ReaderSettings(context: Context, name: String = PREFERENCES) {
         const val KEY_LAST_HIGHLIGHT_COLOR = "lastHighlightColor"
         const val KEY_NARRATION_RATE = "narrationRate"
         const val KEY_NARRATION_VOICE = "narrationVoiceID2"
+        const val KEY_NARRATION_VOICE_NAME = "narrationVoiceName"
     }
 }

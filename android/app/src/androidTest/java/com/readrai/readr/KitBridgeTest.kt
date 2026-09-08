@@ -27,8 +27,10 @@ import com.readrai.readr.kit.NanoProbe
 import com.readrai.readr.kit.NarrationEvents
 import com.readrai.readr.ui.ask.AnswerBlock
 import com.readrai.readr.ui.ask.AnswerMarkdown
+import com.readrai.readr.ui.listen.NarrationNowPlaying
 import com.readrai.readr.ui.listen.NarrationSentence
 import com.readrai.readr.ui.listen.NarrationState
+import com.readrai.readr.ui.listen.NarrationVoices
 import org.swift.swiftkit.core.SwiftArena
 import java.io.File
 import kotlin.time.Duration.Companion.minutes
@@ -91,6 +93,16 @@ class KitBridgeTest {
 
         /** Every question in this file is about the whole book. */
         const val WHOLE_BOOK_SCOPE = "{\"wholeBook\":true}"
+
+        /**
+         * A phone whose *default* voice is French and which also has an
+         * English one — the shape that tells "the engine's default" apart from
+         * "the language the book (or the reader) is in".
+         */
+        const val FRENCH_DEFAULT_AND_ENGLISH = """[
+          {"id":"fr-fr-x-vlf#female_1-local","name":"French","language":"fr-FR","quality":"standard","isDefault":true},
+          {"id":"en-us-x-tpf#female_1-local","name":"English","language":"en-US","quality":"standard","isDefault":false}
+        ]"""
 
         /**
          * Real time, not the virtual clock: these tests wait on a real
@@ -1275,13 +1287,19 @@ class KitBridgeTest {
      * A listening session, built on the main thread — where the controller
      * lives and where every call into it has to be made.
      */
-    private fun session(bookId: String, settings: String = """{"rate":1.0}"""): Session = onMain {
+    private fun session(
+        bookId: String,
+        settings: String = """{"rate":1.0}""",
+        deviceLocale: String = "en-US",
+    ): Session = onMain {
         val arena = SwiftArena.ofAuto()
         val events = NarrationEvents.init(arena)
         val backend = FakeSpeechBackend(events)
         val observer = RecordingNarrationObserver()
         Session(
-            AndroidNarration.init(kit.library, bookId, backend, events, observer, settings, arena),
+            AndroidNarration.init(
+                kit.library, bookId, backend, events, observer, settings, deviceLocale, arena
+            ),
             backend,
             observer,
         )
@@ -1452,18 +1470,187 @@ class KitBridgeTest {
     fun theVoiceIsChosenOnceThePhoneSaysWhichItHas() = runTest(timeout = TEST_TIMEOUT) {
         val book = aliceBook()
         val session = session(book.id)
-        assertEquals("nothing installed yet", "[]", onMain { session.backend.voicesJSON() })
+        assertEquals(
+            "nothing installed yet",
+            """{"ready":true,"voices":[]}""",
+            onMain { session.backend.voicesJSON() },
+        )
 
-        session.backend.voices = """[
-          {"id":"fr-fr-x-vlf#female_1-local","name":"French","language":"fr-FR","quality":"standard","isDefault":true},
-          {"id":"en-us-x-tpf#female_1-local","name":"English","language":"en-US","quality":"standard","isDefault":false}
-        ]"""
+        session.backend.voices = FRENCH_DEFAULT_AND_ENGLISH
         onMain { session.narration.start(0, 0, "nextSentenceStart") }
 
         // Alice declares `dc:language` en, so the English voice reads it —
         // not the engine's own default, which here is the French one.
         assertEquals("en-us-x-tpf#female_1-local", session.backend.spoken.last().voiceID)
         assertEquals("en-us-x-tpf#female_1-local", session.state().voiceID)
+    }
+
+    /**
+     * The picker's recommendation and the reading voice are one answer.
+     *
+     * A book that declares no language used to be two: the picker grouped by
+     * the reader's own locale and marked a row "Recommended", while narration
+     * left the choice to the engine's default — so on a phone whose default is
+     * French, a plain-text file was listed under English and then read in
+     * French, with a tick nowhere near the row the sheet was recommending.
+     */
+    @Test
+    fun anUntaggedBookIsReadInTheVoiceThePickerRecommends() = runTest(timeout = TEST_TIMEOUT) {
+        // Plain text declares no `dc:language` at all.
+        val book = narrationBook()
+        val session = session(book.id, deviceLocale = "en-US")
+        session.backend.voices = FRENCH_DEFAULT_AND_ENGLISH
+
+        onMain { session.narration.start(0, 0, "nextSentenceStart") }
+
+        val picker = kitJson.decodeFromString<NarrationVoices>(
+            onMain { session.narration.voicesJSON() }
+        )
+        assertEquals(
+            "the phone's language is the guess, not its default voice",
+            "en-us-x-tpf#female_1-local",
+            picker.recommendedID,
+        )
+        assertEquals("and it is the voice reading", picker.recommendedID, session.backend.spoken.last().voiceID)
+        assertEquals(picker.recommendedID, session.state().voiceID)
+    }
+
+    /** And the guess is the *device's* language, not Foundation's idea of it. */
+    @Test
+    fun theRecommendedVoiceFollowsTheDeviceLanguage() = runTest(timeout = TEST_TIMEOUT) {
+        val book = narrationBook()
+        val session = session(book.id, deviceLocale = "fr-FR")
+        session.backend.voices = FRENCH_DEFAULT_AND_ENGLISH
+
+        onMain { session.narration.start(0, 0, "nextSentenceStart") }
+
+        val picker = kitJson.decodeFromString<NarrationVoices>(
+            onMain { session.narration.voicesJSON() }
+        )
+        assertEquals("fr-fr-x-vlf#female_1-local", picker.recommendedID)
+        assertEquals("fr-fr-x-vlf#female_1-local", session.backend.spoken.last().voiceID)
+    }
+
+    /**
+     * The picker's whole payload is the facade's, over the kit's
+     * `VoiceSelector`: the book's own language first in the kit's order,
+     * everything else behind the disclosure, and the recommendation marked.
+     */
+    @Test
+    fun voicesJSONGroupsByTheBooksLanguageAndMarksTheRecommendation() = runTest(timeout = TEST_TIMEOUT) {
+        val book = aliceBook()
+        val session = session(book.id, deviceLocale = "fr-FR")
+        session.backend.voices = """[
+          {"id":"fr-fr-x-vlf#female_1-local","name":"French","language":"fr-FR","quality":"standard","isDefault":true},
+          {"id":"en-us-x-tpf#female_1-local","name":"American","language":"en-US","quality":"enhanced","isDefault":false},
+          {"id":"en-gb-x-rjs#male_1-local","name":"British","language":"en-GB","quality":"standard","isDefault":false}
+        ]"""
+
+        val picker = kitJson.decodeFromString<NarrationVoices>(
+            onMain { session.narration.voicesJSON() }
+        )
+        assertEquals(
+            "Alice declares en, so the device's French is not the grouping",
+            listOf("en-us-x-tpf#female_1-local", "en-gb-x-rjs#male_1-local"),
+            picker.voices.map { it.id },
+        )
+        assertEquals(listOf("fr-fr-x-vlf#female_1-local"), picker.otherVoices.map { it.id })
+        assertEquals("en-us-x-tpf#female_1-local", picker.recommendedID)
+        assertTrue(picker.voices.first { it.id == picker.recommendedID }.isRecommended)
+        assertFalse("an answer, not a wait", picker.looking)
+        assertEquals("and nothing is missing, so nothing says so", "", picker.emptyText)
+    }
+
+    /**
+     * "Not started up yet" and "this phone has none" are different answers,
+     * and the picker shows different sentences for them. Both are the
+     * facade's; Kotlin reports the fact and words neither.
+     */
+    @Test
+    fun voicesJSONTellsAWaitApartFromAnEmptyPhone() = runTest(timeout = TEST_TIMEOUT) {
+        val book = narrationBook()
+        val session = session(book.id)
+        session.backend.voicesReady = false
+
+        val looking = kitJson.decodeFromString<NarrationVoices>(
+            onMain { session.narration.voicesJSON() }
+        )
+        assertTrue(looking.isEmpty)
+        assertTrue("still looking", looking.looking)
+        assertTrue(looking.lookingText, looking.lookingText.isNotBlank())
+        assertEquals("and nothing claims the phone has none", "", looking.emptyText)
+        assertEquals(looking.lookingText, looking.absentText)
+
+        session.backend.voicesReady = true
+        val empty = kitJson.decodeFromString<NarrationVoices>(
+            onMain { session.narration.voicesJSON() }
+        )
+        assertFalse(empty.looking)
+        assertTrue(empty.emptyText, empty.emptyText.isNotBlank())
+        assertEquals(empty.emptyText, empty.absentText)
+    }
+
+    /**
+     * What the media session publishes: the book, who wrote it, and the
+     * chapters the kit will actually read — each carrying its own index in the
+     * book, since the ones it skips are not rows.
+     */
+    @Test
+    fun nowPlayingJSONReportsTheBookItsAuthorAndItsChapters() = runTest(timeout = TEST_TIMEOUT) {
+        val book = aliceBook()
+        val session = session(book.id)
+
+        val now = kitJson.decodeFromString<NarrationNowPlaying>(
+            onMain { session.narration.nowPlayingJSON() }
+        )
+        assertEquals("Alice's Adventures in Wonderland", now.title)
+        assertTrue(now.authors, now.authors.isNotBlank())
+        assertEquals("every chapter of Alice is prose", 12, now.chapters.size)
+        assertEquals((0 until 12).toList(), now.chapters.map { it.index })
+        assertTrue(now.chapters[0].title, now.chapters[0].title.contains("Rabbit-Hole"))
+        // Not a line of the book anywhere in it — the notification is not a
+        // private surface, and the sentence being read stays on the card.
+        assertFalse(now.chapters.any { it.title.contains("Alice was beginning") })
+    }
+
+    /**
+     * The system taking the audio crosses the bridge as a *hold*, not a
+     * failure: the kit stops narration by its own rules, keeps the word the
+     * voice reached, and publishes a reason the card and the notification can
+     * explain. Playing again re-speaks the remainder and clears it.
+     */
+    @Test
+    fun anAudioInterruptionCrossesAsAHoldWithItsReason() = runTest(timeout = TEST_TIMEOUT) {
+        val book = narrationBook()
+        val chapter = kit.library.chapterText(book.id, 0)
+        val session = session(book.id)
+        onMain { session.narration.start(0, chapter.indexOf("Beta 1").toLong(), "sentenceContaining") }
+        val sentence = session.backend.lastText.orEmpty()
+        val word = sentence.indexOf("second")
+        onMain { session.backend.speakWord(word, word + "second".length) }
+
+        onMain { session.backend.interrupt() }
+
+        val held = session.state()
+        assertEquals("paused", held.status)
+        assertEquals("audioInterrupted", held.holdReason)
+        assertTrue(held.holdText.orEmpty(), held.holdText.orEmpty().isNotEmpty())
+        assertTrue(
+            "the card was told: ${session.observer.holds}",
+            session.observer.holds.any { it == "audioInterrupted" },
+        )
+        assertEquals("nothing is on the engine", "idle", onMain { session.backend.state() })
+
+        onMain { session.narration.play() }
+        val playing = session.state()
+        assertEquals("speaking", playing.status)
+        assertNull("the hold is over", playing.holdReason)
+        assertNull(playing.holdText)
+        assertEquals(
+            "and the rest of the sentence is re-spoken, from the word the voice reached",
+            sentence.substring(word),
+            session.backend.lastText,
+        )
     }
 
     /** Skipping a chapter lands on the first sentence of the next linear one. */

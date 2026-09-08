@@ -396,4 +396,46 @@ extension SpeechPlaylistTests {
         // the later advance agree exactly.
         XCTAssertEqual(playlist.segments(inChapter: 2).map(\.text), ["Beta one.", "Beta two."])
     }
+
+    // MARK: - The chapters continuous playback will read
+
+    /// The same rule `moveToChapter(after:)` walks by, asked without walking:
+    /// what a lock screen's chapter playlist may offer, so ⏭ never lands on a
+    /// row auto-advance would refuse to play.
+    func testNarratableChaptersAreTheOnesContinuousPlaybackWouldVisit() {
+        let book = makeBook()
+        XCTAssertEqual(book.narratableChapterIndices, [0, 2], "the notes document is not a track")
+
+        var playlist = SpeechPlaylist(book: book)
+        playlist.seek(toChapter: 0)
+        XCTAssertEqual(playlist.advanceToNextChapter()?.chapterIndex, 2, "and the walk agrees")
+    }
+
+    /// An empty chapter is not a track either — a PDF page carrying only an
+    /// image, or a spine document with nothing but a heading lifted out of it.
+    func testAChapterWithNothingToSayIsNotNarratable() {
+        let book = makeBook(chapters: [
+            ("One", "Alpha one.", true),
+            ("Plate", "   \n ", true),
+            ("Two", "Beta one.", true),
+        ])
+        XCTAssertEqual(book.narratableChapterIndices, [0, 2])
+    }
+
+    /// And neither is one whose only "text" is footnote markers, which
+    /// narration mutes before it segments.
+    func testAMarkerOnlyChapterIsNotNarratable() {
+        let book = Book(
+            metadata: BookMetadata(title: "Test"),
+            chapters: [
+                Chapter(title: "One", order: 0, text: "Alpha one."),
+                Chapter(
+                    title: "Markers", order: 1, text: "12",
+                    formatSpans: [FormatSpan(start: 0, end: 2, kind: .superscript)]
+                ),
+            ],
+            estimatedTokenCount: 10
+        )
+        XCTAssertEqual(book.narratableChapterIndices, [0])
+    }
 }

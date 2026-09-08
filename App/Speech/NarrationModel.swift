@@ -65,6 +65,7 @@ final class NarrationModel: ObservableObject {
     var holdText: String? {
         switch holdReason {
         case .needsForeground: return "Paused \u{2014} unlock Readr to keep listening"
+        case .audioInterrupted: return "Paused \u{2014} another app is using the sound"
         case nil: return nil
         }
     }

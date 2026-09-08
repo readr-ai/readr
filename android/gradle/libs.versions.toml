@@ -6,6 +6,7 @@ lifecycle = "2.9.2"
 activityCompose = "1.10.1"
 composeBom = "2025.06.00"
 navigation = "2.9.0"
+media3 = "1.11.0"
 serialization = "1.8.1"
 coroutines = "1.9.0"
 swiftkit = "0.6.0"
@@ -27,6 +28,12 @@ androidx-ui-test-manifest = { group = "androidx.compose.ui", name = "ui-test-man
 androidx-ui-test-junit4 = { group = "androidx.compose.ui", name = "ui-test-junit4" }
 androidx-material3 = { group = "androidx.compose.material3", name = "material3" }
 androidx-navigation-compose = { group = "androidx.navigation", name = "navigation-compose", version.ref = "navigation" }
+# Media3's session half only: the media session, its notification and the
+# `SimpleBasePlayer` the voice is published through. No ExoPlayer — there is
+# no audio file here, the phone's synthesizer makes the sound — and nothing in
+# either artifact's dependency graph uploads anything (see android/README.md).
+androidx-media3-session = { group = "androidx.media3", name = "media3-session", version.ref = "media3" }
+androidx-media3-common = { group = "androidx.media3", name = "media3-common", version.ref = "media3" }
 swiftkit-core = { group = "org.swift.swiftkit", name = "swiftkit-core", version.ref = "swiftkit" }
 kotlinx-serialization-json = { group = "org.jetbrains.kotlinx", name = "kotlinx-serialization-json", version.ref = "serialization" }
 kotlinx-coroutines-android = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-android", version.ref = "coroutines" }

@@ -206,6 +206,12 @@ public final class NarrationController {
     }
 
     public func pause() {
+        // Before the guard, because a reader may press pause while narration
+        // is *already* held: that is them taking the hold over, and the reason
+        // no longer describes anything. Whoever was watching for it — Android's
+        // audio-focus regain — then finds nothing to resume by and leaves the
+        // reader's pause where they put it.
+        holdReason = nil
         guard isUnderway else { return }
         if engine.pausesInPlace {
             engine.pause()

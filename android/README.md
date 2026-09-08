@@ -47,6 +47,28 @@ cd android
 The kit's own XCTest suite runs on an emulator too — see
 `.github/workflows/android.yml` for the push-and-run recipe.
 
+### The instrumented run cannot hang
+
+Two guards, both in `app/build.gradle.kts`'s `defaultConfig`.
+
+`ReadrTestRunner` switches the phone to `NoInputMethod` — a keyboard with no
+window — for the length of the run, and puts the reader's own back at the
+end. Nothing here types on a soft keyboard (`performTextInput` hands Compose
+the characters), but the keyboard's *show* transition intermittently never
+finishes on CI's 320×640 emulator: `ViewRootImpl` goes on scheduling frames
+for a resize that never lands, so the main looper never reports idle, and
+Compose's `waitForIdle` — inside every `performClick`, `performScrollToNode`,
+`assertExists` — waits on `Espresso.onIdle()`, which has no timeout. Run
+34167244349 sat on one `AskSheetTest` case for 74 minutes that way, until the
+job's own cap killed it. To see it locally, boot an AVD at the emulator's
+default 320×640 (`hw.lcd.width=320`, `hw.lcd.height=640`, density 160) rather
+than a phone profile; the 1080×2400 AVDs this is usually developed on never
+reproduce it.
+
+`timeout_msec` is the second guard: any test that outlives three minutes
+fails and names itself. It is what makes the *next* unbounded wait a red
+build in minutes rather than an hour of silence.
+
 ## The reader
 
 `ui/reader/` is the paginated reading surface. `LayoutPaginator` lays the
@@ -341,7 +363,10 @@ the phone's voice refuses is not one of the kit's `NarrationHoldReason` cases
 (on Apple it is a Retry the bar offers, not a state), so `BridgedSpeechEngine`
 keeps the engine's last failure and `state()` turns a pause nobody pressed into
 `holdReason: "engineFailed"` with the words the card shows. Kotlin reports an
-engine code to the log and no further, as everywhere else. **The voice:** the
+engine code to the log and no further, as everywhere else. (The *system* taking
+the audio is not this: it is a real kit hold, `NarrationHoldReason
+.audioInterrupted`, reached through `NarrationEvents.suspended` — see the audio
+focus note below.) **The voice:** the
 phone cannot say which voices it has until its engine has started up, which is
 after the session is built — so the kit's choice (`VoiceSelector`, the book's
 language over the device's) is made lazily, retried on every control and on the
@@ -423,11 +448,156 @@ mid-sentence — so it is released by a `NarrationLease`, a `ViewModel` on the
 reader's `NavBackStackEntry`, rather than in an `onDispose`. Leaving the book
 stops the voice and hands the synthesizer back.
 
-Not yet: a media session and lock-screen controls (A4b), a voice picker, and the
-read-along underline. A follow-up worth doing: `NarrationModel` both is pushed
-to (`NarrationObserver`) and pulls (`refresh()` after every control, and once a
-second), so the same state arrives twice by two routes — one push path would be
-less to reason about.
+### With the screen off
+
+`ui/listen/NarrationSession` is the book on the lock screen: one media3
+`MediaSession` over the voice, carried by `NarrationService`, a
+`MediaSessionService` that runs in the foreground for exactly as long as a
+voice is reading. That is what keeps the reading going with the screen off,
+and it is what puts the transport in the notification shade, on the lock
+screen, and under a headset button.
+
+There is no `ExoPlayer` and no audio file — the phone's synthesizer makes the
+sound, sentence by sentence, and every playback rule is still the kit's. What
+the session publishes is a `NarrationPlayer`: a `SimpleBasePlayer` that owns no
+playback and only *describes* `NarrationModel`. Commands go straight back to
+the model: play/pause to the kit's own, stop to `stopListening`. Nothing here
+has a duration or a timeline, and the position is a **constant** zero rather
+than a bare `0` — media3 extrapolates a plain number with the wall clock, and
+⏮ then means "start this chapter again" three seconds in, which is not what the
+button says.
+
+**No book text reaches the notification.** The book is the title and the album,
+the chapter is the artist line, and the sentence being read is nowhere in any
+of it — it stays on the card, inside the app. A media notification is not a
+private surface: the lock screen shows it to whoever picks the phone up and the
+shade keeps it in its history, and the sentence used to be the media item's
+title. A *hold* still takes the title line ("Paused — another app is using the
+sound"), because that is the app's own words about the app's own state and the
+lock screen is exactly where the reader is when the voice stops by itself.
+
+The playlist is the chapters the kit **will read**
+(`AndroidNarration.nowPlayingJSON`, which names the book, its author, and
+`Book.narratableChapterIndices` with the kit's own headings — Kotlin writes
+none). A `linear="no"` spine entry is not a track, because auto-advance would
+refuse to play it; each row carries its own chapter index in the book, so the
+row's position and the chapter's number are different numbers and the current
+row is a lookup, not an offset. Titles come from
+`chapterDisplayTitlesInStoredOrder` — narration counts in `chapters` array
+positions and `chapterDisplayTitle` counts in reading order, and a playlist
+titled through the wrong one is a row out of step.
+
+A seek is read from the **command**, not from the index: ⏭/⏮ map to the kit's
+chapter skips and a queue pick maps to `listen(chapter, 0)`. ⏮ mid-chapter is
+the kit's rule — restart this chapter, then cross back from its start — which
+is a seek to the row already playing, and comparing indices saw "nothing
+moved" and did nothing. `availableCommands` is built per state, so the last
+chapter offers no ⏭ rather than a control that does nothing. The rows are
+cached on `(chapters, holdText, title)`: `getState()` runs once a sentence and
+once a second, and a playlist rebuilt each time is a new timeline every second
+— a flicker in the shade. Sentence skips stay on the card, where a reader can
+see what they are skipping.
+
+The session's lifetime is the voice's, so the `NarrationLease` rule is intact:
+background playback means the screen is off or another app is in front, never
+that the reader left the book behind. Opening the session starts the service;
+letting it go stops it. A swipe of Readr off the recents list stops the voice
+too, which is what leaving the book means.
+
+**Audio focus** is `AudioManager`'s, asked for as speech (`USAGE_MEDIA`,
+`CONTENT_TYPE_SPEECH`), and it follows the *status*: `holdFocus()` when
+narration is under way, `dropFocus()` when it is not, both idempotent, so a
+paused book has no claim on the phone's sound.
+
+**Kotlin owns the focus; the kit owns the pause.** Every interruption — a
+transient loss, a permanent one, and a request the phone simply refuses — goes
+to `AndroidNarration.audioInterrupted()`, which suspends the kit's engine and
+leaves narration held with `NarrationHoldReason.audioInterrupted`. That reason
+is the whole mechanism: it is what the card and the notification explain
+("Paused — another app is using the sound"), it is what a `GAIN` checks before
+resuming, and `NarrationController.pause()` clears it the moment the reader
+takes the pause over — so a reader who pressed pause during a call, or opened
+Ask, is not read at by the regain. Kotlin used to keep a `pausedForFocus` flag
+of its own beside the kit's state, and the two could disagree. A refused
+request is not a log line and a book that reads anyway: the voice holds. The
+one thing `dropFocus` will not do is abandon the request *during* an
+interruption — that registration is the only way the regain reaches us.
+Ducking is ignored: a quieter voice under someone else's music is not
+listenable, and pausing is what a real loss already does. The focus sits behind
+`NarrationAudioFocus`, because "a call came in" is a thing the system does to
+an app rather than a thing a test can provoke; the service is started and
+stopped with two `ContextCompat` lines and needs no seam, since
+`NarrationService.running` already says what a test wants to know.
+
+`POST_NOTIFICATIONS` is asked for the **first time Listen starts** and never
+again — a permission sheet on the way into a book nobody has asked to hear yet
+is a question out of nowhere. Refusing costs nothing audible: a media-playback
+foreground service posts its own notification either way, so the voice keeps
+reading and only the shade's other messages are lost. The app's permissions are
+otherwise unchanged; media3 brings `ACCESS_NETWORK_STATE` for ExoPlayer's
+bandwidth meter, which nothing here builds, and the manifest takes it back out
+(`tools:node="remove"`) so the permission list stays the one sentence it has
+always been.
+
+### The voice
+
+The narrator is chosen in the **Appearance sheet**, as it is in the Apple app's
+Aa popover and for the same reason: it is a decision made once, not a control
+reached for mid-sentence. `ui/listen/VoicePicker` draws it, and decides nothing
+— `AndroidNarration.voicesJSON()` answers the whole payload: the voices for the
+book's own language first, everything else behind "Other voices", which voice
+is reading, which one the kit *recommends* (`VoiceSelector` with no stored
+preference — marked, and not the same thing as the row that is checked), and
+the sentence for a list with nothing in it. Every ordering is the kit's
+`VoiceSelector`, the same ranking the Apple picker lists by and the same rule
+narration resolves the reading voice with; Kotlin re-ranks nothing and words
+nothing.
+
+**One language for the picker and the reader.** `AndroidNarration` takes the
+device's language tag from Kotlin (`Locale.getDefault().toLanguageTag()` —
+Foundation's current locale on Android is not the reader's) and
+`narrationLanguage` is the book's own if it declares one, else that. Both
+`voicesJSON()` and `resolveVoiceIfNeeded()` use it. They used to differ: an
+untagged book was grouped under the reader's locale with a row marked
+"Recommended", and then read in whatever the engine's default was — so on a
+phone whose default is French, an English file was listed in English and read
+in French, with the tick nowhere near the recommendation.
+
+**Two silences, two sentences.** `SpeechBackend.voicesJSON()` answers
+`{"ready":…,"voices":[…]}`, because "the engine has not started up yet" and
+"this phone has no voice data" are both an empty list and want opposite words.
+The facade emits `emptyText` only when the engine has answered with nothing,
+and a `looking` flag with "Looking for voices…" otherwise; sending a reader to
+a settings screen while the list is on its way is simply wrong.
+
+**The row costs nothing to draw, and nothing polls.** `VoiceRow` names the
+voice from the preferences file — `narrationVoiceID2` (the iOS key) with
+`narrationVoiceName` beside it (Android's own key: the id is a machine name and
+the readable half is composed from the phone's list), falling back to the
+facade's "Phone's default voice" out of the static `optionsJSON()`. Only the
+tap that *opens the picker* calls `prepareVoices()`, which is what builds a
+listening session and starts a `TextToSpeech` engine; doing that when the row
+merely appeared started one on every trip to the Appearance sheet. When the
+engine reports in, `PlatformSpeechBackend` fires `NarrationEvents.voicesReady`
+unconditionally (it used to sit below an early return for "no sentence was
+waiting", which is exactly the picker's case), the facade pushes
+`NarrationObserver.voicesChanged()`, and the row fills in — where it used to
+ask twenty-four times a quarter-second apart because there was nothing to wait
+on. Picking applies mid-sentence through the kit's settings path.
+
+Android gives a voice a machine name and no human one, in two shapes —
+`en-us-x-sfg#female_1-local`, where a `#` marks the variant, and
+`en-us-x-tpd-local`, where nothing does; Google's engine ships nine local
+English voices of the second shape, so `PlatformSpeechBackend` reads the `x-`
+token as well, or the picker is nine rows that cannot be told apart.
+
+Not yet: the read-along underline. Two follow-ups worth doing. `NarrationModel`
+both is pushed to (`NarrationObserver`) and pulls (`refresh()` after every
+control, and once a second), so the same state arrives twice by two routes —
+one push path would be less to reason about. And that voice display name is
+still composed on the Kotlin side (`displayName`/`variant` above): it is the
+one reader-facing string here that the facade does not own, and moving the
+composition behind `voicesJSON()` would finish the rule.
 
 ## Layout on device
 
@@ -443,7 +613,10 @@ but the reader's own key), so an instrumented test writing under a test alias
 cannot leave unreadable entries in the reader's file, nor delete the reader's
 keys tidying up after itself. Presence is answered from the preferences file
 (`SecretStore.has`), so drawing the settings screen never decrypts a key. The app holds `INTERNET` for one reason: the provider the
-reader connected. Nothing else is called.
+reader connected. Nothing else is called. The other three permissions are
+Listen's — `FOREGROUND_SERVICE`, `FOREGROUND_SERVICE_MEDIA_PLAYBACK` and
+`POST_NOTIFICATIONS` — and they are what lets the voice keep reading with the
+screen off; none of them reaches the network.
 
 Every packaged Swift library is checked against the facade's `DT_NEEDED`
 entries (transitively) at build time, so a new Foundation module the kit
