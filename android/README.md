@@ -47,6 +47,28 @@ cd android
 The kit's own XCTest suite runs on an emulator too — see
 `.github/workflows/android.yml` for the push-and-run recipe.
 
+### The instrumented run cannot hang
+
+Two guards, both in `app/build.gradle.kts`'s `defaultConfig`.
+
+`ReadrTestRunner` switches the phone to `NoInputMethod` — a keyboard with no
+window — for the length of the run, and puts the reader's own back at the
+end. Nothing here types on a soft keyboard (`performTextInput` hands Compose
+the characters), but the keyboard's *show* transition intermittently never
+finishes on CI's 320×640 emulator: `ViewRootImpl` goes on scheduling frames
+for a resize that never lands, so the main looper never reports idle, and
+Compose's `waitForIdle` — inside every `performClick`, `performScrollToNode`,
+`assertExists` — waits on `Espresso.onIdle()`, which has no timeout. Run
+34167244349 sat on one `AskSheetTest` case for 74 minutes that way, until the
+job's own cap killed it. To see it locally, boot an AVD at the emulator's
+default 320×640 (`hw.lcd.width=320`, `hw.lcd.height=640`, density 160) rather
+than a phone profile; the 1080×2400 AVDs this is usually developed on never
+reproduce it.
+
+`timeout_msec` is the second guard: any test that outlives three minutes
+fails and names itself. It is what makes the *next* unbounded wait a red
+build in minutes rather than an hour of silence.
+
 ## The reader
 
 `ui/reader/` is the paginated reading surface. `LayoutPaginator` lays the

@@ -15,7 +15,16 @@ android {
         targetSdk = 36
         versionCode = 1
         versionName = "0.1.0"
-        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        testInstrumentationRunner = "com.readrai.readr.ReadrTestRunner"
+        // No instrumented test may hang the run. Compose's `waitForIdle` —
+        // inside every `performClick`, `performScrollToNode`, `assertExists`
+        // — waits on `Espresso.onIdle()`, which has no timeout of its own: a
+        // main looper that never reports idle is a test that never returns,
+        // and CI then sits until the job's 90-minute cap with nothing to show
+        // for it (run 34167244349 spent 74 minutes that way). AndroidJUnit's
+        // per-test timeout turns that into a named failure in three minutes.
+        // The slowest honest test on CI's emulator is well under a minute.
+        testInstrumentationRunnerArguments["timeout_msec"] = "180000"
     }
 
     buildTypes {
