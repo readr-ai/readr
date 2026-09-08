@@ -20,7 +20,7 @@ import com.readrai.readr.data.LibraryRepository
 import com.readrai.readr.data.kitJson
 import com.readrai.readr.kit.KeystoreSecretStore
 import com.readrai.readr.kit.Kit
-import com.readrai.readr.kit.NanoProbe
+import com.readrai.readr.kit.NanoModel
 import com.readrai.readr.ui.ask.AskConversation
 import com.readrai.readr.ui.ask.AskRequest
 import com.readrai.readr.ui.ask.AskSheet
@@ -68,7 +68,7 @@ class AskSheetTest {
     fun setUp() = runBlocking {
         root = File(context.cacheDir, "ask-test-${System.nanoTime()}").apply { mkdirs() }
         context.deleteSharedPreferences(KeystoreSecretStore.fileName(TEST_ALIAS))
-        kit = Kit.open(root, KeystoreSecretStore(context, alias = TEST_ALIAS), NanoProbe(context))
+        kit = Kit.open(root, KeystoreSecretStore(context, alias = TEST_ALIAS), NanoModel(context))
         library = LibraryRepository(context, kit)
         asks = AskRepository(kit)
         settingsName = "ask-test-${System.nanoTime()}"
@@ -143,6 +143,25 @@ class AskSheetTest {
                 )
             }
         }
+    }
+
+    /**
+     * The phone's own model promises nothing beyond the book: no wider
+     * knowledge, no citations from anywhere else. The caption is the one the
+     * on-device milestone settled on, and it must survive the sheet being
+     * opened over a Nano-backed kit.
+     */
+    @Test
+    fun anOnDeviceModelPromisesTheBookAndNothingElse() {
+        val nano = Kit.open(root, KeystoreSecretStore(context, alias = TEST_ALIAS), FakeOnDeviceModel())
+        val model = AskViewModel({ AskRepository(nano) }, AskConversation(book.id))
+        openSheet(model)
+        awaitTag("ask.grounding")
+        compose.waitUntil(30_000) { textOf("ask.grounding").startsWith("Answers come from") }
+        assertEquals(
+            "Answers come from what you\u2019ve read so far only.",
+            textOf("ask.grounding"),
+        )
     }
 
     /**

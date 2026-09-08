@@ -1,118 +1,6 @@
 import Foundation
 import ReadrKit
 
-/// Whether the phone's own model (Gemini Nano, through AICore) can answer a
-/// question right now — asked of Kotlin, which is the only side that can see
-/// AICore.
-///
-/// The answer is a bare token, never a sentence: `"ready"`, `"unavailable"`
-/// (fixable or temporary — still downloading, AICore updating) or
-/// `"unsupported"` (this phone can never run it). The words the reader sees
-/// come from the kit (`ProviderManager.ProviderError.notConfigured`), so the
-/// Android card and the Apple one say the same thing and Kotlin writes no
-/// reader-facing copy. One string rather than three methods, because a
-/// bridged protocol method may not throw and may not return an optional.
-public protocol OnDeviceProbe {
-  func readiness() -> String
-}
-
-/// The probe as the kit's `OnDeviceReadinessReporting` wants it: `Sendable`,
-/// speaking `OnDeviceReadiness` rather than a wire string, and asked at most
-/// once every few seconds.
-///
-/// `@unchecked`: the Kotlin object behind it is a plain, stateless reader of
-/// `PackageManager`; the same bargain `SecretCredentialStore` makes.
-final class OnDeviceProbeBox: @unchecked Sendable {
-  private let probe: any OnDeviceProbe
-  private let lock = NSLock()
-  private var cached: (readiness: OnDeviceReadiness, at: Date)?
-  private let now: () -> Date
-
-  /// How long an answer stands. The selection is resolved through the probe
-  /// on every read — building one settings payload asks several times — and
-  /// each ask is a JNI hop into `PackageManager`. Short enough that a model
-  /// finishing its download shows up on the next glance at the screen.
-  private let maxAge: TimeInterval = 5
-
-  init(_ probe: any OnDeviceProbe, now: @escaping () -> Date = { Date() }) {
-    self.probe = probe
-    self.now = now
-  }
-
-  /// Parses the wire token. Anything unrecognised is `unsupported` — a probe
-  /// that cannot say what it means must not leave the reader on a provider
-  /// that can only fail. The reason is the kit's sentence in every case: the
-  /// probe reports a state, not words.
-  var readiness: OnDeviceReadiness {
-    if let fresh = cachedReadiness { return fresh }
-    // Asked outside the lock: it is a call into Kotlin, and a mutex held
-    // across it would serialise every reader of the selection behind it.
-    let answer = probe.readiness()
-    let readiness = Self.parse(answer)
-    lock.lock()
-    cached = (readiness, now())
-    lock.unlock()
-    return readiness
-  }
-
-  var isReady: Bool { readiness == .ready }
-
-  /// Forget the cached answer, so the next read really asks the phone. What
-  /// "Check again" is for: a reader who has just installed the model is
-  /// telling us the last answer is out of date.
-  func invalidate() {
-    lock.lock(); defer { lock.unlock() }
-    cached = nil
-  }
-
-  private var cachedReadiness: OnDeviceReadiness? {
-    lock.lock(); defer { lock.unlock() }
-    guard let cached, now().timeIntervalSince(cached.at) < maxAge else { return nil }
-    return cached.readiness
-  }
-
-  private static func parse(_ answer: String) -> OnDeviceReadiness {
-    // A token with a trailing reason still parses: the token is what counts,
-    // and the sentence is the kit's either way.
-    let token = answer.split(separator: ":", maxSplits: 1).first.map(String.init) ?? ""
-    switch token.trimmingCharacters(in: .whitespaces) {
-    case "ready": return .ready
-    case "unavailable": return .unavailable(reason: onDeviceReason)
-    default: return .unsupported(reason: onDeviceReason)
-    }
-  }
-
-  /// The one sentence a phone that cannot run its own model is told, straight
-  /// from the kit — the same words the Apple app shows for its system model.
-  static var onDeviceReason: String {
-    ProviderManager.ProviderError.notConfigured(.geminiNano).errorDescription
-      ?? "Gemini Nano isn't available on this phone."
-  }
-}
-
-/// Stands in for the real Gemini Nano provider until A3c wires ML Kit's GenAI
-/// APIs up: it reports the phone's readiness (which is what Settings needs to
-/// show the card honestly) and refuses to answer.
-///
-/// A refusal here is a *sentence*, not a crash: `ProviderManager.validate`
-/// only ever asks it for `readiness()`, but Ask could still reach `stream`
-/// while the card says "ready" on a phone whose model this build cannot yet
-/// drive.
-struct PlaceholderOnDeviceProvider: LLMProvider, OnDeviceReadinessReporting {
-  let info: ProviderInfo
-  let probe: OnDeviceProbeBox
-
-  func stream(_ request: ChatRequest) -> AsyncThrowingStream<ChatChunk, Error> {
-    AsyncThrowingStream { continuation in
-      continuation.finish(throwing: AndroidBridgeError.onDeviceModelNotReady)
-    }
-  }
-
-  func countTokens(_ text: String) throws -> Int { TokenCounter.estimate(text) }
-
-  func readiness() async -> OnDeviceReadiness { probe.readiness }
-}
-
 // MARK: - The JSON Settings renders
 
 /// One selectable model on a card.
@@ -205,16 +93,13 @@ public final class AndroidProviders {
 
   private let root: URL
   private let credentialStore: SecretCredentialStore
-  private let probe: OnDeviceProbeBox
-  /// Guards `_manager`, which is replaced when a disconnect has to drop the
-  /// selection (see `disconnect(_:)`).
-  private let managerLock = NSLock()
-  private var _manager: ProviderManager
-
-  var manager: ProviderManager {
-    managerLock.lock(); defer { managerLock.unlock() }
-    return _manager
-  }
+  /// The phone's own model: what it says about itself, and what it answers.
+  private let onDevice: OnDeviceModelBox
+  /// Built once and kept: the manager is its own lock, and every move the
+  /// facade makes on it — including un-choosing (see `disconnect(_:)`) — is
+  /// a method on the one instance, so nothing this process learned about a
+  /// provider is thrown away behind a reader's back.
+  let manager: ProviderManager
 
   private let openRouterStore: OpenRouterModelStore
   /// Where a cloud provider's requests actually go. Empty in every build a
@@ -231,19 +116,19 @@ public final class AndroidProviders {
   /// every other Readr file already lives.
   private var selectionFile: URL { root.appendingPathComponent("provider-selection.json") }
 
-  public init(store: any SecretStore, rootDirectory: String, probe: any OnDeviceProbe) {
+  public init(store: any SecretStore, rootDirectory: String, model: any OnDeviceModel) {
     let root = URL(fileURLWithPath: rootDirectory, isDirectory: true)
     self.root = root
     let credentials = SecretCredentialStore(store: store)
     credentialStore = credentials
-    let probeBox = OnDeviceProbeBox(probe)
-    self.probe = probeBox
+    let modelBox = OnDeviceModelBox(model)
+    onDevice = modelBox
 
     let overrides = EndpointOverrides()
     endpointOverrides = overrides
     let stored = Self.readSelection(root.appendingPathComponent("provider-selection.json"))
-    _manager = Self.makeManager(
-      store: credentials, overrides: overrides, probe: probeBox, selection: stored)
+    manager = Self.makeManager(
+      store: credentials, overrides: overrides, model: modelBox, selection: stored)
     let store = OpenRouterModelStore(
       cacheURL: root.appendingPathComponent("OpenRouterModels.json"))
     openRouterStore = store
@@ -261,12 +146,12 @@ public final class AndroidProviders {
     }
   }
 
-  /// One manager, however many times it has to be built. `persistingIn` is
-  /// nil on purpose — see `persistingSelection`.
+  /// The one manager this facade owns. `persistingIn` is nil on purpose —
+  /// see `persistingSelection`.
   private static func makeManager(
     store: SecretCredentialStore,
     overrides: EndpointOverrides,
-    probe: OnDeviceProbeBox,
+    model: OnDeviceModelBox,
     selection: ProviderSelection?
   ) -> ProviderManager {
     let factory: ProviderManager.ProviderFactory = { info, credentials in
@@ -279,7 +164,7 @@ public final class AndroidProviders {
         return try DefaultProviderFactory.make(
           info: info, credentials: credentials, http: overrides.client(for: info.kind))
       }
-      return PlaceholderOnDeviceProvider(info: info, probe: probe)
+      return NanoProvider(info: info, model: model)
     }
     return ProviderManager(
       store: store,
@@ -290,8 +175,15 @@ public final class AndroidProviders {
       // nothing — but only while the phone can actually run it. Resolved on
       // every read, never written down: the day AICore goes away the reader
       // is back to "nothing chosen" rather than pinned to a dead selection.
+      //
+      // `isReady` READS THE CACHE AND ASKS NOTHING. The manager calls this
+      // closure with its own lock held, and the phone is asked through ML
+      // Kit on a five-second leash: a probe from in here would hold every
+      // reader of the selection behind a wedged AICore. The facade refreshes
+      // that cache on its way in instead — see
+      // `refreshOnDeviceReadiness()`.
       defaultSelection: {
-        probe.isReady
+        model.isReady
           ? ProviderSelection(
               kind: .geminiNano,
               modelID: ProviderCatalog.defaultModel(for: .geminiNano).modelID)
@@ -300,14 +192,48 @@ public final class AndroidProviders {
       supportedKinds: Set(Self.supportedKinds))
   }
 
+  // MARK: Keeping the phone's answer current
+
+  /// Ask the phone about its own model again, unless the last answer is
+  /// still fresh — then let go, before anything reads the selection.
+  ///
+  /// `OnDeviceModelBox.readiness` never asks (the reason is written on the
+  /// type: the manager holds its lock across `defaultSelection`), so every
+  /// entry point that is about to draw a card, run a check, or resolve the
+  /// active provider brings the cache up to date here first. It costs one
+  /// JNI upcall per cache window at most, on the caller's own thread, with
+  /// no lock of ours held — and every caller is a facade function Kotlin
+  /// runs on `Dispatchers.IO`.
+  func refreshOnDeviceReadiness() {
+    onDevice.refreshReadiness()
+  }
+
+  /// The same refresh, skipped when the reader has chosen a provider for
+  /// themselves.
+  ///
+  /// An explicit selection means `defaultSelection` is never consulted, so
+  /// the phone's own model has no say in what `selection` answers and there
+  /// is nothing to bring up to date. What that saves is real: without it a
+  /// reader who uses a cloud key would pay for a check of a model they are
+  /// not using — up to five seconds of it on a phone with a broken AICore —
+  /// on the way into every single question.
+  func refreshOnDeviceReadinessBeforeSelection() {
+    guard manager.explicitSelection == nil else { return }
+    onDevice.refreshReadiness()
+  }
+
   // MARK: Reading
 
   /// Everything the settings screen draws, in one answer: the line naming
   /// what Ask uses, the active selection, and a card per vendor.
   public func providersJSON() -> String {
+    // The card states what the phone says about its own model, so the phone
+    // is asked — here, before the selection is read, and not from inside the
+    // manager's lock where `defaultSelection` runs.
+    refreshOnDeviceReadiness()
     // Every card in the payload asks the same three questions about a kind,
     // and two of them reach the Keystore. Asked once here and carried down.
-    let facts = Facts(manager: manager, credentials: credentialStore, probe: probe)
+    let facts = Facts(manager: manager, credentials: credentialStore, model: onDevice)
     let payload = ProviderSettingsPayload(
       askUsesLine: askUsesLine(facts),
       selection: facts.selection,
@@ -322,7 +248,8 @@ public final class AndroidProviders {
   /// provider has actually rejected (or a selection with nothing behind it)
   /// counts as nothing to ask with.
   public func hasAnyProvider() -> Bool {
-    ((try? manager.activeProvider()) ?? nil) != nil
+    refreshOnDeviceReadinessBeforeSelection()
+    return ((try? manager.activeProvider()) ?? nil) != nil
   }
 
   /// An honest empty-state sentence for a panel with nothing connected —
@@ -330,18 +257,21 @@ public final class AndroidProviders {
   /// questions." Mirrors `SettingsModel.setupGuidance(toDo:)`, and names the
   /// phone's own model only where the phone can actually run it.
   public func setupGuidance(_ action: String) -> String {
-    "\(Self.joined(setupPaths)) to \(action)."
+    // The sentence names the phone's own model only where the phone can run
+    // one, so the phone is asked before it is written.
+    refreshOnDeviceReadiness()
+    return "\(Self.joined(setupPaths)) to \(action)."
   }
 
   /// The ways a reader can connect something in *this* build. Derived from
-  /// the kinds on offer and the probe, so it never advertises a door that is
+  /// the kinds on offer and the model, so it never advertises a door that is
   /// not there: no sign-in (A3 is keys only), and no on-device path on a
   /// phone whose own model cannot run.
   private var setupPaths: [String] {
     // Capitalised: it leads the sentence `setupGuidance` builds.
     var paths: [String] = []
     if Self.supportedKinds.contains(where: \.usesAPIKey) { paths.append("Add an API key") }
-    if Self.supportedKinds.contains(where: \.isOnDevice), probe.isReady {
+    if Self.supportedKinds.contains(where: \.isOnDevice), onDevice.isReady {
       paths.append("use the model built into this phone")
     }
     return paths.isEmpty ? ["Connect an AI provider"] : paths
@@ -382,6 +312,9 @@ public final class AndroidProviders {
   public func connect(_ kind: String) async throws -> String {
     try await readerFacing {
       let k = try self.kind(kind)
+      // Both steps read the selection to decide whether this kind may take
+      // the slot, so the phone's answer has to be current before they do.
+      refreshOnDeviceReadiness()
       persistingSelection { manager.requestActivation(of: k) }
       await persistingSelection { await manager.validateAndActivate(k) }
       return self.statusJSON(manager.validationState(k))
@@ -395,6 +328,7 @@ public final class AndroidProviders {
   public func validateIfStale(_ kind: String, maxAgeSeconds: Int64) async throws -> String {
     try await readerFacing {
       let k = try self.kind(kind)
+      refreshOnDeviceReadiness()
       await persistingSelection {
         await manager.validateIfStale(k, maxAge: TimeInterval(maxAgeSeconds))
       }
@@ -422,13 +356,19 @@ public final class AndroidProviders {
   public func deleteCredential(_ kind: String) throws { try disconnect(kind) }
 
   /// Check that a kind is actually usable — a one-token authenticated call
-  /// for a cloud key, the phone's probe for the on-device model — and report
+  /// for a cloud key, the phone's own check for the on-device model — and report
   /// where it landed. Never skipped: this is the reader pressing "Check
   /// again", and a cached answer is exactly what they are disputing.
   public func validate(_ kind: String) async throws -> String {
     try await readerFacing {
       let k = try self.kind(kind)
-      if k.isOnDevice { probe.invalidate() }
+      // "Check again" on the phone's own card: throw the last answer away
+      // and go and get another one, here, before the manager reads either
+      // the selection or `NanoProvider.readiness()` — both of which now read
+      // only what this leaves behind. Emptying the cache without refilling it
+      // would read as a phone that cannot run the model at all.
+      if k.isOnDevice { onDevice.invalidate() }
+      refreshOnDeviceReadiness()
       _ = await persistingSelection { await manager.validate(k) }
       // Re-read rather than trust the return value: a key saved mid-flight
       // discards this run's result, and the manager holds the fresh state.
@@ -469,7 +409,7 @@ public final class AndroidProviders {
     private let stored: [ProviderInfo.Kind: Bool]
     private let onDeviceReady: Bool
 
-    init(manager: ProviderManager, credentials: SecretCredentialStore, probe: OnDeviceProbeBox) {
+    init(manager: ProviderManager, credentials: SecretCredentialStore, model: OnDeviceModelBox) {
       selection = manager.selection
       explicitSelection = manager.explicitSelection
       var states: [ProviderInfo.Kind: ProviderManager.ValidationState?] = [:]
@@ -480,7 +420,7 @@ public final class AndroidProviders {
       }
       self.states = states
       self.stored = stored
-      onDeviceReady = probe.isReady
+      onDeviceReady = model.isReady
     }
 
     func state(_ kind: ProviderInfo.Kind) -> ProviderManager.ValidationState? {
@@ -668,17 +608,13 @@ public final class AndroidProviders {
 
   /// Back to "nothing chosen", here and on disk.
   ///
-  /// `ProviderManager` has no way to un-choose — `setActive` is the only door
-  /// in and it always names a kind — so the facade builds a fresh manager
-  /// over the same store, factory and probe. It forgets what this session had
-  /// checked, which the next sweep re-establishes. KIT FOLLOW-UP: a
-  /// `clearSelection()` on `ProviderManager` would make this a one-liner and
-  /// keep those results.
+  /// The kit un-chooses in place, so everything this session learned about
+  /// the *other* kinds — a key already checked, and how long ago — survives
+  /// a disconnect. The file goes through `writeSelection`, the one door to
+  /// disk, so the two cannot disagree about what "nothing chosen" looks
+  /// like on the next launch.
   private func dropSelection() {
-    managerLock.lock()
-    _manager = Self.makeManager(
-      store: credentialStore, overrides: endpointOverrides, probe: probe, selection: nil)
-    managerLock.unlock()
+    manager.clearSelection()
     writeSelection(nil)
   }
 

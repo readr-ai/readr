@@ -19,6 +19,7 @@ import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.readrai.readr.ui.theme.ReadingPalette
+import kotlin.math.hypot
 
 /** The visible dot at each end of a selection, and how far a finger may miss it. */
 private val handleRadius = 7.dp
@@ -49,26 +50,27 @@ class PageSelectionState {
     fun clear() { range = null }
 
     /**
-     * Long press: take the word under the finger. A press that lands in the
-     * space between words takes the word before it, as Android's own
-     * selection does, so a long press always yields a word and never a blank.
-     * Returns the anchor a drag then extends from.
+     * Long press: take the word under the finger, expanded from the glyph the
+     * finger is actually **on**.
+     *
+     * The pixel is resolved the way a tap resolves it ([characterUnder]), not
+     * to the nearest caret. `getOffsetForPosition` answers with an insertion
+     * point, and a press on the right half of a letter rounds to the caret
+     * *after* it — on a word's last letter that is the boundary between the
+     * word and whatever follows, and the word iterator there hands back the
+     * following run. So a press on the "t" of "Light," selected the comma,
+     * while the tap meant to reopen that mark resolved the very same pixel to
+     * the "t": one place on the page, two different characters.
+     *
+     * A press on something that is not a word — a comma, the space between
+     * two words, the white past a short line — walks out to the nearest word
+     * character on either side and takes whichever the finger is closer to.
+     * A long press therefore always yields a word, never a blank, and never
+     * punctuation while there is a word to be had. Returns the anchor a drag
+     * then extends from.
      */
     fun selectWord(layout: TextLayoutResult, position: Offset): TextRange {
-        val text = layout.layoutInput.text.text
-        val offset = layout.getOffsetForPosition(position).coerceIn(0, text.length)
-        val word = layout.getWordBoundary(offset)
-        var start = word.min.coerceIn(0, text.length)
-        var end = word.max.coerceIn(start, text.length)
-        while (end > start && text[end - 1].isWhitespace()) end--
-        while (start < end && text[start].isWhitespace()) start++
-        if (start >= end) {
-            end = offset
-            while (end > 0 && text[end - 1].isWhitespace()) end--
-            start = end
-            while (start > 0 && !text[start - 1].isWhitespace()) start--
-        }
-        val picked = if (start < end) TextRange(start, end) else TextRange(offset, (offset + 1).coerceAtMost(text.length))
+        val picked = wordUnder(layout, position)
         range = picked
         return picked
     }
@@ -205,6 +207,84 @@ private suspend fun AwaitPointerEventScope.trackUntilUp(id: PointerId, onMove: (
 }
 
 /**
+ * The word a long press at [position] means, in page-local offsets.
+ *
+ * The glyph under the finger first — the same resolution a tap makes, so the
+ * two gestures never disagree about one pixel. A press over no glyph at all
+ * (the margin, the white past a short line) has no glyph to start from, and
+ * falls back to the nearest caret: it still has to select something, and the
+ * walk below turns that into the word beside the finger.
+ */
+private fun wordUnder(layout: TextLayoutResult, position: Offset): TextRange {
+    val text = layout.layoutInput.text.text
+    if (text.isEmpty()) return TextRange(0, 0)
+    val pressed = characterUnder(layout, position).takeIf { it != NO_CHARACTER }
+        ?: layout.getOffsetForPosition(position).coerceIn(0, text.lastIndex)
+    val letter = if (isWordCharacter(text, pressed)) {
+        pressed
+    } else {
+        nearestWordCharacter(layout, text, pressed, position)
+    }
+    // A page with no word on it at all — a picture, a rule — still answers a
+    // press with the one character under it rather than with nothing.
+    if (letter == NO_CHARACTER) return TextRange(pressed, pressed + 1)
+    var start = letter
+    while (start > 0 && isWordCharacter(text, start - 1)) start--
+    var end = letter + 1
+    while (end < text.length && isWordCharacter(text, end)) end++
+    return TextRange(start, end)
+}
+
+/**
+ * Whether the character at [index] is part of a word. Letters and digits are;
+ * so is an apostrophe with one on each side, because "don't" is one word and
+ * Android's own iterator reads it as one. A hyphen is not: "well-known" is
+ * selected a half at a time there too.
+ */
+private fun isWordCharacter(text: String, index: Int): Boolean {
+    val char = text[index]
+    if (char.isLetterOrDigit()) return true
+    if (char != '\'' && char != '’') return false
+    return index > 0 && text[index - 1].isLetterOrDigit() &&
+        index + 1 < text.length && text[index + 1].isLetterOrDigit()
+}
+
+/**
+ * The word character nearest the finger, on either side of [from], or
+ * [NO_CHARACTER] when the page holds none.
+ *
+ * Measured where the reader can see it — the distance from the finger to each
+ * candidate's glyph box — rather than counted in characters, which would make
+ * every space a tie. A press in the gap between two words is a pixel from one
+ * and a space's width from the other; a press past the end of a short line is
+ * beside the word that ends it, not beside the one that starts the next.
+ * A true tie goes to the word before, as Android's own selection does.
+ */
+private fun nearestWordCharacter(
+    layout: TextLayoutResult,
+    text: String,
+    from: Int,
+    position: Offset,
+): Int {
+    val before = (from - 1 downTo 0).firstOrNull { isWordCharacter(text, it) }
+    val after = (from + 1 until text.length).firstOrNull { isWordCharacter(text, it) }
+    return when {
+        before == null -> after ?: NO_CHARACTER
+        after == null -> before
+        distanceTo(layout, before, position) <= distanceTo(layout, after, position) -> before
+        else -> after
+    }
+}
+
+/** How far the finger is from the glyph at [index], in pixels, zero when on it. */
+private fun distanceTo(layout: TextLayoutResult, index: Int, position: Offset): Float {
+    val box = layout.getBoundingBox(index)
+    val dx = maxOf(box.left - position.x, position.x - box.right, 0f)
+    val dy = maxOf(box.top - position.y, position.y - box.bottom, 0f)
+    return hypot(dx, dy)
+}
+
+/**
  * The character the finger is over, or [NO_CHARACTER] where it is over none —
  * the white past the end of a short line, the margin below the last one, the
  * air beside a centred picture. `getOffsetForPosition` answers with a caret,
@@ -213,6 +293,9 @@ private suspend fun AwaitPointerEventScope.trackUntilUp(id: PointerId, onMove: (
  * happened to be closest and could follow a link the finger never touched.
  * The glyph boxes decide instead — and a tap on the last letter of a highlight
  * still lands inside it rather than just past its end.
+ *
+ * The long press comes through here too ([wordUnder]), so both gestures read
+ * one pixel as one character.
  */
 private fun characterUnder(layout: TextLayoutResult, position: Offset): Int {
     val length = layout.layoutInput.text.length

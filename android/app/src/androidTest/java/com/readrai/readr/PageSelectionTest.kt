@@ -59,6 +59,58 @@ class PageSelectionTest {
         return result.getBoundingBox((start + end - 1) / 2).center
     }
 
+    /** What a long press at [position] selected, as the words themselves. */
+    private fun pressed(result: TextLayoutResult, position: Offset): String {
+        val state = PageSelectionState()
+        state.layout = result
+        val picked = state.selectWord(result, position)
+        return prose.substring(picked.min, picked.max)
+    }
+
+    /**
+     * A press on the right half of a word's last letter takes the word, not
+     * the punctuation after it.
+     *
+     * That half of a glyph rounds to the caret *after* it, which on a last
+     * letter is the boundary between the word and the comma — and the word
+     * iterator there hands back the comma. A tap resolves the same pixel to
+     * the letter it is on, so the press and the tap that would reopen its
+     * mark disagreed about a mark one of them had just made.
+     */
+    @Test
+    fun aPressOnALastLetterTakesTheWordAndNotTheComma() {
+        val result = layout()
+        val comma = prose.indexOf("Light,") + "Light".length
+        assertEquals("the fixture has the comma this is about", ',', prose[comma])
+        // Inside the "t" and against its right edge: `Rect.contains` is
+        // left-inclusive and right-exclusive, so half a pixel in is still on
+        // the letter while the nearest caret has already rounded past it.
+        val letter = result.getBoundingBox(comma - 1)
+        assertEquals("Light", pressed(result, Offset(letter.right - 0.5f, letter.center.y)))
+    }
+
+    /**
+     * A press in the space between two words takes the nearer of them: the
+     * word before when the finger is at that end of the gap, the word after
+     * when it is at the other. Measured in pixels — counted in characters
+     * every space is a tie.
+     */
+    @Test
+    fun aPressOnASpaceTakesTheNearerWord() {
+        val result = layout()
+        val space = prose.indexOf("the best") + "the".length
+        assertEquals("the fixture has the space this is about", ' ', prose[space])
+        assertEquals(
+            "the words either side of it are on one line",
+            result.getLineForOffset(space - 1),
+            result.getLineForOffset(space + 1),
+        )
+        val gap = result.getBoundingBox(space)
+        assertTrue("a gap wide enough to have two ends: ${gap.width}", gap.width > 1f)
+        assertEquals("the", pressed(result, Offset(gap.left + gap.width * 0.15f, gap.center.y)))
+        assertEquals("best", pressed(result, Offset(gap.right - gap.width * 0.15f, gap.center.y)))
+    }
+
     @Test
     fun aHandleTouchedWhereItIsDrawnLeavesTheSelectionAlone() {
         val result = layout()

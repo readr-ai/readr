@@ -19,15 +19,16 @@ class Kit private constructor(
 ) {
     companion object {
         /**
-         * `probe` is what the phone can say about its own model — see
-         * [NanoProbe]. It is asked on every read of the active selection, so
-         * an answer that changes (AICore finishing a download) changes what
-         * Settings shows without anything being re-opened.
+         * `model` is the phone's own model — see [NanoModel]: what it can say
+         * about itself, and what it answers. Its readiness is asked on every
+         * read of the active selection, so an answer that changes (AICore
+         * finishing a download) changes what Settings shows without anything
+         * being re-opened.
          */
-        fun open(root: File, secrets: SecretStore, probe: OnDeviceProbe): Kit {
+        fun open(root: File, secrets: SecretStore, model: OnDeviceModel): Kit {
             val arena = SwiftArena.ofAuto()
             val library = AndroidLibrary.init(root.absolutePath, arena)
-            val providers = AndroidProviders.init(secrets, root.absolutePath, probe, arena)
+            val providers = AndroidProviders.init(secrets, root.absolutePath, model, arena)
             return Kit(arena, library, providers)
         }
     }

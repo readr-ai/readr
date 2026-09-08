@@ -9,7 +9,7 @@ import com.readrai.readr.data.EpubExtractor
 import com.readrai.readr.data.kitJson
 import com.readrai.readr.kit.KeystoreSecretStore
 import com.readrai.readr.kit.Kit
-import com.readrai.readr.kit.NanoProbe
+import com.readrai.readr.kit.NanoModel
 import com.readrai.readr.ui.listen.NarrationModel
 import com.readrai.readr.ui.listen.NarrationService
 import com.readrai.readr.ui.listen.NarrationSession
@@ -57,7 +57,7 @@ class NarrationSessionTest {
     fun setUp() = runBlocking {
         grantNotifications()
         root = File(context.cacheDir, "session-test-${System.nanoTime()}").apply { mkdirs() }
-        kit = Kit.open(root, KeystoreSecretStore(context, alias = "readr.secrets.test"), NanoProbe(context))
+        kit = Kit.open(root, KeystoreSecretStore(context, alias = "readr.secrets.test"), NanoModel(context))
         settingsName = "session-test-${System.nanoTime()}"
         settings = ReaderSettings(context, settingsName)
         val text = buildString {

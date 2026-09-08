@@ -5,12 +5,19 @@ import PackageDescription
 // `ReadrAndroid` is the Android facade over ReadrKit: a few classes with
 // String/Int64/Double/Bool signatures (JSON for anything structured) that
 // swift-java's jextract turns into the `com.readrai.readr.kit` Java package.
-// Kotlin implements the protocols declared here (secret storage today; the
-// speech backend and narration observer in the Listen milestone).
+// Kotlin implements the protocols declared here: `SecretStore` (secrets in
+// the Android Keystore), `AskSink` (where one streamed answer's events go)
+// and `OnDeviceModel` (Gemini Nano through AICore, which only Kotlin can
+// see); the speech backend and narration observer follow in the Listen
+// milestone.
 //
 // Boundary rules learned in the 2026-09 bridging spike:
 // no type may share the module's name; Java-implemented protocol methods take
-// Int64, not Int; no optionals or throws on protocol methods.
+// Int64, not Int; no optionals or throws on protocol methods. And a callback
+// travelling the other way — a Swift object passed INTO a Java-implemented
+// method — must be a public class, not a protocol: jextract wraps a concrete
+// jextracted type, and a protocol existential has no address for the Java
+// wrapper to hold (`OnDeviceSink` in OnDevice.swift).
 let package = Package(
   name: "ReadrAndroid",
   platforms: [.macOS(.v15)],

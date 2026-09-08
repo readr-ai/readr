@@ -19,7 +19,7 @@ import com.readrai.readr.data.LibraryRepository
 import com.readrai.readr.data.kitJson
 import com.readrai.readr.kit.KeystoreSecretStore
 import com.readrai.readr.kit.Kit
-import com.readrai.readr.kit.NanoProbe
+import com.readrai.readr.kit.NanoModel
 import com.readrai.readr.ui.listen.NarrationModel
 import com.readrai.readr.ui.reader.ReaderScreen
 import com.readrai.readr.ui.reader.ReaderSettings
@@ -84,7 +84,7 @@ class VoicePickerTest {
     fun setUp() = runBlocking {
         grantNotifications()
         root = File(context.cacheDir, "voice-test-${System.nanoTime()}").apply { mkdirs() }
-        kit = Kit.open(root, KeystoreSecretStore(context, alias = "readr.secrets.test"), NanoProbe(context))
+        kit = Kit.open(root, KeystoreSecretStore(context, alias = "readr.secrets.test"), NanoModel(context))
         repository = LibraryRepository(context, kit)
         settingsName = "voice-test-${System.nanoTime()}"
         settings = ReaderSettings(context, settingsName)
