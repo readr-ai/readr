@@ -64,9 +64,9 @@ public protocol ContextStrategy: Sendable {
     /// - Parameter history: earlier turns of the same conversation, oldest
     ///   first. Without it a follow-up ("but roads are technically 3D") reads
     ///   as a brand-new question with no idea what it is objecting to.
-    /// - Parameter scope: what the answer may draw on — the whole book, or
-    ///   only what the reader has read. Named at every call site; see
-    ///   `ReadingScope`.
+    /// - Parameter scope: what the answer may draw on — the whole book,
+    ///   everything read so far, or only the paragraphs near the passage in
+    ///   hand. Named at every call site; see `ReadingScope`.
     func assembleContext(
         for question: String,
         in book: Book,
@@ -94,36 +94,73 @@ public extension ContextStrategy {
     }
 }
 
-/// Default adaptive router:
-/// - Tier 1 (whole book) when the book fits the provider budget.
-/// - Tier 2 (retrieval) otherwise, or for local/small-context models.
-/// Both tiers always inject the selection + chapter + TOC anchor.
+/// Default adaptive router. The scope names what the reader asked for, and
+/// the router takes it at its word:
+/// - `.window` — the paragraphs around the passage plus retrieved passages.
+///   Never the book. Only exception: while what has been read is still small
+///   (see `defaultSmallBookTokenCap`), that rides along instead, because it
+///   costs about the same and cannot miss what retrieval might.
+/// - `.upTo` — everything read so far, if the model can spare the room.
+/// - `.wholeBook` — the whole book, if the model can spare the room.
+/// A text that does not fit its share of the budget falls back to retrieval,
+/// and the panel says so. Both tiers always inject the selection, the chapter
+/// and the TOC anchor.
+///
+/// The rule used to be "the book fits 60% of the budget" — which, against a
+/// 200k-token budget, sent the whole book for almost every real book on every
+/// question. That is a large bill for something most questions do not need:
+/// the reader asked about a sentence, and a model reads a question about a
+/// sentence the way a reader does — the passage in hand, the paragraphs just
+/// before it, and whatever it goes back to look up. See
+/// docs/CONTEXT-STRATEGY.md.
 public struct AdaptiveContextStrategy: ContextStrategy {
     private let index: RAGIndex
     private let lengths: ReadingLengthCache
-    /// Fraction of the context budget we allow the book to occupy before
-    /// switching to retrieval (leaves room for history + answer).
+    /// Fraction of the context budget a text may occupy when the reader asked
+    /// for the text itself (leaves room for history + answer).
     private let wholeBookBudgetFraction: Double
+    /// The read-so-far size under which the read text rides along even in the
+    /// nearby-passages scope.
+    private let smallBookTokenCap: Int
 
     /// - Parameter lengths: per-book chapter lengths, shared with whatever
     ///   else measures books (the app hands in its one cache) so a scoped
     ///   question's token estimate never re-walks the text.
+    /// - Parameter smallBookTokenCap: see `defaultSmallBookTokenCap`.
     public init(
         index: RAGIndex,
         lengths: ReadingLengthCache = ReadingLengthCache(),
-        wholeBookBudgetFraction: Double = AdaptiveContextStrategy.defaultWholeBookBudgetFraction
+        wholeBookBudgetFraction: Double = AdaptiveContextStrategy.defaultWholeBookBudgetFraction,
+        smallBookTokenCap: Int = AdaptiveContextStrategy.defaultSmallBookTokenCap
     ) {
         self.index = index
         self.lengths = lengths
         self.wholeBookBudgetFraction = wholeBookBudgetFraction
+        self.smallBookTokenCap = smallBookTokenCap
     }
 
-    /// The share of the context budget a book may occupy before the router
-    /// switches to retrieval. Named rather than written twice: a caller that
-    /// has to predict the tier without a strategy in hand (deciding whether a
-    /// retrieval index is worth building at all) reads this one, so a change
-    /// here cannot leave a second copy behind.
+    /// The share of the context budget a text may occupy when the reader
+    /// asked for the text itself — "Read so far" or "Whole book" in the
+    /// panel. The nearby-passages scope does not consult it: it is gated by
+    /// `defaultSmallBookTokenCap` instead. Named rather than written twice: a
+    /// caller that has to predict the tier without a strategy in hand reads
+    /// this one, so a change here cannot leave a second copy behind.
     public static let defaultWholeBookBudgetFraction = 0.6
+
+    /// How much text a book may have *read so far* and still ride along in
+    /// the nearby-passages scope, where the reader did not ask for text.
+    ///
+    /// Small reads are both cheaper and more accurate sent whole: below this
+    /// size the text is the same order of magnitude as a handful of retrieved
+    /// passages, so retrieval would cost about as much and could miss. It is
+    /// also the rung where the analogy to a reader holds best — at the start
+    /// of a book you have all of it in mind; past the first few chapters you
+    /// have the current page and whatever you go back to look up.
+    ///
+    /// 6,000 tokens ≈ 12–15 printed pages of prose. Measured in English; CJK
+    /// text is denser per character, so the cap lands on fewer pages there —
+    /// which is the conservative direction for a bill.
+    public static let defaultSmallBookTokenCap = 6_000
 
     // MARK: - Routing
 
@@ -135,7 +172,8 @@ public struct AdaptiveContextStrategy: ContextStrategy {
     /// an index build for a question that will never retrieve — cannot be
     /// told one thing and served another.
     struct Routing {
-        /// The share of the provider's context budget the text may occupy.
+        /// The share of the provider's context budget a text may occupy when
+        /// the reader asked for the text itself.
         let budget: Int
         /// Characters before the frontier, or nil for an unscoped question —
         /// nil and 0 are different answers, and only 0 means "not started".
@@ -145,9 +183,10 @@ public struct AdaptiveContextStrategy: ContextStrategy {
         /// book, whatever the provider — there is no text to be too big for
         /// it and nothing for retrieval to find.
         var nothingRead: Bool { charactersRead == 0 }
-        /// Whether the text itself fits, for a provider that can take it.
-        /// Local models never do: they are the small-window case retrieval
-        /// exists for.
+        /// Whether the text rides along whole: small enough to ride along
+        /// unasked, or asked for and small enough for this model. Local models
+        /// never qualify — they are the small-window case retrieval exists
+        /// for.
         let fits: Bool
         /// The tier `assembleContext` picks.
         var isWholeBook: Bool { nothingRead || fits }
@@ -158,20 +197,32 @@ public struct AdaptiveContextStrategy: ContextStrategy {
         scope: ReadingScope,
         provider: ProviderInfo,
         lengths: ReadingLengthCache,
-        wholeBookBudgetFraction: Double
+        wholeBookBudgetFraction: Double,
+        smallBookTokenCap: Int
     ) -> Routing {
         let budget = Int(Double(provider.contextBudget) * wholeBookBudgetFraction)
         // Counted, not built: a long book the reader has only started is a
         // short text, and the text itself is only assembled once the
         // whole-book tier is chosen.
         let charactersRead = scope.frontier.map { lengths.table(for: book).charactersRead(upTo: $0) }
-        // What would ride along on the whole-book tier, and therefore what
-        // the budget has to fit.
+        // What would ride along on the whole-book tier, and therefore what has
+        // to fit. A question with no frontier (a PDF page) has no read-so-far
+        // to measure, so the whole document is what would be sent.
         let bookTokens = charactersRead.map(estimateTokens(characterCount:)) ?? book.estimatedTokenCount
+        // The scope says how much text the reader asked for, so it sets the
+        // cap: the nearby-passages scope sends extracts and never the book —
+        // except while the read text is still small enough that sending it
+        // costs about what retrieval would (and cannot miss) — while the two
+        // text scopes are honored up to what the model can actually hold.
+        let cap: Int
+        switch scope {
+        case .window: cap = min(smallBookTokenCap, budget)
+        case .upTo, .wholeBook: cap = budget
+        }
         return Routing(
             budget: budget,
             charactersRead: charactersRead,
-            fits: !provider.isLocal && bookTokens <= budget
+            fits: !provider.isLocal && bookTokens <= cap
         )
     }
 
@@ -184,11 +235,14 @@ public struct AdaptiveContextStrategy: ContextStrategy {
     /// chunking and embedding a long book is seconds no whole-book answer
     /// would use.
     public func routesWholeBook(
-        book: Book, scope: ReadingScope, provider: ProviderInfo
+        book: Book,
+        scope: ReadingScope,
+        provider: ProviderInfo
     ) -> Bool {
         Self.routing(
-            book: book, scope: scope, provider: provider,
-            lengths: lengths, wholeBookBudgetFraction: wholeBookBudgetFraction
+            book: book, scope: scope, provider: provider, lengths: lengths,
+            wholeBookBudgetFraction: wholeBookBudgetFraction,
+            smallBookTokenCap: smallBookTokenCap
         ).isWholeBook
     }
 
@@ -205,11 +259,13 @@ public struct AdaptiveContextStrategy: ContextStrategy {
         scope: ReadingScope,
         provider: ProviderInfo,
         lengths: ReadingLengthCache,
-        wholeBookBudgetFraction: Double = AdaptiveContextStrategy.defaultWholeBookBudgetFraction
+        wholeBookBudgetFraction: Double = AdaptiveContextStrategy.defaultWholeBookBudgetFraction,
+        smallBookTokenCap: Int = AdaptiveContextStrategy.defaultSmallBookTokenCap
     ) -> Bool {
         routing(
-            book: book, scope: scope, provider: provider,
-            lengths: lengths, wholeBookBudgetFraction: wholeBookBudgetFraction
+            book: book, scope: scope, provider: provider, lengths: lengths,
+            wholeBookBudgetFraction: wholeBookBudgetFraction,
+            smallBookTokenCap: smallBookTokenCap
         ).isWholeBook
     }
 
@@ -242,9 +298,18 @@ public struct AdaptiveContextStrategy: ContextStrategy {
         // that holds the rule — `routesWholeBook` asks the same question of
         // the same code, so a caller that predicted the tier gets it.
         let routing = Self.routing(
-            book: book, scope: scope, provider: provider,
-            lengths: lengths, wholeBookBudgetFraction: wholeBookBudgetFraction
+            book: book, scope: scope, provider: provider, lengths: lengths,
+            wholeBookBudgetFraction: wholeBookBudgetFraction,
+            smallBookTokenCap: smallBookTokenCap
         )
+        // The prompt says "the book below", which is only true where the text
+        // was actually sent. Say so when it wasn't — the nearby scope is the
+        // one that hands the model extracts — but only when that is what
+        // happened: a read small enough to ride along whole leaves no unseen
+        // book to warn about.
+        if scope.isWindow, !routing.isWholeBook {
+            systemContent += "\n\n" + Self.nearbyOnlyNote
+        }
         let budget = routing.budget
 
         if routing.nothingRead {
@@ -468,6 +533,18 @@ public struct AdaptiveContextStrategy: ContextStrategy {
     A request for a recap or summary means what has happened so far, \
     nothing more. Tell it in reading order, and stop where the reader \
     stopped.
+    """
+
+    /// Appended when a `.window` question is answered from extracts — the one
+    /// scope where the model is handed passages rather than text, so the
+    /// prompt's own "the book below" would otherwise be a lie it answers
+    /// from. Pinned by `ReadingFrontierTests`.
+    static let nearbyOnlyNote = """
+    You were given passages, not the whole book: the text around the reader's \
+    place, plus passages found by searching for this question. There is more \
+    book you have not been shown. Where an answer would turn on text you were \
+    not given, say so in a few words instead of guessing at it, and don't \
+    describe the book as a whole from these passages alone.
     """
 
     /// Appended, in place of any book text, when the frontier is at the very

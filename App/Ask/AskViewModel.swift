@@ -24,6 +24,17 @@ final class AskViewModel: ObservableObject {
         var answerText: String = ""
         var tier: AssembledContext.Tier? = nil
         var citations: [Citation] = []
+        /// The passage the question was asked about, when it was about one —
+        /// kept so a saved note can quote what its answer is about, the way
+        /// the panel showed it at the time.
+        var quote: String? = nil
+        /// The chapter the question came from, for the saved note's front
+        /// matter.
+        var chapter: String? = nil
+        /// Where this answer was saved in the reader's knowledge base, once
+        /// they saved it — the row under the answer then shows the saved state
+        /// instead of offering to save it a second time.
+        var savedPath: String? = nil
         /// The stream failed; the panel's error card carries the detail.
         var failed = false
         var isStreaming = true
@@ -79,11 +90,52 @@ final class AskViewModel: ObservableObject {
     /// question is held to; nil (a native PDF page) means every question
     /// is about the whole document and the scope choice is hidden.
     @Published private(set) var frontier: ReadingFrontier?
-    /// The reader's scope choice — "Whole book" on — kept on the
-    /// conversation, with the transcript it describes: a choice made for
-    /// one question holds for the next opening rather than snapping back
-    /// while whole-book answers sit in the history the model is shown.
-    @Published var wholeBook = false
+    /// The reader's "Answers from" choice, kept on the conversation, with the
+    /// transcript it describes: a choice made for one question holds for the
+    /// next opening rather than snapping back while whole-book answers sit in
+    /// the history the model is shown.
+    ///
+    /// Deliberately NOT persisted across launches. The default is the cheap
+    /// scope, and a "Whole book" left over from yesterday would quietly send
+    /// the entire book on the next question — a bill the reader never asked
+    /// for today. It is one click to set it again.
+    @Published var answersFrom: AnswersFrom = .nearby
+
+    /// How much of the book an answer may see — the panel's "Answers from"
+    /// choice as three named options. The names describe what the reader
+    /// gets; `ReadingScope` is how the strategy hears it.
+    enum AnswersFrom: String, CaseIterable, Identifiable, Sendable {
+        /// The default: the passage in hand, the paragraphs around it, and
+        /// whatever retrieval finds. Never the book.
+        case nearby
+        /// Everything read so far, sent whole when the model can hold it.
+        case readSoFar
+        /// The whole book, past the reader's place included.
+        case wholeBook
+
+        var id: String { rawValue }
+
+        var title: String {
+            switch self {
+            case .nearby: return "Nearby"
+            case .readSoFar: return "Read so far"
+            case .wholeBook: return "Whole book"
+            }
+        }
+
+        /// One line under the picker saying what the chosen option means —
+        /// the choice is only honest if the reader can see its cost.
+        var note: String {
+            switch self {
+            case .nearby:
+                return "The passage in question, the paragraphs around it, and passages found by search. Cheapest."
+            case .readSoFar:
+                return "Everything you've read — no spoilers. Sent in full when the model can hold it."
+            case .wholeBook:
+                return "The whole book, including what you haven't read yet."
+            }
+        }
+    }
     /// True while the latest opening was a Recap, for the panel's headline.
     @Published private(set) var openedForRecap = false
     /// The question an opening asked to send on the panel's behalf (Recap),
@@ -101,14 +153,23 @@ final class AskViewModel: ObservableObject {
     /// the passage the conversation has since been pointed at.
     private(set) var lastRequest: (question: String, scope: ReadingScope, selection: Selection?)?
 
-    /// What the next question is allowed to see.
+    /// What the next question is allowed to see: the reader's choice, pointed
+    /// at wherever the conversation currently is.
     var scope: ReadingScope {
-        if let frontier, !wholeBook { return .upTo(frontier) }
-        return .wholeBook
+        switch answersFrom {
+        case .nearby:
+            // No reading position (a native PDF page) is still the nearby
+            // scope — "nearby" means extracts, not the book.
+            return .window(frontier)
+        case .readSoFar:
+            return frontier.map(ReadingScope.upTo) ?? .wholeBook
+        case .wholeBook:
+            return .wholeBook
+        }
     }
 
     /// The scope is NOT an init argument: the panel hands it to every
-    /// `ask(_:scope:)` from its toggle, so a panel opened scoped can ask the
+    /// `ask(_:scope:)` from its picker, so a panel opened scoped can ask the
     /// next question about the whole book without a new view model.
     init(
         makeService: @escaping () -> AskService?,
@@ -225,7 +286,10 @@ final class AskViewModel: ObservableObject {
             exchanges.removeLast()
         }
         let id = UUID()
-        exchanges.append(Exchange(id: id, question: trimmed, scope: scope))
+        exchanges.append(Exchange(
+            id: id, question: trimmed, scope: scope,
+            quote: selection?.quotedText, chapter: selection?.chapterTitle
+        ))
 
         guard self.service != nil else {
             fail(id, "Connect an AI provider in settings to ask questions.", recovery: nil)
@@ -332,6 +396,16 @@ final class AskViewModel: ObservableObject {
     private func update(_ id: UUID, _ change: (inout Exchange) -> Void) {
         guard let index = exchanges.firstIndex(where: { $0.id == id }) else { return }
         change(&exchanges[index])
+    }
+
+    /// The active model's name, for a saved note's front matter — the same
+    /// string the bug reports and the sidebar use ("DeepSeek Flash").
+    var modelName: String { providerName() }
+
+    /// Record that an answer was written to the knowledge base, so the row
+    /// under it stops offering to save it again.
+    func markSaved(_ id: UUID, path: String) {
+        update(id) { $0.savedPath = path }
     }
 
     private func fail(_ id: UUID, _ message: String, recovery: String?) {

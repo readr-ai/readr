@@ -195,7 +195,10 @@ final class ProviderManagerTests: XCTestCase {
         XCTAssertEqual(Set(ProviderInfo.Kind.allCases).count, ProviderInfo.Kind.allCases.count)
         XCTAssertEqual(
             Set(ProviderInfo.Kind.allCases),
-            Set([.anthropic, .openAI, .chatGPT, .openRouter, .local, .appleIntelligence, .geminiNano])
+            Set([
+                .anthropic, .openAI, .chatGPT, .openRouter, .local,
+                .appleIntelligence, .geminiNano, .deepSeek,
+            ])
         )
         let manager = makeManager(store: FakeCredentialStore(), factory: CapturingFactory())
         XCTAssertTrue(
@@ -494,6 +497,7 @@ final class ProviderManagerTests: XCTestCase {
             + ProviderCatalog.openAIModels.count
             + ProviderCatalog.chatGPTModels.count
             + ProviderCatalog.openRouterModels.count
+            + ProviderCatalog.deepSeekModels.count
             + ProviderCatalog.localModels.count
             + ProviderCatalog.appleIntelligenceModels.count
             + ProviderCatalog.geminiNanoModels.count

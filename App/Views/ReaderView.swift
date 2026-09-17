@@ -91,8 +91,19 @@ struct ReaderView: View {
     /// is a sheet and Ask stays its own full-height sheet (owner decision,
     /// September 2026), so the tab strip shows only where Ask lives here —
     /// or where it already is, after an iPad narrowed with Ask open.
+    #if os(macOS)
+    /// On the Mac the column is the reader's own furniture, so it comes back
+    /// the way it was left — which tab was showing, and whether it was
+    /// showing at all. Before this it opened closed on every launch, which
+    /// made a side panel behave like a modal you had to summon each time.
+    /// (iOS keeps the plain state: there the inspector is a covering column,
+    /// and re-presenting it unasked on launch would be rude.)
+    @AppStorage("reader.inspectorShown") private var showInspector = false
+    @AppStorage("reader.inspectorTab") private var inspectorTab: InspectorTab = .highlights
+    #else
     @State private var showInspector = false
     @State private var inspectorTab: InspectorTab = .highlights
+    #endif
     /// The voice was paused because Ask opened over it; it resumes when
     /// Ask goes away (the sheet dismisses, or the inspector leaves the Ask
     /// tab). A reader can't listen to page 5 while reading an answer
@@ -352,6 +363,14 @@ struct ReaderView: View {
                     )
             }
             .overlay(alignment: .topTrailing) { appearancePopoverAnchor }
+            // The panel's own handle, on the seam between the page and the
+            // column. The toolbar's ✦ Ask / Highlights buttons toggle the
+            // same state, but they read as "open Ask" rather than as "the
+            // panel" — and once the column is away there is nothing at its
+            // edge saying it can come back. This rides the content's
+            // trailing edge, so it marks the seam while the column is out
+            // and the window edge while it is away.
+            .overlay(alignment: .trailing) { inspectorHandle }
             #endif
             .inspector(isPresented: $showInspector) {
                 inspectorColumn
@@ -479,7 +498,10 @@ struct ReaderView: View {
 
     // MARK: - Inspector
 
-    enum InspectorTab { case highlights, ask }
+    /// `String` so the Mac can remember which tab was showing across launches
+    /// (`@AppStorage("reader.inspectorTab")`). `knowledge` is offered on the
+    /// Mac only, where the saved notes are files in the reader's own Documents.
+    enum InspectorTab: String { case highlights, ask, knowledge }
 
     /// Where ✦ Ask lives: the inspector column on the Mac and on a regular
     /// iPad, its own sheet on iPhone (an iPhone in landscape reports a
@@ -499,6 +521,32 @@ struct ReaderView: View {
         usesAskInspector || inspectorTab == .ask
     }
 
+    /// The small arrow on the page/column seam: one tap puts the column away,
+    /// another brings it back, with the spring the rest of the reader already
+    /// uses. Mounted by the Mac-only overlay above (see the comment there for
+    /// why it rides the content's edge rather than the column's).
+    private var inspectorHandle: some View {
+        Button {
+            withAnimation(.spring(response: 0.32, dampingFraction: 0.85)) {
+                showInspector.toggle()
+            }
+        } label: {
+            Image(systemName: showInspector ? "chevron.right" : "chevron.left")
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(style.theme.muted)
+                .frame(width: 16, height: 44)
+                .background(style.theme.elevated, in: Capsule())
+                .overlay(Capsule().strokeBorder(style.theme.line, lineWidth: 1))
+                // The whole pill is the hit target, not just the chevron.
+                .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .padding(.trailing, 5)
+        .help(showInspector ? "Hide the side panel (⇧⌘N)" : "Show the side panel (⇧⌘A)")
+        .accessibilityIdentifier("reader.inspector.handle")
+        .accessibilityLabel(showInspector ? "Hide the side panel" : "Show the side panel")
+    }
+
     private var inspectorColumn: some View {
         VStack(spacing: 0) {
             if inspectorShowsAskTab {
@@ -506,11 +554,24 @@ struct ReaderView: View {
             }
             if inspectorShowsAskTab, inspectorTab == .ask {
                 askColumn
+            } else if inspectorTab == .knowledge {
+                knowledgeColumn
             } else {
                 highlightsPanel
             }
         }
         .background(style.theme.background)
+    }
+
+    /// The Knowledge column: what the reader saved, re-read from the folder
+    /// every time it appears. Mac only (see `KnowledgePanel`).
+    @ViewBuilder
+    private var knowledgeColumn: some View {
+        #if os(macOS)
+        KnowledgePanel(theme: style.theme)
+        #else
+        EmptyView()
+        #endif
     }
 
     /// Highlights · ✦ Ask, the selected one underlined (ink for Highlights,
@@ -527,6 +588,17 @@ struct ReaderView: View {
                 help: isImageOnlyPDF ? ScannedPDFCopy.needsText("Ask") : "Ask the book (⇧⌘A)"
             )
             .disabled(isImageOnlyPDF)
+            #if os(macOS)
+            // Third tab, Mac only: the answers the reader chose to keep, as
+            // Markdown files in their own Documents folder. It is not offered
+            // elsewhere because there is nowhere on a phone for the reader to
+            // find those files again.
+            inspectorTabButton(
+                .knowledge, title: "Knowledge", count: nil,
+                id: "inspector.tab.knowledge",
+                help: "Answers you saved"
+            )
+            #endif
             Spacer(minLength: 0)
         }
         .padding(.horizontal, 14)
@@ -722,8 +794,14 @@ struct ReaderView: View {
                     url: url,
                     onAsk: { selection in
                         // A native PDF page is not a reading position: no
-                        // frontier, so the whole document is in scope.
-                        presentAsk(AskRequest(selection: selection, scope: .wholeBook, initialQuestion: nil))
+                        // frontier, so nothing bounds what may be retrieved —
+                        // but the scope is still the nearby one. Asking sends
+                        // the passage question straight away, like the text
+                        // reader's Ask (see `passageQuestion`).
+                        presentAsk(AskRequest(
+                            selection: selection, scope: .window(nil),
+                            initialQuestion: passageQuestion(for: selection)
+                        ))
                     },
                     onListen: { anchor in listen(from: anchor) },
                     annotationActions: $pdfAnnotationActions,
@@ -1199,9 +1277,11 @@ struct ReaderView: View {
         narrationResumeAnchor ?? pagedAnchor
     }
 
-    /// How far the reader has got, for Ask. Answers are built only from the
-    /// text before this point, so "recap what I've read" can't spoil — but
-    /// the point must never sit behind the page in front of the reader.
+    /// How far the reader has got, for Ask. The frontier bounds what an answer
+    /// may see, so "recap what I've read" can't spoil — and under the panel's
+    /// nearby scope it also caps retrieval, so "nearby" can't reach past the
+    /// reader either. The point must never sit behind the page in front of
+    /// the reader.
     ///
     /// Paged layouts: the top of the visible page (the same anchor the
     /// reading position uses), pushed forward to the end of `selection` when
@@ -1214,11 +1294,14 @@ struct ReaderView: View {
     /// at is the worse error. (If the scroll surface ever reports the end of
     /// its visible text, that is the anchor to use here instead.)
     ///
-    /// Native PDF pages have no text position at all, so they get no frontier
-    /// and the whole document, as before. An image-only PDF also never gets a
-    /// frontier, including when its retained source is missing.
+    /// The scope returned is the nearby one — the panel's default — because
+    /// opening Ask is a question about the passage in hand, not a request for
+    /// the book. Native PDF pages have no text position at all, so they get
+    /// no frontier; that costs them the spoiler guard, not the nearby scope.
+    /// An image-only PDF also never gets a frontier, including when its
+    /// retained source is missing.
     private func askScope(selection: Range<Int>?) -> ReadingScope {
-        guard !isPDFOriginal, !isImageOnlyPDF else { return .wholeBook }
+        guard !isPDFOriginal, !isImageOnlyPDF else { return .window(nil) }
         var frontier: ReadingFrontier
         if layout == .scroll {
             frontier = ReadingFrontier(chapterIndex: chapterIndex, characterOffset: chapter?.text.count ?? 0)
@@ -1228,7 +1311,7 @@ struct ReaderView: View {
         if let selection {
             frontier = frontier.extended(toInclude: selection)
         }
-        return .upTo(frontier)
+        return .window(frontier)
     }
 
     /// True while something is presented over the reader.
@@ -1574,24 +1657,56 @@ struct ReaderView: View {
     /// published actions.
     private func askTheBook() {
         if isPDFOriginal {
+            let selection = pdfAnnotationActions?.askSelection()
             presentAsk(AskRequest(
-                selection: pdfAnnotationActions?.askSelection(), scope: .wholeBook, initialQuestion: nil
+                selection: selection, scope: .window(nil),
+                initialQuestion: passageQuestion(for: selection)
             ))
         } else if let chapter, let selected = currentSelection.value {
+            let selection = model.makeSelection(in: chapter, range: selected)
             presentAsk(AskRequest(
-                selection: model.makeSelection(in: chapter, range: selected),
+                selection: selection,
                 scope: askScope(selection: selected),
-                initialQuestion: nil
+                initialQuestion: passageQuestion(for: selection)
             ))
         } else if let (selection, range) = narratedSentenceSelection() {
             // Listening: the question is about the sentence being read.
             presentAsk(AskRequest(
-                selection: selection, scope: askScope(selection: range), initialQuestion: nil
+                selection: selection, scope: askScope(selection: range),
+                initialQuestion: passageQuestion(for: selection)
             ))
         } else {
             // No selection: a question about the book — scoped to what has
-            // been read, with the panel's switch to widen it.
+            // been read, with the panel's switch to widen it. Nothing is sent
+            // on the reader's behalf here: "what does this passage mean" needs
+            // a passage, and a question about the whole book is one only the
+            // reader can put into words.
             presentAsk(bookRequest())
+        }
+    }
+
+    /// The question Ask sends when the reader asks about a passage and types
+    /// nothing. Picking a sentence and pressing Ask should be one action, not
+    /// two — ask, and then think of what to ask about it — so the panel sends
+    /// this the moment it opens with a provider ready.
+    ///
+    /// Matched to the passage's own language, because the answer comes back in
+    /// the language of the question: a Chinese passage asked about in English
+    /// is answered in English, which is not what a reader of that passage
+    /// wanted. (Two languages is the whole of it for now — Han or kana takes
+    /// the Chinese question, everything else the English one.)
+    private func passageQuestion(for selection: Selection?) -> String {
+        Self.asksInChinese(selection?.quotedText ?? "")
+            ? "这段话是什么意思？"
+            : "What does this passage mean?"
+    }
+
+    /// Han or kana — enough to tell a CJK passage from a Latin one, without
+    /// pulling a language detector into the reader.
+    private static func asksInChinese(_ text: String) -> Bool {
+        text.unicodeScalars.contains { scalar in
+            (0x4E00...0x9FFF).contains(scalar.value)       // Han
+                || (0x3040...0x30FF).contains(scalar.value) // Hiragana, katakana
         }
     }
 
@@ -2042,10 +2157,13 @@ struct ReaderView: View {
 
         case .ask:
             let range = self.range(for: target)
+            let selection = model.makeSelection(in: chapter, range: range)
             presentAsk(AskRequest(
-                selection: model.makeSelection(in: chapter, range: range),
+                selection: selection,
                 scope: askScope(selection: range),
-                initialQuestion: nil
+                // The selection bar's Ask is the other way in, and it means
+                // the same thing: send the passage question now.
+                initialQuestion: passageQuestion(for: selection)
             ))
 
         case .listen:

@@ -67,6 +67,8 @@ public final class ProviderManager: @unchecked Sendable {
                     return "ChatGPT isn't connected. Sign in with your ChatGPT account in Settings → AI Providers."
                 case .openRouter:
                     return "OpenRouter isn't connected. Sign in or add an API key in Settings → AI Providers."
+                case .deepSeek:
+                    return "DeepSeek isn't connected. Add an API key in Settings → AI Providers."
                 case .local:
                     return "The local model isn't available. Make sure Ollama is running on this device."
                 case .appleIntelligence:

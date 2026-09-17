@@ -49,6 +49,19 @@ public struct OpenAIProvider: LLMProvider, CredentialValidating {
             validation: .minimalCompletion(maxTokensField: "max_tokens"),
             extraHeaders: [:]
         )
+
+        /// DeepSeek's own API (`api.deepseek.com`). Its docs advertise the
+        /// OpenAI SDK shape with the bare `/chat/completions` path — the
+        /// `/v1` prefix exists only as an OpenAI-compatibility alias and is
+        /// not a model version, so the documented path is the one used here.
+        /// The output-cap field is `max_tokens`, the name its Chat
+        /// Completions surface accepts.
+        public static let deepSeek = Endpoints(
+            kind: .deepSeek,
+            chatURL: URL(string: "https://api.deepseek.com/chat/completions")!,
+            validation: .minimalCompletion(maxTokensField: "max_tokens"),
+            extraHeaders: [:]
+        )
     }
 
     public let info: ProviderInfo

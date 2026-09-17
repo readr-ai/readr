@@ -29,8 +29,10 @@ public struct AskService: Sendable {
     ///
     /// - Parameter history: earlier turns of this conversation, oldest first,
     ///   so a follow-up can lean on what was already asked and answered.
-    /// - Parameter scope: what the answer may draw on. Named by every caller
-    ///   — see `ReadingScope`.
+    /// - Parameter scope: what the answer may draw on — the whole book,
+    ///   everything read so far, or only the passages near the reader's place.
+    ///   Named by every caller — see `ReadingScope`; how much text it buys is
+    ///   the strategy's business.
     public func ask(
         _ question: String,
         about book: Book,

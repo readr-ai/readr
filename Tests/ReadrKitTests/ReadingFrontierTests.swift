@@ -397,6 +397,31 @@ final class ReadingFrontierTests: XCTestCase {
         XCTAssertEqual(systemText(without), AdaptiveContextStrategy.systemPrompt)
     }
 
+    /// The nearby scope is the one that hands the model extracts instead of
+    /// text, so the prompt has to say so — otherwise "the book below" is a
+    /// whole it was never shown. The text scopes carry no such note.
+    func testPromptSaysWhenOnlyPassagesWereGiven() async throws {
+        // Tiny chapters but a document-sized estimate: the nearby scope on a
+        // page with no reading position (a native PDF) retrieves.
+        let book = makeBook(tokenCount: 50_000)
+        let strategy = AdaptiveContextStrategy(index: StubRAGIndex())
+        let nearby = try await strategy.assembleContext(
+            for: "q", in: book, selection: nil, history: [],
+            scope: .window(nil), provider: provider()
+        )
+        XCTAssertEqual(nearby.tier, .retrieval)
+        XCTAssertTrue(systemText(nearby).contains(AdaptiveContextStrategy.nearbyOnlyNote))
+
+        let whole = try await strategy.assembleContext(
+            for: "q", in: book, selection: nil, history: [], scope: .wholeBook, provider: provider()
+        )
+        XCTAssertEqual(whole.tier, .wholeBook)
+        XCTAssertFalse(
+            systemText(whole).contains(AdaptiveContextStrategy.nearbyOnlyNote),
+            "a text scope has no unseen book to warn about"
+        )
+    }
+
     /// The anchor's "read so far" line is the panel's own summary — the same
     /// title, the same "Chapter N of M" — so the model and the reader are
     /// told the same place.
@@ -469,7 +494,9 @@ private final class RecordingStrategy: ContextStrategy, @unchecked Sendable {
         for question: String, in book: Book, selection: Selection?,
         history: [ConversationTurn], scope: ReadingScope, provider: ProviderInfo
     ) async throws -> AssembledContext {
-        lock.lock(); scopes.append(scope); lock.unlock()
+        lock.lock()
+        scopes.append(scope)
+        lock.unlock()
         return AssembledContext(
             tier: .wholeBook,
             request: ChatRequest(messages: [ChatMessage(role: .user, content: question)], maxOutputTokens: 8)

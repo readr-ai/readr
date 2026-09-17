@@ -63,6 +63,8 @@ final class DefaultProviderFactoryTests: XCTestCase {
             [.anthropic, .openAI, .chatGPT, .openRouter, .local, .appleIntelligence, .geminiNano]
         )
         XCTAssertEqual(ProviderInfo.Kind.geminiNano.rawValue, "geminiNano")
+        // The kind added after it keeps the enum's brand casing on the wire.
+        XCTAssertEqual(ProviderInfo.Kind.deepSeek.rawValue, "deepSeek")
     }
 
     func testAnthropicBuildsWithCredentials() throws {
@@ -95,6 +97,46 @@ final class DefaultProviderFactoryTests: XCTestCase {
         XCTAssertThrowsError(try DefaultProviderFactory.make(info: info, credentials: nil, http: http)) {
             XCTAssertEqual($0 as? ProviderManager.ProviderError, .notConfigured(.openRouter))
         }
+    }
+
+    /// DeepSeek goes through the OpenAI-wire provider against its own host,
+    /// and its default row is the cheap Flash tier — a reader who just pastes
+    /// a key should not land on the expensive model by default.
+    func testDeepSeekBuildsOnTheOpenAIWireAgainstItsOwnHost() async throws {
+        let info = ProviderCatalog.defaultModel(for: .deepSeek)
+        XCTAssertEqual(info.modelID, "deepseek-flash")
+        XCTAssertFalse(info.isLocal)
+
+        let provider = try DefaultProviderFactory.make(
+            info: info, credentials: .apiKey("sk-ds-test"), http: http
+        )
+        XCTAssertEqual(provider.info.kind, .deepSeek)
+        XCTAssertFalse(provider.info.isLocal)
+
+        // The endpoint is DeepSeek's, not OpenAI's — proven by the request the
+        // provider actually makes.
+        let validated = try XCTUnwrap(provider as? CredentialValidating)
+        try await validated.validateCredential()
+        XCTAssertEqual(
+            http.requests.first?.url.absoluteString,
+            "https://api.deepseek.com/chat/completions"
+        )
+        XCTAssertEqual(http.requests.first?.headers["authorization"], "Bearer sk-ds-test")
+    }
+
+    func testDeepSeekWithoutCredentialsThrows() {
+        let info = ProviderCatalog.defaultModel(for: .deepSeek)
+        XCTAssertThrowsError(try DefaultProviderFactory.make(info: info, credentials: nil, http: http)) {
+            XCTAssertEqual($0 as? ProviderManager.ProviderError, .notConfigured(.deepSeek))
+        }
+    }
+
+    /// The refusal is a sentence a reader can act on.
+    func testTheDeepSeekRefusalReadsAsASentence() {
+        XCTAssertEqual(
+            ProviderManager.ProviderError.notConfigured(.deepSeek).errorDescription,
+            "DeepSeek isn't connected. Add an API key in Settings → AI Providers."
+        )
     }
 
     func testChatGPTBuildsWithOAuthCredentials() throws {

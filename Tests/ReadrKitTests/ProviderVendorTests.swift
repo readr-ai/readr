@@ -18,6 +18,26 @@ final class ProviderVendorTests: XCTestCase {
         XCTAssertTrue(ProviderInfo.Kind.openAI.usesAPIKey)
         XCTAssertTrue(ProviderInfo.Kind.anthropic.usesAPIKey)
         XCTAssertTrue(ProviderInfo.Kind.openRouter.usesAPIKey)
+        XCTAssertTrue(ProviderInfo.Kind.deepSeek.usesAPIKey)
+    }
+
+    /// DeepSeek is a key-only door: it has no sign-in flow, so its card must
+    /// never offer one.
+    func testDeepSeekOffersNoSignIn() {
+        XCTAssertFalse(ProviderInfo.Kind.deepSeek.offersSignIn)
+        XCTAssertFalse(ProviderInfo.Kind.deepSeek.isOnDevice)
+    }
+
+    /// It gets a card of its own rather than riding OpenAI's or OpenRouter's:
+    /// the key is DeepSeek's, and a reader who pasted one has not connected
+    /// either of the others.
+    func testDeepSeekHasItsOwnKeyOnlyVendor() {
+        let deepSeek = ProviderVendor.vendor(for: .deepSeek)
+        XCTAssertEqual(deepSeek?.id, "deepseek")
+        XCTAssertEqual(deepSeek?.title, "DeepSeek")
+        XCTAssertEqual(deepSeek?.methods, [.deepSeek])
+        XCTAssertEqual(deepSeek?.badge, "API key")
+        XCTAssertFalse(deepSeek?.hasMultipleMethods ?? true)
     }
 
     /// Anthropic sign-in is intentionally unwired (Consumer Terms — see
@@ -152,8 +172,10 @@ final class ProviderVendorTests: XCTestCase {
         XCTAssertEqual(Set(listed).count, listed.count, "a kind is listed twice")
         XCTAssertEqual(
             Set(listed),
-            Set([.chatGPT, .openAI, .anthropic, .openRouter, .local, .appleIntelligence, .geminiNano]
-                as [ProviderInfo.Kind])
+            Set([
+                .chatGPT, .openAI, .anthropic, .openRouter, .deepSeek, .local,
+                .appleIntelligence, .geminiNano,
+            ] as [ProviderInfo.Kind])
         )
     }
 
@@ -162,7 +184,7 @@ final class ProviderVendorTests: XCTestCase {
     func testZeroSetupThenSignInVendorsComeFirst() {
         XCTAssertEqual(
             ProviderVendor.all.map(\.id),
-            ["apple", "android", "openai", "openrouter", "anthropic", "local"]
+            ["apple", "android", "openai", "openrouter", "anthropic", "deepseek", "local"]
         )
     }
 

@@ -3,6 +3,14 @@ import ReadrKit
 
 @main
 struct ReadrApp: App {
+    #if os(macOS)
+    /// Only for window-frame repair (see `WindowFrameFitter`). Attached at the
+    /// app level rather than as a view modifier on purpose: a representable in
+    /// a `WindowGroup`'s content — and a `setFrame` during `viewDidMoveToWindow`
+    /// — left windows created but never ordered on screen.
+    @NSApplicationDelegateAdaptor(ReadrAppDelegate.self) private var appDelegate
+    #endif
+
     /// One AppModel for every scene: the library window, each reader window,
     /// and Settings all share the same store, caches, and provider manager.
     /// Scenes receive it via `environmentObject` — never a second instance, or
@@ -81,6 +89,31 @@ struct ReadrApp: App {
 }
 
 #if os(macOS)
+/// Repairs window frames that macOS restored off the desktop.
+///
+/// The hook is "a window came forward", not "the app launched": that is after
+/// the saved frame has been applied *and* after layout, it covers a reader
+/// window opened hours into the session, and it touches nothing during window
+/// creation — which is where the first attempt at this broke things.
+final class ReadrAppDelegate: NSObject, NSApplicationDelegate {
+    private var observer: NSObjectProtocol?
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        observer = NotificationCenter.default.addObserver(
+            forName: NSWindow.didBecomeKeyNotification, object: nil, queue: .main
+        ) { note in
+            guard let window = note.object as? NSWindow else { return }
+            WindowFrameFitter.fit(window)
+        }
+    }
+
+    deinit {
+        if let observer { NotificationCenter.default.removeObserver(observer) }
+    }
+}
+#endif
+
+#if os(macOS)
 /// Resolves a reader window's Book.ID against the live library. The id can
 /// stop resolving — the book was deleted while its window was open, or state
 /// restoration revived a window for a since-removed book — so show a friendly
@@ -90,15 +123,17 @@ private struct ReaderWindowRoot: View {
     let bookID: Book.ID?
 
     var body: some View {
-        if let bookID, let book = model.books.first(where: { $0.id == bookID }) {
-            ReaderView(book: book)
-        } else {
-            ContentUnavailableView(
-                "Book Unavailable",
-                systemImage: "book.closed",
-                description: Text("This book is no longer in your library.")
-            )
-            .frame(minWidth: 400, minHeight: 300)
+        Group {
+            if let bookID, let book = model.books.first(where: { $0.id == bookID }) {
+                ReaderView(book: book)
+            } else {
+                ContentUnavailableView(
+                    "Book Unavailable",
+                    systemImage: "book.closed",
+                    description: Text("This book is no longer in your library.")
+                )
+                .frame(minWidth: 400, minHeight: 300)
+            }
         }
     }
 }

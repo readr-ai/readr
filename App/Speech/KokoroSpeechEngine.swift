@@ -1,7 +1,14 @@
 import Foundation
 import AVFoundation
-import FluidAudio
 import ReadrKit
+
+// FluidAudio is the App-layer package that supplies the CoreML Kokoro runtime.
+// The import is guarded so the app also compiles where the package isn't in
+// the build — see the `#else` branch at the foot of this file, and
+// `clt-build/` for the Command-Line-Tools-only build that needs it.
+#if canImport(FluidAudio)
+import FluidAudio
+#endif
 
 /// "Readr Voice": Kokoro-82M neural narration behind ReadrKit's
 /// `SpeechEngine` protocol, via FluidAudio's CoreML port (Apache-2.0,
@@ -36,6 +43,8 @@ import ReadrKit
 /// CoreML crashes inside Apple's BNNS on iOS 26.4+), so the CoreML path is
 /// never prepared or entered there — not even on the iOS 18–26.3 builds
 /// that pass the BNNS gate.
+#if canImport(FluidAudio)
+
 final class KokoroSpeechEngine: NSObject, ReadrVoiceEngine {
     weak var delegate: (any SpeechEngineDelegate)?
 
@@ -255,3 +264,71 @@ final class KokoroSpeechEngine: NSObject, ReadrVoiceEngine {
         return task
     }
 }
+
+#else
+
+/// The same engine, in a build with no FluidAudio (and therefore no CoreML
+/// Kokoro runtime).
+///
+/// It reports exactly the state the real engine reports on an OS whose BNNS
+/// crashes CoreML: `isSupportedOnThisOS` false, `supports(language:)` false,
+/// `readiness` `.unsupported`. Every caller already handles that state —
+/// `RoutingSpeechEngine` routes narration to the platform voices,
+/// `NarrationModel` keeps the voice picker to the system voices — so this
+/// branch changes no other file, and the Readr Voice code above stays whole
+/// for the Xcode build that does have the package.
+///
+/// The sentinel ids keep their real values deliberately: a reader who had
+/// picked "Readr Voice" keeps a setting that resolves and falls back, rather
+/// than one that reads as corrupt.
+final class KokoroSpeechEngine: NSObject, ReadrVoiceEngine {
+    weak var delegate: (any SpeechEngineDelegate)?
+
+    /// There is no runtime here to support — never true in this build.
+    static let isSupportedOnThisOS = false
+
+    static let voiceIDPrefix = "readr.voice.kokoro."
+    static let defaultVoiceID = voiceIDPrefix + "af_heart"
+
+    static func isKokoroVoiceID(_ id: String?) -> Bool {
+        id?.hasPrefix(voiceIDPrefix) == true
+    }
+
+    static let pickerVoice = SpeechVoice(
+        id: defaultVoiceID,
+        name: "Readr Voice",
+        language: "en-US",
+        quality: .premium,
+        family: .modern
+    )
+
+    static func supports(language: String?) -> Bool { false }
+
+    static func kokoroVoice(from id: String?) -> String {
+        guard let id, isKokoroVoiceID(id) else { return "af_heart" }
+        return String(id.dropFirst(voiceIDPrefix.count))
+    }
+
+    typealias Readiness = ReadrVoiceReadiness
+
+    private(set) var readiness: Readiness = .unsupported
+    var onReadinessChange: ((Readiness) -> Void)?
+    var isReady: Bool { false }
+    let downloadProgress: Double? = nil
+    var onDownloadProgressChange: ((Double?) -> Void)?
+
+    var state: SpeechEngineState { .idle }
+
+    func speak(_ request: SpeechRequest) {
+        delegate?.speechEngine(
+            self, didFail: request.id, error: SpeechEngineError.audioUnavailable
+        )
+    }
+
+    func pause() {}
+    func resume() {}
+    func stop() {}
+    func prepare() {}
+}
+
+#endif

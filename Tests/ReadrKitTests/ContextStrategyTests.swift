@@ -349,42 +349,83 @@ final class ContextStrategyTests: XCTestCase {
 
     /// A book with real chapter text, so a scoped question has something to
     /// measure. `estimatedTokenCount` is the whole book's; what a scoped
-    /// question sends is derived from the chapter lengths.
-    private func makeChapteredBook(tokenCount: Int) -> Book {
+    /// question sends is derived from the chapter lengths, so the two can
+    /// disagree — deliberately, in the cases that need a long chapter.
+    private func makeChapteredBook(tokenCount: Int, chapterCharacters: Int = 4_000) -> Book {
         Book(
             metadata: BookMetadata(title: "Chaptered", authors: ["A. Author"]),
             chapters: [
-                Chapter(title: "One", order: 0, text: String(repeating: "x", count: 4_000)),
-                Chapter(title: "Two", order: 1, text: String(repeating: "y", count: 4_000)),
+                Chapter(title: "One", order: 0, text: String(repeating: "x", count: chapterCharacters)),
+                Chapter(title: "Two", order: 1, text: String(repeating: "y", count: chapterCharacters)),
             ],
             estimatedTokenCount: tokenCount
         )
     }
 
-    /// Every routing case the router has, as (book, scope, provider). Both
-    /// the predicate and `assembleContext` are asked each one, and they must
-    /// answer the same — that is the whole point of factoring the rule out.
-    private var routingCases: [(name: String, book: Book, scope: ReadingScope, provider: ProviderInfo)] {
+    /// One routing case: everything the router reads.
+    private struct RoutingCase {
+        let name: String
+        let book: Book
+        let scope: ReadingScope
+        let provider: ProviderInfo
+    }
+
+    /// Every routing case the router has. Both the predicate and
+    /// `assembleContext` are asked each one, and they must answer the same —
+    /// that is the whole point of factoring the rule out.
+    ///
+    /// The rule this set pins: the scope says how much text the reader asked
+    /// for, and the router takes it at its word. `.window` sends extracts,
+    /// never the book, except while the read-so-far is still small
+    /// (`defaultSmallBookTokenCap` ≈ 6,000 tokens). `.upTo` and `.wholeBook`
+    /// send the text up to what the model can hold. Every way in and every
+    /// way out is covered below.
+    private var routingCases: [RoutingCase] {
         let short = makeChapteredBook(tokenCount: 1_000)
         let long = makeChapteredBook(tokenCount: 5_000_000)
-        // Budget: 1_000 tokens × 0.6 = 600 tokens ≈ 2_400 characters read.
+        // Long chapters, so a frontier can read past the small-read cap while
+        // still sitting inside one chapter; and a whole book (100,000 tokens)
+        // that fits a 200k budget — the case the old "60% of the budget" rule
+        // sent whole on every question.
+        let mid = makeChapteredBook(tokenCount: 100_000, chapterCharacters: 100_000)
+        // Budget: 1_000 tokens × 0.6 = 600 tokens ≈ 2,400 characters read.
         let tight = provider(budget: 1_000, isLocal: false)
         let roomy = provider(budget: 200_000, isLocal: false)
         let local = provider(budget: 200_000, isLocal: true)
-        let start = ReadingScope.upTo(ReadingFrontier(chapterIndex: 0, characterOffset: 0))
-        let underBudget = ReadingScope.upTo(ReadingFrontier(chapterIndex: 0, characterOffset: 2_000))
-        let overBudget = ReadingScope.upTo(ReadingFrontier(chapterIndex: 0, characterOffset: 3_000))
+        let start = ReadingFrontier(chapterIndex: 0, characterOffset: 0)
+        let underBudget = ReadingFrontier(chapterIndex: 0, characterOffset: 2_000)
+        let overBudget = ReadingFrontier(chapterIndex: 0, characterOffset: 3_000)
+        // 40,000 characters = 10,000 tokens: past the small-read cap, so this
+        // is the rung where retrieval takes over in the nearby scope.
+        let pastSmallCap = ReadingFrontier(chapterIndex: 0, characterOffset: 40_000)
+        // 20,000 characters = 5,000 tokens: inside the small-read cap.
+        let insideSmallCap = ReadingFrontier(chapterIndex: 0, characterOffset: 20_000)
         return [
-            ("a short book, whole", short, .wholeBook, roomy),
-            ("a long book, whole", long, .wholeBook, roomy),
-            ("a long book, barely started", long, underBudget, roomy),
-            ("scoped just inside the budget", short, underBudget, tight),
-            ("scoped just past the budget", short, overBudget, tight),
-            ("a local model, whole book", short, .wholeBook, local),
-            ("a local model, scoped past the start", short, underBudget, local),
-            ("a local model, nothing read", short, start, local),
-            ("nothing read", short, start, roomy),
-            ("nothing read, long book", long, start, roomy),
+            // The nearby scope: extracts, never the book.
+            RoutingCase(name: "nearby, read past the small cap", book: mid, scope: .window(pastSmallCap), provider: roomy),
+            RoutingCase(name: "nearby, a huge book barely started", book: long, scope: .window(insideSmallCap), provider: roomy),
+            RoutingCase(name: "nearby, a small read rides along", book: mid, scope: .window(insideSmallCap), provider: roomy),
+            RoutingCase(name: "nearby, nothing read", book: short, scope: .window(start), provider: roomy),
+            RoutingCase(name: "nearby, a local model", book: short, scope: .window(pastSmallCap), provider: local),
+            // No reading position at all — a native PDF page.
+            RoutingCase(name: "nearby, no frontier, short document", book: short, scope: .window(nil), provider: roomy),
+            RoutingCase(name: "nearby, no frontier, vast document", book: long, scope: .window(nil), provider: roomy),
+            // The text scopes: what the reader asked for, up to what fits.
+            RoutingCase(name: "a short book, whole", book: short, scope: .wholeBook, provider: roomy),
+            RoutingCase(name: "a long book, whole and far too big", book: long, scope: .wholeBook, provider: roomy),
+            RoutingCase(name: "a mid book, whole and it fits", book: mid, scope: .wholeBook, provider: roomy),
+            RoutingCase(name: "a long book, read so far", book: long, scope: .upTo(insideSmallCap), provider: roomy),
+            RoutingCase(
+                name: "a mid book, read past the small cap",
+                book: mid, scope: .upTo(pastSmallCap), provider: roomy
+            ),
+            RoutingCase(name: "scoped just inside the budget", book: short, scope: .upTo(underBudget), provider: tight),
+            RoutingCase(name: "scoped just past the budget", book: short, scope: .upTo(overBudget), provider: tight),
+            RoutingCase(name: "a local model, whole book", book: short, scope: .wholeBook, provider: local),
+            RoutingCase(name: "a local model, scoped past the start", book: short, scope: .upTo(underBudget), provider: local),
+            RoutingCase(name: "a local model, nothing read", book: short, scope: .upTo(start), provider: local),
+            RoutingCase(name: "nothing read", book: short, scope: .upTo(start), provider: roomy),
+            RoutingCase(name: "nothing read, long book", book: long, scope: .upTo(start), provider: roomy),
         ]
     }
 
@@ -462,9 +503,12 @@ final class ContextStrategyTests: XCTestCase {
         )
     }
 
-    /// The budget fraction lives in one place: a strategy built with a
-    /// different one routes by it, and so does the predicate that reads it.
-    func testThePredicateFollowsTheStrategysOwnBudgetFraction() async throws {
+    /// The fraction governs the two text scopes: "Read so far" and "Whole
+    /// book" are asked to hold what was asked for, up to this share of the
+    /// budget. A strategy built with a different fraction routes by it, and so
+    /// does the predicate that reads it — while the nearby scope is unaffected
+    /// by it either way.
+    func testThePredicateFollowsTheStrategysOwnBudgetFractionForTextScopes() async throws {
         let book = makeChapteredBook(tokenCount: 1_000)
         // 2_000 characters read ≈ 500 tokens. At 0.6 of a 1_000-token budget
         // (600) that fits; at 0.4 (400) it does not.
@@ -476,13 +520,57 @@ final class ContextStrategyTests: XCTestCase {
             )
             XCTAssertEqual(
                 strategy.routesWholeBook(book: book, scope: scope, provider: info), expected,
-                "fraction \(fraction)"
+                "fraction \(fraction), read so far"
             )
             let assembled = try await strategy.assembleContext(
                 for: "q", in: book, selection: nil, scope: scope, provider: info
             )
             XCTAssertEqual(assembled.tier == .wholeBook, expected, "fraction \(fraction)")
         }
+    }
+
+    /// The small-read cap is what the nearby scope consults, and it is the
+    /// whole point of the change: read a little and the text rides along
+    /// (cheaper and more accurate than retrieving from a text this size); read
+    /// past it and the answer comes from the neighborhood plus retrieval,
+    /// however big the budget is. The text scopes are not capped by it —
+    /// asking for the text is asking for the text.
+    func testNearbySendsTheTextOnlyWhileTheReadIsSmall() async throws {
+        let book = makeChapteredBook(tokenCount: 100_000, chapterCharacters: 100_000)
+        let roomy = provider(budget: 200_000, isLocal: false)
+        // 20,000 characters = 5,000 tokens: inside the 6,000-token cap.
+        let smallRead = ReadingFrontier(chapterIndex: 0, characterOffset: 20_000)
+        // 40,000 characters = 10,000 tokens: past it. A 200k budget either way.
+        let bigRead = ReadingFrontier(chapterIndex: 0, characterOffset: 40_000)
+
+        XCTAssertEqual(
+            try await AdaptiveContextStrategy(index: StubIndex()).assembleContext(
+                for: "q", in: book, selection: nil, scope: .window(smallRead), provider: roomy
+            ).tier,
+            .wholeBook,
+            "nearby, a small read still rides along whole"
+        )
+        XCTAssertEqual(
+            try await AdaptiveContextStrategy(index: StubIndex()).assembleContext(
+                for: "q", in: book, selection: nil, scope: .window(bigRead), provider: roomy
+            ).tier,
+            .retrieval,
+            "nearby, a big budget does not buy a whole-book prompt"
+        )
+        XCTAssertEqual(
+            try await AdaptiveContextStrategy(index: StubIndex()).assembleContext(
+                for: "q", in: book, selection: nil, scope: .upTo(bigRead), provider: roomy
+            ).tier,
+            .wholeBook,
+            "read so far: the same text, because that is what was asked for"
+        )
+        XCTAssertEqual(
+            try await AdaptiveContextStrategy(index: StubIndex()).assembleContext(
+                for: "q", in: book, selection: nil, scope: .window(nil), provider: roomy
+            ).tier,
+            .retrieval,
+            "nearby with no reading position is still extracts, not the document"
+        )
     }
 
     /// The default the strategy uses is the one it publishes, so a caller

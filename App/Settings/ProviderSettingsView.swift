@@ -1,8 +1,9 @@
 import SwiftUI
 import ReadrKit
 
-/// Provider settings (J5): connect Claude, OpenAI, OpenRouter or a local model
-/// and pick the active one. Per docs/AUTH.md, API keys are the default path;
+/// Provider settings (J5): connect Claude, OpenAI, OpenRouter, DeepSeek or a
+/// local model and pick the active one. Per docs/AUTH.md, API keys are the
+/// default path;
 /// OAuth is an opt-in "use your subscription" option. Styled as the design's
 /// Settings: caps section labels, cards on the elevated surface with a status
 /// dot + badge, and the privacy footer.
@@ -595,6 +596,8 @@ struct ProviderSettingsView: View {
             return (URL(string: "https://platform.openai.com/api-keys")!, "openai")
         case .openRouter:
             return (URL(string: "https://openrouter.ai/keys")!, "openrouter")
+        case .deepSeek:
+            return (URL(string: "https://platform.deepseek.com/api_keys")!, "deepseek")
         default:
             return nil
         }

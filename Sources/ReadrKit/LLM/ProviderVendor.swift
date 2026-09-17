@@ -77,6 +77,7 @@ public extension ProviderVendor {
         ProviderVendor(id: "openai", title: "OpenAI", methods: [.chatGPT, .openAI]),
         ProviderVendor(id: "openrouter", title: "OpenRouter", methods: [.openRouter]),
         ProviderVendor(id: "anthropic", title: "Claude (Anthropic)", methods: [.anthropic]),
+        ProviderVendor(id: "deepseek", title: "DeepSeek", methods: [.deepSeek]),
         ProviderVendor(id: "local", title: "Local model (on-device)", methods: [.local]),
     ]
 

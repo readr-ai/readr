@@ -1153,15 +1153,20 @@ final class AppModel: ObservableObject {
         try? await ragIndex.build(for: book, embeddings: embeddings)
     }
 
-    /// Build a `Selection` (quote + surrounding context) from a character range.
+    /// Build a `Selection` (quote + the paragraphs around it) from a character
+    /// range.
+    ///
+    /// The surrounding text is the reader's own working memory: a few
+    /// paragraphs before the passage and one after, not a fixed crawl of
+    /// characters. It is the local half of what Ask sends — the other half is
+    /// retrieved passages, the equivalent of going back to look something up.
+    /// See `ParagraphWindow` and docs/CONTEXT-STRATEGY.md.
     func makeSelection(in chapter: Chapter, range: Range<Int>) -> Selection {
         let characters = Array(chapter.text)
         let lower = max(0, range.lowerBound)
         let upper = min(characters.count, range.upperBound)
         let quoted = lower < upper ? String(characters[lower..<upper]) : ""
-        let contextLower = max(0, lower - 240)
-        let contextUpper = min(characters.count, upper + 240)
-        let surrounding = String(characters[contextLower..<contextUpper])
+        let surrounding = ParagraphWindow.text(in: chapter.text, around: lower..<upper)
         return Selection(
             chapterID: chapter.id,
             quotedText: quoted,

@@ -40,6 +40,13 @@ public enum DefaultProviderFactory {
                 http: http, contextBudget: info.contextBudget,
                 endpoints: .openRouter, displayName: info.displayName
             )
+        case .deepSeek:
+            guard let credentials else { throw ProviderManager.ProviderError.notConfigured(.deepSeek) }
+            return OpenAIProvider(
+                credentials: credentials, model: info.modelID,
+                http: http, contextBudget: info.contextBudget,
+                endpoints: .deepSeek, displayName: info.displayName
+            )
         case .local:
             return LocalLLMProvider(
                 model: info.modelID, http: http, contextBudget: info.contextBudget,
