@@ -274,8 +274,37 @@ struct ReaderView: View {
         return book.chapters[chapterIndex]
     }
 
-    var body: some View {
+    /// macOS uses a deliberately fixed side column instead of SwiftUI's
+    /// native Inspector host. The native host can retain or recalculate a top
+    /// content inset when an alert is dismissed, leaving a visible strip and
+    /// occasionally changing the panel's geometry. A plain HStack has one
+    /// content rectangle, so the page and the 340pt panel always share the
+    /// same top and bottom edges.
+    @ViewBuilder
+    private var readerAndInspector: some View {
+        #if os(macOS)
+        HStack(spacing: 0) {
+            content
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            if showInspector {
+                style.theme.line.frame(width: 1)
+                inspectorColumn
+                    .frame(width: 340)
+                    .frame(maxHeight: .infinity, alignment: .top)
+                    .clipped()
+            }
+        }
+        #else
         content
+            .inspector(isPresented: $showInspector) {
+                inspectorColumn
+                    .inspectorColumnWidth(min: 280, ideal: 340, max: 480)
+            }
+        #endif
+    }
+
+    var body: some View {
+        readerAndInspector
             #if os(iOS)
             // The chrome layout keys on this (see `showsWideChrome`). The
             // transform yields the Bool, so the action fires only when the
@@ -364,10 +393,6 @@ struct ReaderView: View {
             }
             .overlay(alignment: .topTrailing) { appearancePopoverAnchor }
             #endif
-            .inspector(isPresented: $showInspector) {
-                inspectorColumn
-                .inspectorColumnWidth(min: 280, ideal: 340, max: 480)
-            }
             .onChange(of: showInspector) { _, shown in
                 if !shown { resumeNarrationAfterAsk() }
             }
@@ -531,6 +556,7 @@ struct ReaderView: View {
                 highlightsPanel
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .background(style.theme.background)
     }
 
@@ -758,50 +784,53 @@ struct ReaderView: View {
     // MARK: - Reading surface
 
     private var content: some View {
-        Group {
-            if isPDFOriginal, let url = model.sourceURL(for: book) {
-                PDFReaderView(
-                    book: book,
-                    url: url,
-                    onAsk: { selection in
-                        // A native PDF page is not a reading position: no
-                        // frontier, so nothing bounds what may be retrieved —
-                        // but the scope is still the nearby one. Asking sends
-                        // the passage question straight away, like the text
-                        // reader's Ask (see `passageQuestion`).
-                        presentAsk(AskRequest(
-                            selection: selection, scope: .window(nil),
-                            initialQuestion: passageQuestion(for: selection)
-                        ))
-                    },
-                    onListen: { anchor in listen(from: anchor) },
-                    annotationActions: $pdfAnnotationActions,
-                    wideChrome: showsWideChrome
-                )
-            } else if isImageOnlyPDF {
-                // The retained file is gone (or was never copied), and every
-                // chapter is empty: nothing to fall back on but an explanation.
-                ContentUnavailableView(
-                    ScannedPDFCopy.missingFileTitle,
-                    systemImage: "doc.viewfinder",
-                    description: Text(ScannedPDFCopy.missingFileDescription)
-                )
-                .accessibilityIdentifier("reader.scanMissingFile")
-            } else if let chapter, model.isPDF(book), !chapter.hasText {
-                imagePagePlaceholder(for: chapter)
-            } else if let chapter {
-                readingSurface(for: chapter)
-            } else {
-                ContentUnavailableView("No readable content", systemImage: "doc")
-            }
-        }
-        // The welcome-back line insets the page from the top for the same
-        // reason the Listen card insets it from the bottom: nothing floats
-        // over the words.
-        .safeAreaInset(edge: .top, spacing: 0) {
+        VStack(spacing: 0) {
+            // Keep the temporary welcome card in ordinary layout instead of
+            // a conditional `safeAreaInset`. On macOS, removing that inset
+            // during its transition occasionally left the host view with a
+            // stale top safe-area value: the page and the inspector both
+            // started one toolbar-row too low until the tab/window refreshed.
             if let welcomeBack {
                 welcomeBackBar(welcomeBack)
             }
+            Group {
+                if isPDFOriginal, let url = model.sourceURL(for: book) {
+                    PDFReaderView(
+                        book: book,
+                        url: url,
+                        onAsk: { selection in
+                            // A native PDF page is not a reading position: no
+                            // frontier, so nothing bounds what may be retrieved —
+                            // but the scope is still the nearby one. Asking sends
+                            // the passage question straight away, like the text
+                            // reader's Ask (see `passageQuestion`).
+                            presentAsk(AskRequest(
+                                selection: selection, scope: .window(nil),
+                                initialQuestion: passageQuestion(for: selection)
+                            ))
+                        },
+                        onListen: { anchor in listen(from: anchor) },
+                        annotationActions: $pdfAnnotationActions,
+                        wideChrome: showsWideChrome
+                    )
+                } else if isImageOnlyPDF {
+                    // The retained file is gone (or was never copied), and every
+                    // chapter is empty: nothing to fall back on but an explanation.
+                    ContentUnavailableView(
+                        ScannedPDFCopy.missingFileTitle,
+                        systemImage: "doc.viewfinder",
+                        description: Text(ScannedPDFCopy.missingFileDescription)
+                    )
+                    .accessibilityIdentifier("reader.scanMissingFile")
+                } else if let chapter, model.isPDF(book), !chapter.hasText {
+                    imagePagePlaceholder(for: chapter)
+                } else if let chapter {
+                    readingSurface(for: chapter)
+                } else {
+                    ContentUnavailableView("No readable content", systemImage: "doc")
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         // The Listen card insets the reading surface rather than floating over
         // it: the page turns itself to follow the voice, so the card must never

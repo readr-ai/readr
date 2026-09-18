@@ -51,6 +51,7 @@ struct KnowledgePanel: View {
                 list
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .background(theme.background)
         .task { reload() }
         .onReceive(NotificationCenter.default.publisher(for: KnowledgeBaseStore.changedNotification)) { _ in
@@ -68,13 +69,9 @@ struct KnowledgePanel: View {
                 try? store.delete(entry)
                 if expandedPath == entry.path { expandedPath = nil }
                 pendingDelete = nil
-                reload()
             }
             Button("Cancel", role: .cancel) { pendingDelete = nil }
         } message: { entry in
-            // Names the file, not the title: the reader is deleting something
-            // from their own Documents folder, and the file is what they would
-            // have to put back by hand.
             Text(entry.url.lastPathComponent + "\n\nThe file is deleted from the knowledge base folder.")
         }
     }
@@ -146,6 +143,14 @@ struct KnowledgePanel: View {
                 }
             }
         }
+        // Deleting an expanded note can shrink the document by thousands of
+        // points. AppKit otherwise preserves the old NSScrollView offset,
+        // leaving the viewport below the new document so the tab looks blank
+        // until it is recreated by switching away and back. A changed set of
+        // file paths is exactly a changed document: rebuild this one scroll
+        // view and start it at a valid offset.
+        .id(visibleNotes.map(\.path))
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .accessibilityIdentifier("knowledge.list")
     }
 
@@ -316,7 +321,12 @@ struct KnowledgePanel: View {
     /// to clear it, which beats silently showing something else than the reader
     /// asked for.
     private func reload() {
-        index = store.index()
+        let refreshed = store.index()
+        if let expandedPath,
+           !refreshed.notes.contains(where: { $0.path == expandedPath }) {
+            self.expandedPath = nil
+        }
+        index = refreshed
     }
 
     private static let dateFormatter: DateFormatter = {

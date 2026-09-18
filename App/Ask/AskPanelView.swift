@@ -655,15 +655,25 @@ struct AskPanelView: View {
         case .wholeBook:
             grounding = vm.tier?.providesCitations == false ? "the whole book" : "this book"
         }
+        #if os(macOS)
         if vm.answersFromBookOnly {
-            // The on-device model answers from the passages and nothing else;
-            // promising its "wider knowledge" would promise what it cannot do.
+            // The on-device model has no wider world knowledge, but receives
+            // matching notes from the reader's local knowledge base.
+            return "Answers search \(grounding) and your saved knowledge notes."
+        }
+        if vm.tier?.providesCitations == false {
+            return "Grounded in \(grounding); saved notes are searched too — plus the model\u{2019}s wider knowledge."
+        }
+        return "Grounded in \(grounding) with citations; saved notes are searched too — plus the model\u{2019}s wider knowledge."
+        #else
+        if vm.answersFromBookOnly {
             return "Answers come from \(grounding) only."
         }
         if vm.tier?.providesCitations == false {
             return "Grounded in \(grounding) — plus the model\u{2019}s wider knowledge."
         }
         return "Grounded in \(grounding) with citations — plus the model\u{2019}s wider knowledge."
+        #endif
     }
 
     /// A4: the honest whole-book footer — the answer drew on the entire text

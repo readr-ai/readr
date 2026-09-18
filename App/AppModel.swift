@@ -1067,10 +1067,15 @@ final class AppModel: ObservableObject {
     /// An `AskService` bound to the active provider, or nil if none is configured.
     func makeAskService() -> AskService? {
         guard let provider = activeProvider() else { return nil }
+        let bookStrategy = AdaptiveContextStrategy(index: ragIndex, lengths: lengthCache)
+        #if os(macOS)
         return AskService(
-            strategy: AdaptiveContextStrategy(index: ragIndex, lengths: lengthCache),
+            strategy: KnowledgeAwareContextStrategy(base: bookStrategy),
             provider: provider
         )
+        #else
+        return AskService(strategy: bookStrategy, provider: provider)
+        #endif
     }
 
     /// Renew the active provider's OAuth tokens if they're at expiry, so a
