@@ -158,9 +158,9 @@ struct KnowledgePanel: View {
                 }
             } label: {
                 VStack(alignment: .leading, spacing: 3) {
-                    // The model's name for the note, and — when that is not
-                    // the question — the question under it, so the reader can
-                    // find what they asked without opening the file.
+                    // The dated content summary, and the original question
+                    // under it, so the reader can find what they asked without
+                    // opening the file.
                     Text(entry.title)
                         .font(.callout)
                         .foregroundStyle(theme.inkColor)

@@ -36,8 +36,8 @@ struct KnowledgeBaseStore {
         /// Finder, and what a reveal or a delete has to act on.
         var id: String { path }
         let path: String
-        /// The note's name — the model's title when it gave one, else the
-        /// question, else the filename.
+        /// The note's name — its saved date plus a short description of the
+        /// answer, else the filename for notes created outside Readr.
         let title: String
         /// What the reader asked.
         let question: String
@@ -135,9 +135,11 @@ struct KnowledgeBaseStore {
     ) throws -> Entry {
         let notes = try notesFolder(forBook: bookTitle)
         let day = Self.dayFormatter.string(from: now)
-        let stem = "\(day)-\(Self.sanitize(question))"
+        let content = Self.briefContent(from: answer, fallback: question)
+        let title = Self.datedTitle(day: day, content: content)
+        let stem = "\(day)-\(Self.sanitize(content))"
         var url = notes.appendingPathComponent("\(stem).md")
-        // Two questions on one day must not silently overwrite each other.
+        // Two notes on one day must not silently overwrite each other.
         var suffix = 2
         while FileManager.default.fileExists(atPath: url.path) {
             url = notes.appendingPathComponent("\(stem)-\(suffix).md")
@@ -145,7 +147,7 @@ struct KnowledgeBaseStore {
         }
 
         try Self.write(
-            to: url, title: question, question: question, answer: answer, quote: quote,
+            to: url, title: title, question: question, answer: answer, quote: quote,
             bookTitle: bookTitle, author: author, chapter: chapter, model: model,
             tags: [], links: [bookTitle], createdAt: now, updatedAt: now
         )
@@ -154,13 +156,14 @@ struct KnowledgeBaseStore {
             .deletingLastPathComponent().lastPathComponent)
     }
 
-    /// Rewrite a note with the names the model gave it — title, tags, the
-    /// concepts it is about — and move it to a filename carrying that title.
+    /// Rewrite a note with the metadata the model gave it — a short content
+    /// description, tags, the concepts it is about — and move it to a
+    /// filename carrying that description. The visible title always keeps the
+    /// saved date in front.
     ///
     /// Called after `save` returns, so the reader never waits for a second
     /// model call to have their note on disk. A failure here leaves the note
-    /// exactly as `save` wrote it: named after the question, which is a
-    /// perfectly good name.
+    /// exactly as `save` wrote it: date plus an excerpt of the answer.
     @discardableResult
     func applyMetadata(
         title: String?, tags: [String], links: [String], to path: String
@@ -175,16 +178,22 @@ struct KnowledgeBaseStore {
         let body = Self.body(of: text)
         let answer = Self.answerSection(of: body) ?? body
 
-        let cleanTitle = Self.cleanTitle(title)
-        let finalTitle = cleanTitle ?? question
+        let createdAt = Self.parseDate(fields["created"]) ?? Date()
+        let day = Self.dayFormatter.string(from: createdAt)
+        let generatedContent = Self.cleanTitle(title)
+            .flatMap { Self.contentPart(of: $0, day: day) }
+        let existingContent = fields["title"]
+            .flatMap { Self.contentPart(of: $0, day: day) }
+        let fallbackContent = Self.briefContent(from: answer, fallback: question)
+        let finalContent = generatedContent ?? existingContent ?? fallbackContent
+        let finalTitle = Self.datedTitle(day: day, content: finalContent)
         let finalLinks = Self.mergedLinks(existing: Self.links(in: body), with: links, book: fields["book.title"])
 
         // Rename to carry the new title, keeping the date prefix and staying in
         // the same folder. A collision (the same title saved twice) takes the
         // next free suffix rather than overwriting the other note.
         var destination = url
-        let day = Self.dayFormatter.string(from: Self.parseDate(fields["created"]) ?? Date())
-        let stem = "\(day)-\(Self.sanitize(finalTitle))"
+        let stem = "\(day)-\(Self.sanitize(finalContent))"
         destination = url.deletingLastPathComponent().appendingPathComponent("\(stem).md")
         var suffix = 2
         while FileManager.default.fileExists(atPath: destination.path), destination.path != url.path {
@@ -204,7 +213,7 @@ struct KnowledgeBaseStore {
             model: fields["ai.model"],
             tags: tags,
             links: finalLinks,
-            createdAt: Self.parseDate(fields["created"]) ?? Date(),
+            createdAt: createdAt,
             updatedAt: Date()
         )
         if destination.path != url.path {
@@ -590,6 +599,80 @@ struct KnowledgeBaseStore {
         }
         guard title.count >= 2 else { return nil }
         return String(title.prefix(60))
+    }
+
+    /// A useful title before the optional naming request comes back. Prefer
+    /// the first piece of prose in the answer, because the question is already
+    /// stored and shown separately. Markdown headings and list markers are
+    /// discarded so the title describes the content rather than its layout.
+    static func briefContent(from answer: String, fallback question: String) -> String {
+        let answerLines = answer
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .map(String.init)
+
+        var headingFallback: String?
+        for rawLine in answerLines {
+            let trimmed = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty, !trimmed.hasPrefix("```") else { continue }
+
+            if trimmed.hasPrefix("#") {
+                let heading = stripMarkdownPrefix(trimmed)
+                if headingFallback == nil, !heading.isEmpty { headingFallback = heading }
+                continue
+            }
+
+            let prose = stripMarkdownPrefix(trimmed)
+            if let brief = shortenedTitle(prose) { return brief }
+        }
+
+        if let headingFallback, let brief = shortenedTitle(headingFallback) { return brief }
+        if let brief = shortenedTitle(question) { return brief }
+        return "读书笔记"
+    }
+
+    /// The UI title has a readable separator; the filename uses the same two
+    /// pieces with filesystem-safe punctuation.
+    static func datedTitle(day: String, content: String) -> String {
+        "\(day) · \(content)"
+    }
+
+    /// Remove the date we add to a displayed title before using the content in
+    /// a filename or replacing it with the model's shorter description.
+    private static func contentPart(of title: String, day: String) -> String? {
+        let prefix = "\(day) · "
+        let content = title.hasPrefix(prefix) ? String(title.dropFirst(prefix.count)) : title
+        return cleanTitle(content)
+    }
+
+    private static func stripMarkdownPrefix(_ raw: String) -> String {
+        var text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        while let first = text.first, "#>*•-".contains(first) {
+            text.removeFirst()
+            text = text.trimmingCharacters(in: .whitespaces)
+        }
+
+        // Ordered-list markers such as "1. " and "2、" are presentation, not
+        // part of the thought the title should preserve.
+        if let marker = text.firstIndex(where: { !$0.isNumber }),
+           marker != text.startIndex,
+           ".、)）".contains(text[marker]) {
+            text = String(text[text.index(after: marker)...])
+                .trimmingCharacters(in: .whitespaces)
+        }
+
+        for marker in ["**", "__", "`"] {
+            text = text.replacingOccurrences(of: marker, with: "")
+        }
+        return text
+    }
+
+    private static func shortenedTitle(_ raw: String) -> String? {
+        let collapsed = raw.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
+        guard !collapsed.isEmpty else { return nil }
+
+        let sentenceEnd = collapsed.firstIndex(where: { "。！？!?".contains($0) })
+        let sentence = sentenceEnd.map { String(collapsed[..<$0]) } ?? collapsed
+        return cleanTitle(String(sentence.prefix(36)))
     }
 
     /// A filename the filesystem and every editor can take: no path

@@ -31,6 +31,13 @@ import AppKit
 /// can't import. `ReadrKit.Paginator` remains the geometry-free fallback and
 /// the host of the shared `Page`/spread index helpers.
 struct LayoutPaginator {
+    /// Beyond this size, exact TextKit pagination is the wrong trade-off.
+    /// Some valid EPUBs put an entire book in one spine item (the reported
+    /// Kant edition is 1.85M characters); measuring thousands of pages on the
+    /// main thread freezes the window. Returning `[]` selects the caller's
+    /// deterministic character-capacity paginator instead.
+    static let maximumAccurateCharacterCount = 500_000
+
     let style: ReaderStyle
     let inlineImages: [Int: InlineImage]
     /// Formatting runs in chapter coordinates — heading fonts, blockquote
@@ -72,9 +79,10 @@ struct LayoutPaginator {
     /// attachment taller than a page) — the caller falls back to the
     /// estimate-based paginator so reading never breaks.
     func paginate(_ text: String, containerSize: (Int) -> CGSize) -> [Page] {
-        let chars = Array(text)
-        let n = chars.count
+        let n = text.count
         guard n > 0 else { return [] }
+        guard n <= Self.maximumAccurateCharacterCount else { return [] }
+        let chars = Array(text)
 
         // Spans are applied in chapter coordinates ONCE and sliced along with
         // the text below — `attributedSubstring` preserves attributes, so

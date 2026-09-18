@@ -363,14 +363,6 @@ struct ReaderView: View {
                     )
             }
             .overlay(alignment: .topTrailing) { appearancePopoverAnchor }
-            // The panel's own handle, on the seam between the page and the
-            // column. The toolbar's ✦ Ask / Highlights buttons toggle the
-            // same state, but they read as "open Ask" rather than as "the
-            // panel" — and once the column is away there is nothing at its
-            // edge saying it can come back. This rides the content's
-            // trailing edge, so it marks the seam while the column is out
-            // and the window edge while it is away.
-            .overlay(alignment: .trailing) { inspectorHandle }
             #endif
             .inspector(isPresented: $showInspector) {
                 inspectorColumn
@@ -490,6 +482,11 @@ struct ReaderView: View {
                 guard !Task.isCancelled else { return }
                 withAnimation(.easeOut(duration: 0.2)) { welcomeBack = nil }
             }
+            // Isolate the Mac window's minimum size from the intrinsic height
+            // of a fully laid-out book page. The exact-size proposal also
+            // makes the page repaginate when the window gets shorter instead
+            // of letting its old layout continue below the window edge.
+            .modifier(ReaderWindowLayoutBoundary())
     }
 
     private var welcomeBackScrollTimerRunning: Bool {
@@ -519,32 +516,6 @@ struct ReaderView: View {
     /// conversation never vanishes behind Highlights mid-answer.
     private var inspectorShowsAskTab: Bool {
         usesAskInspector || inspectorTab == .ask
-    }
-
-    /// The small arrow on the page/column seam: one tap puts the column away,
-    /// another brings it back, with the spring the rest of the reader already
-    /// uses. Mounted by the Mac-only overlay above (see the comment there for
-    /// why it rides the content's edge rather than the column's).
-    private var inspectorHandle: some View {
-        Button {
-            withAnimation(.spring(response: 0.32, dampingFraction: 0.85)) {
-                showInspector.toggle()
-            }
-        } label: {
-            Image(systemName: showInspector ? "chevron.right" : "chevron.left")
-                .font(.system(size: 10, weight: .semibold))
-                .foregroundStyle(style.theme.muted)
-                .frame(width: 16, height: 44)
-                .background(style.theme.elevated, in: Capsule())
-                .overlay(Capsule().strokeBorder(style.theme.line, lineWidth: 1))
-                // The whole pill is the hit target, not just the chevron.
-                .contentShape(Capsule())
-        }
-        .buttonStyle(.plain)
-        .padding(.trailing, 5)
-        .help(showInspector ? "Hide the side panel (⇧⌘N)" : "Show the side panel (⇧⌘A)")
-        .accessibilityIdentifier("reader.inspector.handle")
-        .accessibilityLabel(showInspector ? "Hide the side panel" : "Show the side panel")
     }
 
     private var inspectorColumn: some View {
@@ -2321,6 +2292,27 @@ final class SelectionMirror {
 /// reader" (see `SelectionMirror` for why it is a class in a `@State` slot).
 final class NarrationMoveFlag {
     var isActive = false
+}
+
+/// A GeometryReader reports a small, flexible intrinsic size to AppKit, then
+/// gives the reader exactly the content size the window actually has. Without
+/// this boundary, a paged text view can become the window's minimum height;
+/// AppKit stops the resize early and clips the bottom controls anyway.
+private struct ReaderWindowLayoutBoundary: ViewModifier {
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        #if os(macOS)
+        GeometryReader { geometry in
+            content.frame(width: geometry.size.width, height: geometry.size.height)
+        }
+        .frame(
+            minWidth: ReaderWindowSizing.minimumContentSize.width,
+            minHeight: ReaderWindowSizing.minimumContentSize.height
+        )
+        #else
+        content
+        #endif
+    }
 }
 
 // MARK: - Chapter swipe (scroll mode)

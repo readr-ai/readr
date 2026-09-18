@@ -162,6 +162,11 @@ public struct AdaptiveContextStrategy: ContextStrategy {
     /// which is the conservative direction for a bill.
     public static let defaultSmallBookTokenCap = 6_000
 
+    /// Emergency grounding while a book's retrieval index is still warming.
+    /// Keep it deliberately small: this path exists to answer immediately,
+    /// not to turn a nearby question into a hidden whole-book request.
+    public static let defaultFallbackPassageCharacterCap = 1_600
+
     // MARK: - Routing
 
     /// The tier decision, and the numbers it rests on, in one place.
@@ -290,9 +295,21 @@ public struct AdaptiveContextStrategy: ContextStrategy {
         // the model reads the earlier turns as what was already said and the
         // last message as what it has to answer. With a frontier, the prompt
         // also carries the no-spoiler rule.
-        var systemContent = scope.isScoped
-            ? Self.systemPrompt + "\n\n" + Self.spoilerGuard
-            : Self.systemPrompt
+        var systemContent: String
+        if scope.isWindow {
+            // Nearby is the one-click, latency-sensitive reading path. Keep
+            // its instructions as compact as its passage set: the full
+            // long-form prompt costs more prefill than the two or three local
+            // paragraphs the reader actually asked about.
+            systemContent = Self.nearbySystemPrompt
+            if frontier != nil {
+                systemContent += "\n\n" + Self.nearbySpoilerGuard
+            }
+        } else {
+            systemContent = scope.isScoped
+                ? Self.systemPrompt + "\n\n" + Self.spoilerGuard
+                : Self.systemPrompt
+        }
         let priorTurns = Self.historyMessages(from: history)
         // The tier decision and the numbers behind it, from the one place
         // that holds the rule — `routesWholeBook` asks the same question of
@@ -328,7 +345,12 @@ public struct AdaptiveContextStrategy: ContextStrategy {
         }
         let systemMessage = ChatMessage(role: .system, content: systemContent)
 
-        if routing.fits {
+        // A selected passage is already a complete local anchor. Even in the
+        // first few pages, don't replace it with every character read so far:
+        // that turns the one-click "explain this" interaction into a large
+        // prompt and recreates the latency Nearby exists to avoid.
+        let usesCompactSelectedPassage = scope.isWindow && selection != nil
+        if routing.fits, !usesCompactSelectedPassage {
             // Tier 1: the text read so far always rides along; question
             // carries the anchor. Providers that support prompt caching cache
             // the prefix, the rest send it as a plain system message — either
@@ -345,24 +367,88 @@ public struct AdaptiveContextStrategy: ContextStrategy {
             return AssembledContext(tier: .wholeBook, request: request)
         }
 
-        // Tier 2: hybrid retrieval over the rest of the book. With a frontier,
-        // the index is asked for passages at or before the last chapter the
-        // reader has finished — the ceiling is the index's to apply, before
-        // its limit, so a scoped question still gets a full set (see
-        // `RAGIndex.retrieve`). What a scope-aware index returns is trusted
-        // as is: a second filter here would only throw away passages the
-        // index has already vouched for, including any it returns without a
-        // chapter number.
+        // Tier 2: bounded context. With a frontier, the index is asked for
+        // passages at or before the last chapter the reader has finished —
+        // the ceiling is the index's to apply, before its limit.
         let maxChapterIndex: Int? = frontier.map { frontier in
             book.hasFinishedChapter(at: frontier) ? frontier.chapterIndex : frontier.chapterIndex - 1
         }
-        var passages = try await index.retrieve(
-            query: question,
-            bookID: book.id,
-            limit: 8,
-            maxChapterIndex: maxChapterIndex
-        )
-        if passages.isEmpty, let frontier {
+
+        var passages: [RetrievedPassage] = []
+
+        if scope.isWindow {
+            // This is the reader's instant path, matching the original AI
+            // reading area: local paragraphs plus at most three 160-character
+            // search snippets. Eight full ~1,200-character chunks made the
+            // provider spend seconds on prompt prefill before the first token.
+            //
+            // Without a selection the anchor contains only the position, so
+            // carry a small tail of the visible/read text as the local source.
+            if selection == nil, let frontier {
+                let tail = book.readTail(
+                    upTo: frontier,
+                    lastCharacters: min(
+                        budget * 4, Self.defaultFallbackPassageCharacterCap
+                    )
+                )
+                if !tail.text.isEmpty {
+                    passages.append(RetrievedPassage(
+                        text: tail.text, locator: Self.readSoFarLocator, score: 1,
+                        chapterIndex: tail.chapterIndex,
+                        characterOffset: tail.characterOffset
+                    ))
+                }
+            }
+
+            let searchHits = try await index.retrieve(
+                query: selection?.quotedText ?? question,
+                bookID: book.id,
+                limit: 3,
+                maxChapterIndex: maxChapterIndex
+            )
+            passages.append(contentsOf: searchHits.map { passage in
+                RetrievedPassage(
+                    text: Self.snippet(from: passage.text),
+                    locator: passage.locator,
+                    score: passage.score,
+                    chapterIndex: passage.chapterIndex,
+                    characterOffset: passage.characterOffset
+                )
+            })
+        } else {
+            // Read-so-far and whole-book retrieval intentionally trade more
+            // context for breadth; they retain the richer eight-chunk path.
+            passages = try await index.retrieve(
+                query: question,
+                bookID: book.id,
+                limit: 8,
+                maxChapterIndex: maxChapterIndex
+            )
+        }
+
+        if passages.isEmpty, let selection {
+            // "Explain this" already carries the quote and surrounding
+            // paragraphs in the anchor. Reuse that compact neighborhood as
+            // its source while the background index warms; the old generic
+            // read-tail fallback could inject 800,000 characters for a 200K
+            // model and was the real 3–5 second first-token regression.
+            let chapterIndex = book.chaptersInReadingOrder.firstIndex {
+                $0.id == selection.chapterID
+            }
+            let locator = chapterIndex.map { index in
+                Chunker.locator(for: book.chaptersInReadingOrder[index])
+            } ?? selection.chapterTitle ?? "Selected passage"
+            let text = selection.surroundingText.isEmpty
+                ? selection.quotedText : selection.surroundingText
+            if !text.isEmpty {
+                passages = [
+                    RetrievedPassage(
+                        text: text, locator: locator, score: 1,
+                        chapterIndex: chapterIndex, characterOffset: nil
+                    ),
+                ]
+            }
+        } else if passages.isEmpty, let frontier {
             // The reader has read something (the empty case returned above),
             // but none of it survived the chapter filter — they are partway
             // through the first chapter, say. The end of what they've read is
@@ -373,7 +459,12 @@ public struct AdaptiveContextStrategy: ContextStrategy {
             // walk reports: a long tail read from just inside a chapter
             // begins in the one before it, and the citation has to open the
             // book there rather than at the frontier.
-            let tail = book.readTail(upTo: frontier, lastCharacters: budget * 4)
+            let tail = book.readTail(
+                upTo: frontier,
+                lastCharacters: min(
+                    budget * 4, Self.defaultFallbackPassageCharacterCap
+                )
+            )
             if !tail.text.isEmpty {
                 passages = [
                     RetrievedPassage(
@@ -516,6 +607,19 @@ public struct AdaptiveContextStrategy: ContextStrategy {
     question without repeating what you already said.
     """
 
+    /// Compact instructions for the interactive Nearby path. It preserves
+    /// the full prompt's two product guarantees — answer beyond the book when
+    /// useful, never invent what the book says — without making a short
+    /// passage explanation prefill a multi-paragraph policy document.
+    static let nearbySystemPrompt = """
+    You are a precise reading companion. Answer in the user's language, \
+    directly and briefly (usually under 200 words). Ground claims about the \
+    book in the supplied text; never invent or misattribute what it says. If \
+    the text is insufficient, say so briefly, then use your own knowledge \
+    where helpful and distinguish it from the book. No preamble, restatement, \
+    or closing recap. Use Markdown sparingly.
+    """
+
     /// Appended to the system prompt whenever the scope is `.upTo` a
     /// frontier. The text past the frontier is already withheld; this covers
     /// the other source of spoilers — what the model knows about the book
@@ -535,16 +639,24 @@ public struct AdaptiveContextStrategy: ContextStrategy {
     stopped.
     """
 
+    /// Nearby gets the same spoiler boundary in a form sized for an instant
+    /// passage explanation. The text after the frontier is already withheld;
+    /// this also stops spoilers from the model's world knowledge.
+    static let nearbySpoilerGuard = """
+    Do not reveal or hint at anything after the reader's current position, \
+    including facts you know about the book. A recap covers only what has \
+    been read so far. If the question requires later material, say briefly \
+    that you are keeping the answer spoiler-free.
+    """
+
     /// Appended when a `.window` question is answered from extracts — the one
     /// scope where the model is handed passages rather than text, so the
     /// prompt's own "the book below" would otherwise be a lie it answers
     /// from. Pinned by `ReadingFrontierTests`.
     static let nearbyOnlyNote = """
-    You were given passages, not the whole book: the text around the reader's \
-    place, plus passages found by searching for this question. There is more \
-    book you have not been shown. Where an answer would turn on text you were \
-    not given, say so in a few words instead of guessing at it, and don't \
-    describe the book as a whole from these passages alone.
+    You were given only nearby and searched passages, not the whole book. If \
+    unseen text would decide the answer, say so briefly instead of guessing, \
+    and do not generalize about the entire book from these extracts.
     """
 
     /// Appended, in place of any book text, when the frontier is at the very

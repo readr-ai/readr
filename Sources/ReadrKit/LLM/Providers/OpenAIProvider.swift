@@ -147,11 +147,18 @@ public struct OpenAIProvider: LLMProvider, CredentialValidating {
             request = HTTPRequest(url: url, method: .get, headers: headers)
         case let .minimalCompletion(maxTokensField):
             headers["content-type"] = "application/json"
-            let payload: [String: Any] = [
+            var payload: [String: Any] = [
                 "model": model,
                 "messages": [["role": "user", "content": "hi"]],
                 maxTokensField: 1,
             ]
+            // DeepSeek's current models default to thinking mode. A reading
+            // question should start appearing immediately, and the real Ask
+            // path below explicitly uses non-thinking mode for that reason;
+            // validate the same mode the reader will actually use.
+            if endpoints.kind == .deepSeek {
+                payload["thinking"] = ["type": "disabled"]
+            }
             request = HTTPRequest(
                 url: endpoints.chatURL,
                 method: .post,
@@ -177,11 +184,18 @@ public struct OpenAIProvider: LLMProvider, CredentialValidating {
         var headers = endpoints.extraHeaders
         headers["authorization"] = "Bearer \(authToken)"
         headers["content-type"] = "application/json"
-        let body = try Self.encodeBody(request, model: model)
+        let body = try Self.encodeBody(
+            request, model: model,
+            disablesThinking: endpoints.kind == .deepSeek
+        )
         return HTTPRequest(url: endpoints.chatURL, method: .post, headers: headers, body: body)
     }
 
-    static func encodeBody(_ request: ChatRequest, model: String) throws -> Data {
+    static func encodeBody(
+        _ request: ChatRequest,
+        model: String,
+        disablesThinking: Bool = false
+    ) throws -> Data {
         var messages: [[String: Any]] = []
         // A cacheable prefix maps to a leading system message for OpenAI.
         if let prefix = request.cacheableSystemPrefix {
@@ -190,12 +204,22 @@ public struct OpenAIProvider: LLMProvider, CredentialValidating {
         for message in request.messages {
             messages.append(["role": message.role.rawValue, "content": message.content])
         }
-        let payload: [String: Any] = [
+        var payload: [String: Any] = [
             "model": model,
             "stream": true,
             "messages": messages,
             "max_tokens": request.maxOutputTokens,
         ]
+        // Since V4, DeepSeek defaults every request to thinking mode and
+        // streams `reasoning_content` before visible `content`. That is useful
+        // for agentic/coding work, but turns a one-click passage explanation
+        // into several seconds of apparently blank UI. Readr is an interactive
+        // reader, so its DeepSeek preset opts into the supported non-thinking
+        // mode explicitly. Other OpenAI-compatible endpoints must not receive
+        // this vendor-specific field.
+        if disablesThinking {
+            payload["thinking"] = ["type": "disabled"]
+        }
         return try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])
     }
 

@@ -17,6 +17,19 @@ struct AnswerMarkdownView: View {
     let markdown: String
     let theme: ReadingTheme
 
+    @AppStorage(AskPreferences.answerFontSizeKey)
+    private var storedFontSize = AskPreferences.defaultAnswerFontSize
+    /// Preserve Dynamic Type on top of the reader's chosen base size.
+    @ScaledMetric(relativeTo: .callout) private var dynamicTypeScale: CGFloat = 1
+
+    private var bodyFontSize: CGFloat {
+        CGFloat(AskPreferences.clampedAnswerFontSize(storedFontSize)) * dynamicTypeScale
+    }
+
+    private func fontSize(offset: CGFloat = 0) -> CGFloat {
+        max(10, bodyFontSize + offset)
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             ForEach(Array(AnswerMarkdown.blocks(from: markdown).enumerated()), id: \.offset) {
@@ -33,19 +46,19 @@ struct AnswerMarkdownView: View {
         switch block {
         case let .paragraph(text):
             Text(AnswerMarkdownView.inline(text))
-                .font(.callout)
+                .font(.system(size: fontSize()))
                 .lineSpacing(6)
                 .foregroundStyle(theme.inkColor)
                 .frame(maxWidth: .infinity, alignment: .leading)
 
         case let .heading(level, text):
-            // Semantic styles, not fixed point sizes: the whole Ask surface
-            // scales with Dynamic Type (A9, pinned by the ax3 snapshot).
+            // The chosen base size is still multiplied by Dynamic Type.
             Text(AnswerMarkdownView.inline(text))
-                .font(
-                    .system(level <= 2 ? .subheadline : .footnote, design: .serif)
-                        .weight(.semibold)
-                )
+                .font(.system(
+                    size: fontSize(offset: level <= 2 ? 1 : -1),
+                    weight: .semibold,
+                    design: .serif
+                ))
                 .foregroundStyle(theme.inkColor)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.top, 2)
@@ -57,7 +70,7 @@ struct AnswerMarkdownView: View {
             VStack(alignment: .leading, spacing: 6) {
                 ForEach(Array(paragraphs.enumerated()), id: \.offset) { _, paragraph in
                     Text(AnswerMarkdownView.inline(paragraph))
-                        .font(.system(.footnote, design: .serif))
+                        .font(.system(size: fontSize(offset: -1), design: .serif))
                         .italic()
                         .lineSpacing(4)
                         .foregroundStyle(theme.muted)
@@ -75,7 +88,7 @@ struct AnswerMarkdownView: View {
             // wrapping mid-token.
             ScrollView(.horizontal, showsIndicators: false) {
                 Text(text)
-                    .font(.system(.caption, design: .monospaced))
+                    .font(.system(size: fontSize(offset: -2), design: .monospaced))
                     .foregroundStyle(theme.inkColor)
                     .padding(10)
             }
@@ -87,12 +100,12 @@ struct AnswerMarkdownView: View {
                 ForEach(Array(items.enumerated()), id: \.offset) { _, item in
                     HStack(alignment: .firstTextBaseline, spacing: 8) {
                         Text(item.marker)
-                            .font(.callout)
+                            .font(.system(size: fontSize()))
                             .foregroundStyle(theme.faint)
                             // Numbers and bullets line up in one gutter.
                             .frame(minWidth: 14, alignment: .trailing)
                         Text(AnswerMarkdownView.inline(item.text))
-                            .font(.callout)
+                            .font(.system(size: fontSize()))
                             .lineSpacing(5)
                             .foregroundStyle(theme.inkColor)
                             .frame(maxWidth: .infinity, alignment: .leading)

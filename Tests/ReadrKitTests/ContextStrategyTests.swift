@@ -303,6 +303,153 @@ final class ContextStrategyTests: XCTestCase {
         XCTAssertEqual(citation.characterOffset, chapter.text.count - Int(200 * 0.6) * 4)
     }
 
+    /// The fast "explain this passage" path may ask before the background
+    /// index is ready. Its selected paragraph is already sufficient grounding;
+    /// falling back to the entire readable tail turned a tiny request into a
+    /// 100k+ character prompt and moved first-token latency from instant to
+    /// several seconds.
+    func testSelectedNearbyQuestionDoesNotSendTheReadTailWhenIndexIsNotReady() async throws {
+        let leak = "READ_TAIL_MUST_NOT_BE_SENT"
+        let chapter = Chapter(
+            title: "One", order: 0,
+            text: String(repeating: "older text ", count: 8_000) + leak
+        )
+        let book = Book(
+            metadata: BookMetadata(title: "Test Book", authors: ["A. Author"]),
+            chapters: [chapter], estimatedTokenCount: 5_000_000
+        )
+        let selection = Selection(
+            chapterID: chapter.id,
+            quotedText: "the selected sentence",
+            surroundingText: "the paragraph immediately around the selection",
+            chapterTitle: chapter.title
+        )
+        let strategy = AdaptiveContextStrategy(index: StubRAGIndex(passages: []))
+
+        let result = try await strategy.assembleContext(
+            for: "What does this mean?", in: book, selection: selection,
+            scope: .window(ReadingFrontier(
+                chapterIndex: 0, characterOffset: chapter.text.count
+            )),
+            provider: provider(budget: 200_000, isLocal: false)
+        )
+
+        let prompt = result.request.messages.map(\.content).joined(separator: "\n")
+        XCTAssertFalse(prompt.contains(leak))
+        XCTAssertTrue(prompt.contains(selection.surroundingText))
+        XCTAssertEqual(result.citations.count, 1)
+        XCTAssertEqual(result.citations.first?.locator, "Ch. 1 (One)")
+    }
+
+    func testUnindexedNearbyFallbackIsCappedForAQuestionWithoutASelection() async throws {
+        let chapter = Chapter(
+            title: "One", order: 0,
+            text: String(repeating: "read text. ", count: 10_000)
+        )
+        let book = Book(
+            metadata: BookMetadata(title: "Test Book", authors: ["A. Author"]),
+            chapters: [chapter], estimatedTokenCount: 5_000_000
+        )
+        let strategy = AdaptiveContextStrategy(index: StubRAGIndex(passages: []))
+
+        let result = try await strategy.assembleContext(
+            for: "What is happening?", in: book, selection: nil,
+            scope: .window(ReadingFrontier(
+                chapterIndex: 0, characterOffset: chapter.text.count
+            )),
+            provider: provider(budget: 200_000, isLocal: false)
+        )
+
+        let prompt = result.request.messages.map(\.content).joined(separator: "\n")
+        XCTAssertLessThan(
+            prompt.count, AdaptiveContextStrategy.defaultFallbackPassageCharacterCap + 2_000
+        )
+    }
+
+    /// Nearby questions are the interactive, low-latency path. The earlier
+    /// reading-area implementation sent at most three 160-character search
+    /// snippets; forwarding eight full chunks made DeepSeek spend seconds on
+    /// prompt prefill before it could stream the first token.
+    func testNearbySearchResultsAreThreeShortSnippets() async throws {
+        let chapter = Chapter(
+            title: "One", order: 0,
+            text: String(repeating: "nearby page text. ", count: 500)
+        )
+        let book = Book(
+            metadata: BookMetadata(title: "Test Book", authors: ["A. Author"]),
+            chapters: [chapter], estimatedTokenCount: 5_000_000
+        )
+        let passages = (1...8).map { index in
+            RetrievedPassage(
+                text: String(repeating: "result \(index) words ", count: 100)
+                    + "FULL_CHUNK_TAIL_\(index)",
+                locator: "Ch. \(index)", score: 1, chapterIndex: 0
+            )
+        }
+        let index = StubRAGIndex(passages: passages)
+        let strategy = AdaptiveContextStrategy(index: index)
+
+        let result = try await strategy.assembleContext(
+            for: "What is happening?", in: book, selection: nil,
+            scope: .window(ReadingFrontier(
+                chapterIndex: 0, characterOffset: chapter.text.count
+            )),
+            provider: provider(budget: 200_000, isLocal: false)
+        )
+
+        let prompt = result.request.messages.map(\.content).joined(separator: "\n")
+        XCTAssertEqual(index.retrieveCallCount, 1)
+        XCTAssertEqual(result.citations.count, 4, "one local passage plus three search snippets")
+        XCTAssertTrue(result.citations.dropFirst().allSatisfy { $0.quotedText.count <= 161 })
+        XCTAssertFalse(prompt.contains("FULL_CHUNK_TAIL_1"))
+        XCTAssertFalse(prompt.contains("result 4 words"))
+    }
+
+    func testNearbySelectionStaysCompactWhenTheIndexIsReady() async throws {
+        let chapter = Chapter(
+            title: "One", order: 0,
+            // Deliberately below the generic small-read threshold. A nearby
+            // selection must still use its compact passage path instead of
+            // sending every character read so far.
+            text: String(repeating: "older book text. ", count: 200)
+                + "WHOLE_READ_MUST_NOT_BE_SENT"
+        )
+        let book = Book(
+            metadata: BookMetadata(title: "Test Book", authors: ["A. Author"]),
+            chapters: [chapter], estimatedTokenCount: 5_000_000
+        )
+        let selection = Selection(
+            chapterID: chapter.id,
+            quotedText: "selected sentence",
+            surroundingText: "two paragraphs around the selected sentence",
+            chapterTitle: chapter.title
+        )
+        let passages = (1...8).map { index in
+            RetrievedPassage(
+                text: String(repeating: "search hit \(index) ", count: 100)
+                    + "FULL_CHUNK_TAIL_\(index)",
+                locator: "Ch. \(index)", score: 1, chapterIndex: 0
+            )
+        }
+        let strategy = AdaptiveContextStrategy(index: StubRAGIndex(passages: passages))
+
+        let result = try await strategy.assembleContext(
+            for: "Explain this.", in: book, selection: selection,
+            scope: .window(ReadingFrontier(
+                chapterIndex: 0, characterOffset: chapter.text.count
+            )),
+            provider: provider(budget: 200_000, isLocal: false)
+        )
+
+        let prompt = result.request.messages.map(\.content).joined(separator: "\n")
+        XCTAssertEqual(result.tier, .retrieval)
+        XCTAssertTrue(prompt.contains(selection.surroundingText))
+        XCTAssertEqual(result.citations.count, 3)
+        XCTAssertFalse(prompt.contains("WHOLE_READ_MUST_NOT_BE_SENT"))
+        XCTAssertFalse(prompt.contains("FULL_CHUNK_TAIL_1"))
+        XCTAssertFalse(prompt.contains("search hit 4"))
+    }
+
     /// The same passage on a real book: a reader fifty characters into the
     /// third chapter, with a tail long enough to reach back into the second,
     /// is cited in the SECOND — at an offset the second chapter's own text

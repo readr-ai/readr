@@ -30,6 +30,14 @@ struct ProviderSettingsView: View {
 
     @AppStorage("readingTheme") private var themeRaw = ReadingTheme.paper.rawValue
     private var theme: ReadingTheme { ReadingTheme(rawValue: themeRaw) ?? .paper }
+    @AppStorage(AskPreferences.answerFontSizeKey)
+    private var askAnswerFontSize = AskPreferences.defaultAnswerFontSize
+    @AppStorage(AskPreferences.contextRangeKey)
+    private var askContextRangeRaw = AskContextRange.nearby.rawValue
+
+    private var askContextRange: AskContextRange {
+        AskContextRange(rawValue: askContextRangeRaw) ?? .nearby
+    }
 
     @State private var showingBugReport = false
     @State private var showingOpenRouterPicker = false
@@ -65,6 +73,10 @@ struct ProviderSettingsView: View {
                     ForEach(model.displayedVendors) { vendor in
                         vendorCard(vendor)
                     }
+
+                    sectionLabel("ASK")
+                        .padding(.top, 18)
+                    askSettingsCard
 
                     sectionLabel("PRIVACY")
                         .padding(.top, 18)
@@ -127,6 +139,69 @@ struct ProviderSettingsView: View {
     }
 
     // MARK: Help
+
+    private var askSettingsCard: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Text("Answer text size")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(theme.inkColor)
+                    Spacer(minLength: 12)
+                    Text("\(Int(askAnswerFontSize.rounded())) pt")
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(theme.muted)
+                }
+                HStack(spacing: 10) {
+                    Text("A").font(.caption)
+                    Slider(
+                        value: $askAnswerFontSize,
+                        in: AskPreferences.minimumAnswerFontSize...AskPreferences.maximumAnswerFontSize,
+                        step: 1
+                    )
+                    .tint(theme.iris)
+                    .accessibilityIdentifier("settings.askFontSize")
+                    Text("A").font(.title3)
+                }
+                Text("The answer updates at this size while system accessibility scaling still applies.")
+                    .font(.system(size: CGFloat(AskPreferences.clampedAnswerFontSize(askAnswerFontSize))))
+                    .foregroundStyle(theme.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier("settings.askFontPreview")
+            }
+
+            theme.line.frame(height: 1)
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Default context range")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(theme.inkColor)
+                Picker("Default context range", selection: $askContextRangeRaw) {
+                    ForEach(AskContextRange.allCases) { option in
+                        Text(option.title).tag(option.rawValue)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                #if os(macOS)
+                .controlSize(.small)
+                #endif
+                .tint(theme.iris)
+                .accessibilityIdentifier("settings.askContextRange")
+                Text(askContextRange.note)
+                    .font(.caption)
+                    .foregroundStyle(theme.faint)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier("settings.askContextNote")
+            }
+        }
+        .padding(15)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(theme.elevated, in: RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(theme.line, lineWidth: 1))
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("settings.card.ask")
+    }
 
     /// Reporting a bug (#41) and passing Readr on (#40). Both were missing
     /// entirely: the EPUB bugs this cycle were only caught by manual

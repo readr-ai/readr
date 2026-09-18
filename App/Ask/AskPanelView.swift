@@ -136,21 +136,32 @@ struct AskPanelView: View {
     /// The inspector column: a slim ✦ header with "New conversation", then
     /// the same transcript and composer the sheet shows.
     private var inspectorBody: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 8) {
-                AISheetHeader(title: "Ask the book", theme: theme)
-                    .accessibilityIdentifier("ask.header")
-                Spacer(minLength: 8)
-                if !vm.exchanges.isEmpty, let onNewConversation {
-                    newConversationButton(onNewConversation)
+        // Inspector content participates in the window's intrinsic-size pass.
+        // Isolate that pass from the transcript's full ideal height, then lay
+        // the column out inside the height the window actually has.
+        GeometryReader { geometry in
+            VStack(spacing: 0) {
+                HStack(spacing: 8) {
+                    AISheetHeader(title: "Ask the book", theme: theme)
+                        .accessibilityIdentifier("ask.header")
+                    Spacer(minLength: 8)
+                    if !vm.exchanges.isEmpty, let onNewConversation {
+                        newConversationButton(onNewConversation)
+                    }
                 }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 10)
+                .overlay(alignment: .bottom) { theme.line.frame(height: 1) }
+                panelContent
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 10)
-            .overlay(alignment: .bottom) { theme.line.frame(height: 1) }
-            panelContent
+            .frame(width: geometry.size.width, height: geometry.size.height)
         }
         .background(theme.background)
+        .onAppear { vm.refreshAskPreferences() }
+        .onReceive(NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification)) { _ in
+            vm.refreshAskPreferences()
+        }
     }
 
     /// The sheet: the panel inside its own navigation bar, Done on the right.
@@ -231,9 +242,17 @@ struct AskPanelView: View {
 
     private var askContent: some View {
         VStack(spacing: 0) {
-        transcript
-        composer
+            // This is the flexible part of the column. When a Mac window gets
+            // shorter, collapse the transcript viewport (it already scrolls)
+            // before taking any height from the controls below it.
+            transcript
+                .frame(minHeight: 0, maxHeight: .infinity)
+            composer
+                .fixedSize(horizontal: false, vertical: true)
+                .layoutPriority(1)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .clipped()
     }
 
     // MARK: - Transcript
@@ -454,8 +473,8 @@ struct AskPanelView: View {
             )
             saveFailures[exchange.id] = nil
             vm.markSaved(exchange.id, path: entry.path)
-            // Name it afterwards, off the critical path: the note is already on
-            // disk, so this only improves it (see `nameNote(_:)`).
+            // Refine its short content description afterwards, off the critical
+            // path: the dated note is already on disk (see `nameNote(_:)`).
             Task {
                 await nameNote(
                     exchangeID: exchange.id, path: entry.path,
@@ -473,7 +492,8 @@ struct AskPanelView: View {
     /// links to — and rewrite the file with its answer.
     ///
     /// Silent on every failure (no provider, offline, a reply that is not
-    /// JSON): the note keeps the name `save` gave it, which is the question.
+    /// JSON): the note keeps the name `save` gave it — date plus a short
+    /// excerpt of the answer.
     /// The model call is the reader's own provider, the same one that answered
     /// the question, so this costs them one small call and no new setup.
     @MainActor

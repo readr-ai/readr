@@ -3,6 +3,42 @@ import SwiftUI
 #if os(macOS)
 import AppKit
 
+/// The reader stays useful at this size: the page still has room beside the
+/// 280pt inspector, while the Ask transcript can collapse before its composer.
+/// Keep the SwiftUI layout boundary and AppKit window constraint in lockstep.
+enum ReaderWindowSizing {
+    static let minimumContentSize = NSSize(width: 620, height: 420)
+}
+
+/// Enables the normal Mac window affordances on SwiftUI's value-keyed reader
+/// windows. `WindowGroup(for:)` can otherwise create these as zoom-only
+/// windows and derive a very tall minimum from the paged reader's content.
+///
+/// This representable never moves or resizes the window while it is being
+/// created. It only installs capabilities and a bounded minimum after AppKit
+/// has attached the hosting view; frame repair remains in `ReadrAppDelegate`.
+struct ReaderWindowConfigurator: NSViewRepresentable {
+    func makeNSView(context: Context) -> ReaderWindowConfigurationView {
+        ReaderWindowConfigurationView()
+    }
+
+    func updateNSView(_ nsView: ReaderWindowConfigurationView, context: Context) {
+        nsView.configureAttachedWindow()
+    }
+}
+
+final class ReaderWindowConfigurationView: NSView {
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        configureAttachedWindow()
+    }
+
+    func configureAttachedWindow() {
+        guard let window else { return }
+        WindowFrameFitter.configureReader(window)
+    }
+}
+
 /// Pulls a window back onto the screen it belongs on, after macOS has restored
 /// a frame that does not fit.
 ///
@@ -24,12 +60,22 @@ import AppKit
 /// kept — the title bar is what a reader aims at, and the bottom is the part
 /// they could not see.
 ///
-/// Deliberately **not** an `NSViewRepresentable` in the window's content: a
-/// representable attached to a `WindowGroup`'s root view (or a
-/// `setFrame` during `viewDidMoveToWindow`) left the window created but never
-/// ordered on screen. This runs from the app delegate instead, when a window
-/// has finished coming forward, which is after the restore and after layout.
+/// Frame repair is deliberately **not** done by the configurator above: a
+/// `setFrame` from an `NSViewRepresentable` during `viewDidMoveToWindow` left
+/// the window created but never ordered on screen. Repair runs from the app
+/// delegate instead, when the window has finished coming forward, which is
+/// after the restore and after layout.
 enum WindowFrameFitter {
+    /// Makes a reader a conventional resizable, full-screen-capable Mac
+    /// window, with a minimum that protects the controls rather than one
+    /// inferred from a full page of book content.
+    static func configureReader(_ window: NSWindow) {
+        window.styleMask.insert(.resizable)
+        window.collectionBehavior.insert(.fullScreenPrimary)
+        window.contentMinSize = ReaderWindowSizing.minimumContentSize
+        window.standardWindowButton(.zoomButton)?.isEnabled = true
+    }
+
     static func fit(_ window: NSWindow) {
         let frame = window.frame
         // A frame the window has not grown into yet is not a restored frame.

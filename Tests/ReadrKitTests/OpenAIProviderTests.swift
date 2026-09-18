@@ -225,6 +225,34 @@ final class OpenAIProviderTests: XCTestCase {
         )
         XCTAssertEqual(mock.requests.first?.headers["authorization"], "Bearer sk-ds")
         XCTAssertEqual(provider.info.kind, .deepSeek)
+
+        let body = try XCTUnwrap(mock.requests.first?.body)
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? [String: Any])
+        let thinking = try XCTUnwrap(object["thinking"] as? [String: String])
+        XCTAssertEqual(thinking["type"], "disabled")
+    }
+
+    /// DeepSeek's current API defaults to thinking mode, which streams hidden
+    /// reasoning before any visible answer. Reading Q&A is latency-sensitive,
+    /// so the preset explicitly requests non-thinking mode; ordinary OpenAI
+    /// requests must remain byte-shape compatible and omit the vendor field.
+    func testThinkingToggleIsDeepSeekOnly() throws {
+        let deepSeekBody = try OpenAIProvider.encodeBody(
+            makeRequest(), model: "deepseek-flash", disablesThinking: true
+        )
+        let deepSeek = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: deepSeekBody) as? [String: Any]
+        )
+        XCTAssertEqual(
+            (deepSeek["thinking"] as? [String: String])?["type"],
+            "disabled"
+        )
+
+        let openAIBody = try OpenAIProvider.encodeBody(makeRequest(), model: "gpt-5.6-sol")
+        let openAI = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: openAIBody) as? [String: Any]
+        )
+        XCTAssertNil(openAI["thinking"])
     }
 
     /// Its Chat Completions surface takes `max_tokens`, the older of the two
@@ -237,6 +265,10 @@ final class OpenAIProviderTests: XCTestCase {
             let object = try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? [String: Any])
             XCTAssertEqual(object["max_tokens"] as? Int, 1)
             XCTAssertNil(object["max_completion_tokens"])
+            XCTAssertEqual(
+                (object["thinking"] as? [String: String])?["type"],
+                "disabled"
+            )
             return HTTPResponse(status: 200, body: Data())
         }
         let provider = OpenAIProvider(

@@ -600,6 +600,20 @@ struct PagedChapterView: View {
             newlineOffsets = found
             return found
         }
+        func lowerBound(_ values: [Int], _ target: Int) -> Int {
+            var lower = 0
+            var upper = values.count
+            while lower < upper {
+                let middle = lower + (upper - lower) / 2
+                if values[middle] < target {
+                    lower = middle + 1
+                } else {
+                    upper = middle
+                }
+            }
+            return lower
+        }
+        let chapterLength = chapterText.count
         return spans.compactMap { span in
             // Degenerate runs must not snap into a whole styled paragraph.
             guard span.start < span.end else { return nil }
@@ -608,11 +622,12 @@ struct PagedChapterView: View {
             switch span.kind {
             case .heading, .blockquote, .alignment:
                 let breaks = newlines()
-                start = breaks.last(where: { $0 < start }).map { $0 + 1 } ?? 0
+                let before = lowerBound(breaks, start)
+                start = before > 0 ? breaks[before - 1] + 1 : 0
                 // `end - 1` so a span already covering its trailing newline
                 // doesn't snap into the following paragraph.
-                end = breaks.first(where: { $0 >= end - 1 }).map { $0 + 1 }
-                    ?? chapterText.count
+                let after = lowerBound(breaks, end - 1)
+                end = after < breaks.count ? breaks[after] + 1 : chapterLength
             case .bold, .italic, .link, .superscript, .`subscript`, .smallCaps,
                  .highlighted, .colored:
                 break

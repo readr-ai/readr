@@ -72,7 +72,10 @@ struct ReadrApp: App {
                 .preferredColorScheme(colorScheme)
         }
         .windowToolbarStyle(.unifiedCompact)
-        .defaultSize(width: 780, height: 920)
+        // Fits comfortably on a 13-inch Mac with the Dock and menu bar still
+        // visible. Readers can grow it or enter full screen, but a first open
+        // must not put the Ask composer below the desktop.
+        .defaultSize(width: 780, height: 720)
 
         Settings {
             ProviderSettingsView(app: model)
@@ -135,6 +138,9 @@ private struct ReaderWindowRoot: View {
                 .frame(minWidth: 400, minHeight: 300)
             }
         }
+        // Value-keyed SwiftUI windows otherwise inherit a zoom-only green
+        // button and an over-tall content minimum from the reader hierarchy.
+        .background(ReaderWindowConfigurator())
     }
 }
 #endif

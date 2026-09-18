@@ -422,6 +422,26 @@ final class ReadingFrontierTests: XCTestCase {
         )
     }
 
+    /// Nearby is the instant interaction, so its policy text must stay much
+    /// smaller than the full long-form prompt while retaining the product's
+    /// grounding, language, and spoiler guarantees.
+    func testNearbyPromptIsCompactButKeepsItsSafetyRules() async throws {
+        let book = makeBook(tokenCount: 50_000)
+        let strategy = AdaptiveContextStrategy(index: StubRAGIndex())
+        let nearby = try await strategy.assembleContext(
+            for: "q", in: book, selection: nil, history: [],
+            scope: .window(ReadingFrontier(chapterIndex: 1, characterOffset: 3)),
+            provider: provider()
+        )
+        let prompt = systemText(nearby).lowercased()
+
+        XCTAssertLessThan(prompt.count, 1_200)
+        XCTAssertTrue(prompt.contains("user's language"))
+        XCTAssertTrue(prompt.contains("never invent"))
+        XCTAssertTrue(prompt.contains("spoil"))
+        XCTAssertTrue(prompt.contains("not the whole book"))
+    }
+
     /// The anchor's "read so far" line is the panel's own summary — the same
     /// title, the same "Chapter N of M" — so the model and the reader are
     /// told the same place.

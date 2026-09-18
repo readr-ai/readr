@@ -8,8 +8,8 @@ import ReadrKit
 /// Asked **after** the note is already on disk (see
 /// `KnowledgeBaseStore.applyMetadata`), so the reader never waits for a second
 /// model call to have their note, and a naming that fails — no provider,
-/// offline, a reply that is not JSON — leaves a note named after its question,
-/// which is a perfectly good name.
+/// offline, a reply that is not JSON — leaves the initial date plus answer
+/// excerpt intact.
 ///
 /// One call for all three, because they are one judgement: what is this note
 /// about? JSON rather than three prose answers so the reply can be used
