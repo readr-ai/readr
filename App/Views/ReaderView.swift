@@ -274,25 +274,18 @@ struct ReaderView: View {
         return book.chapters[chapterIndex]
     }
 
-    /// macOS uses a deliberately fixed side column instead of SwiftUI's
-    /// native Inspector host. The native host can retain or recalculate a top
-    /// content inset when an alert is dismissed, leaving a visible strip and
-    /// occasionally changing the panel's geometry. A plain HStack has one
-    /// content rectangle, so the page and the 340pt panel always share the
-    /// same top and bottom edges.
     @ViewBuilder
     private var readerAndInspector: some View {
         #if os(macOS)
-        HStack(spacing: 0) {
+        MacReaderSplitLayout(
+            showsInspector: showInspector,
+            inspectorWidth: 340,
+            background: style.theme.background,
+            divider: style.theme.line
+        ) {
             content
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            if showInspector {
-                style.theme.line.frame(width: 1)
-                inspectorColumn
-                    .frame(width: 340)
-                    .frame(maxHeight: .infinity, alignment: .top)
-                    .clipped()
-            }
+        } inspector: {
+            inspectorColumn
         }
         #else
         content
@@ -2331,9 +2324,11 @@ private struct ReaderWindowLayoutBoundary: ViewModifier {
     @ViewBuilder
     func body(content: Content) -> some View {
         #if os(macOS)
-        GeometryReader { geometry in
-            content.frame(width: geometry.size.width, height: geometry.size.height)
-        }
+        // `MacReaderSplitLayout` is already the one geometry boundary for the
+        // window. Wrapping it in a second GeometryReader made the toolbar safe
+        // area propagate twice: an empty white strip appeared above the panel,
+        // and its height changed as AppKit recomputed the window chrome.
+        content
         .frame(
             minWidth: ReaderWindowSizing.minimumContentSize.width,
             minHeight: ReaderWindowSizing.minimumContentSize.height
@@ -2343,6 +2338,75 @@ private struct ReaderWindowLayoutBoundary: ViewModifier {
         #endif
     }
 }
+
+#if os(macOS)
+/// The reader's Mac workspace is an explicit two-rectangle layout. It does not
+/// use SwiftUI's native Inspector or either child's intrinsic size: the right
+/// edge is always a fixed-width panel and the page receives exactly the space
+/// left over. It is also the only GeometryReader in the Mac window, keeping
+/// the system toolbar's safe area out of the panel's own layout calculations.
+private struct MacReaderSplitLayout<Main: View, Inspector: View>: View {
+    let showsInspector: Bool
+    let inspectorWidth: CGFloat
+    let background: Color
+    let divider: Color
+    private let main: Main
+    private let inspector: Inspector
+
+    init(
+        showsInspector: Bool,
+        inspectorWidth: CGFloat,
+        background: Color,
+        divider: Color,
+        @ViewBuilder main: () -> Main,
+        @ViewBuilder inspector: () -> Inspector
+    ) {
+        self.showsInspector = showsInspector
+        self.inspectorWidth = inspectorWidth
+        self.background = background
+        self.divider = divider
+        self.main = main()
+        self.inspector = inspector()
+    }
+
+    var body: some View {
+        GeometryReader { geometry in
+            let inspectorExtent = showsInspector ? inspectorWidth + 1 : 0
+            let mainWidth = max(0, geometry.size.width - inspectorExtent)
+
+            ZStack(alignment: .topTrailing) {
+                main
+                    .frame(width: mainWidth, height: geometry.size.height, alignment: .topLeading)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                    .clipped()
+
+                if showsInspector {
+                    HStack(spacing: 0) {
+                        divider.frame(width: 1)
+                        inspector
+                            .frame(width: inspectorWidth)
+                            .frame(maxHeight: .infinity, alignment: .top)
+                            .background(background)
+                            .clipped()
+                    }
+                    .frame(
+                        width: inspectorExtent,
+                        height: geometry.size.height,
+                        alignment: .topTrailing
+                    )
+                    .background(background)
+                    .accessibilityIdentifier("reader.macInspector")
+                }
+            }
+            .frame(width: geometry.size.width, height: geometry.size.height)
+        }
+        // Paint the safe-area strip too. This is deliberately on the split
+        // container, not the Ask/Knowledge tabs, so switching or deleting can
+        // never expose the window's default white hosting background.
+        .background(background.ignoresSafeArea())
+    }
+}
+#endif
 
 // MARK: - Chapter swipe (scroll mode)
 
