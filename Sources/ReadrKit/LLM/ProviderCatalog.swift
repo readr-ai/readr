@@ -85,6 +85,41 @@ public enum ProviderCatalog {
         ),
     ]
 
+    /// DeepSeek models, served by DeepSeek's own API (`api.deepseek.com`).
+    ///
+    /// The ids are the two DeepSeek currently publishes (checked against its
+    /// pricing page on 2026-09-17): `deepseek-flash`, whose backing model is
+    /// DeepSeek-V4.1-Flash, and `deepseek-v4-pro`. Note what is deliberately
+    /// NOT here — `deepseek-chat` / `deepseek-reasoner` were retired on
+    /// 2026-07-24, and `deepseek-v4-flash` is now a legacy alias whose model
+    /// was taken offline. Flash is the default: the cheap tier is the
+    /// everyday reading model, and Pro is the one a hard question escalates
+    /// to.
+    ///
+    /// Both windows are 1M (384K max output), and both budgets below are the
+    /// ROUTER policy (see the type comment), not the models' ceiling. Like
+    /// OpenAI's, DeepSeek caches automatically — its cache-hit rate is a
+    /// pricing tier, not a request field — so `supportsPromptCaching` stays
+    /// false to keep the router conservative.
+    public static let deepSeekModels: [ProviderInfo] = [
+        ProviderInfo(
+            kind: .deepSeek,
+            modelID: "deepseek-flash",
+            contextBudget: 200_000,
+            supportsPromptCaching: false,
+            isLocal: false,
+            displayName: "DeepSeek Flash"
+        ),
+        ProviderInfo(
+            kind: .deepSeek,
+            modelID: "deepseek-v4-pro",
+            contextBudget: 200_000,
+            supportsPromptCaching: false,
+            isLocal: false,
+            displayName: "DeepSeek V4 Pro"
+        ),
+    ]
+
     /// ChatGPT subscription models, served by ChatGPT's backend (not
     /// api.openai.com). These slugs track what ChatGPT itself offers, which
     /// is a *different* list from the API's — so they deliberately lag the
@@ -352,6 +387,7 @@ public enum ProviderCatalog {
         case .openAI: return openAIModels
         case .chatGPT: return chatGPTModels
         case .openRouter: return openRouterModels
+        case .deepSeek: return deepSeekModels
         case .local: return localModels
         case .appleIntelligence: return appleIntelligenceModels
         case .geminiNano: return geminiNanoModels

@@ -91,8 +91,19 @@ struct ReaderView: View {
     /// is a sheet and Ask stays its own full-height sheet (owner decision,
     /// September 2026), so the tab strip shows only where Ask lives here —
     /// or where it already is, after an iPad narrowed with Ask open.
+    #if os(macOS)
+    /// On the Mac the column is the reader's own furniture, so it comes back
+    /// the way it was left — which tab was showing, and whether it was
+    /// showing at all. Before this it opened closed on every launch, which
+    /// made a side panel behave like a modal you had to summon each time.
+    /// (iOS keeps the plain state: there the inspector is a covering column,
+    /// and re-presenting it unasked on launch would be rude.)
+    @AppStorage("reader.inspectorShown") private var showInspector = false
+    @AppStorage("reader.inspectorTab") private var inspectorTab: InspectorTab = .highlights
+    #else
     @State private var showInspector = false
     @State private var inspectorTab: InspectorTab = .highlights
+    #endif
     /// The voice was paused because Ask opened over it; it resumes when
     /// Ask goes away (the sheet dismisses, or the inspector leaves the Ask
     /// tab). A reader can't listen to page 5 while reading an answer
@@ -263,8 +274,30 @@ struct ReaderView: View {
         return book.chapters[chapterIndex]
     }
 
-    var body: some View {
+    @ViewBuilder
+    private var readerAndInspector: some View {
+        #if os(macOS)
+        MacReaderSplitLayout(
+            showsInspector: showInspector,
+            inspectorWidth: 340,
+            background: style.theme.background,
+            divider: style.theme.line
+        ) {
+            content
+        } inspector: {
+            inspectorColumn
+        }
+        #else
         content
+            .inspector(isPresented: $showInspector) {
+                inspectorColumn
+                    .inspectorColumnWidth(min: 280, ideal: 340, max: 480)
+            }
+        #endif
+    }
+
+    var body: some View {
+        readerAndInspector
             #if os(iOS)
             // The chrome layout keys on this (see `showsWideChrome`). The
             // transform yields the Bool, so the action fires only when the
@@ -353,10 +386,6 @@ struct ReaderView: View {
             }
             .overlay(alignment: .topTrailing) { appearancePopoverAnchor }
             #endif
-            .inspector(isPresented: $showInspector) {
-                inspectorColumn
-                .inspectorColumnWidth(min: 280, ideal: 340, max: 480)
-            }
             .onChange(of: showInspector) { _, shown in
                 if !shown { resumeNarrationAfterAsk() }
             }
@@ -471,6 +500,11 @@ struct ReaderView: View {
                 guard !Task.isCancelled else { return }
                 withAnimation(.easeOut(duration: 0.2)) { welcomeBack = nil }
             }
+            // Isolate the Mac window's minimum size from the intrinsic height
+            // of a fully laid-out book page. The exact-size proposal also
+            // makes the page repaginate when the window gets shorter instead
+            // of letting its old layout continue below the window edge.
+            .modifier(ReaderWindowLayoutBoundary())
     }
 
     private var welcomeBackScrollTimerRunning: Bool {
@@ -479,7 +513,10 @@ struct ReaderView: View {
 
     // MARK: - Inspector
 
-    enum InspectorTab { case highlights, ask }
+    /// `String` so the Mac can remember which tab was showing across launches
+    /// (`@AppStorage("reader.inspectorTab")`). `knowledge` is offered on the
+    /// Mac only, where the saved notes are files in the reader's own Documents.
+    enum InspectorTab: String { case highlights, ask, knowledge }
 
     /// Where ✦ Ask lives: the inspector column on the Mac and on a regular
     /// iPad, its own sheet on iPhone (an iPhone in landscape reports a
@@ -506,11 +543,25 @@ struct ReaderView: View {
             }
             if inspectorShowsAskTab, inspectorTab == .ask {
                 askColumn
+            } else if inspectorTab == .knowledge {
+                knowledgeColumn
             } else {
                 highlightsPanel
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .background(style.theme.background)
+    }
+
+    /// The Knowledge column: what the reader saved, re-read from the folder
+    /// every time it appears. Mac only (see `KnowledgePanel`).
+    @ViewBuilder
+    private var knowledgeColumn: some View {
+        #if os(macOS)
+        KnowledgePanel(theme: style.theme)
+        #else
+        EmptyView()
+        #endif
     }
 
     /// Highlights · ✦ Ask, the selected one underlined (ink for Highlights,
@@ -527,6 +578,17 @@ struct ReaderView: View {
                 help: isImageOnlyPDF ? ScannedPDFCopy.needsText("Ask") : "Ask the book (⇧⌘A)"
             )
             .disabled(isImageOnlyPDF)
+            #if os(macOS)
+            // Third tab, Mac only: the answers the reader chose to keep, as
+            // Markdown files in their own Documents folder. It is not offered
+            // elsewhere because there is nowhere on a phone for the reader to
+            // find those files again.
+            inspectorTabButton(
+                .knowledge, title: "Knowledge", count: nil,
+                id: "inspector.tab.knowledge",
+                help: "Answers you saved"
+            )
+            #endif
             Spacer(minLength: 0)
         }
         .padding(.horizontal, 14)
@@ -690,7 +752,15 @@ struct ReaderView: View {
         let end = min(chapter.text.count, sentence.upperBound)
         guard end > start else { return nil }
         let range = start..<end
-        return (model.makeSelection(in: chapter, range: range), range)
+        let scope = askScope(selection: range)
+        return (
+            model.makeSelection(
+                in: chapter,
+                range: range,
+                visibleThrough: scope.frontier?.characterOffset
+            ),
+            range
+        )
     }
 
     /// Start over: a fresh conversation, open on the book at large.
@@ -715,44 +785,53 @@ struct ReaderView: View {
     // MARK: - Reading surface
 
     private var content: some View {
-        Group {
-            if isPDFOriginal, let url = model.sourceURL(for: book) {
-                PDFReaderView(
-                    book: book,
-                    url: url,
-                    onAsk: { selection in
-                        // A native PDF page is not a reading position: no
-                        // frontier, so the whole document is in scope.
-                        presentAsk(AskRequest(selection: selection, scope: .wholeBook, initialQuestion: nil))
-                    },
-                    onListen: { anchor in listen(from: anchor) },
-                    annotationActions: $pdfAnnotationActions,
-                    wideChrome: showsWideChrome
-                )
-            } else if isImageOnlyPDF {
-                // The retained file is gone (or was never copied), and every
-                // chapter is empty: nothing to fall back on but an explanation.
-                ContentUnavailableView(
-                    ScannedPDFCopy.missingFileTitle,
-                    systemImage: "doc.viewfinder",
-                    description: Text(ScannedPDFCopy.missingFileDescription)
-                )
-                .accessibilityIdentifier("reader.scanMissingFile")
-            } else if let chapter, model.isPDF(book), !chapter.hasText {
-                imagePagePlaceholder(for: chapter)
-            } else if let chapter {
-                readingSurface(for: chapter)
-            } else {
-                ContentUnavailableView("No readable content", systemImage: "doc")
-            }
-        }
-        // The welcome-back line insets the page from the top for the same
-        // reason the Listen card insets it from the bottom: nothing floats
-        // over the words.
-        .safeAreaInset(edge: .top, spacing: 0) {
+        VStack(spacing: 0) {
+            // Keep the temporary welcome card in ordinary layout instead of
+            // a conditional `safeAreaInset`. On macOS, removing that inset
+            // during its transition occasionally left the host view with a
+            // stale top safe-area value: the page and the inspector both
+            // started one toolbar-row too low until the tab/window refreshed.
             if let welcomeBack {
                 welcomeBackBar(welcomeBack)
             }
+            Group {
+                if isPDFOriginal, let url = model.sourceURL(for: book) {
+                    PDFReaderView(
+                        book: book,
+                        url: url,
+                        onAsk: { selection in
+                            // A native PDF page is not a reading position: no
+                            // frontier, so nothing bounds what may be retrieved —
+                            // but the scope is still the nearby one. Asking sends
+                            // the passage question straight away, like the text
+                            // reader's Ask (see `passageQuestion`).
+                            presentAsk(AskRequest(
+                                selection: selection, scope: .window(nil),
+                                initialQuestion: passageQuestion(for: selection)
+                            ))
+                        },
+                        onListen: { anchor in listen(from: anchor) },
+                        annotationActions: $pdfAnnotationActions,
+                        wideChrome: showsWideChrome
+                    )
+                } else if isImageOnlyPDF {
+                    // The retained file is gone (or was never copied), and every
+                    // chapter is empty: nothing to fall back on but an explanation.
+                    ContentUnavailableView(
+                        ScannedPDFCopy.missingFileTitle,
+                        systemImage: "doc.viewfinder",
+                        description: Text(ScannedPDFCopy.missingFileDescription)
+                    )
+                    .accessibilityIdentifier("reader.scanMissingFile")
+                } else if let chapter, model.isPDF(book), !chapter.hasText {
+                    imagePagePlaceholder(for: chapter)
+                } else if let chapter {
+                    readingSurface(for: chapter)
+                } else {
+                    ContentUnavailableView("No readable content", systemImage: "doc")
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         // The Listen card insets the reading surface rather than floating over
         // it: the page turns itself to follow the voice, so the card must never
@@ -1199,9 +1278,11 @@ struct ReaderView: View {
         narrationResumeAnchor ?? pagedAnchor
     }
 
-    /// How far the reader has got, for Ask. Answers are built only from the
-    /// text before this point, so "recap what I've read" can't spoil — but
-    /// the point must never sit behind the page in front of the reader.
+    /// How far the reader has got, for Ask. The frontier bounds what an answer
+    /// may see, so "recap what I've read" can't spoil — and under the panel's
+    /// nearby scope it also caps retrieval, so "nearby" can't reach past the
+    /// reader either. The point must never sit behind the page in front of
+    /// the reader.
     ///
     /// Paged layouts: the top of the visible page (the same anchor the
     /// reading position uses), pushed forward to the end of `selection` when
@@ -1214,11 +1295,14 @@ struct ReaderView: View {
     /// at is the worse error. (If the scroll surface ever reports the end of
     /// its visible text, that is the anchor to use here instead.)
     ///
-    /// Native PDF pages have no text position at all, so they get no frontier
-    /// and the whole document, as before. An image-only PDF also never gets a
-    /// frontier, including when its retained source is missing.
+    /// The scope returned is the nearby one — the panel's default — because
+    /// opening Ask is a question about the passage in hand, not a request for
+    /// the book. Native PDF pages have no text position at all, so they get
+    /// no frontier; that costs them the spoiler guard, not the nearby scope.
+    /// An image-only PDF also never gets a frontier, including when its
+    /// retained source is missing.
     private func askScope(selection: Range<Int>?) -> ReadingScope {
-        guard !isPDFOriginal, !isImageOnlyPDF else { return .wholeBook }
+        guard !isPDFOriginal, !isImageOnlyPDF else { return .window(nil) }
         var frontier: ReadingFrontier
         if layout == .scroll {
             frontier = ReadingFrontier(chapterIndex: chapterIndex, characterOffset: chapter?.text.count ?? 0)
@@ -1228,7 +1312,7 @@ struct ReaderView: View {
         if let selection {
             frontier = frontier.extended(toInclude: selection)
         }
-        return .upTo(frontier)
+        return .window(frontier)
     }
 
     /// True while something is presented over the reader.
@@ -1574,24 +1658,61 @@ struct ReaderView: View {
     /// published actions.
     private func askTheBook() {
         if isPDFOriginal {
+            let selection = pdfAnnotationActions?.askSelection()
             presentAsk(AskRequest(
-                selection: pdfAnnotationActions?.askSelection(), scope: .wholeBook, initialQuestion: nil
+                selection: selection, scope: .window(nil),
+                initialQuestion: passageQuestion(for: selection)
             ))
         } else if let chapter, let selected = currentSelection.value {
+            let scope = askScope(selection: selected)
+            let selection = model.makeSelection(
+                in: chapter,
+                range: selected,
+                visibleThrough: scope.frontier?.characterOffset
+            )
             presentAsk(AskRequest(
-                selection: model.makeSelection(in: chapter, range: selected),
-                scope: askScope(selection: selected),
-                initialQuestion: nil
+                selection: selection,
+                scope: scope,
+                initialQuestion: passageQuestion(for: selection)
             ))
         } else if let (selection, range) = narratedSentenceSelection() {
             // Listening: the question is about the sentence being read.
             presentAsk(AskRequest(
-                selection: selection, scope: askScope(selection: range), initialQuestion: nil
+                selection: selection, scope: askScope(selection: range),
+                initialQuestion: passageQuestion(for: selection)
             ))
         } else {
             // No selection: a question about the book — scoped to what has
-            // been read, with the panel's switch to widen it.
+            // been read, with the panel's switch to widen it. Nothing is sent
+            // on the reader's behalf here: "what does this passage mean" needs
+            // a passage, and a question about the whole book is one only the
+            // reader can put into words.
             presentAsk(bookRequest())
+        }
+    }
+
+    /// The question Ask sends when the reader asks about a passage and types
+    /// nothing. Picking a sentence and pressing Ask should be one action, not
+    /// two — ask, and then think of what to ask about it — so the panel sends
+    /// this the moment it opens with a provider ready.
+    ///
+    /// Matched to the passage's own language, because the answer comes back in
+    /// the language of the question: a Chinese passage asked about in English
+    /// is answered in English, which is not what a reader of that passage
+    /// wanted. (Two languages is the whole of it for now — Han or kana takes
+    /// the Chinese question, everything else the English one.)
+    private func passageQuestion(for selection: Selection?) -> String {
+        Self.asksInChinese(selection?.quotedText ?? "")
+            ? "这段话是什么意思？"
+            : "What does this passage mean?"
+    }
+
+    /// Han or kana — enough to tell a CJK passage from a Latin one, without
+    /// pulling a language detector into the reader.
+    private static func asksInChinese(_ text: String) -> Bool {
+        text.unicodeScalars.contains { scalar in
+            (0x4E00...0x9FFF).contains(scalar.value)       // Han
+                || (0x3040...0x30FF).contains(scalar.value) // Hiragana, katakana
         }
     }
 
@@ -2042,10 +2163,18 @@ struct ReaderView: View {
 
         case .ask:
             let range = self.range(for: target)
+            let scope = askScope(selection: range)
+            let selection = model.makeSelection(
+                in: chapter,
+                range: range,
+                visibleThrough: scope.frontier?.characterOffset
+            )
             presentAsk(AskRequest(
-                selection: model.makeSelection(in: chapter, range: range),
-                scope: askScope(selection: range),
-                initialQuestion: nil
+                selection: selection,
+                scope: scope,
+                // The selection bar's Ask is the other way in, and it means
+                // the same thing: send the passage question now.
+                initialQuestion: passageQuestion(for: selection)
             ))
 
         case .listen:
@@ -2204,6 +2333,98 @@ final class SelectionMirror {
 final class NarrationMoveFlag {
     var isActive = false
 }
+
+/// A GeometryReader reports a small, flexible intrinsic size to AppKit, then
+/// gives the reader exactly the content size the window actually has. Without
+/// this boundary, a paged text view can become the window's minimum height;
+/// AppKit stops the resize early and clips the bottom controls anyway.
+private struct ReaderWindowLayoutBoundary: ViewModifier {
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        #if os(macOS)
+        // `MacReaderSplitLayout` is already the one geometry boundary for the
+        // window. Wrapping it in a second GeometryReader made the toolbar safe
+        // area propagate twice: an empty white strip appeared above the panel,
+        // and its height changed as AppKit recomputed the window chrome.
+        content
+        .frame(
+            minWidth: ReaderWindowSizing.minimumContentSize.width,
+            minHeight: ReaderWindowSizing.minimumContentSize.height
+        )
+        #else
+        content
+        #endif
+    }
+}
+
+#if os(macOS)
+/// The reader's Mac workspace is an explicit two-rectangle layout. It does not
+/// use SwiftUI's native Inspector or either child's intrinsic size: the right
+/// edge is always a fixed-width panel and the page receives exactly the space
+/// left over. It is also the only GeometryReader in the Mac window, keeping
+/// the system toolbar's safe area out of the panel's own layout calculations.
+private struct MacReaderSplitLayout<Main: View, Inspector: View>: View {
+    let showsInspector: Bool
+    let inspectorWidth: CGFloat
+    let background: Color
+    let divider: Color
+    private let main: Main
+    private let inspector: Inspector
+
+    init(
+        showsInspector: Bool,
+        inspectorWidth: CGFloat,
+        background: Color,
+        divider: Color,
+        @ViewBuilder main: () -> Main,
+        @ViewBuilder inspector: () -> Inspector
+    ) {
+        self.showsInspector = showsInspector
+        self.inspectorWidth = inspectorWidth
+        self.background = background
+        self.divider = divider
+        self.main = main()
+        self.inspector = inspector()
+    }
+
+    var body: some View {
+        GeometryReader { geometry in
+            let inspectorExtent = showsInspector ? inspectorWidth + 1 : 0
+            let mainWidth = max(0, geometry.size.width - inspectorExtent)
+
+            ZStack(alignment: .topTrailing) {
+                main
+                    .frame(width: mainWidth, height: geometry.size.height, alignment: .topLeading)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                    .clipped()
+
+                if showsInspector {
+                    HStack(spacing: 0) {
+                        divider.frame(width: 1)
+                        inspector
+                            .frame(width: inspectorWidth)
+                            .frame(maxHeight: .infinity, alignment: .top)
+                            .background(background)
+                            .clipped()
+                    }
+                    .frame(
+                        width: inspectorExtent,
+                        height: geometry.size.height,
+                        alignment: .topTrailing
+                    )
+                    .background(background)
+                    .accessibilityIdentifier("reader.macInspector")
+                }
+            }
+            .frame(width: geometry.size.width, height: geometry.size.height)
+        }
+        // Paint the safe-area strip too. This is deliberately on the split
+        // container, not the Ask/Knowledge tabs, so switching or deleting can
+        // never expose the window's default white hosting background.
+        .background(background.ignoresSafeArea())
+    }
+}
+#endif
 
 // MARK: - Chapter swipe (scroll mode)
 

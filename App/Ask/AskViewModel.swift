@@ -24,6 +24,17 @@ final class AskViewModel: ObservableObject {
         var answerText: String = ""
         var tier: AssembledContext.Tier? = nil
         var citations: [Citation] = []
+        /// The passage the question was asked about, when it was about one —
+        /// kept so a saved note can quote what its answer is about, the way
+        /// the panel showed it at the time.
+        var quote: String? = nil
+        /// The chapter the question came from, for the saved note's front
+        /// matter.
+        var chapter: String? = nil
+        /// Where this answer was saved in the reader's knowledge base, once
+        /// they saved it — the row under the answer then shows the saved state
+        /// instead of offering to save it a second time.
+        var savedPath: String? = nil
         /// The stream failed; the panel's error card carries the detail.
         var failed = false
         var isStreaming = true
@@ -64,7 +75,9 @@ final class AskViewModel: ObservableObject {
     /// takes effect immediately.
     private let makeService: () -> AskService?
     private var service: AskService?
-    private let prepare: () async -> Void
+    /// Performs only the work this request's scope needs. In particular, a
+    /// whole-text request must not wait for a retrieval index it will not use.
+    private let prepare: (ReadingScope, Selection?) async -> Void
     /// Which provider answered, for diagnostics only (#41). A closure because
     /// the active provider can change while the panel is open, same as
     /// `makeService`.
@@ -79,11 +92,26 @@ final class AskViewModel: ObservableObject {
     /// question is held to; nil (a native PDF page) means every question
     /// is about the whole document and the scope choice is hidden.
     @Published private(set) var frontier: ReadingFrontier?
-    /// The reader's scope choice — "Whole book" on — kept on the
-    /// conversation, with the transcript it describes: a choice made for
-    /// one question holds for the next opening rather than snapping back
-    /// while whole-book answers sit in the history the model is shown.
-    @Published var wholeBook = false
+    /// The reader's "Answers from" choice, kept on the conversation, with the
+    /// transcript it describes: a choice made for one question holds for the
+    /// next opening rather than snapping back while whole-book answers sit in
+    /// the history the model is shown.
+    ///
+    /// Persisted because Settings now exposes it as an explicit reader
+    /// preference. The Settings copy warns that Whole book can use more model
+    /// context; the in-panel picker writes the same preference.
+    @Published var answersFrom: AnswersFrom {
+        didSet {
+            if AskPreferences.defaultContextRange != answersFrom {
+                AskPreferences.defaultContextRange = answersFrom
+            }
+        }
+    }
+
+    /// How much of the book an answer may see — the panel's "Answers from"
+    /// choice as three named options. The names describe what the reader
+    /// gets; `ReadingScope` is how the strategy hears it.
+    typealias AnswersFrom = AskContextRange
     /// True while the latest opening was a Recap, for the panel's headline.
     @Published private(set) var openedForRecap = false
     /// The question an opening asked to send on the panel's behalf (Recap),
@@ -101,18 +129,27 @@ final class AskViewModel: ObservableObject {
     /// the passage the conversation has since been pointed at.
     private(set) var lastRequest: (question: String, scope: ReadingScope, selection: Selection?)?
 
-    /// What the next question is allowed to see.
+    /// What the next question is allowed to see: the reader's choice, pointed
+    /// at wherever the conversation currently is.
     var scope: ReadingScope {
-        if let frontier, !wholeBook { return .upTo(frontier) }
-        return .wholeBook
+        switch answersFrom {
+        case .nearby:
+            // No reading position (a native PDF page) is still the nearby
+            // scope — "nearby" means extracts, not the book.
+            return .window(frontier)
+        case .readSoFar:
+            return frontier.map(ReadingScope.upTo) ?? .wholeBook
+        case .wholeBook:
+            return .wholeBook
+        }
     }
 
     /// The scope is NOT an init argument: the panel hands it to every
-    /// `ask(_:scope:)` from its toggle, so a panel opened scoped can ask the
+    /// `ask(_:scope:)` from its picker, so a panel opened scoped can ask the
     /// next question about the whole book without a new view model.
     init(
         makeService: @escaping () -> AskService?,
-        prepare: @escaping () async -> Void,
+        prepare: @escaping (ReadingScope, Selection?) async -> Void,
         book: Book,
         selection: Selection?,
         initialQuestion: String?,
@@ -126,6 +163,7 @@ final class AskViewModel: ObservableObject {
         self.book = book
         self.selection = selection
         self.pendingQuestion = initialQuestion
+        self.answersFrom = AskPreferences.defaultContextRange
         let resolved = makeService()
         self.service = resolved
         self.hasProvider = resolved != nil
@@ -176,6 +214,15 @@ final class AskViewModel: ObservableObject {
         sendPendingIfReady()
     }
 
+    /// Pull in a Settings change for conversations that already exist. The
+    /// guard avoids writing the same value back to UserDefaults and turning a
+    /// defaults notification into a loop.
+    func refreshAskPreferences() {
+        let stored = AskPreferences.defaultContextRange
+        guard answersFrom != stored else { return }
+        answersFrom = stored
+    }
+
     /// Ask, under the current scope and about the current passage. The
     /// stream runs as the conversation's own task, so it can be cancelled.
     func submit(_ question: String) {
@@ -209,6 +256,10 @@ final class AskViewModel: ObservableObject {
     private func run(
         _ question: String, scope: ReadingScope, selection: Selection?, replacingLastExchange: Bool
     ) async {
+        let startedAt = ProcessInfo.processInfo.systemUptime
+        var preparedAt = startedAt
+        var contextAssembledAt = startedAt
+        var loggedFirstToken = false
         let trimmed = question.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         // Ignore re-entrant submits while a stream is already in flight.
@@ -225,7 +276,10 @@ final class AskViewModel: ObservableObject {
             exchanges.removeLast()
         }
         let id = UUID()
-        exchanges.append(Exchange(id: id, question: trimmed, scope: scope))
+        exchanges.append(Exchange(
+            id: id, question: trimmed, scope: scope,
+            quote: selection?.quotedText, chapter: selection?.chapterTitle
+        ))
 
         guard self.service != nil else {
             fail(id, "Connect an AI provider in settings to ask questions.", recovery: nil)
@@ -241,7 +295,8 @@ final class AskViewModel: ObservableObject {
             sendPendingIfReady()
         }
 
-        await prepare()
+        await prepare(scope, selection)
+        preparedAt = ProcessInfo.processInfo.systemUptime
         // `prepare` renews expired OAuth tokens (see AskPanelView); providers
         // capture credentials by value, so re-resolve the service to bake the
         // refreshed tokens into the one that streams.
@@ -260,14 +315,31 @@ final class AskViewModel: ObservableObject {
                 if Task.isCancelled { return }
                 switch event {
                 case let .contextAssembled(tier):
+                    contextAssembledAt = ProcessInfo.processInfo.systemUptime
                     update(id) { $0.tier = tier }
                 case let .citations(list):
                     update(id) { $0.citations = list }
                 case let .token(delta):
+                    if !loggedFirstToken, !delta.isEmpty {
+                        loggedFirstToken = true
+                        let now = ProcessInfo.processInfo.systemUptime
+                        DiagnosticsLog.shared.record(
+                            .info, .provider,
+                            "ask timing: provider \(providerName()), prepare \(Self.milliseconds(preparedAt - startedAt)) ms, context \(Self.milliseconds(contextAssembledAt - preparedAt)) ms, first token \(Self.milliseconds(now - startedAt)) ms"
+                        )
+                    }
                     update(id) { $0.answerText += delta }
                 case let .completed(fullText):
                     // Authoritative final text — covers providers that don't
                     // stream incremental deltas.
+                    if !loggedFirstToken, !fullText.isEmpty {
+                        loggedFirstToken = true
+                        let now = ProcessInfo.processInfo.systemUptime
+                        DiagnosticsLog.shared.record(
+                            .info, .provider,
+                            "ask timing: provider \(providerName()), prepare \(Self.milliseconds(preparedAt - startedAt)) ms, context \(Self.milliseconds(contextAssembledAt - preparedAt)) ms, first answer \(Self.milliseconds(now - startedAt)) ms"
+                        )
+                    }
                     update(id) { $0.answerText = fullText }
                 }
             }
@@ -309,6 +381,10 @@ final class AskViewModel: ObservableObject {
         }
     }
 
+    private static func milliseconds(_ duration: TimeInterval) -> Int {
+        max(0, Int((duration * 1_000).rounded()))
+    }
+
     /// Completed turns before `id`, oldest first — what the model is shown of
     /// the conversation so far. A failed or empty turn carries no answer and
     /// is left out. So is a whole-book turn when THIS question is scoped:
@@ -332,6 +408,16 @@ final class AskViewModel: ObservableObject {
     private func update(_ id: UUID, _ change: (inout Exchange) -> Void) {
         guard let index = exchanges.firstIndex(where: { $0.id == id }) else { return }
         change(&exchanges[index])
+    }
+
+    /// The active model's name, for a saved note's front matter — the same
+    /// string the bug reports and the sidebar use ("DeepSeek Flash").
+    var modelName: String { providerName() }
+
+    /// Record that an answer was written to the knowledge base, so the row
+    /// under it stops offering to save it again.
+    func markSaved(_ id: UUID, path: String) {
+        update(id) { $0.savedPath = path }
     }
 
     private func fail(_ id: UUID, _ message: String, recovery: String?) {

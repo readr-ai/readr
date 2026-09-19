@@ -6,7 +6,7 @@ Readr connects to an LLM in one of **five** ways. All five sit behind the
 | Mode | What the user does | Where credentials live | Network |
 |------|--------------------|------------------------|---------|
 | **Sign in (OAuth)** | "Sign in with ChatGPT" / "Sign in with OpenRouter" in a browser | Tokens/key in **Keychain** | provider API |
-| **Bring your own key** | Pastes an Anthropic / OpenAI / OpenRouter key | API key in **Keychain** | provider API |
+| **Bring your own key** | Pastes an Anthropic / OpenAI / OpenRouter / DeepSeek key | API key in **Keychain** | provider API |
 | **On this device** | Nothing — Apple's on-device model (iOS/macOS 26, Apple Intelligence hardware) is offered where it can run | none | **none (on-device)** |
 | **On this phone** | Nothing — Android's Gemini Nano (AICore, through ML Kit's GenAI APIs) is offered where it can run | none | **none (on-device)** |
 | **Local** | Picks a local model (Ollama on a Mac) | none | **none (loopback)** |
@@ -70,6 +70,14 @@ live sign-in):**
 - **OpenAI (API key)** — kind `.openAI` stays key-only by design; the
   subscription path is the separate `.chatGPT` kind so catalogs, credentials,
   and persisted selections never mix.
+- **DeepSeek** — kind `.deepSeek`, key-only (no sign-in exists to offer). Its
+  API is OpenAI-compatible on the wire, so chat and the key check run through
+  `OpenAIProvider` with the `.deepSeek` endpoints preset against
+  `https://api.deepseek.com/chat/completions` — DeepSeek's own documented
+  path (its `/v1` prefix is an OpenAI-compatibility alias, not a version).
+  Model ids follow DeepSeek's live list (`deepseek-flash`,
+  `deepseek-v4-pro`); `deepseek-chat` / `deepseek-reasoner` were retired on
+  2026-07-24 and must not be reintroduced.
 - **Anthropic / Claude** — subscription OAuth is **not supported** in Readr.
   Anthropic's Consumer Terms prohibit using Free/Pro/Max OAuth tokens in any
   third-party product/tool/service, so we deliberately do **not** offer a

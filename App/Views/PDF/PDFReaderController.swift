@@ -624,11 +624,12 @@ final class PDFReaderController: NSObject, ObservableObject {
         if !quoted.isEmpty,
            let pageText = page?.string,
            let range = pageText.range(of: quoted) {
-            let lower = pageText.index(range.lowerBound, offsetBy: -240, limitedBy: pageText.startIndex)
-                ?? pageText.startIndex
-            let upper = pageText.index(range.upperBound, offsetBy: 240, limitedBy: pageText.endIndex)
-                ?? pageText.endIndex
-            surrounding = String(pageText[lower..<upper])
+            let lower = pageText.distance(from: pageText.startIndex, to: range.lowerBound)
+            let upper = pageText.distance(from: pageText.startIndex, to: range.upperBound)
+            // The same paragraph window the text reader uses: a page's text has
+            // paragraphs too, and a flat ±240 characters was half a paragraph
+            // on a wide page and two of them on a narrow one.
+            surrounding = ParagraphWindow.text(in: pageText, around: lower..<upper)
         }
         return Selection(
             chapterID: book?.chapters.first?.id ?? UUID(),

@@ -1060,14 +1060,28 @@ final class AppModel: ObservableObject {
 
     private let ragIndex = HybridRAGIndex()
     private let embeddings = LocalEmbeddingProvider()
+    /// Reader pre-warming and a fast follow-up can request the same index at
+    /// once. Share one task rather than chunking and embedding the book twice.
+    private var indexBuildTasks: [UUID: Task<Void, Never>] = [:]
 
     /// An `AskService` bound to the active provider, or nil if none is configured.
     func makeAskService() -> AskService? {
         guard let provider = activeProvider() else { return nil }
+        let bookStrategy = AdaptiveContextStrategy(index: ragIndex, lengths: lengthCache)
+        #if os(macOS)
+        // Saved notes never leave the device implicitly. Local providers may
+        // use them as extra context; cloud providers receive only the book
+        // scope and question the reader explicitly chose.
+        guard provider.info.isLocal else {
+            return AskService(strategy: bookStrategy, provider: provider)
+        }
         return AskService(
-            strategy: AdaptiveContextStrategy(index: ragIndex, lengths: lengthCache),
+            strategy: KnowledgeAwareContextStrategy(base: bookStrategy),
             provider: provider
         )
+        #else
+        return AskService(strategy: bookStrategy, provider: provider)
+        #endif
     }
 
     /// Renew the active provider's OAuth tokens if they're at expiry, so a
@@ -1121,9 +1135,8 @@ final class AppModel: ObservableObject {
     private func makeAskConversation(for book: Book) -> AskViewModel {
         AskViewModel(
             makeService: { [weak self] in self?.makeAskService() },
-            prepare: { [weak self] in
-                await self?.ensureIndexed(book)
-                await self?.refreshActiveProviderCredentialsIfNeeded()
+            prepare: { [weak self] scope, selection in
+                await self?.prepareAsk(book: book, scope: scope, selection: selection)
             },
             book: book,
             selection: nil,
@@ -1150,18 +1163,71 @@ final class AppModel: ObservableObject {
     /// call repeatedly; the index is reused across questions.
     func ensureIndexed(_ book: Book) async {
         if await ragIndex.isBuilt(bookID: book.id) { return }
-        try? await ragIndex.build(for: book, embeddings: embeddings)
+        if let existing = indexBuildTasks[book.id] {
+            await existing.value
+            return
+        }
+
+        let index = ragIndex
+        let embeddingProvider = embeddings
+        let task = Task {
+            do {
+                try await index.build(for: book, embeddings: embeddingProvider)
+            } catch {
+                // Retrieval already has a no-results fallback; a later call
+                // may retry the build after this task leaves the dictionary.
+            }
+        }
+        indexBuildTasks[book.id] = task
+        await task.value
+        indexBuildTasks[book.id] = nil
     }
 
-    /// Build a `Selection` (quote + surrounding context) from a character range.
-    func makeSelection(in chapter: Chapter, range: Range<Int>) -> Selection {
+    /// Refresh credentials, then wait for a retrieval index only if the
+    /// context router will actually retrieve passages for this scope. Small
+    /// read-so-far and whole-book requests go straight to the provider.
+    private func prepareAsk(book: Book, scope: ReadingScope, selection: Selection?) async {
+        await refreshActiveProviderCredentialsIfNeeded()
+        guard let provider = activeProvider() else { return }
+
+        // Nearby is the instant path. Its selected/local context is already
+        // enough to answer, and the strategy has a compact fallback when the
+        // background index has not landed yet. Never put that warm-up between
+        // the click and the first streamed token.
+        if scope.isWindow { return }
+
+        let sendsTextDirectly = AdaptiveContextStrategy.routesWholeBook(
+            book: book,
+            scope: scope,
+            provider: provider.info,
+            lengths: lengthCache
+        )
+        guard !sendsTextDirectly else { return }
+        await ensureIndexed(book)
+    }
+
+    /// Build a `Selection` (quote + the paragraphs around it) from a character
+    /// range.
+    ///
+    /// The surrounding text is the reader's own working memory: a few
+    /// paragraphs before the passage and one after, not a fixed crawl of
+    /// characters. It is the local half of what Ask sends — the other half is
+    /// retrieved passages, the equivalent of going back to look something up.
+    /// See `ParagraphWindow` and docs/CONTEXT-STRATEGY.md.
+    func makeSelection(
+        in chapter: Chapter,
+        range: Range<Int>,
+        visibleThrough: Int? = nil
+    ) -> Selection {
         let characters = Array(chapter.text)
         let lower = max(0, range.lowerBound)
         let upper = min(characters.count, range.upperBound)
         let quoted = lower < upper ? String(characters[lower..<upper]) : ""
-        let contextLower = max(0, lower - 240)
-        let contextUpper = min(characters.count, upper + 240)
-        let surrounding = String(characters[contextLower..<contextUpper])
+        let surrounding = ParagraphWindow.text(
+            in: chapter.text,
+            around: lower..<upper,
+            visibleThrough: visibleThrough
+        )
         return Selection(
             chapterID: chapter.id,
             quotedText: quoted,

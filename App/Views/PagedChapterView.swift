@@ -211,6 +211,12 @@ struct PagedChapterView: View {
             // `turnPage` the edge-strip chevrons and swipes call.
             .focusable()
             .focused($focused)
+            #if os(macOS)
+            // Keep keyboard paging without painting AppKit's blue focus ring
+            // around the entire reading canvas. The page is not a form field;
+            // the ring looked like a selected border around the book.
+            .focusEffectDisabled()
+            #endif
             .onKeyPress(.rightArrow) { turnPage(+1, in: pages); return .handled }
             .onKeyPress(.leftArrow) { turnPage(-1, in: pages); return .handled }
             .onAppear { focused = true }
@@ -600,6 +606,20 @@ struct PagedChapterView: View {
             newlineOffsets = found
             return found
         }
+        func lowerBound(_ values: [Int], _ target: Int) -> Int {
+            var lower = 0
+            var upper = values.count
+            while lower < upper {
+                let middle = lower + (upper - lower) / 2
+                if values[middle] < target {
+                    lower = middle + 1
+                } else {
+                    upper = middle
+                }
+            }
+            return lower
+        }
+        let chapterLength = chapterText.count
         return spans.compactMap { span in
             // Degenerate runs must not snap into a whole styled paragraph.
             guard span.start < span.end else { return nil }
@@ -608,11 +628,12 @@ struct PagedChapterView: View {
             switch span.kind {
             case .heading, .blockquote, .alignment:
                 let breaks = newlines()
-                start = breaks.last(where: { $0 < start }).map { $0 + 1 } ?? 0
+                let before = lowerBound(breaks, start)
+                start = before > 0 ? breaks[before - 1] + 1 : 0
                 // `end - 1` so a span already covering its trailing newline
                 // doesn't snap into the following paragraph.
-                end = breaks.first(where: { $0 >= end - 1 }).map { $0 + 1 }
-                    ?? chapterText.count
+                let after = lowerBound(breaks, end - 1)
+                end = after < breaks.count ? breaks[after] + 1 : chapterLength
             case .bold, .italic, .link, .superscript, .`subscript`, .smallCaps,
                  .highlighted, .colored:
                 break
@@ -733,18 +754,25 @@ private struct SwipeToTurn: ViewModifier {
                 }
         )
         #else
-        content.background(MacTrackpadSwipeCatcher(onSwipe: onTurn))
+        // An overlay receives the full spread's proposed size. As a
+        // background, AppKit was free to give this zero intrinsic size in a
+        // two-column layout; its window monitor then rejected every event as
+        // outside its bounds even though the swipe happened over the pages.
+        content.overlay {
+            MacTrackpadSwipeCatcher(onSwipe: onTurn)
+                .allowsHitTesting(false)
+        }
         #endif
     }
 }
 
 #if canImport(AppKit)
-/// Observes scroll-wheel phases via a local event monitor and reports one
-/// page turn per completed two-finger horizontal swipe. A monitor (not a
-/// gesture recognizer) because the page's NSScrollView sits above us and
-/// would swallow direct events; momentum events are ignored so one physical
-/// swipe never turns two pages. Only fires for events over this view in its
-/// own window.
+/// Observes both gesture-scroll and native swipe events via a local event
+/// monitor and reports one page turn per two-finger horizontal swipe. A
+/// monitor (not a gesture recognizer) because each facing page owns an
+/// NSScrollView above us; those views otherwise swallow the event before a
+/// SwiftUI gesture sees it. Momentum is ignored so one swipe never turns two
+/// spreads. Only fires for events over this reading surface in its own window.
 private struct MacTrackpadSwipeCatcher: NSViewRepresentable {
     let onSwipe: (Int) -> Void
 
@@ -768,8 +796,10 @@ private struct MacTrackpadSwipeCatcher: NSViewRepresentable {
         var onSwipe: (Int) -> Void
         private var monitor: Any?
         private weak var view: NSView?
-        private var accumulatedX: CGFloat = 0
-        private var accumulatedY: CGFloat = 0
+        private var detector = MacTrackpadPageTurnDetector()
+        /// Some pointing devices send precise scroll deltas without gesture
+        /// phases. A short gap is their gesture boundary.
+        private var lastPhaselessEventTime: TimeInterval?
 
         init(onSwipe: @escaping (Int) -> Void) {
             self.onSwipe = onSwipe
@@ -777,7 +807,9 @@ private struct MacTrackpadSwipeCatcher: NSViewRepresentable {
 
         func install(on view: NSView) {
             self.view = view
-            monitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self] event in
+            monitor = NSEvent.addLocalMonitorForEvents(
+                matching: [.scrollWheel, .swipe]
+            ) { [weak self] event in
                 self?.handle(event)
                 return event
             }
@@ -793,30 +825,102 @@ private struct MacTrackpadSwipeCatcher: NSViewRepresentable {
         }
 
         private func handle(_ event: NSEvent) {
-            guard let view, let window = view.window, event.window === window else { return }
-            let location = view.convert(event.locationInWindow, from: nil)
-            guard view.bounds.contains(location) else { return }
-            // Momentum after the fingers lift must not turn a second page.
-            guard event.momentumPhase.isEmpty else { return }
-            switch event.phase {
-            case .began:
-                accumulatedX = 0
-                accumulatedY = 0
-            case .changed:
-                accumulatedX += event.scrollingDeltaX
-                accumulatedY += event.scrollingDeltaY
-            case .ended:
-                // Deliberate horizontal travel only; natural scrolling means
-                // content follows the fingers, so left = next page.
-                if abs(accumulatedX) > 60, abs(accumulatedX) > abs(accumulatedY) * 1.5 {
-                    onSwipe(accumulatedX < 0 ? +1 : -1)
+            guard let view, let window = view.window,
+                  event.windowNumber == window.windowNumber else { return }
+
+            // The overlay normally has the spread's exact frame. During the
+            // first AppKit layout pass it can briefly report an empty bound;
+            // accepting that pass is safer than permanently disabling paging
+            // (the old background implementation stayed empty in facing-page
+            // mode). Once laid out, keep inspector gestures out.
+            if view.bounds.width > 1, view.bounds.height > 1 {
+                let location = view.convert(event.locationInWindow, from: nil)
+                guard view.bounds.contains(location) else { return }
+            }
+
+            // Depending on the user's Trackpad settings, macOS may promote a
+            // horizontal two-finger gesture to a single native `.swipe`
+            // event instead of a phased `.scrollWheel` stream.
+            if event.type == .swipe {
+                guard abs(event.deltaX) > abs(event.deltaY), abs(event.deltaX) > 0.01 else { return }
+                onSwipe(event.deltaX < 0 ? +1 : -1)
+                detector.endGesture()
+                return
+            }
+
+            // Momentum begins as the fingers lift and can arrive on the same
+            // event as `.ended`. Page turns happen during `.changed`, once,
+            // so momentum can be discarded without losing the gesture.
+            if !event.momentumPhase.isEmpty {
+                detector.endGesture()
+                return
+            }
+
+            let phase = event.phase
+            if phase.contains(.mayBegin) || phase.contains(.began) {
+                detector.beginGesture()
+            }
+
+            if phase.contains(.changed),
+               let direction = detector.add(
+                   horizontal: event.scrollingDeltaX,
+                   vertical: event.scrollingDeltaY
+               ) {
+                onSwipe(direction)
+            } else if phase.isEmpty, event.hasPreciseScrollingDeltas {
+                // Fallback for Magic Mouse / older macOS event streams that
+                // omit phases. Accumulate deltas across one short burst.
+                if let last = lastPhaselessEventTime, event.timestamp - last > 0.18 {
+                    detector.beginGesture()
+                } else if lastPhaselessEventTime == nil {
+                    detector.beginGesture()
                 }
-                accumulatedX = 0
-                accumulatedY = 0
-            default:
-                break
+                lastPhaselessEventTime = event.timestamp
+                if let direction = detector.add(
+                    horizontal: event.scrollingDeltaX,
+                    vertical: event.scrollingDeltaY
+                ) {
+                    onSwipe(direction)
+                }
+            }
+
+            if phase.contains(.ended) || phase.contains(.cancelled) {
+                detector.endGesture()
+                lastPhaselessEventTime = nil
             }
         }
+    }
+}
+
+/// Pure gesture accumulator shared by the AppKit event bridge and tests. It
+/// fires as soon as a deliberate horizontal swipe clears the threshold rather
+/// than waiting for `.ended` (which trackpads often combine with momentum).
+struct MacTrackpadPageTurnDetector {
+    private(set) var accumulatedX: CGFloat = 0
+    private(set) var accumulatedY: CGFloat = 0
+    private(set) var didTurn = false
+
+    mutating func beginGesture() {
+        accumulatedX = 0
+        accumulatedY = 0
+        didTurn = false
+    }
+
+    mutating func add(horizontal: CGFloat, vertical: CGFloat) -> Int? {
+        guard !didTurn else { return nil }
+        accumulatedX += horizontal
+        accumulatedY += vertical
+        guard abs(accumulatedX) >= 36,
+              abs(accumulatedX) > abs(accumulatedY) * 1.15 else { return nil }
+        didTurn = true
+        // Natural direction: content follows the fingers, left advances.
+        return accumulatedX < 0 ? +1 : -1
+    }
+
+    mutating func endGesture() {
+        accumulatedX = 0
+        accumulatedY = 0
+        didTurn = false
     }
 }
 #endif

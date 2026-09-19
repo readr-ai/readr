@@ -53,3 +53,7 @@ build-*/
 
 # Written by `swiftly use` in a checkout; the toolchain version is pinned in android/readrkit/build.gradle.kts
 /.swift-version
+
+# 本地 agent 的工作记忆（本机的排查记录/项目笔记）。它是工作过程的笔记，
+# 不是源码；这一层里的注释明确说过"工作树的附带物不得进入公开仓库"。
+.workbuddy/

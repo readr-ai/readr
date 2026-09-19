@@ -45,7 +45,7 @@ final class SettingsModel: ObservableObject {
     /// sign-in paths lead (lowest-friction first-run), then the key-only
     /// cloud providers, then Local.
     static let allKinds: [ProviderInfo.Kind] = [
-        .appleIntelligence, .chatGPT, .openRouter, .anthropic, .openAI, .local,
+        .appleIntelligence, .chatGPT, .openRouter, .anthropic, .openAI, .deepSeek, .local,
     ]
 
     let kinds: [ProviderInfo.Kind] = SettingsModel.allKinds

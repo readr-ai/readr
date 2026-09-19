@@ -296,6 +296,43 @@ enum TextRangeConvert {
         return NSRange(lower..<upper, in: text)
     }
 
+    /// Convert many character-coordinate ranges in one forward walk. Calling
+    /// `String.index(_:offsetBy:)` from `startIndex` for every run is quadratic
+    /// on a large chapter; one real EPUB carried 12,672 runs over 1.85M
+    /// characters and left the main thread here indefinitely.
+    static func nsRanges(from ranges: [Range<Int>], in text: String) -> [NSRange?] {
+        guard !ranges.isEmpty else { return [] }
+        let targets = Set(ranges.flatMap { [$0.lowerBound, $0.upperBound] }).sorted()
+        guard targets.first.map({ $0 >= 0 }) ?? true else {
+            return ranges.map { _ in nil }
+        }
+
+        var utf16AtCharacter: [Int: Int] = [:]
+        utf16AtCharacter.reserveCapacity(targets.count)
+        var index = text.startIndex
+        var characterOffset = 0
+        var utf16Offset = 0
+
+        for target in targets {
+            while characterOffset < target, index < text.endIndex {
+                let next = text.index(after: index)
+                utf16Offset += text[index..<next].utf16.count
+                index = next
+                characterOffset += 1
+            }
+            guard characterOffset == target else { break }
+            utf16AtCharacter[target] = utf16Offset
+        }
+
+        return ranges.map { range in
+            guard let lower = utf16AtCharacter[range.lowerBound],
+                  let upper = utf16AtCharacter[range.upperBound],
+                  upper >= lower
+            else { return nil }
+            return NSRange(location: lower, length: upper - lower)
+        }
+    }
+
     static func attributedString(
         _ text: String,
         highlights: [HighlightSpan],
@@ -413,24 +450,30 @@ enum TextRangeConvert {
         guard !spans.isEmpty else { return }
         let count = text.count
 
-        // Clamp every span once; route each kind to its channel(s).
+        // Clamp every span once, then convert all character offsets in one
+        // forward pass; route each kind to its channel(s).
         var character: [(ns: NSRange, kind: FormatSpan.Kind)] = []
         var paragraphLevel: [(ns: NSRange, kind: FormatSpan.Kind)] = []
+        var clamped: [(range: Range<Int>, kind: FormatSpan.Kind)] = []
+        clamped.reserveCapacity(spans.count)
         for span in spans {
             let lower = min(max(0, span.start), count)
             let upper = min(max(lower, span.end), count)
-            guard lower < upper,
-                  let ns = nsRange(from: lower..<upper, in: text) else { continue }
-            switch span.kind {
+            if lower < upper { clamped.append((lower..<upper, span.kind)) }
+        }
+        let converted = nsRanges(from: clamped.map(\.range), in: text)
+        for (entry, convertedRange) in zip(clamped, converted) {
+            guard let ns = convertedRange else { continue }
+            switch entry.kind {
             case .heading, .blockquote:
                 // Font/ink at character level, spacing/indents at paragraph.
-                character.append((ns, span.kind))
-                paragraphLevel.append((ns, span.kind))
+                character.append((ns, entry.kind))
+                paragraphLevel.append((ns, entry.kind))
             case .alignment:
-                paragraphLevel.append((ns, span.kind))
+                paragraphLevel.append((ns, entry.kind))
             case .bold, .italic, .link, .superscript, .`subscript`, .smallCaps,
                  .highlighted, .colored:
-                character.append((ns, span.kind))
+                character.append((ns, entry.kind))
             }
         }
 
@@ -604,6 +647,13 @@ enum TextRangeConvert {
         // separator never styles the paragraph before it. Fold order: quote
         // geometry, then heading spacing, then an explicit alignment.
         let nsText = text as NSString
+        let paragraphRuns = paragraphLevel.sorted { lhs, rhs in
+            lhs.ns.location == rhs.ns.location
+                ? lhs.ns.length > rhs.ns.length
+                : lhs.ns.location < rhs.ns.location
+        }
+        var nextParagraphRun = 0
+        var activeParagraphRuns: [(ns: NSRange, kind: FormatSpan.Kind)] = []
         var location = 0
         while location < nsText.length {
             var pStart = 0
@@ -619,6 +669,19 @@ enum TextRangeConvert {
             let contentRange = NSRange(location: pStart, length: contentsEnd - pStart)
             guard contentRange.length > 0 else { continue }
 
+            // Sweep the ordered runs alongside the ordered paragraphs. Each
+            // run enters and leaves the active set once, replacing three full
+            // scans of every paragraph-level span per paragraph.
+            activeParagraphRuns.removeAll { NSMaxRange($0.ns) <= contentRange.location }
+            while nextParagraphRun < paragraphRuns.count,
+                  paragraphRuns[nextParagraphRun].ns.location < NSMaxRange(contentRange) {
+                let candidate = paragraphRuns[nextParagraphRun]
+                if NSMaxRange(candidate.ns) > contentRange.location {
+                    activeParagraphRuns.append(candidate)
+                }
+                nextParagraphRun += 1
+            }
+
             func intersects(_ ns: NSRange) -> Bool {
                 NSIntersectionRange(ns, contentRange).length > 0
             }
@@ -632,7 +695,7 @@ enum TextRangeConvert {
                 return created
             }
 
-            if paragraphLevel.contains(where: { $0.kind == .blockquote && intersects($0.ns) }) {
+            if activeParagraphRuns.contains(where: { $0.kind == .blockquote && intersects($0.ns) }) {
                 let quote = mutable()
                 let indent = style.fontSize * 1.5
                 quote.firstLineHeadIndent = indent
@@ -643,7 +706,7 @@ enum TextRangeConvert {
                 quote.tailIndent = -indent
                 quote.alignment = .natural
             }
-            if paragraphLevel.contains(where: { entry in
+            if activeParagraphRuns.contains(where: { entry in
                 if case .heading = entry.kind { return intersects(entry.ns) }
                 return false
             }) {
@@ -653,7 +716,7 @@ enum TextRangeConvert {
                 heading.paragraphSpacing = style.paragraphSpacing + style.fontSize * 0.3
             }
             var alignmentOverride: ReadrKit.TextAlignment?
-            for entry in paragraphLevel {
+            for entry in activeParagraphRuns {
                 if case let .alignment(value) = entry.kind, intersects(entry.ns) {
                     alignmentOverride = value
                 }

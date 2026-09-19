@@ -9,8 +9,10 @@ struct AskRequest: Identifiable {
     let id = UUID()
     /// The passage the question is about, or nil for a book-wide question.
     var selection: Selection?
-    /// What the answer may see. `.upTo` for a text book — the reader has a
-    /// place in it — and `.wholeBook` for a native PDF page, which has none.
+    /// What the answer may see. The panel's "Answers from" choice decides how
+    /// much text that is; the request only carries the reading position, so
+    /// the same request can be answered nearby, up to where the reader is, or
+    /// from the whole book without opening the panel again.
     var scope: ReadingScope
     /// Sent on the panel's behalf as soon as it has a provider (the Recap
     /// button). Nil opens a plain panel.
@@ -62,6 +64,9 @@ struct AskPanelView: View {
     /// Provider settings sheet, reachable from the no-provider empty state so
     /// the guidance is actionable (J4: "guided to set up a provider first").
     @State private var showProviders = false
+    /// Why a save failed, per exchange — shown under the button that caused it
+    /// rather than in the composer's error card (see `save(_:)`).
+    @State private var saveFailures: [UUID: String] = [:]
     @EnvironmentObject private var model: AppModel
     @Environment(\.dismiss) private var dismiss
 
@@ -131,21 +136,32 @@ struct AskPanelView: View {
     /// The inspector column: a slim ✦ header with "New conversation", then
     /// the same transcript and composer the sheet shows.
     private var inspectorBody: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 8) {
-                AISheetHeader(title: "Ask the book", theme: theme)
-                    .accessibilityIdentifier("ask.header")
-                Spacer(minLength: 8)
-                if !vm.exchanges.isEmpty, let onNewConversation {
-                    newConversationButton(onNewConversation)
+        // Inspector content participates in the window's intrinsic-size pass.
+        // Isolate that pass from the transcript's full ideal height, then lay
+        // the column out inside the height the window actually has.
+        GeometryReader { geometry in
+            VStack(spacing: 0) {
+                HStack(spacing: 8) {
+                    AISheetHeader(title: "Ask the book", theme: theme)
+                        .accessibilityIdentifier("ask.header")
+                    Spacer(minLength: 8)
+                    if !vm.exchanges.isEmpty, let onNewConversation {
+                        newConversationButton(onNewConversation)
+                    }
                 }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 10)
+                .overlay(alignment: .bottom) { theme.line.frame(height: 1) }
+                panelContent
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 10)
-            .overlay(alignment: .bottom) { theme.line.frame(height: 1) }
-            panelContent
+            .frame(width: geometry.size.width, height: geometry.size.height)
         }
         .background(theme.background)
+        .onAppear { vm.refreshAskPreferences() }
+        .onReceive(NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification)) { _ in
+            vm.refreshAskPreferences()
+        }
     }
 
     /// The sheet: the panel inside its own navigation bar, Done on the right.
@@ -226,9 +242,17 @@ struct AskPanelView: View {
 
     private var askContent: some View {
         VStack(spacing: 0) {
-        transcript
-        composer
+            // This is the flexible part of the column. When a Mac window gets
+            // shorter, collapse the transcript viewport (it already scrolls)
+            // before taking any height from the controls below it.
+            transcript
+                .frame(minHeight: 0, maxHeight: .infinity)
+            composer
+                .fixedSize(horizontal: false, vertical: true)
+                .layoutPriority(1)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .clipped()
     }
 
     // MARK: - Transcript
@@ -314,25 +338,28 @@ struct AskPanelView: View {
         if vm.openedForRecap, isScoped {
             return "Recap up to where you are"
         }
-        return isScoped ? "Ask about what you've read so far" : "Ask anything about this book"
+        switch vm.answersFrom {
+        case .nearby: return "Ask about the passage in hand"
+        case .readSoFar: return "Ask about what you've read so far"
+        case .wholeBook: return "Ask anything about this book"
+        }
     }
 
-    /// "Up to where I am" or "Whole book": a two-way choice, labelled, with a
-    /// line under it saying what the chosen scope means. It was a switch
-    /// captioned "Whole book", which read as a feature to turn on rather
-    /// than one of two scopes to pick — and off, it gave no hint that the
-    /// other scope existed. Changing it changes the scope of every question
-    /// sent after; the answers already on screen keep the scope they were
-    /// asked under.
+    /// "Nearby", "Read so far" or "Whole book": three named scopes, cheapest
+    /// first and the cheap one selected by default, with a line under it
+    /// saying what the choice means. Changing it changes the scope of every
+    /// question sent after; the answers already on screen keep the scope they
+    /// were asked under.
     private var scopePicker: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text("ANSWERS FROM")
                 .font(.caption2.weight(.semibold))
                 .tracking(1.2)
                 .foregroundStyle(theme.faint)
-            Picker("Answers from", selection: $vm.wholeBook) {
-                Text("Up to where I am").tag(false)
-                Text("Whole book").tag(true)
+            Picker("Answers from", selection: $vm.answersFrom) {
+                ForEach(AskViewModel.AnswersFrom.allCases) { option in
+                    Text(option.title).tag(option)
+                }
             }
             .pickerStyle(.segmented)
             .labelsHidden()
@@ -341,15 +368,11 @@ struct AskPanelView: View {
             #endif
             .tint(theme.iris)
             .accessibilityIdentifier("ask.scope")
-            Text(
-                vm.wholeBook
-                    ? "Answers may use the whole book, including what you haven\u{2019}t read."
-                    : "Answers stop where you stopped reading — no spoilers."
-            )
-            .font(.caption)
-            .foregroundStyle(theme.faint)
-            .fixedSize(horizontal: false, vertical: true)
-            .accessibilityIdentifier("ask.scopeNote")
+            Text(vm.answersFrom.note)
+                .font(.caption)
+                .foregroundStyle(theme.faint)
+                .fixedSize(horizontal: false, vertical: true)
+                .accessibilityIdentifier("ask.scopeNote")
         }
     }
 
@@ -378,8 +401,119 @@ struct AskPanelView: View {
             } else if exchange.tier?.providesCitations == false, !exchange.answerText.isEmpty {
                 wholeBookNote(scoped: exchange.scope.isScoped)
             }
+            // Saving waits for the answer to finish: half an answer is not
+            // worth a file, and a "Save" that quietly saved a prefix would be
+            // worse than no button at all.
+            if !exchange.answerText.isEmpty, !exchange.isStreaming {
+                saveRow(exchange)
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// The row under a finished answer: save it, or — once saved — say where it
+    /// went. macOS only: the knowledge base is a folder of Markdown files in
+    /// the reader's Documents, which is a Mac story (iOS has no user-facing
+    /// Documents folder to put it in).
+    @ViewBuilder
+    private func saveRow(_ exchange: AskViewModel.Exchange) -> some View {
+        #if os(macOS)
+        VStack(alignment: .leading, spacing: 4) {
+            if let path = exchange.savedPath {
+                HStack(spacing: 5) {
+                    Image(systemName: "checkmark.circle")
+                        .font(.system(size: 11))
+                    Text("Saved to your knowledge base")
+                        .font(.caption)
+                    Button("Show in Finder") { KnowledgeBaseStore.reveal(path: path) }
+                        .buttonStyle(.plain)
+                        .font(.caption)
+                        .foregroundStyle(theme.muted)
+                }
+                .foregroundStyle(theme.faint)
+                .accessibilityIdentifier("ask.savedToKnowledgeBase")
+            } else {
+                Button {
+                    save(exchange)
+                } label: {
+                    Label("Save to knowledge base", systemImage: "tray.and.arrow.down")
+                        .font(.caption)
+                        .foregroundStyle(theme.muted)
+                }
+                .buttonStyle(.plain)
+                .help("Saves locally as Markdown; only an on-device model may suggest its title")
+                .accessibilityIdentifier("ask.saveToKnowledgeBase")
+            }
+            if let failure = saveFailures[exchange.id] {
+                Text(failure)
+                    .font(.caption2)
+                    .foregroundStyle(.red)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(.top, 2)
+        #endif
+    }
+
+    /// Write the exchange to the reader's knowledge base. A failure here is a
+    /// disk failure (permissions, no space) and belongs under the button that
+    /// caused it — the composer's error card is about asking, and its Retry
+    /// re-runs the ask, which is the wrong repair for a failed save.
+    private func save(_ exchange: AskViewModel.Exchange) {
+        #if os(macOS)
+        do {
+            let entry = try KnowledgeBaseStore().save(
+                question: exchange.question,
+                answer: exchange.answerText,
+                quote: exchange.quote,
+                bookTitle: book.metadata.title,
+                author: book.metadata.authors.first,
+                chapter: exchange.chapter,
+                model: vm.modelName
+            )
+            saveFailures[exchange.id] = nil
+            vm.markSaved(exchange.id, path: entry.path)
+            // An on-device model may refine the title afterwards, off the
+            // critical path. Cloud providers never receive this second,
+            // implicit request (see `nameNote(_:)`).
+            Task {
+                await nameNote(
+                    exchangeID: exchange.id, path: entry.path,
+                    question: exchange.question, answer: exchange.answerText,
+                    book: book.metadata.title
+                )
+            }
+        } catch {
+            saveFailures[exchange.id] = "Couldn't save: \(error.localizedDescription)"
+        }
+        #endif
+    }
+
+    /// Ask the active model what this note is — a title, tags, the concepts it
+    /// links to — and rewrite the file with its answer.
+    ///
+    /// Silent on every failure (no provider, offline, a reply that is not
+    /// JSON): the note keeps the name `save` gave it — date plus a short
+    /// excerpt of the answer.
+    /// This optional call is on-device only. A cloud model is never sent the
+    /// saved answer again merely because the reader pressed Save.
+    @MainActor
+    private func nameNote(
+        exchangeID: UUID, path: String, question: String, answer: String, book: String
+    ) async {
+        #if os(macOS)
+        guard let provider = (try? model.providerManager.activeProvider()) ?? nil else { return }
+        guard provider.info.isLocal else { return }
+        guard let metadata = await KnowledgeNoteNamer.metadata(
+            question: question, answer: answer, book: book, provider: provider
+        ) else { return }
+        guard let renamed = try? KnowledgeBaseStore().applyMetadata(
+            title: metadata.title, tags: metadata.tags, links: metadata.links, to: path
+        ) else { return }
+        // The file moved to carry its new title, so the row's "Show in Finder"
+        // has to follow it.
+        vm.markSaved(exchangeID, path: renamed.path)
+        #endif
     }
 
     /// The reader's own message, right-aligned in an ink-tinted bubble — the
@@ -508,19 +642,40 @@ struct AskPanelView: View {
     /// A4: the grounding caption promises citations only when the answer will
     /// actually carry them. Before a tier is known (or on the citation-backed
     /// retrieval tier) it keeps the full promise; on the whole-book tier it
-    /// drops the "with citations" claim it can't honor. Under a scope it
-    /// says what the grounding is: what the reader has read, not the book.
+    /// drops the "with citations" claim it can't honor. It also says what the
+    /// grounding IS, in the reader's own terms — the choice they made in the
+    /// picker, so the caption and the picker never disagree.
     private var groundingCaption: String {
-        let grounding = isScoped ? "what you\u{2019}ve read so far" : (vm.tier?.providesCitations == false ? "the whole book" : "this book")
+        let grounding: String
+        switch vm.answersFrom {
+        case .nearby:
+            // Nearby sends extracts — except while the read-so-far is small
+            // enough to ride along instead, which the tier tells apart.
+            grounding = vm.tier?.providesCitations == false ? "what you\u{2019}ve read so far" : "passages near your place"
+        case .readSoFar:
+            grounding = "what you\u{2019}ve read so far"
+        case .wholeBook:
+            grounding = vm.tier?.providesCitations == false ? "the whole book" : "this book"
+        }
+        #if os(macOS)
         if vm.answersFromBookOnly {
-            // The on-device model answers from the passages and nothing else;
-            // promising its "wider knowledge" would promise what it cannot do.
+            // The on-device model has no wider world knowledge, but receives
+            // matching notes from the reader's local knowledge base.
+            return "Answers search \(grounding) and your saved knowledge notes."
+        }
+        if vm.tier?.providesCitations == false {
+            return "Grounded in \(grounding); saved notes are searched too — plus the model\u{2019}s wider knowledge."
+        }
+        return "Grounded in \(grounding) with citations; saved notes are searched too — plus the model\u{2019}s wider knowledge."
+        #else
+        if vm.answersFromBookOnly {
             return "Answers come from \(grounding) only."
         }
         if vm.tier?.providesCitations == false {
             return "Grounded in \(grounding) — plus the model\u{2019}s wider knowledge."
         }
         return "Grounded in \(grounding) with citations — plus the model\u{2019}s wider knowledge."
+        #endif
     }
 
     /// A4: the honest whole-book footer — the answer drew on the entire text

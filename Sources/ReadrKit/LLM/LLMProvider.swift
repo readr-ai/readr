@@ -64,12 +64,23 @@ public struct ProviderInfo: Sendable, Hashable {
     /// no server on either. `local` is a loopback Ollama server the reader
     /// runs themselves. All three are `isLocal`; see `isOnDevice`.
     ///
+    /// `deepSeek` is a key-only cloud kind of its own rather than a row of
+    /// another one: DeepSeek's API is OpenAI-compatible on the wire, but its
+    /// key, catalogue and endpoint belong to DeepSeek, and a reader who
+    /// pastes a DeepSeek key has not connected OpenAI or OpenRouter. It runs
+    /// through `OpenAIProvider` with the `.deepSeek` endpoints preset.
+    ///
     /// A phone only ever has one of the two system models, and which one is
     /// not this enum's business: each platform's build lists the kinds it can
     /// offer (`ProviderVendor.displayed(forKinds:)`), so the other never
     /// reaches a screen.
+    ///
+    /// New cases are appended, never inserted: `allCases` order drives
+    /// `availableKinds()`, and the raw values are persisted with the
+    /// reader's selection.
     public enum Kind: String, Sendable, Hashable, Codable, CaseIterable {
         case anthropic, openAI, chatGPT, openRouter, local, appleIntelligence, geminiNano
+        case deepSeek
 
         /// Runs without credentials: nothing to store, validate, or revoke.
         public var isOnDevice: Bool {

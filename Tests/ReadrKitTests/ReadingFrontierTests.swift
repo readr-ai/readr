@@ -196,6 +196,25 @@ final class ReadingFrontierTests: XCTestCase {
         XCTAssertEqual(straddling.characterOffset, 110)
     }
 
+    func testParagraphWindowNeverIncludesTextPastTheVisibleFrontier() {
+        let text = "Earlier paragraph.\n\nSelected sentence. More visible text.\n\nUNREAD NEXT PARAGRAPH"
+        let selectedStart = text.distance(
+            from: text.startIndex,
+            to: text.range(of: "Selected sentence")!.lowerBound
+        )
+        let selectedEnd = selectedStart + "Selected sentence".count
+
+        let window = ParagraphWindow.text(
+            in: text,
+            around: selectedStart..<selectedEnd,
+            visibleThrough: selectedEnd
+        )
+
+        XCTAssertTrue(window.contains("Selected sentence"))
+        XCTAssertFalse(window.contains("More visible text"))
+        XCTAssertFalse(window.contains("UNREAD NEXT PARAGRAPH"))
+    }
+
     // MARK: - Whole-book tier
 
     func testWholeBookTierSendsOnlyTheTextReadSoFar() async throws {
@@ -397,6 +416,51 @@ final class ReadingFrontierTests: XCTestCase {
         XCTAssertEqual(systemText(without), AdaptiveContextStrategy.systemPrompt)
     }
 
+    /// The nearby scope is the one that hands the model extracts instead of
+    /// text, so the prompt has to say so — otherwise "the book below" is a
+    /// whole it was never shown. The text scopes carry no such note.
+    func testPromptSaysWhenOnlyPassagesWereGiven() async throws {
+        // Tiny chapters but a document-sized estimate: the nearby scope on a
+        // page with no reading position (a native PDF) retrieves.
+        let book = makeBook(tokenCount: 50_000)
+        let strategy = AdaptiveContextStrategy(index: StubRAGIndex())
+        let nearby = try await strategy.assembleContext(
+            for: "q", in: book, selection: nil, history: [],
+            scope: .window(nil), provider: provider()
+        )
+        XCTAssertEqual(nearby.tier, .retrieval)
+        XCTAssertTrue(systemText(nearby).contains(AdaptiveContextStrategy.nearbyOnlyNote))
+
+        let whole = try await strategy.assembleContext(
+            for: "q", in: book, selection: nil, history: [], scope: .wholeBook, provider: provider()
+        )
+        XCTAssertEqual(whole.tier, .wholeBook)
+        XCTAssertFalse(
+            systemText(whole).contains(AdaptiveContextStrategy.nearbyOnlyNote),
+            "a text scope has no unseen book to warn about"
+        )
+    }
+
+    /// Nearby is the instant interaction, so its policy text must stay much
+    /// smaller than the full long-form prompt while retaining the product's
+    /// grounding, language, and spoiler guarantees.
+    func testNearbyPromptIsCompactButKeepsItsSafetyRules() async throws {
+        let book = makeBook(tokenCount: 50_000)
+        let strategy = AdaptiveContextStrategy(index: StubRAGIndex())
+        let nearby = try await strategy.assembleContext(
+            for: "q", in: book, selection: nil, history: [],
+            scope: .window(ReadingFrontier(chapterIndex: 1, characterOffset: 3)),
+            provider: provider()
+        )
+        let prompt = systemText(nearby).lowercased()
+
+        XCTAssertLessThan(prompt.count, 1_200)
+        XCTAssertTrue(prompt.contains("user's language"))
+        XCTAssertTrue(prompt.contains("never invent"))
+        XCTAssertTrue(prompt.contains("spoil"))
+        XCTAssertTrue(prompt.contains("not the whole book"))
+    }
+
     /// The anchor's "read so far" line is the panel's own summary — the same
     /// title, the same "Chapter N of M" — so the model and the reader are
     /// told the same place.
@@ -469,7 +533,9 @@ private final class RecordingStrategy: ContextStrategy, @unchecked Sendable {
         for question: String, in book: Book, selection: Selection?,
         history: [ConversationTurn], scope: ReadingScope, provider: ProviderInfo
     ) async throws -> AssembledContext {
-        lock.lock(); scopes.append(scope); lock.unlock()
+        lock.lock()
+        scopes.append(scope)
+        lock.unlock()
         return AssembledContext(
             tier: .wholeBook,
             request: ChatRequest(messages: [ChatMessage(role: .user, content: question)], maxOutputTokens: 8)

@@ -315,6 +315,19 @@ final class LayoutPaginatorTests: XCTestCase {
         }
     }
 
+    /// A malformed-but-valid EPUB can put an entire 1.8M-character book in
+    /// one XHTML spine item. TextKit pagination of that chapter blocks the UI
+    /// for minutes; returning no measured pages deliberately selects the
+    /// reader's estimate-based fallback and keeps the book openable.
+    func testOversizedChapterSelectsTheEstimateBasedFallback() {
+        let text = String(
+            repeating: "理",
+            count: LayoutPaginator.maximumAccurateCharacterCount + 1
+        )
+        let paginator = LayoutPaginator(style: style, inlineImages: [:])
+        XCTAssertTrue(paginator.paginate(text) { _ in pageSize }.isEmpty)
+    }
+
     /// Windowing must be invisible: a page-sized measurement window and an
     /// unbounded one have to produce IDENTICAL breaks. A window that clipped
     /// the measurement short would end pages early — pages that still tile

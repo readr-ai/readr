@@ -58,26 +58,44 @@ public struct ReadTail: Sendable, Equatable {
     }
 }
 
-/// What a question may draw on: the whole book, or only what the reader has
-/// read. A named choice, made at every call site — there is no default, so
-/// no path can drift into sending the whole book by omission.
+/// What a question may draw on: the whole book, everything read so far, or
+/// only the text near the passage in hand. A named choice, made at every call
+/// site — there is no default, so no path can drift into sending the whole
+/// book by omission.
 public enum ReadingScope: Sendable, Hashable {
-    /// Every chapter. The right scope for a PDF page (no reading position)
-    /// or for a reader who asks for it explicitly.
+    /// Every chapter, no spoiler guard. The reader asked for it.
     case wholeBook
     /// Only the text before the frontier; the spoiler guard rides along.
     case upTo(ReadingFrontier)
+    /// Neither the book nor everything read: the paragraphs around the
+    /// passage in hand, plus whatever retrieval turns up. The cheap one, and
+    /// the panel's default — a question about a sentence is answered from the
+    /// sentence, the paragraphs before it, and what the question sends the
+    /// reader back to look up. See docs/CONTEXT-STRATEGY.md.
+    ///
+    /// The frontier is optional because a native PDF page has no reading
+    /// position. Where there is one it still bounds retrieval: "nearby" is a
+    /// size, not a licence to see past where the reader is.
+    case window(ReadingFrontier?)
 
     /// The frontier, when the scope has one.
     public var frontier: ReadingFrontier? {
         switch self {
         case .wholeBook: return nil
         case let .upTo(frontier): return frontier
+        case let .window(frontier): return frontier
         }
     }
 
     /// True when answers are held to what the reader has read.
     public var isScoped: Bool { frontier != nil }
+
+    /// True for the nearby-passages scope: the one that sends extracts
+    /// rather than the text itself, whatever the book's size.
+    public var isWindow: Bool {
+        if case .window = self { return true }
+        return false
+    }
 }
 
 public extension Book {

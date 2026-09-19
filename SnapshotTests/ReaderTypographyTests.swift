@@ -647,6 +647,27 @@ final class ReaderTypographyTests: XCTestCase {
         XCTAssertEqual(after.headIndent, 0)
     }
 
+    /// Thousands of paragraph-level spans used to search the full newline
+    /// table twice per span. This fixture mirrors the single-XHTML Kant EPUB
+    /// that froze on open: only the final page's run should survive, and the
+    /// operation must be linear/logarithmic rather than spans × paragraphs.
+    func testPageSpanSlicingScalesToThousandsOfParagraphRuns() {
+        let paragraph = "abcdef\n"
+        let count = 10_000
+        let chapterText = String(repeating: paragraph, count: count)
+        let spans = (0..<count).map { index in
+            let start = index * paragraph.count
+            return FormatSpan(start: start, end: start + 6, kind: .alignment(.left))
+        }
+        let origin = (count - 1) * paragraph.count
+
+        let result = PagedChapterView.pageSpans(
+            from: spans, chapterText: chapterText, origin: origin, pageLength: 6
+        )
+
+        XCTAssertEqual(result, [FormatSpan(start: 0, end: 6, kind: .alignment(.left))])
+    }
+
     // MARK: - Footnote resolution
 
     /// A tapped noteref resolves against the TARGET document's lifted notes.
