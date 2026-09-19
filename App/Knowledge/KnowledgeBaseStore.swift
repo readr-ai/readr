@@ -172,7 +172,8 @@ struct KnowledgeBaseStore {
         guard let text = try? String(contentsOf: url, encoding: .utf8) else {
             throw CocoaError(.fileNoSuchFile)
         }
-        let fields = Self.frontMatter(of: text).scalars
+        let front = Self.frontMatter(of: text)
+        let fields = front.scalars
         let question = fields["ai.question"] ?? fields["question"]
             ?? url.deletingPathExtension().lastPathComponent
         let body = Self.body(of: text)
@@ -182,12 +183,29 @@ struct KnowledgeBaseStore {
         let day = Self.dayFormatter.string(from: createdAt)
         let generatedContent = Self.cleanTitle(title)
             .flatMap { Self.contentPart(of: $0, day: day) }
+        let initialContent = Self.briefContent(from: answer, fallback: question)
+        let initialTitle = Self.datedTitle(day: day, content: initialContent)
+        let existingTitle = fields["title"]
         let existingContent = fields["title"]
             .flatMap { Self.contentPart(of: $0, day: day) }
-        let fallbackContent = Self.briefContent(from: answer, fallback: question)
-        let finalContent = generatedContent ?? existingContent ?? fallbackContent
+        // The naming request is asynchronous. If the reader changed the title
+        // while it was in flight, their edit wins; only replace the automatic
+        // date-plus-excerpt title written by `save`.
+        let titleWasEdited = existingTitle.map { $0 != initialTitle } ?? false
+        let finalContent = titleWasEdited
+            ? (existingContent ?? initialContent)
+            : (generatedContent ?? existingContent ?? initialContent)
         let finalTitle = Self.datedTitle(day: day, content: finalContent)
-        let finalLinks = Self.mergedLinks(existing: Self.links(in: body), with: links, book: fields["book.title"])
+        let existingLinks = Self.mergedValues(
+            existing: front.arrays["links"] ?? [],
+            with: Self.links(in: body)
+        )
+        let finalLinks = Self.mergedLinks(
+            existing: existingLinks,
+            with: links,
+            book: fields["book.title"]
+        )
+        let finalTags = Self.mergedValues(existing: front.arrays["tags"] ?? [], with: tags)
 
         // Rename to carry the new title, keeping the date prefix and staying in
         // the same folder. A collision (the same title saved twice) takes the
@@ -201,21 +219,22 @@ struct KnowledgeBaseStore {
             suffix += 1
         }
 
-        try Self.write(
-            to: destination,
-            title: finalTitle,
-            question: question,
-            answer: answer,
-            quote: Self.quoteSection(of: body),
-            bookTitle: fields["book.title"] ?? "",
-            author: fields["book.author"],
-            chapter: fields["book.chapter"],
-            model: fields["ai.model"],
-            tags: tags,
-            links: finalLinks,
-            createdAt: createdAt,
-            updatedAt: Date()
+        // Update only Readr-owned metadata and add missing related links. The
+        // rest of the latest file stays byte-for-byte intact, including a
+        // reader's annotation, hand-written sections, and unknown front matter.
+        // This matters because the file is deliberately editable in Finder
+        // while the optional naming request is in flight.
+        var updatedText = Self.updatingFrontMatter(
+            in: text,
+            replacements: [
+                ("title", Self.yaml(finalTitle)),
+                ("updated", Self.isoFormatter.string(from: Date())),
+                ("tags", "[\(finalTags.map(Self.yamlListValue).joined(separator: ", "))]"),
+                ("links", "[\(finalLinks.map { Self.yaml("[[\($0)]]") }.joined(separator: ", "))]"),
+            ]
         )
+        updatedText = Self.addingRelatedLinks(finalLinks, to: updatedText)
+        try updatedText.write(to: destination, atomically: true, encoding: .utf8)
         if destination.path != url.path {
             try? FileManager.default.removeItem(at: url)
         }
@@ -510,6 +529,7 @@ struct KnowledgeBaseStore {
         lines = Array(lines.dropFirst())
 
         var currentMap: String?
+        var currentArray: String?
         for line in lines {
             let raw = String(line)
             if raw.trimmingCharacters(in: .whitespaces) == "---" { break }
@@ -517,14 +537,31 @@ struct KnowledgeBaseStore {
 
             let isNested = raw.hasPrefix(" ") || raw.hasPrefix("\t")
             let trimmed = raw.trimmingCharacters(in: .whitespaces)
+            if isNested, let array = currentArray, trimmed.hasPrefix("-") {
+                let value = unquote(
+                    String(trimmed.dropFirst()).trimmingCharacters(in: .whitespaces)
+                )
+                let clean = stripWikiBrackets(value)
+                if !clean.isEmpty { result.arrays[array, default: []].append(clean) }
+                continue
+            }
             guard let colon = trimmed.firstIndex(of: ":") else { continue }
             let key = String(trimmed[..<colon]).trimmingCharacters(in: .whitespaces)
             let rawValue = String(trimmed[trimmed.index(after: colon)...])
                 .trimmingCharacters(in: .whitespaces)
 
             if rawValue.isEmpty {
-                // `book:` — the keys under it belong to this map.
-                currentMap = key
+                // `book:` starts a nested mapping; `tags:`/`links:` may be
+                // Obsidian-style block sequences whose members follow as
+                // indented `- value` lines.
+                if key == "tags" || key == "links" {
+                    currentArray = key
+                    result.arrays[key] = []
+                    currentMap = nil
+                } else {
+                    currentMap = key
+                    currentArray = nil
+                }
                 continue
             }
             if isNested, let map = currentMap, !map.isEmpty {
@@ -532,9 +569,11 @@ struct KnowledgeBaseStore {
             } else if rawValue.hasPrefix("[") {
                 result.arrays[key] = arrayValues(rawValue)
                 currentMap = nil
+                currentArray = nil
             } else {
                 result.scalars[key] = unquote(rawValue)
                 currentMap = nil
+                currentArray = nil
             }
         }
         return result
@@ -634,6 +673,109 @@ struct KnowledgeBaseStore {
             merged.append(book)
         }
         return merged
+    }
+
+    /// Merge user-authored values with generated ones without changing the
+    /// user's order or replacing their spelling/capitalisation.
+    static func mergedValues(existing: [String], with new: [String]) -> [String] {
+        var merged: [String] = []
+        for raw in existing + new {
+            let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !value.isEmpty else { continue }
+            guard !merged.contains(where: {
+                $0.caseInsensitiveCompare(value) == .orderedSame
+            }) else { continue }
+            merged.append(value)
+        }
+        return merged
+    }
+
+    /// Replace selected top-level front-matter values while preserving every
+    /// unrecognised field and the complete Markdown body.
+    static func updatingFrontMatter(
+        in text: String, replacements: [(key: String, value: String)]
+    ) -> String {
+        let hadTrailingNewline = text.hasSuffix("\n")
+        var lines = text.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        guard lines.first?.trimmingCharacters(in: .whitespaces) == "---",
+              var closing = lines.indices.dropFirst().first(where: {
+                  lines[$0].trimmingCharacters(in: .whitespaces) == "---"
+              })
+        else { return text }
+
+        for replacement in replacements {
+            if let index = (1..<closing).first(where: { index in
+                let line = lines[index]
+                return !line.hasPrefix(" ") && !line.hasPrefix("\t")
+                    && line.hasPrefix("\(replacement.key):")
+            }) {
+                lines[index] = "\(replacement.key): \(replacement.value)"
+                // Replacing an Obsidian block sequence must consume the
+                // complete indented block. Leaving `  - old-value` below the
+                // new inline array would produce invalid YAML and lose the
+                // reader's tags on the next parse.
+                var end = index + 1
+                while end < closing,
+                      lines[end].hasPrefix(" ") || lines[end].hasPrefix("\t") {
+                    end += 1
+                }
+                if end > index + 1 {
+                    lines.removeSubrange((index + 1)..<end)
+                    closing -= end - index - 1
+                }
+            } else {
+                lines.insert("\(replacement.key): \(replacement.value)", at: closing)
+                closing += 1
+            }
+        }
+
+        var result = lines.joined(separator: "\n")
+        if hadTrailingNewline, !result.hasSuffix("\n") { result += "\n" }
+        return result
+    }
+
+    /// Add generated wiki links to the Related section without replacing any
+    /// prose or links the reader already wrote there (or anywhere else).
+    static func addingRelatedLinks(_ proposed: [String], to text: String) -> String {
+        let existing = links(in: body(of: text))
+        let missing = mergedValues(existing: existing, with: proposed).filter { candidate in
+            !existing.contains(where: {
+                $0.caseInsensitiveCompare(candidate) == .orderedSame
+            })
+        }
+        guard !missing.isEmpty else { return text }
+
+        let hadTrailingNewline = text.hasSuffix("\n")
+        var lines = text.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        let related = lines.firstIndex {
+            $0.trimmingCharacters(in: .whitespaces) == "## 相关"
+        }
+        var insertion = lines.count
+        if let related {
+            insertion = lines.indices.dropFirst(related + 1).first(where: {
+                lines[$0].trimmingCharacters(in: .whitespaces).hasPrefix("## ")
+            }) ?? lines.count
+        } else {
+            if lines.last?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false {
+                lines.append("")
+            }
+            lines.append("## 相关")
+            lines.append("")
+            insertion = lines.count
+        }
+
+        var additions: [String] = []
+        if insertion > 0,
+           !lines[insertion - 1].trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            additions.append("")
+        }
+        additions.append(contentsOf: missing.map { "- [[\($0)]]" })
+        additions.append("")
+        lines.insert(contentsOf: additions, at: insertion)
+
+        var result = lines.joined(separator: "\n")
+        if hadTrailingNewline, !result.hasSuffix("\n") { result += "\n" }
+        return result
     }
 
     // MARK: - Body sections
@@ -873,8 +1015,10 @@ struct KnowledgeBaseStore {
 }
 
 /// Adds relevant saved notes to the normal book context without changing how
-/// the book itself is routed or searched. Keeping this as a decorator means
-/// the fast Nearby path and the RAG index still receive the reader's original
+/// the book itself is routed or searched. The app installs this decorator only
+/// for local providers, so saved notes cannot be attached to a cloud request
+/// without an explicit future opt-in. Keeping it as a decorator also means the
+/// fast Nearby path and the RAG index still receive the reader's original
 /// question, not a query polluted with note text.
 struct KnowledgeAwareContextStrategy: ContextStrategy {
     private let base: any ContextStrategy

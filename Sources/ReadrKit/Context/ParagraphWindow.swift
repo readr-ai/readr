@@ -44,6 +44,7 @@ public enum ParagraphWindow {
     public static func text(
         in text: String,
         around range: Range<Int>,
+        visibleThrough: Int? = nil,
         before: Int = defaultBefore,
         after: Int = defaultAfter,
         maxCharacters: Int = defaultMaxCharacters
@@ -53,6 +54,13 @@ public enum ParagraphWindow {
 
         let lower = min(max(0, range.lowerBound), characters.count)
         let upper = min(max(lower, range.upperBound), characters.count)
+        // A selection is always visible, even when the page-top anchor is
+        // behind it. Anything after the resulting frontier is unread and must
+        // not ride along merely because it shares the next paragraph window.
+        let readableEnd = min(
+            characters.count,
+            max(upper, visibleThrough ?? characters.count)
+        )
 
         let paragraphs = paragraphBounds(in: characters)
         guard !paragraphs.isEmpty else {
@@ -73,7 +81,7 @@ public enum ParagraphWindow {
         return bounded(
             characters,
             from: paragraphs[first].lowerBound,
-            to: paragraphs[last].upperBound,
+            to: min(paragraphs[last].upperBound, readableEnd),
             lower: lower, upper: upper, maxCharacters: maxCharacters
         )
     }

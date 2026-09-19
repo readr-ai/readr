@@ -196,6 +196,25 @@ final class ReadingFrontierTests: XCTestCase {
         XCTAssertEqual(straddling.characterOffset, 110)
     }
 
+    func testParagraphWindowNeverIncludesTextPastTheVisibleFrontier() {
+        let text = "Earlier paragraph.\n\nSelected sentence. More visible text.\n\nUNREAD NEXT PARAGRAPH"
+        let selectedStart = text.distance(
+            from: text.startIndex,
+            to: text.range(of: "Selected sentence")!.lowerBound
+        )
+        let selectedEnd = selectedStart + "Selected sentence".count
+
+        let window = ParagraphWindow.text(
+            in: text,
+            around: selectedStart..<selectedEnd,
+            visibleThrough: selectedEnd
+        )
+
+        XCTAssertTrue(window.contains("Selected sentence"))
+        XCTAssertFalse(window.contains("More visible text"))
+        XCTAssertFalse(window.contains("UNREAD NEXT PARAGRAPH"))
+    }
+
     // MARK: - Whole-book tier
 
     func testWholeBookTierSendsOnlyTheTextReadSoFar() async throws {

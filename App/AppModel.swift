@@ -1069,6 +1069,12 @@ final class AppModel: ObservableObject {
         guard let provider = activeProvider() else { return nil }
         let bookStrategy = AdaptiveContextStrategy(index: ragIndex, lengths: lengthCache)
         #if os(macOS)
+        // Saved notes never leave the device implicitly. Local providers may
+        // use them as extra context; cloud providers receive only the book
+        // scope and question the reader explicitly chose.
+        guard provider.info.isLocal else {
+            return AskService(strategy: bookStrategy, provider: provider)
+        }
         return AskService(
             strategy: KnowledgeAwareContextStrategy(base: bookStrategy),
             provider: provider
@@ -1208,12 +1214,20 @@ final class AppModel: ObservableObject {
     /// characters. It is the local half of what Ask sends — the other half is
     /// retrieved passages, the equivalent of going back to look something up.
     /// See `ParagraphWindow` and docs/CONTEXT-STRATEGY.md.
-    func makeSelection(in chapter: Chapter, range: Range<Int>) -> Selection {
+    func makeSelection(
+        in chapter: Chapter,
+        range: Range<Int>,
+        visibleThrough: Int? = nil
+    ) -> Selection {
         let characters = Array(chapter.text)
         let lower = max(0, range.lowerBound)
         let upper = min(characters.count, range.upperBound)
         let quoted = lower < upper ? String(characters[lower..<upper]) : ""
-        let surrounding = ParagraphWindow.text(in: chapter.text, around: lower..<upper)
+        let surrounding = ParagraphWindow.text(
+            in: chapter.text,
+            around: lower..<upper,
+            visibleThrough: visibleThrough
+        )
         return Selection(
             chapterID: chapter.id,
             quotedText: quoted,

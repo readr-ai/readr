@@ -1,3 +1,4 @@
+import Foundation
 import XCTest
 @testable import Readr
 
@@ -53,5 +54,89 @@ final class AskPreferencesTests: XCTestCase {
 
         XCTAssertEqual(matches.first?.path, relevant.path)
         XCTAssertFalse(matches.contains { $0.question == "目录有几章？" })
+    }
+
+    func testApplyingGeneratedMetadataPreservesEditsMadeAfterSave() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("readr-knowledge-merge-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = KnowledgeBaseStore(root: root)
+        let saved = try store.save(
+            question: "What changed?",
+            answer: "The answer that generated the initial title.",
+            quote: nil,
+            bookTitle: "Editable Book",
+            author: nil,
+            chapter: nil,
+            model: "local"
+        )
+
+        var edited = try String(contentsOfFile: saved.path, encoding: .utf8)
+        edited = KnowledgeBaseStore.updatingFrontMatter(
+            in: edited,
+            replacements: [
+                ("title", "\"Reader title\""),
+                ("tags", "[manual-tag]"),
+            ]
+        )
+        edited = edited.replacingOccurrences(
+            of: "status: seedling",
+            with: "status: seedling\ncustom-field: keep-me"
+        )
+        edited = edited.replacingOccurrences(
+            of: "## 我的批注\n\n\n## 相关",
+            with: "## 我的批注\n\nKeep this reader annotation.\n\n## Custom section\n\nKeep custom prose.\n\n## 相关"
+        )
+        try edited.write(toFile: saved.path, atomically: true, encoding: .utf8)
+
+        let renamed = try store.applyMetadata(
+            title: "Generated title",
+            tags: ["generated-tag", "manual-tag"],
+            links: ["New concept"],
+            to: saved.path
+        )
+        let result = try String(contentsOfFile: renamed.path, encoding: .utf8)
+        let front = KnowledgeBaseStore.frontMatter(of: result)
+
+        XCTAssertTrue(front.scalars["title"]?.contains("Reader title") == true)
+        XCTAssertEqual(front.scalars["custom-field"], "keep-me")
+        XCTAssertEqual(front.arrays["tags"], ["manual-tag", "generated-tag"])
+        XCTAssertTrue(result.contains("Keep this reader annotation."))
+        XCTAssertTrue(result.contains("## Custom section\n\nKeep custom prose."))
+        XCTAssertTrue(result.contains("[[New concept]]"))
+    }
+
+    func testApplyingMetadataPreservesObsidianBlockTagsAndLinks() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("readr-knowledge-block-yaml-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = KnowledgeBaseStore(root: root)
+        let saved = try store.save(
+            question: "Question", answer: "Answer", quote: nil,
+            bookTitle: "Book", author: nil, chapter: nil, model: "local"
+        )
+        var edited = try String(contentsOfFile: saved.path, encoding: .utf8)
+        edited = edited.replacingOccurrences(
+            of: "tags: []\nlinks: [\"[[Book]]\"]",
+            with: "tags:\n  - manual-tag\nlinks:\n  - \"[[Manual concept]]\"\n  - \"[[Book]]\""
+        )
+        try edited.write(toFile: saved.path, atomically: true, encoding: .utf8)
+
+        let renamed = try store.applyMetadata(
+            title: nil,
+            tags: ["generated-tag"],
+            links: ["Generated concept"],
+            to: saved.path
+        )
+        let result = try String(contentsOfFile: renamed.path, encoding: .utf8)
+        let front = KnowledgeBaseStore.frontMatter(of: result)
+
+        XCTAssertEqual(front.arrays["tags"], ["manual-tag", "generated-tag"])
+        XCTAssertEqual(
+            front.arrays["links"],
+            ["Manual concept", "Book", "Generated concept"]
+        )
+        XCTAssertFalse(result.contains("\n  - manual-tag"))
+        XCTAssertFalse(result.contains("\n  - \"[[Manual concept]]\""))
     }
 }

@@ -441,7 +441,7 @@ struct AskPanelView: View {
                         .foregroundStyle(theme.muted)
                 }
                 .buttonStyle(.plain)
-                .help("Saves this answer as a Markdown file in your Documents folder")
+                .help("Saves locally as Markdown; only an on-device model may suggest its title")
                 .accessibilityIdentifier("ask.saveToKnowledgeBase")
             }
             if let failure = saveFailures[exchange.id] {
@@ -473,8 +473,9 @@ struct AskPanelView: View {
             )
             saveFailures[exchange.id] = nil
             vm.markSaved(exchange.id, path: entry.path)
-            // Refine its short content description afterwards, off the critical
-            // path: the dated note is already on disk (see `nameNote(_:)`).
+            // An on-device model may refine the title afterwards, off the
+            // critical path. Cloud providers never receive this second,
+            // implicit request (see `nameNote(_:)`).
             Task {
                 await nameNote(
                     exchangeID: exchange.id, path: entry.path,
@@ -494,14 +495,15 @@ struct AskPanelView: View {
     /// Silent on every failure (no provider, offline, a reply that is not
     /// JSON): the note keeps the name `save` gave it — date plus a short
     /// excerpt of the answer.
-    /// The model call is the reader's own provider, the same one that answered
-    /// the question, so this costs them one small call and no new setup.
+    /// This optional call is on-device only. A cloud model is never sent the
+    /// saved answer again merely because the reader pressed Save.
     @MainActor
     private func nameNote(
         exchangeID: UUID, path: String, question: String, answer: String, book: String
     ) async {
         #if os(macOS)
         guard let provider = (try? model.providerManager.activeProvider()) ?? nil else { return }
+        guard provider.info.isLocal else { return }
         guard let metadata = await KnowledgeNoteNamer.metadata(
             question: question, answer: answer, book: book, provider: provider
         ) else { return }

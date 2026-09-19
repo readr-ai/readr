@@ -752,7 +752,15 @@ struct ReaderView: View {
         let end = min(chapter.text.count, sentence.upperBound)
         guard end > start else { return nil }
         let range = start..<end
-        return (model.makeSelection(in: chapter, range: range), range)
+        let scope = askScope(selection: range)
+        return (
+            model.makeSelection(
+                in: chapter,
+                range: range,
+                visibleThrough: scope.frontier?.characterOffset
+            ),
+            range
+        )
     }
 
     /// Start over: a fresh conversation, open on the book at large.
@@ -1656,10 +1664,15 @@ struct ReaderView: View {
                 initialQuestion: passageQuestion(for: selection)
             ))
         } else if let chapter, let selected = currentSelection.value {
-            let selection = model.makeSelection(in: chapter, range: selected)
+            let scope = askScope(selection: selected)
+            let selection = model.makeSelection(
+                in: chapter,
+                range: selected,
+                visibleThrough: scope.frontier?.characterOffset
+            )
             presentAsk(AskRequest(
                 selection: selection,
-                scope: askScope(selection: selected),
+                scope: scope,
                 initialQuestion: passageQuestion(for: selection)
             ))
         } else if let (selection, range) = narratedSentenceSelection() {
@@ -2150,10 +2163,15 @@ struct ReaderView: View {
 
         case .ask:
             let range = self.range(for: target)
-            let selection = model.makeSelection(in: chapter, range: range)
+            let scope = askScope(selection: range)
+            let selection = model.makeSelection(
+                in: chapter,
+                range: range,
+                visibleThrough: scope.frontier?.characterOffset
+            )
             presentAsk(AskRequest(
                 selection: selection,
-                scope: askScope(selection: range),
+                scope: scope,
                 // The selection bar's Ask is the other way in, and it means
                 // the same thing: send the passage question now.
                 initialQuestion: passageQuestion(for: selection)

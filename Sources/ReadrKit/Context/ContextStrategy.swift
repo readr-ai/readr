@@ -459,11 +459,16 @@ public struct AdaptiveContextStrategy: ContextStrategy {
             // walk reports: a long tail read from just inside a chapter
             // begins in the one before it, and the citation has to open the
             // book there rather than at the frontier.
+            // Nearby is intentionally capped: it promises a compact window.
+            // Read-so-far uses the full remaining prompt budget, otherwise a
+            // recap silently shrinks from `budget * 4` to 1,600 characters
+            // whenever the index has no eligible hit.
+            let fallbackCharacters = scope.isWindow
+                ? min(budget * 4, Self.defaultFallbackPassageCharacterCap)
+                : budget * 4
             let tail = book.readTail(
                 upTo: frontier,
-                lastCharacters: min(
-                    budget * 4, Self.defaultFallbackPassageCharacterCap
-                )
+                lastCharacters: fallbackCharacters
             )
             if !tail.text.isEmpty {
                 passages = [
