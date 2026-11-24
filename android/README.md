@@ -517,36 +517,36 @@ labels, the sleep durations and theirs — so Kotlin draws the controls from
 `SpeechSettings.rateSteps` and `SleepTimer.minuteOptions` rather than from a
 copy of them that goes quietly stale.
 
-`kit/PlatformSpeechBackend` is `android.speech.tts.TextToSpeech` behind the
-kit's engine protocol. **There is no pause**, on the phone or in here.
-`TextToSpeech` cannot pause, so `BridgedSpeechEngine` answers the kit's
-`SpeechEngine.pausesInPlace` with `false`, and `NarrationController` stops the
-backend on a pause and re-speaks the sentence from the last word boundary — as
-a *fresh request* — on play. That is the same path a sleep-timer stop already
-resumes by, it is unit-tested in the kit against a mock engine, and it is the
-reason this class no longer fakes a pause of its own: it used to stop the
-utterance, remember the boundary, re-speak the tail under the same request id
-and add the cut back into every boundary it reported afterwards, so the kit was
-never told the text had been shortened. Now word boundaries are plain offsets
-into the string handed over, `state()` never answers `paused`, and the platform
-is given the request id itself — the controller never speaks one request twice,
-so an id is enough to tell a late report from a stopped utterance apart from the
-one in flight.
+`kit/KokoroSpeechBackend` runs Kokoro-82M v1 int8 with official ONNX Runtime
+1.23.2. Misaki English dictionaries and a small neural G2P fallback pronounce
+unknown words instead of silently dropping them. Heart, Bella and Michael are
+the named English voices. There is no Android `TextToSpeech` implementation or
+system-voice fallback in the app.
 
-Two other rules live here. An engine that **fails to start** kills the backend:
-it is shut down, and every later request is refused on the spot rather than
-parked waiting for a readiness that is not coming (the card then holds with the
-facade's explanation, instead of sitting on Pause with a sentence and no word
-about why). And the **resolved voice is cached** per (voice, language):
-resolving walks `tts.voices`, which is every voice installed on the phone, and
-the answer cannot change between two sentences of one book — while an engine
-left with no language it has data for refuses the sentence rather than taking it
-and saying nothing. Network voices are never offered — reading is a zero-egress
-promise (PRIVACY.md), and a voice that needs a connection would send the
-sentence to a server. The speed reaches the engine on the platform's own scale:
-Android documents that scale as proportional, and the facade's ceiling constant
-is a calibration chosen so the kit's AVFoundation-shaped curve comes back out
-straight — a 1.5× label really is 1.5×.
+`KokoroModelStore` owns the explicitly started 132 MB download. The upstream
+archive is size/hash checked, extracted with an exact filename allowlist into a
+staging directory and installed only when complete. Interrupted or failed
+preparation is visible and retryable. The bundled pronunciation/OCR assets and
+the two native inference AARs are SHA-256 checked by `verifyLocalInference` on
+all builds. `ndk.abiFilters` matches `READR_ANDROID_ABIS`, so an AAR cannot add a
+32-bit ABI without the Swift facade it needs.
+
+`BridgedSpeechEngine.pausesInPlace` remains false: pausing stops the active
+request, and play reissues its remainder through the kit. Kokoro reports a
+sentence range when PCM playback begins; it does not invent word timestamps.
+The controller's bounded lookahead crosses the same bridge, preparing up to two
+future sentences while current PCM plays. The buffer is bounded by sample
+count, and changed/stopped request ids reject stale callbacks. Speed reaches
+Kokoro on the existing proportional calibration and is checked against actual
+audio duration.
+
+PDFs now enter a real PDF path. Android 15+ extracts the native text layer;
+scans and older devices use bundled, local Tesseract English OCR. Original pages
+are retained and the reader's PDF control opens a native page rendering with
+figures intact. Each page is one chapter, so narration and saved page positions
+stay aligned. Password-locked/corrupt files fail explicitly. EPUB, TXT and
+Markdown retain their existing import paths; DRM and arbitrary binary ebook
+formats are not claimed as supported.
 
 `ui/listen/ListenCard` is the post-#101 now-reading card, insetting the reading
 surface from the bottom rather than floating over it — the page turns itself to
@@ -680,63 +680,21 @@ always been.
 
 ### The voice
 
-The narrator is chosen in the **Appearance sheet**, as it is in the Apple app's
-Aa popover and for the same reason: it is a decision made once, not a control
-reached for mid-sentence. `ui/listen/VoicePicker` draws it, and decides nothing
-— `AndroidNarration.voicesJSON()` answers the whole payload: the voices for the
-book's own language first, everything else behind "Other voices", which voice
-is reading, which one the kit *recommends* (`VoiceSelector` with no stored
-preference — marked, and not the same thing as the row that is checked), and
-the sentence for a list with nothing in it. Every ordering is the kit's
-`VoiceSelector`, the same ranking the Apple picker lists by and the same rule
-narration resolves the reading voice with; Kotlin re-ranks nothing and words
-nothing.
+Appearance selects Heart, Bella or Michael through the existing voice picker.
+`AndroidNarration.voicesJSON()` still owns grouping, recommendation and selected
+voice state; Kotlin supplies the Kokoro inventory. The pre-session label is
+"Heart · Kokoro". The picker has no installed-system voice enumeration and
+never sends the reader to Android's system TTS settings.
 
-**One language for the picker and the reader.** `AndroidNarration` takes the
-device's language tag from Kotlin (`Locale.getDefault().toLanguageTag()` —
-Foundation's current locale on Android is not the reader's) and
-`narrationLanguage` is the book's own if it declares one, else that. Both
-`voicesJSON()` and `resolveVoiceIfNeeded()` use it. They used to differ: an
-untagged book was grouped under the reader's locale with a row marked
-"Recommended", and then read in whatever the engine's default was — so on a
-phone whose default is French, an English file was listed in English and read
-in French, with the tick nowhere near the recommendation.
+Settings provides download/progress/cancel/retry controls. Listen reports
+preparation separately from audible playback; its card shows download progress
+or "Preparing Readr Voice" and returns to the sentence when playback begins.
+A synthesis/playback failure pauses with guidance, never with another narrator.
 
-**Two silences, two sentences.** `SpeechBackend.voicesJSON()` answers
-`{"ready":…,"voices":[…]}`, because "the engine has not started up yet" and
-"this phone has no voice data" are both an empty list and want opposite words.
-The facade emits `emptyText` only when the engine has answered with nothing,
-and a `looking` flag with "Looking for voices…" otherwise; sending a reader to
-a settings screen while the list is on its way is simply wrong.
-
-**The row costs nothing to draw, and nothing polls.** `VoiceRow` names the
-voice from the preferences file — `narrationVoiceID2` (the iOS key) with
-`narrationVoiceName` beside it (Android's own key: the id is a machine name and
-the readable half is composed from the phone's list), falling back to the
-facade's "Phone's default voice" out of the static `optionsJSON()`. Only the
-tap that *opens the picker* calls `prepareVoices()`, which is what builds a
-listening session and starts a `TextToSpeech` engine; doing that when the row
-merely appeared started one on every trip to the Appearance sheet. When the
-engine reports in, `PlatformSpeechBackend` fires `NarrationEvents.voicesReady`
-unconditionally (it used to sit below an early return for "no sentence was
-waiting", which is exactly the picker's case), the facade pushes
-`NarrationObserver.voicesChanged()`, and the row fills in — where it used to
-ask twenty-four times a quarter-second apart because there was nothing to wait
-on. Picking applies mid-sentence through the kit's settings path.
-
-Android gives a voice a machine name and no human one, in two shapes —
-`en-us-x-sfg#female_1-local`, where a `#` marks the variant, and
-`en-us-x-tpd-local`, where nothing does; Google's engine ships nine local
-English voices of the second shape, so `PlatformSpeechBackend` reads the `x-`
-token as well, or the picker is nine rows that cannot be told apart.
-
-Not yet: the read-along underline. Two follow-ups worth doing. `NarrationModel`
-both is pushed to (`NarrationObserver`) and pulls (`refresh()` after every
-control, and once a second), so the same state arrives twice by two routes —
-one push path would be less to reason about. And that voice display name is
-still composed on the Kotlin side (`displayName`/`variant` above): it is the
-one reader-facing string here that the facade does not own, and moving the
-composition behind `voicesJSON()` would finish the rule.
+Narration still preserves its existing media session, notification, headset,
+audio-focus, sleep and persistence behavior. The read-along boundary is a whole
+sentence, not a measured word alignment. Moving all observer/refresh state onto
+one push path remains a follow-up; this change does not remove the watchdog.
 
 ## Layout on device
 

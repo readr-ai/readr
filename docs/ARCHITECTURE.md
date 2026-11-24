@@ -41,7 +41,7 @@ can be swapped or mocked.
 | `RAGIndex` | Build/query the hybrid index for a book | SQLite (`sqlite-vec` + FTS5) |
 | `ContextStrategy` | Assemble the optimal prompt context for a query | `AdaptiveContextStrategy` |
 | `ArticleComposer` | Compose highlights + notes into an article | LLM-backed |
-| `SpeechEngine` | Speak one utterance; report boundaries and completion | `AVSpeechEngine` (AVFoundation, on-device) |
+| `SpeechEngine` | Speak one utterance; report boundaries and completion | `RoutingSpeechEngine` (Kokoro on Apple) / `KokoroSpeechBackend` (ONNX Runtime on Android) |
 
 Only the model call itself is platform code. How a small on-device model is
 asked a question about a book — the prompt shaping, the off-topic
@@ -65,10 +65,27 @@ changes applied mid-sentence, sleep timer, auto-advance, the cancelled-utterance
 race) and drives a `SpeechEngine`. All of it is pure and unit-tested on Linux
 CI; only the synthesizer itself lives in the app target.
 
-Apple's `AVSpeechSynthesizer` is the default engine: it is on-device, so
-listening keeps the same zero-egress promise as reading, and it needs no
-account or download. A neural on-device voice can replace it behind the same
-protocol.
+Narration uses Kokoro exclusively. Apple mobile uses MLX, macOS uses CoreML
+where supported, and Android uses ONNX Runtime with Misaki dictionaries and a
+neural pronunciation fallback. No system TTS is constructed as a fallback.
+Unsupported devices/languages and failed preparation produce a recoverable
+error. The launch voices support English. Model downloads are explicit; book
+text stays on the device during synthesis.
+
+All Apple MLX users share a cancellation-aware resource gate, including Kokoro
+CPU compilation switches, model loading and Qwen generation. Downloaded Qwen
+opens a validated, pinned local snapshot with a network-refusing downloader.
+Android keeps a bounded PCM lookahead buffer and preserves the existing media
+session/audio-focus rules.
+
+PDF import keeps one chapter per page. PDFKit extracts native Apple text and
+Vision recognizes image-only pages locally. Android uses native text on API 35+
+and bundled Tesseract English OCR for scans/older devices. Shared cleanup joins
+layout wraps before narration offsets are assigned; native Apple selections map
+to those normalized offsets explicitly. Original PDF pages remain accessible,
+including figures and pages with no recognized text. DRM/password-locked or
+corrupt documents are rejected; recognition and reading order remain dependent
+on the document's layout and scan quality.
 
 ## Persistence
 

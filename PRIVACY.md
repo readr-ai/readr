@@ -43,14 +43,16 @@ Only when you explicitly connect a cloud AI provider and ask it something:
   Apple Intelligence hardware), questions never leave the device at all: the
   model runs inside the OS, needs no account or key, and Readr makes no
   network request on that path.
-- With a **Downloaded model** on supported iPhone/iPad hardware, weights
-  are fetched from huggingface.co only after you tap Download and see the
-  size (about 1.8 GB for 2B or 3.1 GB for the optional 4B tier). Inference
-  opens that local snapshot without network requests; questions stay on the
-  device. Remove the files from the same Settings card whenever needed.
-- Independently of your AI provider, Readr can make a model-download request:
-  a one-time download of the Readr Voice narration model from
-  huggingface.co, the first time an English book is read aloud. On a Mac
+- **Downloaded model** on supported iPhone/iPad hardware fetches the Qwen
+  model files from Hugging Face only when you choose Download in Settings
+  (about 1.8 GB for 2B or 3.1 GB for the optional 4B tier). Remove the files
+  from the same card whenever needed. Questions and passages are processed
+  locally; inference cannot initiate a download. Android's **Gemini Nano** runs inside Google's AICore; its model
+  download is requested explicitly in Settings and scheduled by AICore.
+- Readr Voice fetches its narration models the first time you listen or when
+  you choose Download in Settings. Apple builds fetch from huggingface.co;
+  Android fetches the pinned Kokoro archive from GitHub's release asset host
+  (about 132 MB). Android bundles its English pronunciation and OCR data. On a Mac
   that is ~104MB of Kokoro-82M CoreML weights
   (`FluidInference/kokoro-82m-coreml`). On an iPhone or iPad it is ~330MB of
   Kokoro-82M MLX weights and ~60MB of voice packs
@@ -61,8 +63,8 @@ Only when you explicitly connect a cloud AI provider and ask it something:
   the cache; both live in the app's Caches folder and are recreated by the
   next Listen if the system clears them. These requests carry **nothing
   about you or your book** — they only fetch model files, and the voice then
-  runs entirely on the device. Choose an Apple voice in the Listen bar and
-  Readr makes no network requests at all.
+  runs entirely on the device. All narration uses Kokoro; there is no system
+  TTS fallback. Android synthesis and PDF OCR use no network requests.
 - On iPhone and iPad, sentences Readr Voice has read or prepared ahead are
   kept as compressed audio in the app's Caches folder (up to two hours,
   oldest first, removed with the book) so they play again — and with the
