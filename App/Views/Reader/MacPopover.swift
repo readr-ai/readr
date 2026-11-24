@@ -22,7 +22,7 @@ struct MacPopover<Content: View>: NSViewRepresentable {
     func makeCoordinator() -> Coordinator { Coordinator(isPresented: $isPresented) }
 
     func makeNSView(context: Context) -> NSView {
-        NSView(frame: .zero)
+        AnchorView(frame: .zero)
     }
 
     func updateNSView(_ view: NSView, context: Context) {
@@ -39,16 +39,33 @@ struct MacPopover<Content: View>: NSViewRepresentable {
                 popover.contentViewController = NSHostingController(rootView: content())
                 popover.delegate = coordinator
                 coordinator.popover = popover
-                // Not from inside a SwiftUI update: presenting is a layout
-                // of its own.
-                DispatchQueue.main.async {
-                    guard coordinator.popover === popover, view.window != nil else { return }
+            }
+            if let popover = coordinator.popover {
+                // SwiftUI may update this representable before attaching it
+                // to a window. Keep the pending presentation until attachment.
+                let show = { [weak view, weak coordinator, weak popover] in
+                    guard let view, let coordinator, let popover,
+                          coordinator.popover === popover, view.window != nil,
+                          !popover.isShown else { return }
                     popover.show(relativeTo: view.bounds, of: view, preferredEdge: preferredEdge)
                 }
+                (view as? AnchorView)?.onWindow = { DispatchQueue.main.async(execute: show) }
+                DispatchQueue.main.async(execute: show)
             }
-        } else if let popover = coordinator.popover {
-            coordinator.popover = nil
-            popover.close()
+        } else {
+            (view as? AnchorView)?.onWindow = nil
+            if let popover = coordinator.popover {
+                coordinator.popover = nil
+                popover.close()
+            }
+        }
+    }
+
+    private final class AnchorView: NSView {
+        var onWindow: (() -> Void)?
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            if window != nil { onWindow?() }
         }
     }
 
