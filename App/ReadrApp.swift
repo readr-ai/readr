@@ -42,6 +42,9 @@ struct ReadrApp: App {
         LibraryShellView()
             .environmentObject(model)
             .preferredColorScheme(colorScheme)
+            #if DEBUG && os(iOS)
+            .task { await LaunchModelSmoke.runIfRequested() }
+            #endif
             .onOpenURL { url in
                 Task { await model.importBook(at: url) }
             }
