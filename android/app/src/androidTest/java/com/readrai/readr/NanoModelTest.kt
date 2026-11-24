@@ -12,9 +12,9 @@ import org.junit.runner.RunWith
 /**
  * The real ML Kit path, on the device the suite is running on.
  *
- * Every emulator (and every Firebase Test Lab device) ships a stub AICore: the
- * package is there and does nothing, and ML Kit's own `checkStatus` answers
- * UNAVAILABLE. So nothing here can generate — but the two pieces of the class
+ * The API 35 test image has no production AICore; stub images cannot generate
+ * either. No documented Nano emulator was found. Nothing in this suite proves
+ * real inference — but the two pieces of the class
  * that decide what the reader is told are pure functions of their input, and
  * those are pinned on the real class rather than on the fake that stands in
  * for a phone CI cannot have.
@@ -23,6 +23,15 @@ import org.junit.runner.RunWith
 class NanoModelTest {
     private val context get() = InstrumentationRegistry.getInstrumentation().targetContext
     private val model get() = NanoModel(context)
+
+    @Test
+    fun mergedAppHasNoTelemetryUploadComponents() {
+        val info = context.packageManager.getPackageInfo(context.packageName,
+            android.content.pm.PackageManager.GET_PERMISSIONS or android.content.pm.PackageManager.GET_SERVICES or android.content.pm.PackageManager.GET_RECEIVERS)
+        org.junit.Assert.assertFalse(info.requestedPermissions.orEmpty().contains("android.permission.ACCESS_NETWORK_STATE"))
+        val components = info.services.orEmpty().map { it.name } + info.receivers.orEmpty().map { it.name }
+        org.junit.Assert.assertFalse(components.toString(), components.any { it.startsWith("com.google.android.datatransport.") })
+    }
 
     @Test
     fun anEmulatorsStubAICoreReadsAsUnsupported() {
