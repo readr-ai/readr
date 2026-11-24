@@ -18,6 +18,7 @@ plugins {
 android {
     namespace = "com.readrai.readr.kit"
     compileSdk = 36
+    ndkVersion = "27.3.13750724"
     defaultConfig {
         minSdk = 28 // the Swift SDK for Android's floor
         consumerProguardFiles("consumer-rules.pro")
