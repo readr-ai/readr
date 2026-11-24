@@ -23,6 +23,7 @@ import androidx.compose.ui.window.DialogProperties
 import java.io.File
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
 
 /** Original page rendering keeps figures, equations and fixed layout available
@@ -38,9 +39,23 @@ fun PdfOriginalDialog(file: File, page: Int, spokenPage: Int?, onPage: (Int) -> 
     val list = rememberLazyListState(initialFirstVisibleItemIndex = page.coerceAtLeast(0))
     val openingPage = remember(file.path) { page }
     var positioned by remember(file.path) { mutableStateOf(false) }
+    var seeded by remember(file.path) { mutableStateOf(false) }
+    var readyPages by remember(file.path) { mutableStateOf(emptySet<Int>()) }
     LaunchedEffect(count) {
         val pages = count?.getOrNull() ?: return@LaunchedEffect
-        if (pages > 0) list.scrollToItem(openingPage.coerceIn(0, pages - 1))
+        if (pages == 0) return@LaunchedEffect
+        snapshotFlow { list.layoutInfo.totalItemsCount }.first { it == pages }
+        list.scrollToItem(openingPage.coerceIn(0, pages - 1))
+        seeded = true
+    }
+    LaunchedEffect(seeded, readyPages) {
+        if (!seeded || positioned) return@LaunchedEffect
+        val visible = list.layoutInfo.visibleItemsInfo.map { it.index }
+        if (visible.isEmpty() || !visible.all { it in readyPages }) return@LaunchedEffect
+        // Bitmap dimensions replace the placeholders. Restore the intended
+        // anchor after that layout, before publishing any reading position.
+        withFrameNanos { }
+        list.scrollToItem(openingPage.coerceIn(0, (count?.getOrNull() ?: 1) - 1))
         positioned = true
     }
     LaunchedEffect(spokenPage, positioned) {
@@ -68,7 +83,7 @@ fun PdfOriginalDialog(file: File, page: Int, spokenPage: Int?, onPage: (Int) -> 
                 result == null -> Box(Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
                 result.isFailure -> Box(Modifier.fillMaxSize().padding(padding).padding(24.dp), contentAlignment = Alignment.Center) { Text("The original PDF couldn't be opened. Close this view and try importing it again.") }
                 else -> LazyColumn(state = list, contentPadding = PaddingValues(top = padding.calculateTopPadding(), bottom = padding.calculateBottomPadding()), modifier = Modifier.fillMaxSize().testTag("reader.pdfOriginal"), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    items((0 until result.getOrThrow()).toList(), key = { it }) { index -> PdfPageImage(file, index) }
+                    items((0 until result.getOrThrow()).toList(), key = { it }) { index -> PdfPageImage(file, index) { readyPages = readyPages + index } }
                 }
             }
         }
@@ -76,7 +91,7 @@ fun PdfOriginalDialog(file: File, page: Int, spokenPage: Int?, onPage: (Int) -> 
 }
 
 @Composable
-private fun PdfPageImage(file: File, index: Int) {
+private fun PdfPageImage(file: File, index: Int, onReady: () -> Unit) {
     val bitmap by produceState<Result<Bitmap>?>(null, file.path, index) {
         value = withContext(Dispatchers.IO) { runCatching {
             ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY).use { descriptor ->
@@ -89,6 +104,7 @@ private fun PdfPageImage(file: File, index: Int) {
             }
         } }
     }
+    LaunchedEffect(bitmap) { if (bitmap?.isSuccess == true) onReady() }
     Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
         Text("Page ${index + 1}", style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(8.dp))
         val image = bitmap?.getOrNull()

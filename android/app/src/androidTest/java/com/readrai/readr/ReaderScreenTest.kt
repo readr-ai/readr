@@ -16,6 +16,7 @@ import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.click
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.longClick
+import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
@@ -197,6 +198,29 @@ class ReaderScreenTest {
         nodes("reader.bookmarks").firstOrNull()?.config?.getOrElseNullable(SemanticsProperties.ContentDescription) { null }?.firstOrNull() ?: ""
 
     @Test
+    fun originalPdfDoesNotReportAnEarlierPageWhileItsImagesLoad() {
+        val file = File(root, "original-two-pages.pdf")
+        val document = android.graphics.pdf.PdfDocument()
+        try {
+            for (index in 1..2) {
+                val page = document.startPage(android.graphics.pdf.PdfDocument.PageInfo.Builder(612, 792, index).create())
+                page.canvas.drawText("Original page $index", 30f, 80f, android.graphics.Paint().apply { textSize = 18f })
+                document.finishPage(page)
+            }
+            file.outputStream().use { document.writeTo(it) }
+        } finally { document.close() }
+        val observed = java.util.concurrent.CopyOnWriteArrayList<Int>()
+        compose.setContent { ReadrTheme {
+            com.readrai.readr.ui.reader.PdfOriginalDialog(file, 1, null, onPage = { observed += it }, onDismiss = {})
+        } }
+        awaitTag("reader.pdfPage.0")
+        awaitTag("reader.pdfPage.1")
+        compose.waitUntil(10_000) { observed.isNotEmpty() }
+        compose.waitForIdle()
+        assertTrue("Opening page two must never report a placeholder's page: $observed", observed.all { it == 1 })
+    }
+
+    @Test
     fun pdfFooterAndOriginalViewKeepTheDocumentsPageNumber() = runBlocking {
         val file = File(root, "two-pages.pdf")
         val document = android.graphics.pdf.PdfDocument()
@@ -211,6 +235,9 @@ class ReaderScreenTest {
         val pdf = repository.import(Uri.fromFile(file))
         val model = open(pdf.id)
         assertEquals("PDF page 1 of 2", spreadLabel())
+        compose.onNodeWithTag("reader.originalPdf").performClick()
+        awaitTag("reader.pdfPage.0")
+        compose.onNodeWithContentDescription("Back to reading text").performClick()
         compose.runOnIdle { model.jump(1, 0) }
         compose.waitUntil(10_000) { label().startsWith("PDF page 2 of 2") }
         compose.onNodeWithTag("reader.originalPdf").performClick()
@@ -218,7 +245,9 @@ class ReaderScreenTest {
         awaitTag("reader.pdfPage.0")
         awaitTag("reader.pdfPage.1")
         compose.waitForIdle()
-        assertEquals("Opening the original must preserve page two", 1, model.chapterIndex)
+        compose.onNodeWithContentDescription("Back to reading text").performClick()
+        compose.waitForIdle()
+        assertEquals("Reopening the original must preserve page two", 1, model.chapterIndex)
     }
 
     @Test
