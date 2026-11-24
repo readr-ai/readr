@@ -1,49 +1,20 @@
 import Foundation
 import ReadrKit
 
-/// One `SpeechEngine` that routes each request to the platform synthesizer or
-/// to Kokoro by its voice id — `KokoroSpeechEngine.voiceIDPrefix` ids go to
-/// the neural voice, everything else (including nil) to `AVSpeechEngine`.
-///
-/// Routing at the request level, rather than swapping engines on the
-/// controller, means the existing voice-change path just works:
-/// `NarrationController.applySettingsChange` already re-speaks the current
-/// sentence when `voiceID` changes, and the re-spoken request simply lands on
-/// the other engine. The controller keeps exactly one `engine` and stays
-/// untouched.
-///
-/// Two Kokoro runtimes exist — CoreML (`KokoroSpeechEngine`, macOS) and MLX
-/// (`MLXKokoroSpeechEngine`, iPhone/iPad, where CoreML crashes inside Apple's
-/// BNNS) — and each platform builds, prepares and speaks through at most one
-/// of them, `readrVoice`. Which runtime that is, and which engine gets a
-/// sentence, are both `NarrationEnginePolicy`'s call (ReadrKit,
-/// table-tested); the router only carries out the answer.
-///
-/// There is no fallback in here. Since 3.3.1 a Readr Voice request goes to
-/// the Readr Voice engine whether or not its model is in: the engine waits
-/// (reporting `isPreparing`, which the bar shows) and speaks the moment it
-/// can, and a failure is reported to the controller as a failure — narration
-/// pauses and the bar offers Retry. An Apple voice reads only what the
-/// reader gave it: a non-English book, or a voice picked under "Other
-/// voices".
-///
-/// Every sub-engine reports through this router; a callback is forwarded only
-/// if it comes from the engine that owns the current utterance, so a stale
-/// completion from the engine just switched *away from* can't advance the
-/// book (the same stale-callback discipline `AVSpeechEngine` applies per
-/// utterance).
+/// Routes narration only to the platform's Kokoro runtime. A missing/failed
+/// engine reports a recoverable failure; it never constructs a system TTS
+/// synthesizer. The selected engine alone may advance the active utterance.
 final class RoutingSpeechEngine: SpeechEngine, SpeechPrefetching, SpeechRateAdjusting {
     weak var delegate: (any SpeechEngineDelegate)?
 
-    private let platform: AVSpeechEngine
     /// Built on macOS only, and only outside the BNNS crash gate. iOS is
-    /// MLX-or-platform: CoreML Kokoro is never constructed there, so an
+    /// MLX-only: CoreML Kokoro is never constructed there, so an
     /// iOS 18–26.3 device or simulator (which pass the gate) never prepares
     /// or enters it.
     private let coreML: KokoroSpeechEngine?
     #if os(iOS)
     /// Nil where MLX cannot run (the simulator, no Metal GPU) — the router
-    /// then narrates through the platform voice and nothing is downloaded.
+    /// then reports that neural narration is unavailable.
     private let mlx: MLXKokoroSpeechEngine?
     #endif
     /// The Kokoro engine this platform prepares, and whose readiness the
@@ -57,7 +28,7 @@ final class RoutingSpeechEngine: SpeechEngine, SpeechPrefetching, SpeechRateAdju
     /// neither can serve, in which case the voice is not offered.
     static var readrVoiceRuntime: NarrationEnginePolicy.KokoroRuntime? {
         #if os(iOS)
-        // iOS is MLX-or-platform. `KokoroSpeechEngine.isSupportedOnThisOS`
+        // iOS is MLX-only. `KokoroSpeechEngine.isSupportedOnThisOS`
         // is true on iOS 18–26.3, but CoreML Kokoro must never be prepared on
         // a phone: one runtime, one model download, and no BNNS exposure.
         return NarrationEnginePolicy.kokoroRuntime(
@@ -77,8 +48,7 @@ final class RoutingSpeechEngine: SpeechEngine, SpeechPrefetching, SpeechRateAdju
     /// under the UI-test stub and has no router at all.
     let readrVoiceRuntime: NarrationEnginePolicy.KokoroRuntime?
 
-    init(platform: AVSpeechEngine = AVSpeechEngine()) {
-        self.platform = platform
+    init() {
         let runtime = Self.readrVoiceRuntime
         readrVoiceRuntime = runtime
         // The policy's answer, and nothing else, decides which engine exists.
@@ -109,7 +79,6 @@ final class RoutingSpeechEngine: SpeechEngine, SpeechPrefetching, SpeechRateAdju
             coreML = nil
             readrVoice = nil
         }
-        platform.delegate = self
         coreML?.delegate = self
         #if os(iOS)
         mlx?.delegate = self
@@ -141,24 +110,23 @@ final class RoutingSpeechEngine: SpeechEngine, SpeechPrefetching, SpeechRateAdju
 
     func speak(_ request: SpeechRequest) {
         let target: any SpeechEngine
+        guard KokoroSpeechEngine.supports(language: request.language ?? "en") else {
+            refuse(request, message: "Readr Voice currently supports English narration. This book's language is not supported.")
+            return
+        }
         switch NarrationEnginePolicy.engine(for: situation(for: request)) {
         case .coreMLKokoro:
-            // `coreMLKokoroAvailable` is false whenever `coreML` is nil, so
-            // the fallback here is unreachable — kept so the switch is total.
-            target = coreML ?? platform
+            guard let coreML else { refuse(request); return }
+            target = coreML
         case .mlxKokoro:
             #if os(iOS)
-            target = mlx ?? platform
+            guard let mlx else { refuse(request); return }
+            target = mlx
             #else
-            target = platform
+            refuse(request); return
             #endif
-        case .platform:
-            // A platform voice id, a language Readr Voice can't read, or —
-            // the backstop — a Readr Voice engine that has failed. That last
-            // case is never reached from the app without a Retry first
-            // (`NarrationModel.play`), because an Apple voice must not read
-            // a Readr Voice book on its own account.
-            target = platform
+        case .platform, .unavailable:
+            refuse(request); return
         }
         // Switching engines mid-flight: silence the one being left, so two
         // voices never overlap.
@@ -167,6 +135,12 @@ final class RoutingSpeechEngine: SpeechEngine, SpeechPrefetching, SpeechRateAdju
         }
         current = target
         target.speak(request)
+    }
+
+    private func refuse(_ request: SpeechRequest, message: String = "Readr Voice is unavailable. Retry the voice download on a supported device.") {
+        current?.stop()
+        current = nil
+        delegate?.speechEngine(self, didFail: request.id, error: NeuralNarrationError(message: message))
     }
 
     func pause() {
@@ -180,7 +154,6 @@ final class RoutingSpeechEngine: SpeechEngine, SpeechPrefetching, SpeechRateAdju
     func stop() {
         // Every engine, unconditionally — stop is the everything-off switch
         // and must never depend on routing state.
-        platform.stop()
         coreML?.stop()
         #if os(iOS)
         mlx?.stop()
@@ -192,8 +165,7 @@ final class RoutingSpeechEngine: SpeechEngine, SpeechPrefetching, SpeechRateAdju
     /// The controller's lookahead goes to whichever Kokoro engine the policy
     /// would give each sentence to — in practice the MLX engine on iOS,
     /// which keeps a buffer; the CoreML engine synthesizes as it goes and
-    /// gets nothing. A sentence the policy would give the platform voice
-    /// (an Apple voice picked under "Other voices") is nobody's to prepare.
+    /// gets nothing. Unsupported requests are never prepared by another voice.
     func prefetch(_ requests: [SpeechRequest]) {
         #if os(iOS)
         guard let mlx else { return }
@@ -288,4 +260,9 @@ extension RoutingSpeechEngine: SpeechEngineDelegate {
         guard engine === current else { return }
         delegate?.speechEngine(self, didSuspend: requestID, reason: reason)
     }
+}
+
+private struct NeuralNarrationError: LocalizedError {
+    var message: String
+    var errorDescription: String? { message }
 }

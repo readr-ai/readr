@@ -1,5 +1,6 @@
 package com.readrai.readr.ui.settings
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
@@ -45,8 +46,13 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.platform.LocalContext
+import com.readrai.readr.kit.KokoroModelStore
+import com.readrai.readr.kit.KokoroState
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
@@ -110,14 +116,16 @@ fun ProvidersScreen(model: ProvidersViewModel, onBack: () -> Unit) {
                 .padding(bottom = 32.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            SectionLabel("MODEL")
+            SectionLabel("LISTENING")
+            KokoroSettingsRow()
+            SectionLabel("ASK YOUR BOOK")
             Text(
                 current.askUsesLine,
                 style = MaterialTheme.typography.bodyMedium,
                 color = palette.muted,
                 modifier = Modifier.testTag("settings.askUses"),
             )
-            for (vendor in current.vendors) {
+            for (vendor in current.vendors.sortedBy { if (it.id == "android") 0 else 1 }) {
                 VendorCard(vendor, model, checking, refreshing)
             }
             Spacer(Modifier.size(6.dp))
@@ -125,7 +133,7 @@ fun ProvidersScreen(model: ProvidersViewModel, onBack: () -> Unit) {
             Text(
                 "Keys are kept in the Android Keystore on this phone, and never leave it except to the provider you chose.",
                 style = MaterialTheme.typography.bodyMedium,
-                color = palette.faint,
+                color = palette.muted,
             )
         }
     }
@@ -149,6 +157,7 @@ private fun VendorCard(
     refreshing: Boolean,
 ) {
     val palette = LocalReadingPalette.current
+    var expanded by remember(vendor.id) { mutableStateOf(vendor.id == "android") }
     Column(
         Modifier
             .fillMaxWidth()
@@ -158,10 +167,14 @@ private fun VendorCard(
             .testTag("settings.card.${vendor.id}"),
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             Box(Modifier.size(8.dp).background(dotColor(vendor, checking), CircleShape))
             Text(vendor.title, style = MaterialTheme.typography.titleMedium, color = palette.ink)
             Badge(vendor.badge, Modifier.testTag("settings.badge.${vendor.id}"))
+            Spacer(Modifier.weight(1f))
+            IconButton(onClick = { expanded = !expanded }, modifier = Modifier.testTag("settings.expand.${vendor.id}")) {
+                Text(if (expanded) "−" else "+", color = palette.muted, modifier = Modifier.semantics { contentDescription = if (expanded) "Hide ${vendor.title} configuration" else "Show ${vendor.title} configuration" })
+            }
         }
         vendor.hint?.let { hint ->
             Text(
@@ -171,7 +184,7 @@ private fun VendorCard(
                 modifier = Modifier.testTag("settings.hint.${vendor.id}"),
             )
         }
-        for (kind in vendor.kinds) {
+        if (expanded) for (kind in vendor.kinds) {
             KindRow(kind, vendor, model, checking, refreshing)
         }
     }
@@ -400,3 +413,31 @@ private fun dotColor(vendor: ProviderVendorCard, checking: Set<String>): Color {
 private const val OPEN_ROUTER = "openRouter"
 private val CONNECTED_GREEN = Color(0xFF4C9A5B)
 private val UNAVAILABLE_AMBER = Color(0xFFC07A22)
+
+@Composable
+private fun KokoroSettingsRow() {
+    val context = LocalContext.current
+    val store = remember(context) { KokoroModelStore.get(context) }
+    val state by store.state.collectAsState()
+    val palette = LocalReadingPalette.current
+    Column(Modifier.fillMaxWidth().background(palette.page, RoundedCornerShape(16.dp)).padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Text("Readr Voice", style = MaterialTheme.typography.titleMedium)
+        Text("Natural English voices, powered by Kokoro. Book text is spoken on this device.", style = MaterialTheme.typography.bodyMedium, color = palette.muted)
+        when (val status = state) {
+            KokoroState.Ready -> Text("Ready for offline listening", style = MaterialTheme.typography.labelLarge, color = palette.ink)
+            is KokoroState.Downloading -> {
+                Text("Downloading voice · ${(status.progress * 100).toInt()}%", style = MaterialTheme.typography.bodyMedium)
+                LinearProgressIndicator(progress = { status.progress }, modifier = Modifier.fillMaxWidth())
+                TextButton(onClick = store::cancelDownload) { Text("Cancel download") }
+            }
+            is KokoroState.Failed -> {
+                Text(status.message, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.error)
+                Button(onClick = store::prepare) { Text("Retry voice download") }
+            }
+            KokoroState.Missing -> {
+                Text("One-time download · 132 MB", style = MaterialTheme.typography.bodyMedium, color = palette.muted)
+                Button(onClick = store::prepare, modifier = Modifier.testTag("settings.downloadVoice")) { Text("Download voices") }
+            }
+        }
+    }
+}

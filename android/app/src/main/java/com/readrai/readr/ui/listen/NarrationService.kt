@@ -1,8 +1,14 @@
 package com.readrai.readr.ui.listen
 
 import android.content.Intent
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
+import com.readrai.readr.MainActivity
 import androidx.annotation.OptIn
 import androidx.media3.common.util.UnstableApi
+import androidx.media3.session.DefaultMediaNotificationProvider
 import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
 
@@ -17,21 +23,27 @@ import androidx.media3.session.MediaSessionService
  * stops with it).
  *
  * There is no player to own here. The sound is made by
- * `android.speech.tts.TextToSpeech`, sentence by sentence; the session
+ * Kokoro PCM playback, sentence by sentence; the session
  * publishes a [NarrationPlayer], which is a description of [NarrationModel]
  * and nothing more.
  */
 @OptIn(UnstableApi::class)
 class NarrationService : MediaSessionService() {
 
-    /**
-     * Whether the `startForegroundService` that started this is still owed its
-     * `startForeground` — see [onUpdateNotification].
-     */
-    private var owesForeground = true
-
     override fun onCreate() {
         super.onCreate()
+        // A startForegroundService request can outlive a session that was
+        // immediately paused/released. Acknowledge it synchronously: relying
+        // on Media3's asynchronous notification update can miss the deadline.
+        val manager = getSystemService(NotificationManager::class.java)
+        manager.createNotificationChannel(NotificationChannel(CHANNEL, "Readr listening", NotificationManager.IMPORTANCE_LOW))
+        val opening = PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP), PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+        startForeground(BOOTSTRAP_NOTIFICATION, Notification.Builder(this, CHANNEL)
+            .setSmallIcon(android.R.drawable.ic_media_play)
+            .setContentTitle("Readr")
+            .setContentText("Preparing Readr Voice")
+            .setContentIntent(opening).setOnlyAlertOnce(true).setOngoing(true)
+            .setCategory(Notification.CATEGORY_TRANSPORT).setVisibility(Notification.VISIBILITY_PRIVATE).build())
         running = true
         val session = NarrationSession.active
         if (session == null) {
@@ -47,30 +59,8 @@ class NarrationService : MediaSessionService() {
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? =
         NarrationSession.active?.session
 
-    /**
-     * The notification stays up for as long as there is a session, playing or
-     * paused: a paused audiobook whose notification had gone would leave the
-     * reader no way back to it.
-     *
-     * Whether the service must be *in the foreground* for it is media3's call,
-     * not ours, so the flag is passed through — it used to be forced `true`,
-     * which kept the service in the foreground for a book nobody was
-     * listening to.
-     *
-     * The one exception is the **first** update. `NarrationSession` starts
-     * this with `startForegroundService`, and that is a promise to call
-     * `startForeground` within a few seconds or be killed for it
-     * (`ForegroundServiceDidNotStartInTimeException`). media3 says foreground
-     * is not required whenever the player is not playing — which is true of a
-     * book held from its very first publish, when the phone refuses audio
-     * focus. So the promise is kept once, and every update after it is
-     * media3's own call.
-     */
-    override fun onUpdateNotification(session: MediaSession, startInForegroundRequired: Boolean) {
-        val keepingThePromise = owesForeground
-        owesForeground = false
-        super.onUpdateNotification(session, startInForegroundRequired || keepingThePromise)
-    }
+    // Media3 replaces the bootstrap using the same notification id, then owns
+    // promotion/demotion for playing, preparing and paused states.
 
     /**
      * The reader swiped Readr off the recents list. That is leaving the book,
@@ -83,10 +73,13 @@ class NarrationService : MediaSessionService() {
 
     override fun onDestroy() {
         running = false
+        stopForeground(STOP_FOREGROUND_REMOVE)
         super.onDestroy()
     }
 
     companion object {
+        private const val CHANNEL = DefaultMediaNotificationProvider.DEFAULT_CHANNEL_ID
+        private const val BOOTSTRAP_NOTIFICATION = DefaultMediaNotificationProvider.DEFAULT_NOTIFICATION_ID
         /**
          * Whether the service is up. Only the instrumented tests read it —
          * the app starts and stops the service through [NarrationSession],

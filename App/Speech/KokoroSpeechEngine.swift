@@ -27,7 +27,7 @@ import ReadrKit
 /// the page still follows per sentence; only mid-sentence resume precision
 /// degrades to the sentence start.
 ///
-/// Main-thread-confined like `AVSpeechEngine`; synthesis hops to the
+/// Main-thread-confined; synthesis hops to the
 /// `KokoroAneManager` actor and back, and playback is `SentenceAudioPlayer`,
 /// the one `AVAudioPlayer` contract both Kokoro engines share.
 ///

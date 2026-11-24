@@ -28,7 +28,13 @@ class ReadrApplication : Application() {
      */
     val askConversations: AskConversations = AskConversations()
     /** Reader appearance; plain preferences, read on the main thread (one small file). */
-    val readerSettings: ReaderSettings by lazy { ReaderSettings(this) }
+    val readerSettings: ReaderSettings by lazy {
+        ReaderSettings(this).apply {
+            // Existing development builds stored Android system voice ids.
+            // Retire those choices together with their labels at the app boundary.
+            if (narrationVoiceID?.startsWith("kokoro.") == false) { narrationVoiceID = null; narrationVoiceName = null }
+        }
+    }
 
     /**
      * The voice reading a book aloud — one book at a time, since there is one

@@ -122,9 +122,8 @@ final class SentenceAudioPlayer: NSObject {
         activeRequest = nil
         pausedByCaller = false
         rateOverride = nil
-        // The audio session stays up between sentences for the same reason
-        // AVSpeechEngine's does; `RoutingSpeechEngine.endAudioSession()` ends
-        // it for real.
+        // Keep the audio session up between sentences; the router ends it
+        // when the listening session is actually closed.
     }
 
     /// Change speed in place. Applies to the player if it is up, and to the

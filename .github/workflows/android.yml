@@ -90,11 +90,16 @@ jobs:
         working-directory: android
         run: ./gradlew :readrkit:publishSwiftKit
 
-      - name: Build app and test APKs (x86_64 for the emulator)
+      - name: Lint and build app and test APKs (x86_64 for the emulator)
         working-directory: android
         env:
           READR_ANDROID_ABIS: x86_64
-        run: ./gradlew :app:assembleDebug :app:assembleDebugAndroidTest
+        run: ./gradlew :app:lintDebug :app:assembleDebug :app:assembleDebugAndroidTest
+
+      - name: Verify native libraries and APK alignment
+        run: |
+          python3 android/scripts/verify-native-packaging.py android/app/build/outputs/apk/debug/app-debug.apk
+          "$ANDROID_HOME/build-tools/35.0.0/zipalign" -c -P 16 4 android/app/build/outputs/apk/debug/app-debug.apk
 
       - name: Cross-compile the ReadrKit test suite for x86_64 Android
         run: swift build --swift-sdk x86_64-unknown-linux-android28 --build-tests

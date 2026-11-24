@@ -70,7 +70,8 @@ class ProvidersScreenTest {
 
     /** Settings on its own, as the gear opens it. */
     private fun openSettings() {
-        compose.setContent { ReadrTheme { ProvidersScreen(ProvidersViewModel { repository }, onBack = {}) } }
+        val model = ProvidersViewModel { repository }
+        compose.setContent { ReadrTheme { ProvidersScreen(model, onBack = {}) } }
         awaitTag("settings.askUses")
     }
 
@@ -91,6 +92,8 @@ class ProvidersScreenTest {
 
     @Test
     fun theGearOnTheShelfOpensSettings() {
+        val libraryModel = LibraryViewModel { library }
+        val providersModel = ProvidersViewModel { repository }
         compose.setContent {
             ReadrTheme {
                 val nav = rememberNavController()
@@ -100,13 +103,13 @@ class ProvidersScreenTest {
                         // Settings from the shelf must not seed or read the
                         // books on the phone this test is running on.
                         LibraryScreen(
-                            LibraryViewModel { library },
+                            libraryModel,
                             onOpen = {},
                             onSettings = { nav.navigate("settings") },
                         )
                     }
                     composable("settings") {
-                        ProvidersScreen(ProvidersViewModel { repository }) { nav.popBackStack() }
+                        ProvidersScreen(providersModel) { nav.popBackStack() }
                     }
                 }
             }
@@ -130,6 +133,7 @@ class ProvidersScreenTest {
             assertEquals("Paste an API key to connect.", textOf("settings.hint.$vendor"))
             assertEquals("API KEY", textOf("settings.badge.$vendor"))
         }
+        compose.onNodeWithTag("settings.expand.openai").performScrollTo().performClick()
         assertEquals("Not connected", textOf("settings.status.openAI"))
     }
 
@@ -141,6 +145,7 @@ class ProvidersScreenTest {
     @Test
     fun aKeyConnectsACardAndCanBeMadeActive() {
         openSettings()
+        compose.onNodeWithTag("settings.expand.openai").performScrollTo().performClick()
         compose.onNodeWithTag("settings.apiKey.openAI").performScrollTo().performTextInput("sk-test-not-a-real-key")
         compose.onNodeWithTag("settings.saveKey.openAI").performScrollTo().performClick()
 
@@ -195,7 +200,8 @@ class ProvidersScreenTest {
     fun aPhoneThatCanRunNanoLeadsWithIt() {
         val nano = Kit.open(root, KeystoreSecretStore(context, alias = TEST_ALIAS), FakeOnDeviceModel())
         val repo = ProvidersRepository(nano)
-        compose.setContent { ReadrTheme { ProvidersScreen(ProvidersViewModel { repo }, onBack = {}) } }
+        val model = ProvidersViewModel { repo }
+        compose.setContent { ReadrTheme { ProvidersScreen(model, onBack = {}) } }
         awaitTag("settings.askUses")
 
         compose.onNodeWithTag("settings.card.android").performScrollTo().assertIsDisplayed()

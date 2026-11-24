@@ -20,7 +20,7 @@ import com.readrai.readr.kit.AndroidNarration
 import com.readrai.readr.kit.Kit
 import com.readrai.readr.kit.NarrationEvents
 import com.readrai.readr.kit.NarrationObserver
-import com.readrai.readr.kit.PlatformSpeechBackend
+import com.readrai.readr.kit.KokoroSpeechBackend
 import com.readrai.readr.kit.SpeechBackend
 import com.readrai.readr.ui.reader.ReaderSettings
 import java.util.Locale
@@ -174,7 +174,7 @@ class NarrationModel(
     private val settings: ReaderSettings,
     /** Swapped for a deterministic stand-in by the instrumented tests. */
     private val backends: (NarrationEvents) -> SpeechBackend = { events ->
-        PlatformSpeechBackend(context, events)
+        KokoroSpeechBackend(context, events)
     },
     /**
      * The media session published while a voice is reading — the lock screen,
@@ -657,7 +657,7 @@ class NarrationModel(
         media?.release()
         media = null
         narration?.stop()
-        (backend as? PlatformSpeechBackend)?.release()
+        (backend as? KokoroSpeechBackend)?.release()
         onPosition = null
         scope.coroutineContext[Job]?.cancel()
     }

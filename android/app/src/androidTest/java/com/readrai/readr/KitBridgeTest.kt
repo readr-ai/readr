@@ -1669,6 +1669,19 @@ class KitBridgeTest {
      * would skip the very words they pointed at.
      */
     @Test
+    fun narrationLookaheadCrossesTheRealBridgeAndIsClearedOnStop() = runTest(timeout = TEST_TIMEOUT) {
+        val book = narrationBook()
+        val session = session(book.id)
+        onMain { session.narration.start(0, 0, "containingSentence") }
+        val ahead = org.json.JSONArray(session.backend.prefetched)
+        assertTrue(ahead.length() > 0)
+        assertTrue(ahead.length() <= 2)
+        assertTrue(ahead.getJSONObject(0).getString("text").contains("Alpha 1") || ahead.getJSONObject(0).getString("text").contains("Beta 1"))
+        onMain { session.narration.stop() }
+        assertEquals("[]", session.backend.prefetched)
+    }
+
+    @Test
     fun listenStartsAtTheFirstSentenceOfThePage() = runTest(timeout = TEST_TIMEOUT) {
         val book = narrationBook()
         val chapter = kit.library.chapterText(book.id, 0)

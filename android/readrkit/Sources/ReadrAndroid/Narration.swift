@@ -59,6 +59,9 @@ public protocol SpeechBackend {
   /// the picker's row. Kotlin reports the fact; the words for it are this
   /// side's.
   func voicesJSON() -> String
+  /// Bounded future sentences, synthesized locally while current audio plays.
+  func prefetch(_ requestsJSON: String)
+  func secondsBuffered(_ requestsJSON: String) -> Double
 }
 
 /// What Kotlin answers `voicesJSON()` with.
@@ -193,6 +196,11 @@ public final class NarrationEvents {
     narration?.voicesBecameAvailable()
   }
 
+  /// The neural engine is installing/loading/synthesizing, before audio.
+  public func didPrepare(_ requestID: String) {
+    engine?.didPrepare(requestID)
+  }
+
   /// Audio for the utterance has started.
   public func didBegin(_ requestID: String) {
     engine?.didBegin(requestID)
@@ -250,7 +258,7 @@ struct SpeechBackendError: Error {
 
 /// ReadrKit's `SpeechEngine` over a Kotlin `SpeechBackend` — the Android
 /// counterpart of `AVSpeechEngine`.
-final class BridgedSpeechEngine: SpeechEngine {
+final class BridgedSpeechEngine: SpeechEngine, SpeechPrefetching {
   weak var delegate: (any SpeechEngineDelegate)?
 
   private let backend: any SpeechBackend
@@ -306,6 +314,20 @@ final class BridgedSpeechEngine: SpeechEngine {
       volume: min(max(request.volume, 0), 1))
   }
 
+  private struct Ahead: Encodable {
+    let text: String
+    let language: String
+    let voiceID: String
+    let rate: Double
+  }
+  private func aheadJSON(_ requests: [SpeechRequest]) -> String {
+    let ahead = requests.prefix(2).map { Ahead(text: $0.text, language: $0.language ?? "", voiceID: $0.voiceID ?? "", rate: Self.platformRate($0.rate)) }
+    guard let data = try? JSONEncoder().encode(ahead) else { return "[]" }
+    return String(decoding: data, as: UTF8.self)
+  }
+  func prefetch(_ requests: [SpeechRequest]) { backend.prefetch(aheadJSON(requests)) }
+  func secondsBuffered(ahead requests: [SpeechRequest]) -> TimeInterval { backend.secondsBuffered(aheadJSON(requests)) }
+
   func stop() {
     // Cleared first: a report for this utterance that lands after the stop
     // is stale by construction, exactly as `AVSpeechEngine` treats one for a
@@ -317,6 +339,11 @@ final class BridgedSpeechEngine: SpeechEngine {
   }
 
   // MARK: Callbacks
+
+  func didPrepare(_ requestID: String) {
+    guard requestID == activeID, let id = UUID(uuidString: requestID) else { return }
+    delegate?.speechEngine(self, isPreparing: id)
+  }
 
   func didBegin(_ requestID: String) {
     guard requestID == activeID, let id = UUID(uuidString: requestID) else { return }
@@ -890,7 +917,11 @@ public final class AndroidNarration {
     let reason = hold.map(Self.name(of:))
       ?? (controller.status == .paused && engine.lastFailure != nil ? Self.engineFailed : nil)
     let text = hold.map(Self.holdText(for:))
-      ?? (reason == Self.engineFailed ? Self.engineFailedText : nil)
+      ?? (reason == Self.engineFailed
+        ? (engine.lastFailure == "unsupportedLanguage"
+          ? "Kokoro narration currently supports English. Choose an English book to listen."
+          : Self.engineFailedText)
+        : nil)
     return NarrationStateWire(
       status: Self.name(of: controller.status),
       holdReason: reason,
@@ -1034,14 +1065,13 @@ public final class AndroidNarration {
   /// this side is — Kotlin reports an engine code to the log and no further.
   private static let engineFailed = "engineFailed"
   private static let engineFailedText =
-    "Paused \u{2014} the phone\u{2019}s voice couldn\u{2019}t read that."
+    "Paused \u{2014} Kokoro couldn\u{2019}t read that. Check the voice download in Settings, then try Play again."
 
   /// The phone has no voice data at all, so there is nothing to pick from.
   /// The facade's words too — and they name the door out, as the Apple
   /// picker's "More voices" note does.
   private static let noVoicesText =
-    "No voices installed \u{2014} add one in Settings \u{203A} Accessibility "
-    + "\u{203A} Text-to-speech output."
+    "Kokoro voices are unavailable. Download Readr Voice in Settings and try again."
 
   /// The engine has not finished starting up, so the list is empty for a
   /// reason that will pass. Saying "no voices installed" here sent readers off
@@ -1051,7 +1081,7 @@ public final class AndroidNarration {
   /// What the Voice row says before there is a session to ask: the reader has
   /// chosen nothing, so the phone's own default will read. Facade's words like
   /// the rest, and static because the row draws before any book is narrated.
-  static let defaultVoiceName = "Phone\u{2019}s default voice"
+  static let defaultVoiceName = "Heart · Kokoro"
 
   /// Muted footnote markers leave runs of spaces in a segment's text (the
   /// substitution is length-preserving by design, so offsets stay true).

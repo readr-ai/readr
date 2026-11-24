@@ -40,12 +40,10 @@ final class NarrationModel: ObservableObject {
     @Published private(set) var readrVoiceDownloadProgress: Double?
     /// True when this reader would otherwise use Readr Voice, but neither
     /// Kokoro runtime can serve here (macOS builds with the uncatchable Apple
-    /// BNNS crash; an iOS device with no Metal GPU, or the simulator) and a
-    /// platform voice must read.
+    /// BNNS crash; an iOS device with no Metal GPU, or the simulator).
     @Published private(set) var readrVoiceUnavailable = false
     /// Readr Voice is in the voice menu for this book: an English book on a
-    /// platform where a Kokoro runtime can serve. The menu then shows Readr
-    /// Voice alone with the Apple voices under "Other voices".
+    /// platform where a Kokoro runtime can serve. Only Kokoro voices are offered.
     @Published private(set) var readrVoiceOffered = false
     /// The runtime behind Readr Voice here, for copy that depends on it (the
     /// download size). Taken from the router rather than the static, so the
@@ -117,10 +115,6 @@ final class NarrationModel: ObservableObject {
     /// synthesis hung): narration is paused on the sentence and the card
     /// offers Retry. No Apple voice reads in its place.
     var readrVoiceFailed: Bool { usesReadrVoice && readrVoiceReadiness == .failed }
-    /// The Apple voices, for the "Other voices" disclosure.
-    var platformVoices: [SpeechVoice] {
-        voices.filter { !KokoroSpeechEngine.isKokoroVoiceID($0.id) }
-    }
     /// What the first Listen fetches, for the preparing state's copy.
     var readrVoiceDownloadSize: String {
         readrVoiceRuntime == .mlx ? "410MB" : "104MB"
@@ -202,7 +196,7 @@ final class NarrationModel: ObservableObject {
         // over the library, and reopening the book stacked a second voice on
         // top of the first: every sentence heard twice. The view layer can't
         // always tell "covered for a moment" from "gone"; deallocation can.
-        // (`NarrationController` and `AVSpeechEngine` are main-thread-confined
+        // (`NarrationController` and the speech engines are main-thread-confined
         // plain classes, and the last reference is SwiftUI's, released on the
         // main thread.)
         // Global resources (the shared audio session, Now Playing) are torn
@@ -304,90 +298,14 @@ final class NarrationModel: ObservableObject {
     func prepareVoices(for book: Book) {
         guard voicesBookID != book.id else { return }
         voicesBookID = book.id
-        let selector = VoiceSelector()
-        let installed = AVSpeechEngine.availableVoices()
-        // A book that declares no language — most PDFs, plenty of EPUBs — would
-        // otherwise offer every voice installed on the device, in every
-        // language: a list well past a hundred rows on a stock iPhone, which is
-        // not a picker so much as a wall. Fall back to the reader's own locale,
-        // since a book whose language nobody recorded is most likely in the one
-        // they read in.
-        // Either spelling of this carries extensions a region override adds —
-        // "en_US@rg=inzzzz" from `.identifier`, "en-US-u-rg-inzzzz" from the
-        // BCP-47 form — and `SpeechVoice.normalized` strips both before
-        // matching. Without that the exact-locale branch can never succeed on
-        // such a device and every lookup falls through to a language-wide one.
-        let language = book.metadata.language ?? Locale.current.identifier(.bcp47)
-        let supportsReadrVoice = KokoroSpeechEngine.supports(language: language)
-        // Offered when either Kokoro runtime can serve: MLX on an iOS device,
-        // CoreML on a Mac outside the BNNS crash gate.
-        let readrVoiceAvailable = supportsReadrVoice && RoutingSpeechEngine.isReadrVoiceAvailable
-        // What the platform would pick for this language, which is a better
-        // judge of "the sensible voice" than any ranking of ours: macOS ships
-        // novelty voices that tie on quality and win on name.
-        //
-        // Asked with the extensions stripped, because AVFoundation *honours* a
-        // region override rather than ignoring it: given `en-US-u-rg-inzzzz` it
-        // answers Rishi (en-IN), which is not in the en-US pool the picker
-        // lists — so the voice the picker checked and the voice at the top of
-        // it were two different voices. Our own matching normalizes on the way
-        // in, so `voices(matching:)` and `voice(for:)` still take the raw tag.
-        let systemDefault = AVSpeechEngine.systemDefaultVoiceID(
-            for: SpeechVoice.withoutExtensions(language)
-        )
-        var offered = selector.voices(
-            matching: language, in: installed, systemDefault: systemDefault
-        )
-        // "Readr Voice" — the bundled Kokoro neural narrator, the DEFAULT for
-        // English books (its model — ~104MB on a Mac, ~410MB on an iPhone or
-        // iPad — downloads on first Listen; the router reads through the
-        // platform voice until it's in — see RoutingSpeechEngine.speak).
-        if readrVoiceAvailable {
-            offered.insert(KokoroSpeechEngine.pickerVoice, at: 0)
-        }
-        voices = offered
-        readrVoiceOffered = readrVoiceAvailable
-        // Resolve from the PERSISTED preference ONLY — never the session's
-        // last resolution. `voiceID` is per-book (a French book resolves to a
-        // French voice), and any fallback to it lets one book in another
-        // language veto the choice — or the un-persisted default — for every
-        // later English book in the session. Defaults are written on every
-        // explicit pick, so they are the whole story.
-        let preferred = defaults.string(forKey: Self.voiceKey)
-        readrVoiceUnavailable = supportsReadrVoice
-            && !RoutingSpeechEngine.isReadrVoiceAvailable
-            && (preferred == nil || KokoroSpeechEngine.isKokoroVoiceID(preferred))
-        if readrVoiceAvailable,
-           preferred == nil || KokoroSpeechEngine.isKokoroVoiceID(preferred) {
-            // Readr Voice is the default narrator for English books — a
-            // reader with no stored choice gets it, and a stored Readr Voice
-            // pick keeps it. Only an explicit platform-voice choice (below)
-            // overrides. The download starts with the first spoken sentence
-            // (the engine waits for it); no separate prepare needed here.
-            voiceID = KokoroSpeechEngine.isKokoroVoiceID(preferred)
-                ? preferred : KokoroSpeechEngine.defaultVoiceID
-        } else {
-            // A stored voice may have been deleted since (voices are
-            // downloadable), and a book in another language needs one that
-            // can read it.
-            // A Readr Voice id is not an installed platform voice. UserDefaults
-            // is deliberately not rewritten, so the choice returns wherever a
-            // Kokoro runtime can serve again.
-            let platformPreferred = KokoroSpeechEngine.isKokoroVoiceID(preferred) ? nil : preferred
-            voiceID = selector.voice(
-                for: language, in: installed, preferring: platformPreferred,
-                systemDefault: systemDefault
-            )?.id
-        }
-        // The picker hides the accessibility/novelty families, but a stored
-        // choice of one still narrates (an accessibility reader who set up
-        // Eloquence keeps it) — so the picker must show that truth: append
-        // the chosen voice when curation dropped it, or the menu would show
-        // no checkmark at all.
-        if let chosen = voiceID, !voices.contains(where: { $0.id == chosen }),
-           let installedChoice = installed.first(where: { $0.id == chosen }) {
-            voices.append(installedChoice)
-        }
+        let language = book.metadata.language ?? "en"
+        let supported = KokoroSpeechEngine.supports(language: language)
+        readrVoiceOffered = supported && RoutingSpeechEngine.isReadrVoiceAvailable
+        readrVoiceUnavailable = !readrVoiceOffered
+        voices = readrVoiceOffered ? [KokoroSpeechEngine.pickerVoice] : []
+        // Retire persisted system choices. They must never resurrect a fallback.
+        voiceID = KokoroSpeechEngine.defaultVoiceID
+
     }
 
     // MARK: - Controls
@@ -412,9 +330,7 @@ final class NarrationModel: ObservableObject {
         play()
     }
 
-    /// A Readr Voice request must never reach an engine that has given up —
-    /// the policy's backstop would hand it to an Apple voice. So every play
-    /// that would speak Readr Voice re-prepares a failed engine first; the
+    /// Every play re-prepares a failed neural engine first; the
     /// engine leaves `.failed` synchronously, and the sentence routes to it
     /// and waits. Nothing to do when the engine is fine.
     private func retryReadrVoiceIfFailed() {

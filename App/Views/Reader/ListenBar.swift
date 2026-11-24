@@ -334,9 +334,8 @@ struct ListenBar: View {
 // MARK: - Voice picker (Aa popover)
 
 /// The narrator, chosen once in the Aa popover rather than on every Listen
-/// bar: Readr Voice (checked) with the Apple voices behind a disclosure for
-/// an English book, the Apple voices for the book's language otherwise,
-/// and the notes that used to ride the bar's menu.
+/// bar. Only Kokoro voices are offered; unsupported books/devices explain
+/// the limitation without switching to a system voice.
 struct NarrationVoicePicker: View {
     @ObservedObject var narration: NarrationModel
     let theme: ReadingTheme
@@ -354,7 +353,7 @@ struct NarrationVoicePicker: View {
             // Notes go above the list, not below it: the voice list is as
             // long as the reader has voices installed, and anything under it
             // is off the bottom of the menu.
-            menuNote("More voices: Settings \u{203A} Accessibility \u{203A} Spoken Content")
+            menuNote("Natural English narration · Kokoro · on this device")
             if narration.readrVoiceFailed {
                 menuNote(
                     "Readr Voice couldn\u{2019}t download or stopped responding \u{2014} "
@@ -369,7 +368,7 @@ struct NarrationVoicePicker: View {
             }
             Divider()
             if narration.voices.isEmpty {
-                menuNote("No voices installed")
+                menuNote("Readr Voice is unavailable for this device or book language")
             } else if narration.readrVoiceOffered {
                 Picker("Voice", selection: voiceBinding) {
                     ForEach(narration.voices.filter { KokoroSpeechEngine.isKokoroVoiceID($0.id) }) {
@@ -378,15 +377,6 @@ struct NarrationVoicePicker: View {
                     }
                 }
                 .pickerStyle(.inline)
-                Menu("Other voices\u{2026}") {
-                    Picker("Other voices", selection: voiceBinding) {
-                        ForEach(narration.platformVoices) { voice in
-                            Text("\(voice.name) (\(voice.language))").tag(Optional(voice.id))
-                        }
-                    }
-                    .pickerStyle(.inline)
-                }
-                .accessibilityIdentifier("appearance.otherVoices")
             } else {
                 Picker("Voice", selection: voiceBinding) {
                     ForEach(narration.voices) { voice in
@@ -424,11 +414,11 @@ struct NarrationVoicePicker: View {
     /// a Metal GPU (never missing on a device, always on the simulator).
     private var readrVoiceUnavailableNote: String {
         #if os(iOS)
-        return "Readr Voice isn't available on this device. The Apple voice reads instead."
+        return "Readr Voice needs a supported device and an English book. No system voice is used."
         #else
         return """
         Readr Voice isn't available on this version of \(osName) — an Apple bug \
-        crashes it. The Apple voice reads instead.
+        crashes it. Narration is unavailable on this version.
         """
         #endif
     }
