@@ -2,10 +2,10 @@ package com.readrai.readr
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import com.google.mlkit.genai.common.FeatureStatus
 import com.google.mlkit.genai.common.GenAiException
 import com.readrai.readr.kit.NanoModel
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertNull
 import org.junit.Test
 import org.junit.runner.RunWith
 
@@ -47,6 +47,20 @@ class NanoModelTest {
         assertEquals(0L, model.windowTokens())
     }
 
+    @Test
+    fun downloadableStatusOffersAnExplicitActionWithoutStartingADownload() {
+        val model = model
+        assertEquals("unavailable:downloadable", model.statusToken(FeatureStatus.DOWNLOADABLE))
+        org.junit.Assert.assertTrue(model.canDownload.value)
+        assertEquals("ready", model.statusToken(FeatureStatus.AVAILABLE))
+        org.junit.Assert.assertFalse(model.canDownload.value)
+    }
+
+    @Test
+    fun unavailableConfigurationIsRetryableRatherThanUnsupportedHardware() {
+        assertEquals("unavailable:unavailable", model.statusToken(FeatureStatus.UNAVAILABLE))
+    }
+
     // ---- The reason codes ------------------------------------------------
 
     /**
@@ -55,8 +69,13 @@ class NanoModelTest {
      * `null` is that "say nothing".
      */
     @Test
-    fun aCancelledGenerationIsNotReportedAtAll() {
-        assertNull(model.code(genAi(GenAiException.ErrorCode.CANCELLED)))
+    fun sdkCancellationOfAnActiveGenerationTerminatesWithRetryableFailure() {
+        assertEquals("busy", model.code(genAi(GenAiException.ErrorCode.CANCELLED)))
+    }
+
+    @Test
+    fun sdkCoroutineCancellationWithoutCallerCancellationIsRetryable() {
+        assertEquals("busy", model.code(kotlinx.coroutines.CancellationException("vendor cancelled")))
     }
 
     @Test

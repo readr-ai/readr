@@ -394,6 +394,7 @@ final class OnDeviceModelBox: @unchecked Sendable {
 
   private static func unavailableReason(_ code: String) -> String {
     switch code {
+    case "downloadable": return "Download Gemini Nano in Settings to ask questions on this phone."
     case "downloading": return "Gemini Nano is still downloading. Try again in a few minutes."
     default: return "Gemini Nano isn't available right now."
     }

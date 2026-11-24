@@ -15,7 +15,8 @@ import kotlinx.coroutines.withContext
 
 class ReadrApplication : Application() {
     /** Opened on first use, off the main thread: loading the Swift runtime and decoding library.json is real work. */
-    private val kit: Kit by lazy { Kit.open(filesDir, KeystoreSecretStore(this), NanoModel(this)) }
+    val onDeviceModel: NanoModel by lazy { NanoModel(this) }
+    private val kit: Kit by lazy { Kit.open(filesDir, KeystoreSecretStore(this), onDeviceModel) }
     private val libraryRepository: LibraryRepository by lazy { LibraryRepository(this, kit) }
     private val providersRepository: ProvidersRepository by lazy { ProvidersRepository(kit) }
     private val askRepository: AskRepository by lazy { AskRepository(kit) }

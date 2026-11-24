@@ -24,7 +24,9 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -43,20 +45,18 @@ import kotlinx.coroutines.runBlocking
  *
  * Nothing here reaches the network. AICore runs the model on the phone, and
  * the passages a question carries never leave it. The model's own download is
- * AICore's to fetch and to schedule; [readiness] only asks for it to start.
+ * AICore's to fetch and schedule; only the explicit Settings action starts it.
  *
  * Eligibility is narrow and worth stating plainly: Android 14+, a flagship
  * with AICore installed and the model downloaded, and Readr on screen — AICore
  * refuses a background app. Everything else answers `unsupported`, which is
  * what keeps the card off the reader's list of things they could choose.
  *
- * The stub matters: Firebase Test Lab devices and every emulator image ship a
- * `com.google.android.aicore` package that exists and does nothing, and ML
- * Kit's own check answers UNAVAILABLE there. Both are read as "not on this
- * phone".
+ * Images without AICore cannot generate. A package marked as a stub is
+ * rejected; production inference is validated on supported physical hardware.
  *
  * **Every call into ML Kit runs on a leash.** `checkStatus`, `getTokenLimit`
- * and the cancellation join all bind to AICore, and a phone with a broken or
+ * all bind to AICore, and a phone with a broken or
  * half-installed one can sit inside that bind without ever suspending — which
  * `withTimeout` cannot interrupt. So each of them runs on a thread of its own
  * and is waited for with a bounded `join`: the Swift caller (a cooperative
@@ -86,35 +86,35 @@ class NanoModel(context: Context) : OnDeviceModel {
     private val cumulativeNoted = AtomicBoolean(false)
 
     /** Generations in flight, by the handle the facade cancels with. */
-    private val running = ConcurrentHashMap<Long, Job>()
+    private data class GenerationTask(val job: Job, val sink: NanoSinkGate)
+    private val running = ConcurrentHashMap<Long, GenerationTask>()
     private val handles = AtomicLong(1)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
+    private val downloadable = MutableStateFlow(false)
+    val canDownload = downloadable.asStateFlow()
+
     override fun readiness(): String = try {
-        when {
-            !hasSystemSupport() -> UNSUPPORTED
-            else -> when (checkStatus()) {
-                FeatureStatus.AVAILABLE -> READY
-                // On its way already: waiting is the whole fix.
-                FeatureStatus.DOWNLOADING -> "$UNAVAILABLE:$DOWNLOADING"
-                // Available to this phone but not on it. Saying "downloading"
-                // without asking for the download left a reader watching a
-                // card that would never change; ML Kit fetches nothing until
-                // an app asks, so this asks — once — and reports the same
-                // waiting state. AICore owns the schedule from there.
-                FeatureStatus.DOWNLOADABLE -> {
-                    startDownload()
-                    "$UNAVAILABLE:$DOWNLOADING"
-                }
-                else -> UNSUPPORTED
-            }
-        }
+        if (!hasSystemSupport()) UNSUPPORTED else statusToken(checkStatus())
     } catch (e: Throwable) {
-        // A check that cannot be made is not a model that can answer. Every
-        // ML Kit call is wrapped: on a phone with a stub AICore the failure
-        // modes are many and none of them mean "ready".
-        UNSUPPORTED
+        // A transient bind/configuration failure is not evidence that this
+        // hardware is permanently unsupported. Keep Check again available.
+        Log.w(TAG, "AICore readiness check failed (${e.javaClass.simpleName})")
+        "$UNAVAILABLE:$UNAVAILABLE"
     }
+
+    internal fun statusToken(status: Int): String {
+        downloadable.value = status == FeatureStatus.DOWNLOADABLE && !downloading.get()
+        return when (status) {
+            FeatureStatus.AVAILABLE -> READY
+            FeatureStatus.DOWNLOADING -> "$UNAVAILABLE:$DOWNLOADING"
+            FeatureStatus.DOWNLOADABLE -> if (downloading.get()) "$UNAVAILABLE:$DOWNLOADING" else "$UNAVAILABLE:downloadable"
+            else -> "$UNAVAILABLE:$UNAVAILABLE"
+        }
+    }
+
+    /** Only the explicit Settings action requests an AICore model download. */
+    fun downloadModel() { downloadable.value = false; startDownload() }
 
     /**
      * The window ML Kit reports for this model, or `0` when it cannot say —
@@ -145,7 +145,8 @@ class NanoModel(context: Context) : OnDeviceModel {
             sink.failed(BACKGROUND)
             return handle
         }
-        val job = scope.launch {
+        val guarded = NanoSinkGate(sink::delta, sink::completed, sink::failed)
+        val job = scope.launch(start = CoroutineStart.LAZY) {
             try {
                 val model = client() ?: throw IllegalStateException("no on-device model")
                 val request = request(model, instructions, prompt, maxOutputTokens, temperature)
@@ -156,44 +157,44 @@ class NanoModel(context: Context) : OnDeviceModel {
                 val response = model.generateContent(
                     request,
                     StreamingCallback { text ->
+                        if (!isActive) return@StreamingCallback
                         val piece = synchronized(sent) {
                             delta(sent.toString(), text).also { sent.append(it) }
                         }
-                        if (isActive && piece.isNotEmpty()) sink.delta(piece)
+                        if (isActive && piece.isNotEmpty()) guarded.delta(piece)
                     },
                 )
                 if (!isActive) return@launch
                 val finished = finalText(response, synchronized(sent) { sent.toString() })
-                if (declined(response)) sink.failed(DECLINED) else sink.completed(finished)
-            } catch (e: CancellationException) {
-                // The facade asked for the stop and owns what happens next:
-                // neither ending is reported, as the protocol says.
-                throw e
+                if (declined(response)) guarded.failed(DECLINED) else if (finished.isBlank()) guarded.failed("") else guarded.completed(finished)
             } catch (e: Throwable) {
-                // A null code is a generation that was cancelled somewhere
-                // inside ML Kit rather than one that failed — the same
-                // "neither ending" a coroutine cancellation gets.
-                code(e)?.let { sink.failed(it) }
+                // SDK cancellation while our coroutine is active is a terminal
+                // retryable failure. Caller cancellation closes the gate first.
+                if (isActive) guarded.failed(code(e))
+                else if (e is CancellationException) throw e
             } finally {
+                guarded.close()
                 running.remove(handle)
             }
         }
-        running[handle] = job
-        // A generation that finished between `launch` and here has already
-        // removed itself; putting it back would leak the entry.
-        if (job.isCompleted) running.remove(handle)
+        running[handle] = GenerationTask(job, guarded)
+        job.start()
         return handle
     }
 
     /**
      * Stop the generation `handle` names, and come back only once its sink
      * can no longer be called — the facade lets go of that sink the moment
-     * this returns. The join is bounded: a runtime wedged inside AICore must
-     * not take the reader's cancel with it.
+     * this returns. The callback gate drains an entered callback, while
+     * cancellation of the vendor job never waits on a wedged AICore bind.
      */
     override fun cancel(handle: Long) {
-        val job = running.remove(handle) ?: return
-        onALeash(CANCEL_TIMEOUT_MS, Unit) { runBlocking { job.cancelAndJoin() } }
+        val task = running.remove(handle) ?: return
+        // Closing synchronizes with an already-entered JNI callback. Once it
+        // returns no callback can reach the Swift sink, even if AICore wedges.
+        task.sink.close()
+        task.job.cancel()
+
     }
 
     // ---- Readiness -------------------------------------------------------
@@ -220,8 +221,7 @@ class NanoModel(context: Context) : OnDeviceModel {
             try {
                 model.download().collect { }
             } catch (e: Throwable) {
-                // A download that failed is not a crash. The next readiness
-                // read asks AICore again, and may ask for it again.
+                Log.w(TAG, "AICore model download failed (${e.javaClass.simpleName})")
             } finally {
                 downloading.set(false)
             }
@@ -377,22 +377,11 @@ class NanoModel(context: Context) : OnDeviceModel {
         false
     }
 
-    /**
-     * The reason code the facade turns into a sentence, or `null` for a
-     * generation that should report NOTHING.
-     *
-     * `CANCELLED` is that null: ML Kit raises it for a generation that was
-     * stopped, which is the same event as a coroutine cancellation and is
-     * already what the caller asked for. Reported as a failure it put "Gemini
-     * Nano couldn't answer that on this phone." under an answer the reader
-     * themselves had stopped.
-     *
-     * Anything else unmapped is `""` — the facade's generic sentence.
-     */
-    internal fun code(e: Throwable): String? {
-        val failure = e as? GenAiException ?: return ""
+    /** A terminal reason for an active request. Caller cancellation is gated. */
+    internal fun code(e: Throwable): String {
+        val failure = e as? GenAiException ?: return if (e is CancellationException) BUSY else ""
         return when (failure.errorCode) {
-            GenAiException.ErrorCode.CANCELLED -> null
+            GenAiException.ErrorCode.CANCELLED -> BUSY
             GenAiException.ErrorCode.BACKGROUND_USE_BLOCKED -> BACKGROUND
             GenAiException.ErrorCode.BUSY,
             GenAiException.ErrorCode.PER_APP_BATTERY_USE_QUOTA_EXCEEDED -> BUSY
@@ -423,6 +412,5 @@ class NanoModel(context: Context) : OnDeviceModel {
         const val TOO_LONG = "tooLong"
 
         const val STATUS_TIMEOUT_MS = 5_000L
-        const val CANCEL_TIMEOUT_MS = 2_000L
     }
 }

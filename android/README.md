@@ -249,13 +249,12 @@ away and fetches another on the spot.
 
 A phone whose model is `DOWNLOADABLE` — offered, but not on the device — is
 one `download()` away from ready, and ML Kit fetches nothing until an app asks.
-So `readiness` asks, once, and reports `unavailable:downloading` either way:
-saying "still downloading" without starting one left a reader watching a card
-that would never change. The **progress is deliberately ignored**. AICore owns
-the schedule from there — when to fetch, over which network, on whose
-battery — and a percentage this app cannot influence is not something a reader
-can act on. A download that fails is not a crash: the next readiness read asks
-AICore again.
+Readiness reports `unavailable:downloadable` and Settings offers **Download Gemini
+Nano**. Reading status never initiates a download. After the reader starts it,
+AICore owns scheduling and network/battery decisions; the card reports
+`unavailable:downloading` without a fabricated percentage. A failed download
+can be checked and retried. Bind/configuration failures remain retryable rather
+than being mislabeled as permanently unsupported hardware.
 
 **The window** is not the budget. `windowTokens()` is what the runtime reports
 (`GenerativeModel.getTokenLimit()`, asked once and cached, `0` when it cannot
