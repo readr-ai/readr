@@ -44,7 +44,11 @@ jobs:
       # M4: Xcode 26 images pre-create the M5 instance, and an M4 destination
       # fails to resolve at all ("Unable to find a device matching the provided
       # destination specifier") even though the M4 device *type* still exists.
-      IPAD_SIM: iPad Pro 13-inch (M5)
+      # The 11-inch, not the 13-inch: in portrait with the sidebar open its
+      # reader is ~500pt wide, the case where an iPad nav bar folds items into
+      # a "…" menu (and the PDF Find control went missing, September 2026).
+      # The 13-inch has room for everything and hides that class of bug.
+      IPAD_SIM: iPad Pro 11-inch (M5)
       # macOS XCUITest needs a REAL signature: the runner app is launched by
       # the system, which refuses the automation connection to an unsigned
       # bundle ("the test runner hung before establishing connection"). The
@@ -135,8 +139,11 @@ jobs:
           -resultBundlePath TestResults
           CODE_SIGNING_ALLOWED=NO
       # Same suite at iPad size: regular-width layouts (side-by-side split
-      # view, double-page reader) take different code paths than the iPhone's
-      # compact ones, so iPhone-green does not imply iPad-green.
+      # view, the reader's wide toolbar arrangement) take different code paths
+      # than the iPhone's compact ones, so iPhone-green does not imply
+      # iPad-green. The 11-inch in portrait keeps the sidebar open, which
+      # narrows the reader and exercises the compact arrangement on an iPad;
+      # the rotation test covers the wide one on the same device.
       - name: UI tests (iPad Simulator)
         run: >
           set -o pipefail &&
@@ -193,6 +200,19 @@ jobs:
           IDENTITY=$(security find-identity -v -p codesigning build.keychain \
             | awk -F'"' '/Developer ID Application/ {print $2; exit}')
           echo "Signing UI test runner as: $IDENTITY"
+          # While the test runs, sample the app's threads every ten seconds
+          # and keep any crash report: a red lane on a runner nobody can
+          # attach a debugger to is otherwise a screen recording and a
+          # guess. Published with the screenshots.
+          mkdir -p shots/macui
+          (
+            for i in $(seq 1 24); do
+              sleep 10
+              sample Readr 2 -file "shots/macui/sample-$i.txt" >/dev/null 2>&1 || true
+            done
+          ) &
+          SAMPLER=$!
+          set +e
           xcodebuild test \
             -project Readr.xcodeproj \
             -scheme Readr \
@@ -202,6 +222,11 @@ jobs:
             -resultBundlePath MacUIResults \
             CODE_SIGN_STYLE=Manual \
             CODE_SIGN_IDENTITY="$IDENTITY"
+          STATUS=$?
+          set -e
+          kill "$SAMPLER" 2>/dev/null || true
+          cp ~/Library/Logs/DiagnosticReports/Readr* shots/macui/ 2>/dev/null || true
+          exit "$STATUS"
       # -retry-tests-on-failure + -test-iterations 3: XCUITest on the
       # simulator is timing-sensitive and occasionally flakes (sheet/inspector
       # presentation races). Retrying a *failed* test up to twice rescues
@@ -214,6 +239,8 @@ jobs:
           xcparse screenshots TestResults.xcresult shots || true
           xcparse screenshots IPadResults.xcresult shots/ipad || true
           xcparse attachments MacResults.xcresult shots --uti public.png || true
+          # The macOS UI test's failure screenshots and element-tree text.
+          xcparse attachments MacUIResults.xcresult shots/macui || true
           ls -R shots || true
       - name: Publish screenshots
         if: always()

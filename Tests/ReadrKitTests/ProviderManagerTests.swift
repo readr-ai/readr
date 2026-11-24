@@ -195,7 +195,7 @@ final class ProviderManagerTests: XCTestCase {
         XCTAssertEqual(Set(ProviderInfo.Kind.allCases).count, ProviderInfo.Kind.allCases.count)
         XCTAssertEqual(
             Set(ProviderInfo.Kind.allCases),
-            Set([.anthropic, .openAI, .chatGPT, .openRouter, .local, .appleIntelligence, .downloadedModel])
+            Set([.anthropic, .openAI, .chatGPT, .openRouter, .local, .appleIntelligence, .geminiNano, .downloadedModel])
         )
         let manager = makeManager(store: FakeCredentialStore(), factory: CapturingFactory())
         XCTAssertTrue(
@@ -242,16 +242,21 @@ final class ProviderManagerTests: XCTestCase {
         let factory = CapturingFactory()
         let manager = makeManager(store: store, factory: factory)
 
-        // The on-device kinds are always available even with an empty store.
-        XCTAssertEqual(manager.availableKinds(), [.local, .appleIntelligence, .downloadedModel])
+        // The on-device kinds are always available even with an empty store —
+        // every one the kit knows, whatever platform this build runs on. Which
+        // of them a reader is OFFERED is the app's filter, not this list's.
+        XCTAssertEqual(manager.availableKinds(), [.local, .appleIntelligence, .geminiNano, .downloadedModel])
 
         try store.save(.apiKey("sk-anthropic"), for: .anthropic)
-        XCTAssertEqual(Set(manager.availableKinds()), Set([.anthropic, .local, .appleIntelligence, .downloadedModel]))
+        XCTAssertEqual(
+            Set(manager.availableKinds()),
+            Set([.anthropic, .local, .appleIntelligence, .geminiNano, .downloadedModel])
+        )
 
         try store.save(.apiKey("sk-openai"), for: .openAI)
         XCTAssertEqual(
             Set(manager.availableKinds()),
-            Set([.anthropic, .openAI, .local, .appleIntelligence, .downloadedModel])
+            Set([.anthropic, .openAI, .local, .appleIntelligence, .geminiNano, .downloadedModel])
         )
 
         // The sign-in kinds surface once their credentials exist: OpenRouter
@@ -262,7 +267,7 @@ final class ProviderManagerTests: XCTestCase {
         )
         XCTAssertEqual(
             Set(manager.availableKinds()),
-            Set([.anthropic, .openAI, .openRouter, .chatGPT, .local, .appleIntelligence, .downloadedModel])
+            Set([.anthropic, .openAI, .openRouter, .chatGPT, .local, .appleIntelligence, .geminiNano, .downloadedModel])
         )
     }
 
@@ -491,6 +496,7 @@ final class ProviderManagerTests: XCTestCase {
             + ProviderCatalog.openRouterModels.count
             + ProviderCatalog.localModels.count
             + ProviderCatalog.appleIntelligenceModels.count
+            + ProviderCatalog.geminiNanoModels.count
             + ProviderCatalog.downloadedModels.count
         XCTAssertEqual(ProviderCatalog.all.count, expected)
     }
@@ -574,5 +580,116 @@ final class ProviderManagerTests: XCTestCase {
             persistingIn: defaults
         )
         XCTAssertNil(manager.selection)
+    }
+
+    // MARK: - Clearing the selection
+
+    func testClearSelectionReturnsToTheDefault() {
+        let fallback = ProviderSelection(kind: .appleIntelligence, modelID: "on-device")
+        let manager = ProviderManager(
+            store: FakeCredentialStore(),
+            factory: CapturingFactory().make,
+            defaultSelection: { fallback }
+        )
+        manager.setActive(kind: .anthropic, modelID: "claude-x")
+        XCTAssertEqual(manager.explicitSelection?.kind, .anthropic)
+
+        manager.clearSelection()
+        XCTAssertNil(manager.explicitSelection, "the reader has chosen nothing again")
+        XCTAssertEqual(manager.selection, fallback, "the default applies once more")
+    }
+
+    /// With no default behind it, un-choosing leaves Ask with nothing — the
+    /// onboarding state, not a selection that fails every question.
+    func testClearSelectionWithNoDefaultLeavesNoProvider() throws {
+        let store = FakeCredentialStore()
+        try store.save(.apiKey("sk-x"), for: .anthropic)
+        let manager = makeManager(store: store, factory: CapturingFactory())
+        manager.setActive(kind: .anthropic)
+        XCTAssertNotNil(try manager.activeProvider())
+
+        manager.clearSelection()
+        XCTAssertNil(manager.selection)
+        XCTAssertNil(try manager.activeProvider())
+    }
+
+    func testClearSelectionRemovesThePersistedSelection() throws {
+        let defaults = try makeDefaults()
+        let store = FakeCredentialStore()
+        let factory = CapturingFactory()
+
+        let first = ProviderManager(
+            store: store, factory: factory.make, persistingIn: defaults
+        )
+        first.setActive(kind: .anthropic, modelID: "claude-x")
+        XCTAssertNotNil(defaults.data(forKey: ProviderManager.selectionDefaultsKey))
+
+        first.clearSelection()
+        XCTAssertNil(
+            defaults.data(forKey: ProviderManager.selectionDefaultsKey),
+            "the key is removed, not left naming a provider nobody chose"
+        )
+
+        // A relaunch over the same defaults finds nothing chosen.
+        let second = ProviderManager(
+            store: store, factory: factory.make, persistingIn: defaults
+        )
+        XCTAssertNil(second.selection)
+    }
+
+    func testClearSelectionWithNothingChosenIsANoOp() throws {
+        let defaults = try makeDefaults()
+        let manager = ProviderManager(
+            store: FakeCredentialStore(),
+            factory: CapturingFactory().make,
+            persistingIn: defaults
+        )
+        manager.clearSelection()
+        XCTAssertNil(manager.explicitSelection)
+        XCTAssertNil(defaults.data(forKey: ProviderManager.selectionDefaultsKey))
+    }
+
+    /// Un-choosing changes no credential, so nothing proven this session is
+    /// forgotten — the settings sheet must not re-probe (and re-bill) every
+    /// other card because the reader disconnected one of them.
+    func testClearSelectionKeepsOtherKindsValidationAndFreshness() async throws {
+        let store = FakeCredentialStore()
+        try store.save(.apiKey("sk-x"), for: .openAI)
+        let provider = CountingValidator()
+        let clock = MutableClock(Date(timeIntervalSince1970: 1_000_000))
+        let manager = makeClockedManager(store: store, provider: provider, now: clock.read)
+
+        await manager.validateIfStale(.openAI, maxAge: 300)
+        XCTAssertEqual(manager.validationState(.openAI), .active)
+        XCTAssertEqual(provider.checks, 1)
+
+        // The reader un-chooses a *different* kind.
+        manager.setActive(kind: .anthropic)
+        manager.clearSelection()
+
+        XCTAssertEqual(manager.validationState(.openAI), .active, "another kind's verdict stands")
+        await manager.validateIfStale(.openAI, maxAge: 300)
+        XCTAssertEqual(provider.checks, 1, "and so does its freshness stamp")
+    }
+
+    /// The same holds for the kind that *was* selected: its credential is
+    /// untouched, so its settled verdict and its stamp survive being
+    /// un-chosen. (`setActive` forgets both, because a new model makes the
+    /// old verdict describe something else; nothing changes here.)
+    func testClearSelectionKeepsTheDroppedKindsOwnVerdict() async throws {
+        let store = FakeCredentialStore()
+        try store.save(.apiKey("sk-x"), for: .openAI)
+        let provider = CountingValidator()
+        let clock = MutableClock(Date(timeIntervalSince1970: 1_000_000))
+        let manager = makeClockedManager(store: store, provider: provider, now: clock.read)
+
+        manager.setActive(kind: .openAI)
+        await manager.validateIfStale(.openAI, maxAge: 300)
+        XCTAssertEqual(manager.validationState(.openAI), .active)
+
+        manager.clearSelection()
+        XCTAssertEqual(manager.validationState(.openAI), .active)
+        await manager.validateIfStale(.openAI, maxAge: 300)
+        XCTAssertEqual(provider.checks, 1, "nothing about the key changed")
     }
 }

@@ -162,10 +162,30 @@ final class FoundationModelsProvider: LLMProvider, OnDeviceReadinessReporting, @
     private let model: SystemLanguageModel
 
     /// Apple's tokeniser runs a little denser than the kit's four-characters-
-    /// per-token estimate on English prose; budget on the safe side.
-    static let charactersPerToken = 3.4
-    /// Headroom for the estimate's error, inside the window.
-    static let windowMargin = 200
+    /// per-token estimate on English prose, so the on-device budget is set on
+    /// the safe side. The figures themselves are the kit's — every small model
+    /// starts from them.
+    static let budget = SmallModelPrompt.Budget.onDevice
+
+    // MARK: Routing off-topic questions
+
+    /// The classifier's one short, passage-free call. What it asks and how its
+    /// answer is read are `SmallModelPrompt`'s, shared with every other small
+    /// model Readr talks to; only the call is here. A failure comes back as an
+    /// empty reply, which the kit reads as "unsure" — the path with citations.
+    static func classifierReply(
+        instructions: String, prompt: String, model: SystemLanguageModel
+    ) async -> String {
+        let session = LanguageModelSession(model: model, instructions: instructions)
+        do {
+            return try await session.respond(
+                to: prompt,
+                options: GenerationOptions(sampling: .greedy, maximumResponseTokens: 3)
+            ).content
+        } catch {
+            return ""
+        }
+    }
 
     init(info: ProviderInfo) {
         self.info = info
@@ -179,33 +199,6 @@ final class FoundationModelsProvider: LLMProvider, OnDeviceReadinessReporting, @
     func countTokens(_ text: String) throws -> Int {
         TokenCounter.estimate(text)
     }
-
-    static func tokens(_ text: String) -> Int {
-        TokenCounter.estimate(text, charactersPerToken: charactersPerToken)
-    }
-
-    // MARK: Routing off-topic questions
-
-    /// One short, passage-free call: is this about the book? Small models are
-    /// good at this yes/no and bad at answering while eight passages compete
-    /// for attention. Unsure or failing → treated as about the book, the
-    /// path with citations.
-    static func isAboutTheBook(_ question: String, model: SystemLanguageModel) async -> Bool? {
-        let session = LanguageModelSession(
-            model: model,
-            instructions: LocalPromptShaping.classifierInstructions
-        )
-        do {
-            let reply = try await session.respond(
-                to: LocalPromptShaping.classifierPrompt(for: question),
-                options: GenerationOptions(sampling: .greedy, maximumResponseTokens: 3)
-            ).content
-            return LocalPromptShaping.isBook(reply: reply)
-        } catch {
-            return nil
-        }
-    }
-
 
     /// The window in tokens. `contextSize` arrived in the 26.4 SDK
     /// (back-deployed to 26.0, where it answers 4,096); CI builds with the
@@ -223,41 +216,54 @@ final class FoundationModelsProvider: LLMProvider, OnDeviceReadinessReporting, @
         AsyncThrowingStream { continuation in
             let task = Task { [model] in
                 do {
-                    let shaped = try await LocalPromptShaping.shape(
-                        request, window: Self.contextWindow(of: model), margin: Self.windowMargin,
-                        measure: Self.tokens,
-                        classify: { question in await Self.isAboutTheBook(question, model: model) }
-                    )
-                    let instructions = shaped.instructions
-                    let prompt = shaped.prompt
-                    let answer = shaped.answerTokens
-                    let session = LanguageModelSession(model: model, instructions: instructions)
+                    // The whole recipe — the tier, the off-topic routing, the
+                    // wording, the window arithmetic — is the kit's. This
+                    // provider supplies the two model calls and nothing else.
+                    let plan = try await SmallModelPrompt.plan(
+                        request: request,
+                        window: Self.contextWindow(of: model),
+                        budget: Self.budget
+                    ) { instructions, prompt in
+                        await Self.classifierReply(
+                            instructions: instructions, prompt: prompt, model: model
+                        )
+                    }
+                    if plan.isGeneral {
+                        DiagnosticsLog.shared.record(
+                            .info, .provider,
+                            "on-device: question judged not about the book; answering without passages"
+                        )
+                    }
+                    try Task.checkCancellation()
+                    let session = LanguageModelSession(model: model, instructions: plan.instructions)
                     // Nucleus sampling with some warmth: greedy-ish decoding is
                     // what sends a small model round the same sentence.
                     let options = GenerationOptions(
                         sampling: .random(probabilityThreshold: 0.9),
                         temperature: 0.5,
-                        maximumResponseTokens: answer
+                        maximumResponseTokens: plan.answerTokens
                     )
 
                     // Snapshots are cumulative; the kit's chunks are deltas.
-                    // Text is released a completed sentence at a time, held
-                    // back just long enough for the repetition guard to judge
-                    // it — so a loop ends before its first repeat is shown,
-                    // and the reader never sees the same sentence six times.
-                    // What the reader sees is the model's text minus sentences
-                    // pasted from the passages (`isCopied`) — a whole copied
-                    // sentence answers nothing — released a completed sentence
-                    // at a time so both guards judge it first.
-                    var shown = ShownAnswer(source: shaped.copySource)
-                    var content = ""
-                    for try await snapshot in session.streamResponse(to: prompt, options: options) {
+                    // `SnapshotAnswerStream` is the converter, and it decides
+                    // what a reader sees — settled sentences only, no repeats,
+                    // nothing pasted out of the passages.
+                    var shown = SnapshotAnswerStream(source: plan.copiedSentenceSource)
+                    streaming: for try await snapshot in session.streamResponse(
+                        to: plan.prompt, options: options
+                    ) {
                         try Task.checkCancellation()
-                        content = snapshot.content
-                        guard shown.observe(content, into: continuation) else { break }
+                        let step = shown.advance(to: snapshot.content)
+                        Self.emit(step, into: continuation)
+                        if step.isLooping {
+                            DiagnosticsLog.shared.record(
+                                .warning, .provider, "on-device answer cut short: the model began repeating itself"
+                            )
+                            break streaming
+                        }
                     }
                     // The final fragment, if the stream ended cleanly.
-                    shown.finish(content, into: continuation)
+                    Self.emit(shown.finish(), into: continuation)
                     continuation.finish()
                 } catch {
                     continuation.finish(throwing: Self.mapped(error))
@@ -267,6 +273,19 @@ final class FoundationModelsProvider: LLMProvider, OnDeviceReadinessReporting, @
         }
     }
 
+    /// One step of the answer, onto the wire and into the log.
+    private static func emit(
+        _ step: SnapshotAnswerStream.Output,
+        into continuation: AsyncThrowingStream<ChatChunk, Error>.Continuation
+    ) {
+        for _ in 0..<step.droppedCopiedSentences {
+            DiagnosticsLog.shared.record(
+                .info, .provider, "on-device answer: dropped a sentence copied from the passages"
+            )
+        }
+        if !step.delta.isEmpty { continuation.yield(ChatChunk(textDelta: step.delta)) }
+    }
+
     // MARK: Errors
 
     static func mapped(_ error: Error) -> Error {
@@ -274,6 +293,8 @@ final class FoundationModelsProvider: LLMProvider, OnDeviceReadinessReporting, @
         // The provider's own errors pass through untouched — `.tooLong`
         // carries the one message that tells the reader what to do.
         if let own = error as? OnDeviceModelError { return own }
+        // The kit's "no room for an answer" is this provider's `.tooLong`.
+        if error is SmallModelPrompt.DoesNotFit { return OnDeviceModelError.tooLong }
         guard let generation = error as? LanguageModelSession.GenerationError else {
             return OnDeviceModelError.other(String(String(describing: error).prefix(300)))
         }

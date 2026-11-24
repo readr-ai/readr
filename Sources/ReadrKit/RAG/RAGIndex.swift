@@ -11,12 +11,23 @@ public struct RetrievedPassage: Sendable, Hashable {
     /// the prompt. Nil is treated as unknown — and withheld — when a frontier
     /// is in force.
     public var chapterIndex: Int?
+    /// Where the passage starts in `Chapter.text`, when the index knows it.
+    /// Carried through to `Citation` so a source the reader taps can be
+    /// opened at the passage rather than at the top of the chapter.
+    public var characterOffset: Int?
 
-    public init(text: String, locator: String, score: Double, chapterIndex: Int? = nil) {
+    public init(
+        text: String,
+        locator: String,
+        score: Double,
+        chapterIndex: Int? = nil,
+        characterOffset: Int? = nil
+    ) {
         self.text = text
         self.locator = locator
         self.score = score
         self.chapterIndex = chapterIndex
+        self.characterOffset = characterOffset
     }
 }
 

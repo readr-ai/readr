@@ -54,7 +54,7 @@ struct LibraryNotesView: View {
             }
         }
         .background(theme.background)
-        .navigationTitle("Highlights & Notes")
+        .navigationTitle("Highlights")
     }
 
     // MARK: Layouts
@@ -221,12 +221,10 @@ struct LibraryNotesView: View {
 
     // MARK: Counts
 
-    private func annotationCount(for book: Book) -> Int {
-        model.highlights(for: book).count + model.pdfHighlights(for: book).count
-    }
+    private func annotationCount(for book: Book) -> Int { model.annotationCount(for: book) }
 
     private func annotationLabel(for book: Book) -> String {
         let count = annotationCount(for: book)
-        return count == 1 ? "1 annotation" : "\(count) annotations"
+        return count == 1 ? "1 highlight" : "\(count) highlights"
     }
 }

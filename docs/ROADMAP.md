@@ -32,8 +32,10 @@ highlights→article) together, per project direction.
 - [x] Providers: Anthropic, OpenAI, Local (Ollama) with SSE streaming
 - [x] On this device: Apple's on-device model (FoundationModels, iOS/macOS 26)
       as a zero-setup provider, default until the reader chooses one
-- [x] Downloaded model: Qwen3.5 4B / 2B (4-bit, MLX) downloaded on request
-      for iPhones with 8 GB / 6 GB — the stronger no-key option (iOS only)
+- [x] Downloaded-model integration: Qwen3.5 2B first, optional 4B on 12 GB+
+      iPhones/iPads; explicit download, validated offline load and shared MLX
+      ownership with narration. Physical-device quality/memory checks remain
+      required before release; build success does not qualify either tier.
 - [x] Provider catalog + manager (selection, factory, local-mismatch guard)
 - [x] Provider settings UI: API key, OAuth sign-in, local model, model picker
 - [x] Loopback OAuth server + browser coordinator (app)
@@ -155,16 +157,13 @@ docs/DEVELOPMENT-PLAN.md §M6–M8.
 - [ ] Deferred: multi-window / Stage Manager (macOS per-book WindowGroup is
   the template); iCloud sync (seam: `LibraryStore` behind
   `AppModel.makeDefaultStore()`)
-- [ ] Deferred: macOS UI for the reader typography controls (font /
-  line-spacing / justification live in the iOS Appearance popover; macOS
-  renders the shared defaults but its inline toolbar has no pickers yet)
-- [ ] Deferred (UX review, Jul 2026): unify sheet-header grammar (Ask /
-  Article Studio / Notes / Settings each style their title+Done
-  differently — one shared header component; touches UITest hooks so it
-  needs its own pass); one typeface for AI output (ask answers are sans,
-  composed articles serif); dedupe/label ask source chips; note-indicator
-  underline parity across themes; PDF chrome parity with the EPUB reader
-  toolbar
+- [x] macOS reader typography controls — the macOS bar now carries the
+  same Aa popover as iOS (September 2026 UX review, F3)
+- [x] Sheet-header grammar unified (Ask / Article ✦ caps, Done on the
+  right, one note editor — F4). Still deferred from the Jul 2026 review:
+  one typeface for AI output (ask answers are sans, composed articles
+  serif); dedupe/label ask source chips; note-indicator underline parity
+  across themes; PDF chrome parity with the EPUB reader toolbar
 
 ## M9 — Listen (text-to-speech)
 - [x] `ReadrKit.Speech`: sentence segmentation, playlist across chapters,
@@ -172,8 +171,13 @@ docs/DEVELOPMENT-PLAN.md §M6–M8.
   unit-tested on Linux CI against a mock engine
 - [x] `AVSpeechEngine` (Apple's on-device voices — offline, nothing to
   download, no egress), `NarrationModel`, and the reader's Listen bar
-- [x] Controls: play/pause, sentence and chapter skip, speed, voice, sleep
-  timer (timed + end-of-chapter), auto-advance
+- [x] Controls: play/pause, sentence skip, speed, sleep timer (timed +
+  end-of-chapter), auto-advance. *September 2026 (UX review, F6): the bar
+  became a now-reading card — chapter in caps, the sentence, a progress
+  hairline, ◀ ● ▶ with speed and Sleep; the voice is chosen in the Aa
+  popover, chapter skips live in Contents, and the "N min ready" figure is
+  gone. Ask opened while listening pauses the voice and is about the
+  sentence being read; it resumes when Ask goes away.*
 - [x] The page follows the voice, and the position it persists is where the
   reader listened to
 - [x] iOS background audio: `UIBackgroundModes: audio`, Now Playing, and
@@ -308,6 +312,74 @@ Note what this *fixes* for free: Kokoro takes a speed input directly, so the
 empirical AVFoundation rate calibration in `SpeechSettings` stops being
 needed on that path.
 
+
+## A1–A8 — Android (in progress)
+
+Scope, measurements and the decision record are in the private Android
+scoping note (2026-09-06; `docs/research/` is untracked by design). Same kit, Kotlin + Compose UI, swift-java
+bridge; `android/README.md` has the build recipe.
+
+### A1 — Foundation
+- [x] `android/` Gradle project; `:readrkit` cross-compiles `ReadrKit` + the
+  `ReadrAndroid` facade for arm64/x86_64 and packages the Swift runtime
+- [x] Keystore-backed `SecretStore` implementing the kit's `CredentialStore`
+  (AES-GCM, key in the Android Keystore, never plaintext on disk)
+- [x] Library: import EPUB (Kotlin unzips with the kit's caps, kit parses) and
+  plain text, sample book seeded on first launch, covers, reading position
+- [x] Marginalia theme in Compose; shelf; a scrolling chapter view as the
+  phase-1 reading surface
+- [x] CI lane: kit XCTest suite on an x86_64 emulator + instrumented tests
+- [ ] Play Console account, closed-test track
+
+### A2 — Reading
+- [x] A2a: paginated surface over `Chapter.text` — layout-accurate pages,
+  running head + page label, tap zones and swipes, chapter overflow, the
+  Apple reader's anchor/save timing; Appearance sheet (theme, size, font,
+  spacing, justify; iOS preference keys); Contents sheet (real TOC or spine)
+- [x] A2b: selection, highlights (four colours), notes, bookmarks, Highlights
+  list — long-press selection with handles, the annotation capsule, notes on
+  highlights, the bar's bookmark ribbon and the Highlights sheet
+- [x] A2c: in-book search, inline images, internal links + footnotes, double
+  page on wide screens, scroll layout — plus the reader's link policy (web,
+  mail and telephone only) and a scroll drawn as chunks, not pages
+
+### A3 — Ask
+- [x] A3a: provider settings — the kit's own `providersJSON`, keys in the
+  Keystore, the kit's rule for what a saved key does to the selection
+- [x] A3b: Ask as a full-height sheet — streamed answers, located citations,
+  spoiler-scoped by default, the kit's Markdown blocks off the hot path.
+  Decision (2026-09-07): phones without Nano get no no-key tier — the same
+  position as iPhones older than 15.
+- [ ] A3c: Gemini Nano through ML Kit — the readiness probe answers `ready`
+  and Ask can actually route to the phone's own model
+
+### A4 — Listen
+- [x] A4a: narration over the platform voice — the kit's `NarrationController`
+  behind a Kotlin `SpeechBackend` (Android has no pause, so `SpeechEngine`
+  gained `pausesInPlace` and the kit stops the engine and re-speaks the
+  remainder itself), the now-reading card, the page following the voice,
+  Listen from a selection, and Ask pausing the voice
+- [x] A4b: the voice keeps reading with the screen off — a media3
+  `MediaSessionService` whose player is a description of the narration model
+  (the book and the chapter, never a line of the book; the chapters the kit
+  will narrate are the playlist, so the notification's ⏭/⏮ are chapters), audio
+  focus on speech rules with the *kit* holding the pause
+  (`NarrationHoldReason.audioInterrupted`, so a reader's own pause survives the
+  regain), the notification permission asked at the first Listen and degraded
+  gracefully; and the voice picker in the Appearance sheet, ordered and worded
+  entirely by the kit's `VoiceSelector` through the facade, filled on the tap
+  that opens it and pushed when the phone's engine reports in
+
+A4 is the book read aloud, end to end: the kit's `NarrationController` behind
+the platform synthesizer, the now-reading card and the page that follows the
+voice, Listen from a selection, Ask pausing it — and now the lock screen, the
+headset and the reader's own choice of narrator. Still open: the read-along
+underline, and moving the voice's display name into the facade (the one
+reader-facing string on the Android side Kotlin still composes).
+
+### Next
+- A5 PDF, A6 Readr Voice (research: CPU Kokoro measured marginal), A7 article
+  studio + bug report, A8 Play production
 
 ## Open questions / decisions to revisit
 - OAuth feasibility for "log in with Claude / ChatGPT" vs. API keys only.

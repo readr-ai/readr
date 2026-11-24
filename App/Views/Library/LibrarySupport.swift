@@ -50,6 +50,21 @@ enum LibraryProgress {
         guard fraction > 0 else { return nil }
         return min(fraction, 1)
     }
+
+    /// "~N min left in chapter" for a text book with a saved position. PDF
+    /// positions get none: their chapter/offset fields don't track the page.
+    ///
+    /// `lengths` is an autoclosure: measuring a book the first time is a
+    /// pass over its whole text, so a grid of never-opened books must not
+    /// pay it for an estimate the guard is about to decline.
+    static func minutesLeft(
+        in book: Book, position: ReadingPosition?, lengths: @autoclosure () -> ReadingLengthTable
+    ) -> Int? {
+        guard let position, position.pdfPageIndex == nil,
+              book.chapters.indices.contains(position.chapterIndex) else { return nil }
+        let minutes = ReadingTimeEstimator().minutesLeft(in: lengths(), at: ReadingFrontier(position))
+        return minutes > 0 ? minutes : nil
+    }
 }
 
 /// The Import… and AI-provider (gear) header buttons, shared by Home and every
@@ -182,12 +197,17 @@ struct CardCaption: View {
 
 /// The Marginalia progress mark under every cover: a 2px hairline track with
 /// an ink fill at the reading fraction, and an 11px muted caption ("34%",
-/// "Not started", or "Finished").
+/// "34% · ~9 min left", or "Finished"). A book with no progress gets the
+/// bare track and no caption — "Not started" under every unopened cover was
+/// a label for the absence of information. The caption's line is still
+/// reserved so every cell in a grid row keeps the same height.
 struct LibraryProgressHairline: View {
     /// Fraction read, nil when the book was never opened (see
     /// `LibraryProgress.fraction`).
     let fraction: Double?
     let isFinished: Bool
+    /// "~N min left" beside the percentage, when known.
+    var minutesLeft: Int? = nil
     let theme: ReadingTheme
 
     var body: some View {
@@ -201,9 +221,10 @@ struct LibraryProgressHairline: View {
             }
             .frame(height: 2)
             .clipShape(Capsule())
-            Text(label)
+            Text(label ?? " ")
                 .font(.system(size: 11))
                 .foregroundStyle(theme.muted)
+                .lineLimit(1)
         }
         .accessibilityHidden(true)
     }
@@ -213,10 +234,12 @@ struct LibraryProgressHairline: View {
         return CGFloat(min(max(fraction ?? 0, 0), 1))
     }
 
-    private var label: String {
+    private var label: String? {
         if isFinished { return "Finished" }
-        guard let fraction, fraction > 0 else { return "Not started" }
-        return "\(Int((min(fraction, 1) * 100).rounded()))%"
+        guard let fraction, fraction > 0 else { return nil }
+        let percent = "\(Int((min(fraction, 1) * 100).rounded()))%"
+        if let minutesLeft { return "\(percent) \u{00B7} ~\(minutesLeft) min left" }
+        return percent
     }
 }
 

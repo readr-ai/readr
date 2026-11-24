@@ -47,26 +47,11 @@ public enum DownloadedModelCatalog {
 
     static let gigabyte: Int64 = 1_000_000_000
 
-    /// Best first. Qwen3.5 is Apache-2.0, in the MLX community's 4-bit
-    /// conversions, and the strongest small model on grounded question
-    /// answering as of September 2026; the 2B variant is the only model
-    /// with a measured footprint (~1.3 GB peak) that plausibly fits a 6 GB
-    /// phone.
+    /// Smallest model leads until combined narration/LLM memory has been
+    /// qualified on devices. 4B is an explicit choice on 12 GB+ hardware.
     public static let all: [DownloadedModelSpec] = [
-        DownloadedModelSpec(
-            repository: "mlx-community/Qwen3.5-4B-4bit",
-            displayName: "Qwen3.5 4B",
-            downloadBytes: 3_060_000_000,
-            minimumPhysicalMemory: 7 * gigabyte + gigabyte / 2,
-            contextBudget: 8_192
-        ),
-        DownloadedModelSpec(
-            repository: "mlx-community/Qwen3.5-2B-4bit",
-            displayName: "Qwen3.5 2B",
-            downloadBytes: 1_750_000_000,
-            minimumPhysicalMemory: 5 * gigabyte + gigabyte / 2,
-            contextBudget: 8_192
-        ),
+        DownloadedModelSpec(repository: "mlx-community/Qwen3.5-2B-4bit", displayName: "Qwen3.5 2B", downloadBytes: 1_750_000_000, minimumPhysicalMemory: 5 * gigabyte + gigabyte / 2, contextBudget: 4_096),
+        DownloadedModelSpec(repository: "mlx-community/Qwen3.5-4B-4bit", displayName: "Qwen3.5 4B", downloadBytes: 3_060_000_000, minimumPhysicalMemory: 12 * gigabyte, contextBudget: 4_096),
     ]
 
     public static func spec(for repository: String) -> DownloadedModelSpec? {

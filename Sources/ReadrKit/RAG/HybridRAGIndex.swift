@@ -148,7 +148,7 @@ public final class HybridRAGIndex: RAGIndex, @unchecked Sendable {
             let chunk = entry.chunks[item.index]
             return RetrievedPassage(
                 text: chunk.text, locator: chunk.locator, score: item.score,
-                chapterIndex: chunk.chapterIndex
+                chapterIndex: chunk.chapterIndex, characterOffset: chunk.characterOffset
             )
         }
     }

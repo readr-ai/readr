@@ -2,6 +2,9 @@ import Foundation
 import ReadrKit
 import CoreGraphics
 import CoreText
+#if canImport(PDFKit)
+import PDFKit
+#endif
 
 /// App-level state for M1: the library, import, reading position, and
 /// highlights. AI features (ask, article) attach to this in later milestones.
@@ -22,12 +25,6 @@ final class AppModel: ObservableObject {
     /// that will be shown as extracted text). Same alert-binding pattern as
     /// `importError`, but the import itself succeeded.
     @Published var importNotice: String?
-    /// A book the library asked to open straight into a recap (the Continue
-    /// Reading card's Recap action). The reader for that book consumes it on
-    /// appearance — or on change, when its window is already open — and
-    /// presents Ask with the recap already sent. Nil the rest of the time.
-    @Published var pendingRecapBookID: UUID?
-
     private let store: any LibraryStore
     private let parsers: BookParserRegistry
     private let highlightService = HighlightService()
@@ -99,6 +96,13 @@ final class AppModel: ObservableObject {
         var onDeviceDefault: ProviderManager.DefaultSelection?
         if !isUITest {
             onDeviceDefault = {
+                #if os(iOS)
+                if MLXLLMProvider.isSupportedDevice,
+                   let model = DownloadedModelCatalog.recommendedModel(forPhysicalMemory: MLXLLMProvider.physicalMemory),
+                   MLXModelStore.snapshotIsComplete(for: model.repository, in: .default) {
+                    return ProviderSelection(kind: .downloadedModel, modelID: model.repository)
+                }
+                #endif
                 guard OnDeviceModel.readiness(maxAge: 5) == .ready else { return nil }
                 return ProviderSelection(
                     kind: .appleIntelligence,
@@ -118,7 +122,12 @@ final class AppModel: ObservableObject {
                 }
                 return try await OAuthClient(config: config).refresh(stored)
             },
-            defaultSelection: onDeviceDefault
+            defaultSelection: onDeviceDefault,
+            // The kinds THIS build has. Everything downstream — Settings'
+            // cards, the picker, what Ask is allowed to resolve — derives
+            // from this one list, so Android's on-device model can never
+            // surface on an Apple device (and the reverse over there).
+            supportedKinds: Set(SettingsModel.allKinds)
         )
 
         // All stored properties are initialized above — only now may init
@@ -258,7 +267,13 @@ final class AppModel: ObservableObject {
             .appendingPathComponent("readr.log")
         let fileSink = DiagnosticsFileSink(fileURL: logURL)
         DiagnosticsLog.shared.sink = { event in fileSink.write(event) }
+        diagnosticsFileSink = fileSink
     }
+
+    /// The installed file sink, so Settings › Report a bug can read earlier
+    /// sessions back into the report (`BugReportComposer.evidence`) and offer
+    /// the raw file for sharing. Nil only before `init` has run.
+    private(set) static var diagnosticsFileSink: DiagnosticsFileSink?
 
     private static var appVersionAndBuild: String {
         let info = Bundle.main.infoDictionary
@@ -365,8 +380,17 @@ final class AppModel: ObservableObject {
         )
         let voyage = Book(
             metadata: BookMetadata(title: "A Voyage North", authors: ["I. Larsen"]),
-            chapters: [Chapter(title: "Departure", order: 0, text: paragraph)],
-            estimatedTokenCount: 90
+            // Five one-page chapters: the saved position is the second, so
+            // there is progress to recap, and a UI test can still turn three
+            // pages from there and watch the welcome-back line go.
+            chapters: [
+                Chapter(title: "Departure", order: 0, text: paragraph),
+                Chapter(title: "Open Water", order: 1, text: paragraph),
+                Chapter(title: "Landfall", order: 2, text: paragraph),
+                Chapter(title: "Home Again", order: 3, text: paragraph),
+                Chapter(title: "Afterword", order: 4, text: paragraph),
+            ],
+            estimatedTokenCount: 450
         )
         let letters = Book(
             metadata: BookMetadata(title: "Letters on Design", authors: ["M. Ortiz"]),
@@ -437,9 +461,17 @@ final class AppModel: ObservableObject {
             }
         }
 
-        // "A Voyage North" is a fresh import (leads Recently Added) …
+        // "A Voyage North" was read into its second chapter and then left
+        // for six days: it sits second on Continue Reading, and opening it
+        // shows the welcome-back line with its Recap (no highlights, so the
+        // Article studio's "highlight something first" guidance is still
+        // reachable from it).
+        try? store.savePosition(ReadingPosition(chapterIndex: 1, characterOffset: 0), for: voyage.id)
         try? store.saveBookState(
-            BookState(addedAt: now.addingTimeInterval(-3_600)),
+            BookState(
+                addedAt: now.addingTimeInterval(-8 * 86_400),
+                lastOpenedAt: now.addingTimeInterval(-6 * 86_400)
+            ),
             for: voyage.id
         )
         // … and "Letters on Design" is finished, populating the Finished
@@ -495,11 +527,20 @@ final class AppModel: ObservableObject {
         }
         context.closePDF()
 
+        // Chapters exactly as an import stores them: one per page, holding
+        // the text PDFKit extracts (a line break at every wrapped line) — so
+        // the fixture takes the same page-is-chapter path a real PDF does.
+        // A one-chapter fixture once hid that Listen on page 2 had nothing
+        // to start from, on a shape no import ever produces.
+        var pageTexts: [String?] = [pageOne, pageTwo]
+        #if canImport(PDFKit)
+        if let document = PDFDocument(url: url), document.pageCount > 0 {
+            pageTexts = (0..<document.pageCount).map { document.page(at: $0)?.string }
+        }
+        #endif
         let book = Book(
             metadata: BookMetadata(title: "Field Notes", authors: ["R. Calder"]),
-            chapters: [
-                Chapter(title: "Field Notes", order: 0, text: pageOne + "\n\n" + pageTwo)
-            ],
+            chapters: PDFPageChapters.build(fromPageTexts: pageTexts).chapters,
             estimatedTokenCount: 80,
             sourceFilename: "field-notes.pdf"
         )
@@ -563,6 +604,36 @@ final class AppModel: ObservableObject {
     /// windows), and since `Book.id` is random per parse the store can't
     /// dedupe after the fact.
     private var importingURLs: Set<URL> = []
+
+    /// Several files from one picker or drop, reported once. `importBook`
+    /// writes the single `importError` / `importNotice` per file, so a
+    /// batch would show only whichever problem came last; this collects
+    /// every failure by file name and every notice, then presents each
+    /// alert once.
+    func importBooks(at urls: [URL]) async {
+        guard urls.count > 1 else {
+            if let url = urls.first { await importBook(at: url) }
+            return
+        }
+        var failures: [String] = []
+        var notices: [String] = []
+        for url in urls {
+            importError = nil
+            importNotice = nil
+            await importBook(at: url)
+            if let error = importError {
+                failures.append("\u{2022} \(url.lastPathComponent): \(error)")
+            }
+            if let notice = importNotice {
+                notices.append(notice)
+            }
+        }
+        importNotice = notices.isEmpty ? nil : notices.joined(separator: "\n\n")
+        importError = failures.isEmpty
+            ? nil
+            : "\(failures.count) of \(urls.count) files couldn\u{2019}t be imported.\n\n"
+                + failures.joined(separator: "\n")
+    }
 
     func importBook(at url: URL) async {
         // Idempotent against concurrent duplicate delivery. The check-and-insert
@@ -784,6 +855,9 @@ final class AppModel: ObservableObject {
         bookmarksByBook[book.id] = nil
         statesByBook[book.id] = nil
         positionsByBook[book.id] = nil
+        lastOpenedBeforeOpen[book.id] = nil
+        conversationsByBook[book.id]?.cancel()
+        conversationsByBook[book.id] = nil
         books = store.allBooks()
     }
 
@@ -823,12 +897,34 @@ final class AppModel: ObservableObject {
     }
 
     /// Record that the reader opened this book (drives "Continue Reading").
+    /// Stamps `lastOpenedAt`, keeping the stamp it replaced for the reader's
+    /// welcome-back line (`WelcomeBack`). The record always holds the stamp
+    /// the MOST RECENT stamping replaced: the library shell stamps on open
+    /// and the reader takes the record before stamping again, so the
+    /// reader's own stamp records the shell's (seconds ago) — and a stamp
+    /// nobody takes (macOS fronting a window that is already open) is simply
+    /// replaced by the next one, never greeted late.
     func markOpened(_ book: Book) {
         var state = bookState(for: book) ?? BookState()
+        lastOpenedBeforeOpen[book.id] = state.lastOpenedAt
         state.lastOpenedAt = Date()
         try? store.saveBookState(state, for: book.id)
         statesByBook[book.id] = state
     }
+
+    /// The `lastOpenedAt` the latest open replaced — nil on a first open —
+    /// taken once by the reader, which clears it. A reader that appears
+    /// before anything stamped the book (a window restored at launch) reads
+    /// the stamp still on the book, which IS the previous open.
+    func takeLastOpenedBeforeOpen(for book: Book) -> Date? {
+        defer { lastOpenedBeforeOpen.removeValue(forKey: book.id) }
+        if let recorded = lastOpenedBeforeOpen[book.id] { return recorded }
+        return bookState(for: book)?.lastOpenedAt
+    }
+
+    /// Absent key: nothing stamped since the reader last took it. Present
+    /// with nil: stamped, and it was the book's first open.
+    private var lastOpenedBeforeOpen: [UUID: Date?] = [:]
 
     func setFinished(_ finished: Bool, for book: Book) {
         var state = bookState(for: book) ?? BookState()
@@ -854,6 +950,16 @@ final class AppModel: ObservableObject {
         books.sorted {
             (statesByBook[$0.id]?.addedAt ?? .distantPast)
                 > (statesByBook[$1.id]?.addedAt ?? .distantPast)
+        }
+    }
+
+    /// Books never opened and not marked finished, newest import first —
+    /// Home's second shelf. Unlike a "Recently Added" row it never repeats a
+    /// book that is already on Continue Reading (or Finished), so a small
+    /// library reads as one shelf, not two copies of it.
+    var notStarted: [Book] {
+        recentlyAdded.filter {
+            statesByBook[$0.id]?.lastOpenedAt == nil && statesByBook[$0.id]?.isFinished != true
         }
     }
 
@@ -991,6 +1097,55 @@ final class AppModel: ObservableObject {
     /// The active LLM provider, or nil if none is configured.
     /// `-uiTestStubLLM` (CI screenshot walk only) substitutes a canned local
     /// provider so the Ask flow can be exercised deterministically offline.
+    /// The one answer to "is a model connected?" — Home's nudge and the
+    /// sidebar footer both ask this, so they can never disagree.
+    var hasConnectedProvider: Bool { activeProvider() != nil }
+
+    // MARK: Ask conversations
+
+    /// One Ask conversation per book for this session — never persisted.
+    /// Owned here, not by a reader view, so closing a book and reopening
+    /// it keeps the transcript (docs/DESIGN.md, "one conversation per
+    /// book, per session"); `removeBook` drops it with the book.
+    private var conversationsByBook: [UUID: AskViewModel] = [:]
+
+    /// The book's conversation, made on first use.
+    func askConversation(for book: Book) -> AskViewModel {
+        if let existing = conversationsByBook[book.id] { return existing }
+        let conversation = makeAskConversation(for: book)
+        conversationsByBook[book.id] = conversation
+        return conversation
+    }
+
+    /// A fresh conversation for the book, the old one cancelled.
+    func startNewAskConversation(for book: Book) -> AskViewModel {
+        conversationsByBook[book.id]?.cancel()
+        let conversation = makeAskConversation(for: book)
+        conversationsByBook[book.id] = conversation
+        return conversation
+    }
+
+    private func makeAskConversation(for book: Book) -> AskViewModel {
+        AskViewModel(
+            makeService: { [weak self] in self?.makeAskService() },
+            prepare: { [weak self] in
+                await self?.ensureIndexed(book)
+                await self?.refreshActiveProviderCredentialsIfNeeded()
+            },
+            book: book,
+            selection: nil,
+            initialQuestion: nil,
+            providerName: { [weak self] in self?.providerManager.selection?.kind.rawValue ?? "none" },
+            answersFromBookOnly: { [weak self] in self?.providerManager.selection?.kind == .appleIntelligence }
+        )
+    }
+
+    /// Highlights of both kinds, for the counts the shelf, the review and
+    /// the reader's Highlights tab show.
+    func annotationCount(for book: Book) -> Int {
+        highlights(for: book).count + pdfHighlights(for: book).count
+    }
+
     func activeProvider() -> LLMProvider? {
         if ProcessInfo.processInfo.arguments.contains("-uiTestStubLLM") {
             return UITestStubProvider()

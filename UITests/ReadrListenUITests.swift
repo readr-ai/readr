@@ -93,6 +93,60 @@ final class ReadrListenUITests: XCTestCase {
         XCTAssertTrue(waitForText(app, "Chapter One"))
     }
 
+    // MARK: - Listen from a selection
+
+    /// Select a word mid-page, tap the annotation bar's headphones, and the
+    /// Listen bar appears reading the sentence the word is in — the fix for
+    /// "there's no way to start from the middle of a chapter".
+    ///
+    /// Same LIMITATION as the highlight-from-selection flow in
+    /// ReadrFlowUITests: XCUITest has no text-selection API, so a long-press
+    /// (then a double-tap) is attempted and the test SKIPS if neither raises
+    /// the annotation bar on this simulator boot.
+    func testListenFromSelectionStartsNarrationAtThatSentence() throws {
+        let app = launchSeeded()
+        openSampleBook(app)
+
+        let text = app.textViews.firstMatch
+        XCTAssertTrue(text.waitForExistence(timeout: 5), "The reading surface should be present")
+
+        let listenHere = element(app, "annotation.listen")
+        var barIsUp = false
+        for dy in [0.5, 0.65, 0.3, 0.42] {
+            let point = text.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: dy))
+            point.press(forDuration: 1.2)
+            if !listenHere.waitForExistence(timeout: 5) {
+                point.doubleTap()
+                _ = listenHere.waitForExistence(timeout: 5)
+            }
+            if listenHere.exists { barIsUp = true; break }
+        }
+        guard barIsUp else {
+            throw XCTSkip(
+                "No annotation bar at any probed press point — word selection "
+                    + "isn't automatable on this simulator boot. The seek rule is "
+                    + "pinned in ReadrKit (SpeechPlaylistTests, NarrationControllerTests)."
+            )
+        }
+        // Whatever sentence the press landed in is what the bar must read.
+        listenHere.tap()
+
+        XCTAssertTrue(
+            element(app, "listen.bar").waitForExistence(timeout: 5),
+            "Listen from here should reveal the Listen bar"
+        )
+        let sentence = element(app, "listen.sentence")
+        XCTAssertTrue(sentence.waitForExistence(timeout: 5))
+        let spoken = (sentence.label.isEmpty ? sentence.value as? String : sentence.label) ?? ""
+        XCTAssertFalse(
+            spoken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+            "The bar should name the sentence being read"
+        )
+        // Closing the bar stops narration, as with the toolbar Listen.
+        element(app, "listen.close").tap()
+        XCTAssertTrue(element(app, "listen.bar").waitForNonExistence(timeout: 5))
+    }
+
     /// Opens the seeded book and starts narration.
     @discardableResult
     private func startListening(_ app: XCUIApplication) -> XCUIApplication {
@@ -133,15 +187,19 @@ final class ReadrListenUITests: XCTestCase {
         let app = launchSeeded()
         startListening(app)
 
+        // The card: ◀ ● ▶, speed, sleep, ✕. Chapter skips live in Contents
+        // and the voice in the Aa popover (September 2026 UX review, F6).
         for id in [
-            "listen.previousChapter", "listen.previous", "listen.playPause",
-            "listen.next", "listen.nextChapter",
-            "listen.speed", "listen.voice", "listen.sleep", "listen.close",
+            "listen.previous", "listen.playPause", "listen.next",
+            "listen.speed", "listen.sleep", "listen.close",
         ] {
             XCTAssertTrue(
                 element(app, id).waitForExistence(timeout: 5),
-                "Narration control '\(id)' should be on the Listen bar"
+                "Narration control '\(id)' should be on the Listen card"
             )
+        }
+        for id in ["listen.previousChapter", "listen.nextChapter", "listen.voice", "listen.ahead"] {
+            XCTAssertFalse(element(app, id).exists, "'\(id)' left the card")
         }
     }
 
@@ -225,7 +283,7 @@ final class ReadrListenUITests: XCTestCase {
         // Each skip cancels the utterance in flight and starts the next; the
         // bar must survive all four and still be speaking afterwards.
         for id in [
-            "listen.next", "listen.previous", "listen.nextChapter", "listen.previousChapter",
+            "listen.next", "listen.previous",
         ] {
             let skip = element(app, id)
             XCTAssertTrue(skip.waitForExistence(timeout: 5))
@@ -299,12 +357,79 @@ final class ReadrListenUITests: XCTestCase {
         )
     }
 
-    func testVoiceMenuOpens() {
+    // The narrator is chosen in the Aa popover, once — not on every card —
+    // which means BEFORE the first Listen too: the voices are resolved for
+    // the popover, not by starting narration.
+    func testVoiceCanBeChosenBeforeListening() {
+        let app = launchSeeded()
+        openSampleBook(app)
+
+        let appearance = element(app, "reader.appearance")
+        XCTAssertTrue(appearance.waitForExistence(timeout: 5))
+        appearance.tap()
+        let voice = element(app, "appearance.voice")
+        XCTAssertTrue(voice.waitForExistence(timeout: 5), "the Aa popover should offer the voice")
+        XCTAssertFalse(
+            ((voice.value as? String) ?? "").isEmpty,
+            "The row should name the book's voice before anything has been read aloud"
+        )
+        voice.tap()
+        XCTAssertTrue(menuRow(app, containing: "More voices").waitForExistence(timeout: 5))
+        let none = NSPredicate(format: "label CONTAINS %@ OR title CONTAINS %@",
+                               "No voices installed", "No voices installed")
+        XCTAssertFalse(
+            app.descendants(matching: .any).matching(none).firstMatch.exists,
+            "The voices are resolved for the popover, not only when narration starts"
+        )
+    }
+
+    // Contents is the card's chapter skip: a jump there takes the voice
+    // along, rather than the voice reading on where it was and turning the
+    // page straight back.
+    func testContentsJumpTakesTheVoiceAlong() {
+        let app = launchSeeded()
+        startListening(app)
+        let sentence = element(app, "listen.sentence")
+        XCTAssertTrue(sentence.waitForExistence(timeout: 5))
+        let before = sentence.label
+
+        let toc = element(app, "reader.toc")
+        XCTAssertTrue(toc.waitForExistence(timeout: 5))
+        toc.tap()
+        let chapterTwo = app.buttons["Chapter Two"].firstMatch
+        XCTAssertTrue(chapterTwo.waitForExistence(timeout: 5))
+        chapterTwo.tap()
+
+        XCTAssertTrue(
+            app.staticTexts["Chapter Two"].waitForExistence(timeout: 5),
+            "The page should turn to Chapter Two"
+        )
+        expectation(
+            for: NSPredicate(format: "label != %@", before), evaluatedWith: sentence
+        )
+        waitForExpectations(timeout: 5)
+        XCTAssertEqual(
+            element(app, "listen.playPause").label, "Pause",
+            "The voice keeps reading, from the chapter the reader chose"
+        )
+        // Not turned back by the voice: it is reading here now.
+        sleep(3)
+        XCTAssertTrue(
+            app.staticTexts["Chapter Two"].exists,
+            "The page must stay on the chapter the reader jumped to"
+        )
+    }
+
+    // The narrator is chosen in the Aa popover, once — not on every card.
+    func testVoiceMenuOpensFromAppearance() {
         let app = launchSeeded()
         startListening(app)
 
-        let voice = element(app, "listen.voice")
-        XCTAssertTrue(voice.waitForExistence(timeout: 5))
+        let appearance = element(app, "reader.appearance")
+        XCTAssertTrue(appearance.waitForExistence(timeout: 5))
+        appearance.tap()
+        let voice = element(app, "appearance.voice")
+        XCTAssertTrue(voice.waitForExistence(timeout: 5), "the Aa popover should offer the voice")
         voice.tap()
         // Better voices are a system download, and the menu says so whether or
         // not this simulator has any installed beyond the default.
@@ -341,5 +466,34 @@ final class ReadrListenUITests: XCTestCase {
         )
         listen.tap()
         assertGone(element(app, "listen.bar"))
+    }
+
+    // MARK: - Listen in a PDF
+
+    /// Listen in a PDF starts on the page in view, not at the top of the
+    /// document — the dense-PDF half of "no way to start from the middle".
+    /// The seeded Field Notes PDF has two pages with distinct text; on page 2
+    /// the bar must name a page-2 sentence.
+    func testListenInAPDFStartsOnThePageInView() {
+        let app = launchSeeded()
+        openFieldNotesPDF(app)
+        pageSeededPDFToPageTwo(app)
+
+        let listen = element(app, "reader.listen")
+        XCTAssertTrue(listen.waitForExistence(timeout: 5), "The PDF reader should offer Listen")
+        listen.tap()
+        XCTAssertTrue(element(app, "listen.bar").waitForExistence(timeout: 10), "Listen on a PDF page should start narration")
+
+        let sentence = element(app, "listen.sentence")
+        XCTAssertTrue(sentence.waitForExistence(timeout: 5))
+        let spoken = (sentence.label.isEmpty ? sentence.value as? String : sentence.label) ?? ""
+        XCTAssertTrue(
+            spoken.contains("season") || spoken.contains("gaps"),
+            "Listen on page 2 should start with page 2's text, got: \(spoken)"
+        )
+        XCTAssertFalse(
+            spoken.contains("promise to your future self"),
+            "Listen on page 2 must not start from page 1: \(spoken)"
+        )
     }
 }

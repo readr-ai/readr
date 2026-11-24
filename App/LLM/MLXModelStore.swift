@@ -1,6 +1,5 @@
 import Foundation
 import ReadrKit
-
 #if os(iOS)
 import HuggingFace
 import MLX
@@ -9,254 +8,182 @@ import MLXLMCommon
 import Tokenizers
 import UIKit
 
-/// The downloaded models' lifecycle on this device: on disk or not,
-/// downloading (with progress, cancellable), loaded onto the GPU, gone. One
-/// per process — the weights are gigabytes and the GPU holds one model at a
-/// time, so loading one evicts the other.
-///
-/// Weights live in the same Hugging Face cache Readr Voice uses
-/// (`HubCache.default`), fetched with the same client, so there is one
-/// download path to reason about. Loading is lazy (first question) and goes
-/// through `MLXGPULease` like every other MLX graph; the container is dropped
-/// on a memory warning and when the app leaves the foreground, and the next
-/// question reloads it.
+/// Explicit downloads own network access. Inference opens a validated local
+/// snapshot directory and is given a downloader that always refuses network.
 @MainActor
 final class MLXModelStore: ObservableObject {
-
     static let shared = MLXModelStore()
-
-    enum State: Equatable {
-        case notDownloaded
-        case downloading(Double)
-        case downloaded
-        case failed(String)
-    }
-
-    /// Only what the disk can't tell: a download in flight, or the reason
-    /// the last one failed. Everything else is read from the cache directory
-    /// (memoised until a download or a delete changes it).
+    enum State: Equatable { case notDownloaded, downloading(Double), downloaded, deleting, failed(String) }
     @Published private(set) var transient: [String: State] = [:]
-    private var onDisk: [String: Bool] = [:]
-
     private var downloads: [String: Task<Void, Never>] = [:]
+    private var deletions: [String: Task<Void, Never>] = [:]
     private var containers: [String: ModelContainer] = [:]
     private var loads: [String: Task<ModelContainer, Error>] = [:]
-    /// Which load is current per repository; an unload bumps it so a load
-    /// it cancelled can't land its container afterwards.
     private var loadGeneration: [String: Int] = [:]
+    private var uses: [String: [UUID: ModelGenerationUse]] = [:]
     private let cache = HubCache.default
     private var observers: [NSObjectProtocol] = []
-
     private init() {
         let center = NotificationCenter.default
-        observers.append(center.addObserver(
-            forName: UIApplication.didReceiveMemoryWarningNotification, object: nil, queue: .main
-        ) { [weak self] _ in Task { @MainActor in self?.unloadAll(reason: "memory warning") } })
-        observers.append(center.addObserver(
-            forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main
-        ) { [weak self] _ in Task { @MainActor in self?.unloadAll(reason: "backgrounded") } })
+        for name in [UIApplication.didReceiveMemoryWarningNotification, UIApplication.didEnterBackgroundNotification] {
+            observers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                Task { @MainActor in self?.unloadAll(reason: "device lifecycle") }
+            })
+        }
     }
-
-    // MARK: Disk
-
-    func state(for repository: String) -> State {
-        if let inFlight = transient[repository] { return inFlight }
-        return isDownloaded(repository) ? .downloaded : .notDownloaded
-    }
-
-    /// Weights, config and tokenizer present and non-empty in the cache's
-    /// snapshot directory. Memoised: the answer only changes through this
-    /// store's own download and delete.
-    func isDownloaded(_ repository: String) -> Bool {
-        if let known = onDisk[repository] { return known }
-        let present = Self.snapshotIsComplete(for: repository, in: cache)
-        onDisk[repository] = present
-        return present
-    }
-
-    /// The files a load needs (`model.safetensors` is a single file for the
-    /// MLX community's Qwen3.5 conversions; a sharded repo lists its shards
-    /// in the index, which is why the index is required too).
-    static let requiredFiles = ["config.json", "tokenizer.json", "tokenizer_config.json"]
-
-    /// Off any actor: a directory scan, which the provider's readiness check
-    /// also needs without hopping to the main actor.
-    nonisolated static func snapshotIsComplete(for repository: String, in cache: HubCache) -> Bool {
-        guard let repo = Repo.ID(rawValue: repository) else { return false }
+    func state(for repository: String) -> State { transient[repository] ?? (isDownloaded(repository) ? .downloaded : .notDownloaded) }
+    func isDownloaded(_ repository: String) -> Bool { Self.snapshotDirectory(for: repository, in: cache) != nil }
+    nonisolated static func snapshotIsComplete(for repository: String, in cache: HubCache) -> Bool { snapshotDirectory(for: repository, in: cache) != nil }
+    nonisolated static func snapshotDirectory(for repository: String, in cache: HubCache) -> URL? {
+        guard DownloadedModelCatalog.spec(for: repository) != nil, let repo = Repo.ID(rawValue: repository) else { return nil }
         let snapshots = cache.snapshotsDirectory(repo: repo, kind: .model)
-        let manager = FileManager.default
-        let revisions = (try? manager.contentsOfDirectory(atPath: snapshots.path)) ?? []
-        func hasBytes(_ url: URL) -> Bool {
-            ((try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0) > 0
-        }
-        return revisions.contains { revision in
-            let directory = snapshots.appendingPathComponent(revision)
-            let files = (try? manager.contentsOfDirectory(atPath: directory.path)) ?? []
-            let weights = files.filter { $0.hasSuffix(".safetensors") }
-            guard !weights.isEmpty, weights.allSatisfy({ hasBytes(directory.appendingPathComponent($0)) }) else {
-                return false
-            }
-            return requiredFiles.allSatisfy { hasBytes(directory.appendingPathComponent($0)) }
-        }
+        let revisions = (try? FileManager.default.contentsOfDirectory(atPath: snapshots.path)) ?? []
+        // A snapshot's commit directory pins the actual downloaded revision.
+        // No Hub client is called to resolve the branch during inference.
+        let pinned = UserDefaults.standard.string(forKey: "Readr.downloaded.snapshot." + repository)
+        let ordered = pinned.map { [$0] } ?? []
+        return (ordered + revisions.sorted().reversed().filter { $0 != pinned }).map { snapshots.appendingPathComponent($0) }
+            .first(where: DownloadedModelSnapshot.isComplete)
     }
-
-    // MARK: Downloading
-
-    /// Start (or resume) a download. A failed attempt is simply tried again —
-    /// the Hub client resumes partial blobs, so nothing already fetched is
-    /// lost. Refused only while one is already running or the model is here.
     func download(_ repository: String) {
-        guard downloads[repository] == nil else { return }
-        guard let repo = Repo.ID(rawValue: repository) else {
-            transient[repository] = .failed("That model's name isn't valid.")
-            return
+        guard downloads[repository] == nil, deletions[repository] == nil, !isDownloaded(repository) else { return }
+        guard let specification = DownloadedModelCatalog.spec(for: repository),
+              specification.minimumPhysicalMemory <= MLXLLMProvider.physicalMemory,
+              let repo = Repo.ID(rawValue: repository) else {
+            transient[repository] = .failed("Choose a model from the download list."); return
         }
         transient[repository] = .downloading(0)
-        DiagnosticsLog.shared.record(.info, .provider, "downloaded model: starting \(repository)")
         let client = HubClient(cache: cache)
         downloads[repository] = Task { [weak self] in
             do {
-                _ = try await client.downloadSnapshot(
-                    of: repo,
+                let snapshot = try await client.downloadSnapshot(of: repo,
                     matching: ["*.safetensors", "*.json", "*.txt", "*.model", "*.tiktoken", "*.jinja"],
                     progressHandler: { [weak self] progress in
-                        // Whole percents only: the client reports per chunk,
-                        // and every publish re-renders the card.
-                        let percent = min(1, max(0, progress.fractionCompleted))
-                        if case let .downloading(shown)? = self?.transient[repository],
-                           Int(shown * 100) == Int(percent * 100) { return }
-                        self?.transient[repository] = .downloading(percent)
-                    }
-                )
+                        guard case .downloading? = self?.transient[repository] else { return }
+                        let value = min(1, max(0, progress.fractionCompleted))
+                        if case .downloading(let shown)? = self?.transient[repository], Int(shown * 100) == Int(value * 100) { return }
+                        self?.transient[repository] = .downloading(value)
+                    })
+                try Task.checkCancellation()
                 guard let self else { return }
-                self.onDisk[repository] = nil
-                if self.isDownloaded(repository) {
-                    self.transient[repository] = nil
-                    DiagnosticsLog.shared.record(.info, .provider, "downloaded model: finished \(repository)")
-                } else {
-                    self.transient[repository] = .failed("The download finished but the model files are incomplete. Try again.")
-                    DiagnosticsLog.shared.record(.warning, .provider, "downloaded model: incomplete after download \(repository)")
+                if DownloadedModelSnapshot.isComplete(snapshot) {
+                    UserDefaults.standard.set(snapshot.lastPathComponent, forKey: "Readr.downloaded.snapshot." + repository)
+                }
+                if self.deletions[repository] == nil {
+                    self.transient[repository] = self.isDownloaded(repository) ? nil : .failed("The model files are incomplete. Tap Download to retry.")
                 }
             } catch is CancellationError {
-                self?.transient[repository] = nil
-                DiagnosticsLog.shared.record(.info, .provider, "downloaded model: download cancelled \(repository)")
+                if self?.deletions[repository] == nil { self?.transient[repository] = nil }
             } catch {
-                self?.transient[repository] = .failed("The download didn't finish. Check your connection and try again — it picks up where it stopped.")
-                DiagnosticsLog.shared.record(
-                    .error, .provider, "downloaded model: download failed for \(repository)", error: error
-                )
+                DiagnosticsLog.shared.record(.error, .provider, "Model download failed", error: error)
+                if self?.deletions[repository] == nil { self?.transient[repository] = .failed("The download didn't finish. Check your connection and retry.") }
             }
             self?.downloads[repository] = nil
         }
     }
-
-    func cancelDownload(_ repository: String) {
-        downloads[repository]?.cancel()
-    }
-
-    /// Clear a failure so the card offers Download again (the retry itself
-    /// is just `download`).
-    func dismissFailure(_ repository: String) {
-        if case .failed? = transient[repository] { transient[repository] = nil }
-    }
-
+    func cancelDownload(_ repository: String) { downloads[repository]?.cancel() }
+    func dismissFailure(_ repository: String) { if case .failed? = transient[repository] { transient[repository] = nil } }
     func delete(_ repository: String) {
-        cancelDownload(repository)
+        guard deletions[repository] == nil, let repo = Repo.ID(rawValue: repository), DownloadedModelCatalog.spec(for: repository) != nil else { return }
+        transient[repository] = .deleting
+        let downloading = downloads[repository]
+        downloading?.cancel()
+        let consumers = Array(uses[repository]?.values ?? Dictionary<UUID, ModelGenerationUse>().values)
+        consumers.forEach { $0.cancel() }
         unload(repository, reason: "deleted")
-        if let repo = Repo.ID(rawValue: repository) {
-            let directory = cache.repoDirectory(repo: repo, kind: .model)
-            // Gigabytes: off the main thread.
-            Task.detached(priority: .utility) { try? FileManager.default.removeItem(at: directory) }
+        let directory = cache.repoDirectory(repo: repo, kind: .model)
+        deletions[repository] = Task { [weak self] in
+            await downloading?.value
+            for consumer in consumers { await consumer.waitForCompletion() }
+            do {
+                let token = try await MLXGPULease.shared.acquire()
+                do {
+                    try await Task.detached(priority: .utility) {
+                        if FileManager.default.fileExists(atPath: directory.path) { try FileManager.default.removeItem(at: directory) }
+                    }.value
+                    await MLXGPULease.shared.release(token)
+                } catch { await MLXGPULease.shared.release(token); throw error }
+                UserDefaults.standard.removeObject(forKey: "Readr.downloaded.snapshot." + repository)
+                self?.transient[repository] = nil
+            } catch {
+                DiagnosticsLog.shared.record(.error, .provider, "Model removal failed", error: error)
+                self?.transient[repository] = .failed("The model couldn't be removed. Tap Remove to retry.")
+            }
+            self?.deletions[repository] = nil
         }
-        onDisk[repository] = false
-        transient[repository] = nil
-        DiagnosticsLog.shared.record(.info, .provider, "downloaded model: deleted \(repository)")
     }
-
-    // MARK: GPU
-
-    /// The loaded model, loading it on first use under the GPU lease, and
-    /// evicting any other model first — one set of weights on the GPU at a
-    /// time. Concurrent callers share one load.
+    func register(_ use: ModelGenerationUse, repository: String) throws {
+        guard deletions[repository] == nil else { throw OnDeviceModelError.unavailable("This model is being removed.") }
+        uses[repository, default: [:]][use.id] = use
+    }
+    func finished(_ use: ModelGenerationUse, repository: String) { uses[repository]?[use.id] = nil }
     func container(for repository: String) async throws -> ModelContainer {
+        try Task.checkCancellation()
+        guard deletions[repository] == nil else { throw OnDeviceModelError.unavailable("This model is being removed.") }
         if let loaded = containers[repository] { return loaded }
-        if let inFlight = loads[repository] { return try await inFlight.value }
-        for other in Array(containers.keys) where other != repository { unload(other, reason: "another model requested") }
-        let cache = self.cache
-        let task = Task<ModelContainer, Error> {
-            try await MLXGPULease.shared.withLease {
-                // Readr Voice sets the same limit when it loads; whichever MLX
-                // user comes first bounds the free-buffer pool for both.
-                Memory.cacheLimit = MLXKokoroSpeechEngine.gpuCacheLimit
-                let started = Date()
-                let container = try await loadModelContainer(
-                    from: HubDownloaderBridge(HubClient(cache: cache)),
-                    using: TransformersTokenizerLoader(),
-                    configuration: ModelConfiguration(id: repository)
-                )
-                DiagnosticsLog.shared.record(
-                    .info, .provider,
-                    "downloaded model: loaded \(repository) in \(Int(Date().timeIntervalSince(started)))s"
-                )
-                return container
+        guard let directory = Self.snapshotDirectory(for: repository, in: cache) else { throw OnDeviceModelError.unavailable("Download this model in Settings first.") }
+        let task: Task<ModelContainer, Error>
+        let generation: Int
+        if let existing = loads[repository] { task = existing; generation = loadGeneration[repository, default: 0] }
+        else {
+            for other in Set(containers.keys).union(loads.keys) where other != repository { unload(other, reason: "model changed") }
+            generation = loadGeneration[repository, default: 0] + 1
+            loadGeneration[repository] = generation
+            task = Task {
+                try await MLXGPULease.shared.withLease {
+                    Memory.cacheLimit = MLXKokoroSpeechEngine.gpuCacheLimit
+                    return try await withError {
+                        try await loadModelContainer(from: NoNetworkModelDownloader(), using: TransformersTokenizerLoader(), configuration: ModelConfiguration(directory: directory))
+                    }
+                }
             }
+            loads[repository] = task
         }
-        loads[repository] = task
-        let generation = (loadGeneration[repository] ?? 0) + 1
-        loadGeneration[repository] = generation
         do {
-            let container = try await task.value
-            // A cancel (unload) during the load must not resurrect it.
-            if loadGeneration[repository] == generation {
-                containers[repository] = container
-                loads[repository] = nil
-            }
+            let container = try await withTaskCancellationHandler { try await task.value } onCancel: { task.cancel() }
+            try Task.checkCancellation()
+            guard loadGeneration[repository] == generation, deletions[repository] == nil else { throw CancellationError() }
+            containers[repository] = container; loads[repository] = nil
             return container
         } catch {
             if loadGeneration[repository] == generation { loads[repository] = nil }
             throw error
         }
     }
-
     func unload(_ repository: String, reason: String) {
-        if let load = loads.removeValue(forKey: repository) {
-            loadGeneration[repository, default: 0] += 1
-            load.cancel()
-            DiagnosticsLog.shared.record(.info, .provider, "downloaded model: load cancelled \(repository) (\(reason))")
-        }
-        guard containers.removeValue(forKey: repository) != nil else { return }
-        MLX.GPU.clearCache()
-        DiagnosticsLog.shared.record(.info, .provider, "downloaded model: unloaded \(repository) (\(reason))")
+        loadGeneration[repository, default: 0] += 1
+        loads.removeValue(forKey: repository)?.cancel()
+        uses[repository]?.values.forEach { $0.cancel() }
+        containers[repository] = nil
+        // Clear only after all submitted graphs release process-wide ownership.
+        Task { if let token = try? await MLXGPULease.shared.acquire() { MLX.GPU.clearCache(); await MLXGPULease.shared.release(token) } }
     }
+    func unloadAll(reason: String) { for repo in Set(containers.keys).union(loads.keys).union(uses.keys) { unload(repo, reason: reason) } }
+}
 
-    func unloadAll(reason: String) {
-        for repository in Set(containers.keys).union(loads.keys) { unload(repository, reason: reason) }
+/// A loading SDK cannot accidentally reintroduce Hub requests to inference.
+struct NoNetworkModelDownloader: MLXLMCommon.Downloader {
+    func download(id: String, revision: String?, matching patterns: [String], useLatest: Bool, progressHandler: @Sendable @escaping (Progress) -> Void) async throws -> URL {
+        throw OnDeviceModelError.unavailable("Local model files are missing. Download the model in Settings first.")
     }
 }
 
-// MARK: - Bridges to the Hub client and swift-transformers
-//
-// mlx-swift-lm offers these as macros (Libraries/MLXHuggingFaceMacros/
-// HuggingFaceIntegrationMacros.swift at tag 3.31.4); the expansions are short
-// enough to write out, which keeps the swift-syntax macro toolchain out of
-// the build. Re-check against that file on a version bump.
-
-struct HubDownloaderBridge: MLXLMCommon.Downloader {
-    private let upstream: HubClient
-    init(_ upstream: HubClient) { self.upstream = upstream }
-
-    func download(
-        id: String, revision: String?, matching patterns: [String], useLatest: Bool,
-        progressHandler: @Sendable @escaping (Progress) -> Void
-    ) async throws -> URL {
-        guard let repo = Repo.ID(rawValue: id) else {
-            throw OnDeviceModelError.unavailable("That model isn't available. Pick another in Settings → AI Providers.")
+/// Cancellation may arrive before a Task has been attached or after it ends.
+final class ModelGenerationUse: @unchecked Sendable {
+    let id = UUID()
+    private let lock = NSLock()
+    private var task: Task<Void, Never>?
+    private var cancelled = false
+    private var ended = false
+    func attach(_ value: Task<Void, Never>) {
+        let cancel = lock.withLock { () -> Bool in
+            if !ended { task = value }; return cancelled
         }
-        return try await upstream.downloadSnapshot(
-            of: repo, revision: revision ?? "main", matching: patterns,
-            progressHandler: { @MainActor progress in progressHandler(progress) }
-        )
+        if cancel { value.cancel() }
     }
+    func cancel() { let value = lock.withLock { cancelled = true; return task }; value?.cancel() }
+    func finish() { lock.withLock { ended = true; task = nil } }
+    func waitForCompletion() async { if let value = lock.withLock({ task }) { await value.value } }
 }
 
 struct TransformersTokenizerLoader: MLXLMCommon.TokenizerLoader {

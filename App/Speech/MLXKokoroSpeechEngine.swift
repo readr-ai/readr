@@ -974,6 +974,12 @@ final class MLXKokoroSpeechEngine:
                 guard let self, self.initializeTask == task else { return }
                 self.initializeTask = nil
                 self.downloadProgress = nil
+                // "Readr Voice never gets past Preparing" was undiagnosable
+                // from a bug report: this catch was the only place the
+                // download or load failure was known, and it kept it.
+                DiagnosticsLog.shared.recordVoiceLoadFailure(
+                    runtime: "MLX", inForeground: self.isForeground, error: error
+                )
                 // A failure with the app in the foreground is a failure, and
                 // the reader retries from the bar. A failure while
                 // backgrounded — the download dropped with the phone in a
@@ -1170,15 +1176,20 @@ final class MLXKokoroSpeechEngine:
         func load(isForeground: @Sendable () -> Bool) async throws {
             guard model == nil else { return }
             guard let modelDirectory else { throw MLXKokoroError.notDownloaded }
-            guard isForeground() else { throw MLXKokoroError.backgrounded }
-            // Before the first allocation, so the pool never grows past it.
-            Memory.cacheLimit = MLXKokoroSpeechEngine.gpuCacheLimit
-            let loaded = try await withError {
-                try await KokoroModel.fromModelDirectory(
-                    modelDirectory, textProcessor: textProcessor
-                )
-            }
-            model = loaded
+            let token = try await MLXGPULease.shared.acquire()
+            do {
+                guard isForeground() else { throw MLXKokoroError.backgrounded }
+                // Before the first allocation, so the pool never grows past it.
+                Memory.cacheLimit = MLXKokoroSpeechEngine.gpuCacheLimit
+                let loaded = try await withError {
+                    try await KokoroModel.fromModelDirectory(
+                        modelDirectory, textProcessor: textProcessor
+                    )
+                }
+                model = loaded
+                await MLXGPULease.shared.release(token)
+            } catch { await MLXGPULease.shared.release(token); throw error }
+
         }
 
         /// The same warm-up on the CPU device, so the first locked-screen
@@ -1266,23 +1277,33 @@ final class MLXKokoroSpeechEngine:
                 throw CancellationError()
             }
 
+            // Acquired under the private graph gate's error handler: cancelling
+            // this wait cannot leave the earlier speech gate held forever.
+            let sharedToken: UUID
+            do { sharedToken = try await MLXGPULease.shared.acquire() }
+            catch { releaseGraph(); throw error }
+            if Task.isCancelled {
+                releaseGraph()
+                await MLXGPULease.shared.release(sharedToken)
+                throw CancellationError()
+            }
             let device: DeviceType
             if let fixedDevice {
                 device = fixedDevice
             } else if purpose == .prefetch, prefetchDevicePolicy == .cpuAlways {
                 device = .cpu
             } else {
-                device = isForeground() ? .gpu : .cpu
+                device = isForeground() && MLXGPULease.shared.isForeground ? .gpu : .cpu
+            }
+            if device == .gpu && !MLXGPULease.shared.isForeground {
+                releaseGraph()
+                await MLXGPULease.shared.release(sharedToken)
+                throw MLXKokoroError.backgrounded
             }
             let timeout = device == .gpu
                 ? MLXKokoroSpeechEngine.gpuSynthesisTimeout
                 : MLXKokoroSpeechEngine.cpuSynthesisTimeout
             let mlxDevice: Device = device == .cpu ? Device.cpu : Device.gpu
-            // The process-wide gate shared with the downloaded language
-            // model: one Metal graph at a time across both MLX users.
-            if device == .gpu {
-                try await MLXGPULease.shared.acquire()
-            }
             let started = Date()
             if device == .gpu {
                 gpuWork.begin(at: started)
@@ -1323,7 +1344,6 @@ final class MLXKokoroSpeechEngine:
                 defer {
                     if device == .gpu {
                         gpuWork.end()
-                        Task { await MLXGPULease.shared.release() }
                     }
                 }
                 return try await withError {
@@ -1340,6 +1360,7 @@ final class MLXKokoroSpeechEngine:
                 let elapsed = Date().timeIntervalSince(started)
                 releaseGraph()
                 if device == .cpu { mlx_enable_compile() }
+                await MLXGPULease.shared.release(sharedToken)
                 return GraphResult(samples: produced, device: device, elapsed: elapsed)
             } catch let deadline as DeadlineExceeded {
                 // MLX cannot cancel a submitted graph. Keep the admission
@@ -1349,21 +1370,18 @@ final class MLXKokoroSpeechEngine:
                     _ = try? await work.value
                     if device == .cpu { mlx_enable_compile() }
                     self.releaseGraphAfterLateResult()
+                    await MLXGPULease.shared.release(sharedToken)
                 }
                 throw MLXKokoroError.timedOut(deadline.seconds)
             } catch {
+                _ = try? await work.value
                 releaseGraph()
-                if device == .cpu {
-                    mlx_enable_compile()
-                    // A cancellation is not a CPU failure — the request was
-                    // superseded or the engine went away, not the hardware
-                    // refusing to synthesize. Only a real synthesis error
-                    // marks the session's CPU unavailable (see
-                    // `MLXKokoroSpeechEngine.markCPUUnavailable`).
-                    if !(error is CancellationError) {
-                        throw MLXKokoroError.cpuSynthesisFailed(underlying: error)
-                    }
+                if device == .cpu { mlx_enable_compile() }
+                await MLXGPULease.shared.release(sharedToken)
+                if device == .cpu && !(error is CancellationError) {
+                    throw MLXKokoroError.cpuSynthesisFailed(underlying: error)
                 }
+
                 throw error
             }
         }

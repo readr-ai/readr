@@ -50,3 +50,6 @@ build-*/
 /docs/research/
 /AGENTS.md
 /v*-beta-notes.md
+
+# Written by `swiftly use` in a checkout; the toolchain version is pinned in android/readrkit/build.gradle.kts
+/.swift-version

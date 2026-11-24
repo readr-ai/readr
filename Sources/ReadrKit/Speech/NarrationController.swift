@@ -150,13 +150,19 @@ public final class NarrationController {
 
     /// Start reading at a position — the Listen button's entry point, where
     /// the position is the top of the visible page (or a chapter picked from
-    /// Contents). Narration begins at the first sentence that hasn't been
-    /// passed, never mid-sentence.
-    public func start(atChapter chapterIndex: Int, characterOffset: Int = 0) {
+    /// Contents), or "Listen from here" on a selection. Narration always
+    /// begins at a sentence start, never mid-sentence: `anchor` decides
+    /// whether that is the sentence containing the offset (a selection) or the
+    /// first one beginning after it (a page top) — see `SpeechPlaylist.SeekAnchor`.
+    public func start(
+        atChapter chapterIndex: Int,
+        characterOffset: Int = 0,
+        anchor: SpeechPlaylist.SeekAnchor = .nextSentenceStart
+    ) {
         engine.stop()
         activeRequestID = nil
         guard let segment = playlist.seek(
-            toChapter: chapterIndex, characterOffset: characterOffset
+            toChapter: chapterIndex, characterOffset: characterOffset, anchor: anchor
         ) else {
             currentSegment = nil
             setStatus(.finished)
@@ -178,8 +184,12 @@ public final class NarrationController {
             if mustRespeakToResume, let segment = currentSegment {
                 speak(segment, from: spokenOffset)
             } else {
-                engine.resume()
+                // Status before the engine, as `speak` does: a `resume()` that
+                // fails synchronously reports through `didFail`, and that has
+                // to be the last word — set afterwards, `.speaking` would
+                // overwrite the pause the failure just made.
                 setStatus(.speaking)
+                engine.resume()
             }
         case .idle:
             if let segment = currentSegment ?? playlist.current {
@@ -196,8 +206,24 @@ public final class NarrationController {
     }
 
     public func pause() {
+        // Before the guard, because a reader may press pause while narration
+        // is *already* held: that is them taking the hold over, and the reason
+        // no longer describes anything. Whoever was watching for it — Android's
+        // audio-focus regain — then finds nothing to resume by and leaves the
+        // reader's pause where they put it.
+        holdReason = nil
         guard isUnderway else { return }
-        engine.pause()
+        if engine.pausesInPlace {
+            engine.pause()
+        } else {
+            // No native pause (Android): stop, and let `play()` re-speak the
+            // rest of the sentence from the last word boundary — the same
+            // path a sleep-timer stop resumes by. `spokenOffset` is already
+            // the boundary, so nothing else has to be remembered.
+            engine.stop()
+            activeRequestID = nil
+            mustRespeakToResume = true
+        }
         holdReason = nil
         setStatus(.paused)
     }

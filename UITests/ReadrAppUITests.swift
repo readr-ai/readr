@@ -160,6 +160,44 @@ final class ReadrAppUITests: XCTestCase {
         )
     }
 
+    // #41 follow-up — the report carries evidence, not just a promise of it:
+    // the preview and the copied report both hold the version line and the
+    // recent diagnostics section, and neither leaks a file path.
+    func testBugReportCarriesVersionAndRecentEvidence() throws {
+        let app = launchSeeded()
+        let settingsButton = button(app, id: "library.settings", label: "Settings")
+        XCTAssertTrue(settingsButton.waitForExistence(timeout: 10))
+        settingsButton.tap()
+        let report = app.buttons["settings.reportBug"].firstMatch
+        for _ in 0..<3 where !report.isHittable { app.swipeUp() }
+        XCTAssertTrue(report.waitForExistence(timeout: 5))
+        report.tap()
+
+        let preview = app.buttons["feedback.preview"].firstMatch
+        XCTAssertTrue(preview.waitForExistence(timeout: 5))
+        preview.tap()
+
+        let shown = app.staticTexts.matching(
+            NSPredicate(format: "label CONTAINS %@", "Recent diagnostics:")
+        ).firstMatch
+        XCTAssertTrue(shown.waitForExistence(timeout: 5), "The preview must show the diagnostics section")
+        XCTAssertTrue(shown.label.contains("Readr "), "The preview must name the app version: \(shown.label.prefix(120))")
+        XCTAssertFalse(shown.label.contains("/Users/"), "No file paths in a report")
+
+        // Copy flips its own label; the pasteboard itself is not read from the
+        // runner (reading it there hangs the automation session on iOS 26).
+        let copy = app.buttons["feedback.copy"].firstMatch
+        for _ in 0..<3 where !copy.isHittable { app.swipeUp() }
+        XCTAssertTrue(copy.waitForExistence(timeout: 5))
+        copy.tap()
+        XCTAssertTrue(
+            app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Copied")).firstMatch
+                .waitForExistence(timeout: 5),
+            "Copy report should confirm the copy"
+        )
+        XCTAssertTrue(app.buttons["feedback.github"].firstMatch.exists, "The GitHub route must be offered")
+    }
+
     // Provider sign-in — the settings screen surfaces both OAuth paths with
     // per-provider labels, and the ChatGPT card carries its ToS caveat. The
     // generic "Sign in with subscription" label must never reappear.
@@ -352,6 +390,13 @@ final class ReadrAppUITests: XCTestCase {
             app.staticTexts["settings.activeBadge.anthropic"].firstMatch.waitForExistence(timeout: 5),
             "the seeded Anthropic key is connected and active"
         )
+        // One line says what Ask uses — by name, not wire id (F11).
+        let askUses = app.staticTexts["settings.askUses"].firstMatch
+        XCTAssertTrue(askUses.waitForExistence(timeout: 5), "Settings should say which model Ask uses")
+        XCTAssertTrue(
+            askUses.label.contains("Ask uses Claude ") && !askUses.label.contains("claude-"),
+            "The line names the model, not its id (got: \(askUses.label))"
+        )
 
         XCTAssertFalse(
             app.secureTextFields["settings.apiKey.anthropic"].firstMatch.exists,
@@ -488,7 +533,7 @@ final class ReadrAppUITests: XCTestCase {
         let ask = button(app, id: "reader.ask", label: "Ask the book")
         XCTAssertTrue(ask.waitForExistence(timeout: 5))
         ask.tap()
-        XCTAssertTrue(app.navigationBars["Ask the book"].waitForExistence(timeout: 5))
+        XCTAssertTrue(waitForAskPanel(app, timeout: 5))
     }
 
     // A1 — the Ask panel refreshes after a key is saved from its own empty
@@ -590,6 +635,31 @@ final class ReadrAppUITests: XCTestCase {
         )
     }
 
+    // An answer that ends with nothing shows one plain line and no Sources —
+    // the on-device model can end that way (every sentence cut as a copy or a
+    // loop), and a blank bubble over chapter chips read as a broken app.
+    func testAskEmptyAnswerShowsAPlainLineAndNoSources() {
+        let app = XCUIApplication()
+        app.launchArguments += ["-uiTestSeed", "-uiTestStubLLM", "-uiTestStubEmpty"]
+        app.launch()
+
+        openAskPanel(app)
+
+        let suggestion = app.buttons["Summarize what I've read so far"].firstMatch
+        XCTAssertTrue(suggestion.waitForExistence(timeout: 5))
+        suggestion.tap()
+        let send = app.buttons["ask.send"].firstMatch
+        XCTAssertTrue(send.waitForExistence(timeout: 3))
+        send.tap()
+
+        XCTAssertTrue(
+            app.staticTexts["ask.emptyAnswer"].waitForExistence(timeout: 10),
+            "an empty answer should be explained in a line"
+        )
+        XCTAssertFalse(app.staticTexts["SOURCES"].exists, "no sources for an answer that isn't there")
+        XCTAssertFalse(app.otherElements["ask.error"].exists, "an empty answer is not an error card")
+    }
+
     // A4 — a whole-book answer shows the honest no-citations copy and never a
     // Sources list. -uiTestStubWholeBook makes the stub report a remote model
     // so the small seeded book routes to the whole-book tier. The panel opens
@@ -665,14 +735,12 @@ final class ReadrAppUITests: XCTestCase {
         XCTAssertTrue(ask.waitForExistence(timeout: 5))
         XCTAssertFalse(app.buttons["reader.recap"].exists, "the reader toolbar no longer carries a separate Recap button")
         ask.tap()
-        XCTAssertTrue(app.navigationBars["Ask the book"].waitForExistence(timeout: 5))
+        XCTAssertTrue(waitForAskPanel(app, timeout: 5))
 
+        // A starter chip is a complete question: tapping it sends.
         let recap = app.buttons["Recap what I've read so far \u{2014} no spoilers"].firstMatch
         XCTAssertTrue(recap.waitForExistence(timeout: 5), "a scoped panel leads with the recap starter")
         recap.tap()
-        let send = app.buttons["ask.send"].firstMatch
-        XCTAssertTrue(send.waitForExistence(timeout: 3))
-        send.tap()
 
         XCTAssertTrue(
             sentQuestion(app, startingWith: "Recap what I've read so far").waitForExistence(timeout: 5),
@@ -692,20 +760,69 @@ final class ReadrAppUITests: XCTestCase {
         )
     }
 
-    // Library — the Continue Reading card's ✦ Recap opens the book and then
-    // the recap, with nothing else to tap in between.
-    func testContinueReadingRecapOpensTheBookIntoARecap() {
+    // MARK: - Welcome back
+
+    // Reader — coming back to a book after days away shows the welcome-back
+    // line above the page; its Recap opens Ask with the recap already sent.
+    // "A Voyage North" was last opened six days ago (seed) and has a saved
+    // position, which is exactly what the line is for.
+    func testWelcomeBackLineOffersRecapAfterDaysAway() {
         let app = launchSeeded(stubLLM: true)
         XCTAssertTrue(app.staticTexts["Continue Reading"].waitForExistence(timeout: 10))
 
-        let recap = app.buttons["library.recap"].firstMatch
-        XCTAssertTrue(recap.waitForExistence(timeout: 5), "the mid-read seeded book should offer Recap on its card")
-        recap.tap()
+        let voyage = app.buttons["A Voyage North"].firstMatch
+        XCTAssertTrue(voyage.waitForExistence(timeout: 5), "the six-days-ago book should be on Continue Reading")
+        voyage.tap()
 
-        XCTAssertTrue(app.navigationBars["Ask the book"].waitForExistence(timeout: 10))
+        let line = app.staticTexts["reader.welcomeBack"].firstMatch
+        XCTAssertTrue(line.waitForExistence(timeout: 10), "a book left for six days should greet the reader on return")
+        XCTAssertTrue(line.label.hasPrefix("Welcome back"), "unexpected greeting: \(line.label)")
+        XCTAssertTrue(line.label.contains("6 days"), "the greeting should say how long it has been: \(line.label)")
+
+        app.buttons["reader.welcomeRecap"].firstMatch.tap()
+        XCTAssertTrue(waitForAskPanel(app, timeout: 10))
         XCTAssertTrue(
             sentQuestion(app, startingWith: "Recap what I've read so far").waitForExistence(timeout: 5),
-            "the card's Recap should land in Ask with the recap already sent"
+            "the line's Recap should land in Ask with the recap already sent"
+        )
+    }
+
+    // … and the line goes on its own once the reader has turned three pages:
+    // they have evidently picked the thread up.
+    func testWelcomeBackLineGoesAfterThreePageTurns() {
+        let app = launchSeeded()
+        XCTAssertTrue(app.staticTexts["Continue Reading"].waitForExistence(timeout: 10))
+        let voyage = app.buttons["A Voyage North"].firstMatch
+        XCTAssertTrue(voyage.waitForExistence(timeout: 5))
+        voyage.tap()
+
+        let line = app.staticTexts["reader.welcomeBack"].firstMatch
+        XCTAssertTrue(line.waitForExistence(timeout: 10))
+
+        // One-page chapters from the restored second one: each flick is a
+        // page turn across a chapter wall. Two must leave the line in place.
+        let text = app.textViews.firstMatch
+        XCTAssertTrue(text.waitForExistence(timeout: 5))
+        text.swipeLeft()
+        text.swipeLeft()
+        XCTAssertTrue(line.exists, "two page turns are not yet 'reading on'")
+        text.swipeLeft()
+        XCTAssertTrue(
+            line.waitForNonExistence(timeout: 5),
+            "after three page turns the welcome-back line should go on its own"
+        )
+    }
+
+    // A book opened today gets no greeting — the sample book's stamp is now.
+    func testNoWelcomeBackForABookOpenedToday() {
+        let app = launchSeeded()
+        let sample = app.staticTexts["Sample Book"].firstMatch
+        XCTAssertTrue(sample.waitForExistence(timeout: 10))
+        sample.tap()
+        XCTAssertTrue(app.staticTexts["Chapter One"].waitForExistence(timeout: 10))
+        XCTAssertFalse(
+            app.staticTexts["reader.welcomeBack"].firstMatch.waitForExistence(timeout: 2),
+            "a book opened today must not be greeted as if the reader had been away"
         )
     }
 
@@ -848,10 +965,21 @@ final class ReadrAppUITests: XCTestCase {
         let ask = button(app, id: "reader.ask", label: "Ask the book")
         if ask.waitForExistence(timeout: 3), ask.isHittable {
             ask.tap()
-            _ = app.navigationBars["Ask the book"].waitForExistence(timeout: 3)
+            _ = waitForAskPanel(app, timeout: 3)
             snap(app, "10-ask")
             let done = app.buttons["Done"].firstMatch
-            if done.waitForExistence(timeout: 2) { done.tap() }
+            if done.waitForExistence(timeout: 2) {
+                done.tap()
+            } else {
+                // iPad: Ask is the inspector's tab. ⌘⇧N from the Ask tab
+                // switches to Highlights; again closes the inspector —
+                // so later captures don't carry the column.
+                let notes = button(app, id: "reader.notes", label: "Highlights")
+                if notes.waitForExistence(timeout: 2), notes.isHittable {
+                    notes.tap()
+                    notes.tap()
+                }
+            }
         }
 
         // i. Dark theme + single-page layout (then restore Paper + Scroll so

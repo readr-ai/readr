@@ -1,5 +1,19 @@
 import XCTest
 
+/// The Ask panel is a sheet on iPhone (a navigation bar titled "Ask the
+/// book") and a column in the reader's inspector on iPad and the Mac (its ✦
+/// header, `ask.header`). One wait covers both.
+@discardableResult
+func waitForAskPanel(_ app: XCUIApplication, timeout: TimeInterval = 5) -> Bool {
+    let deadline = Date().addingTimeInterval(timeout)
+    repeat {
+        if app.navigationBars["Ask the book"].exists { return true }
+        if app.descendants(matching: .any)["ask.header"].firstMatch.exists { return true }
+        RunLoop.current.run(until: Date().addingTimeInterval(0.25))
+    } while Date() < deadline
+    return false
+}
+
 /// Widen the Ask panel's scope to the whole book.
 ///
 /// The scope is a segmented "Answers from" Picker (`ask.scope`), and XCUITest

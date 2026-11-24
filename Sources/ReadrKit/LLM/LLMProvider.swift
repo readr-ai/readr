@@ -59,17 +59,21 @@ public struct ProviderInfo: Sendable, Hashable {
     /// separate subscription-OAuth path against ChatGPT's backend — distinct
     /// kinds because their credentials, catalogs, and endpoints all differ.
     /// `appleIntelligence` is the system's on-device model (Apple's
-    /// FoundationModels framework, iOS/macOS 26+): no key, no account, no
-    /// server. `downloadedModel` is a model Readr downloads and runs itself
-    /// on the MLX runtime (`DownloadedModelCatalog`). `local` is a loopback
-    /// Ollama server the reader runs themselves. All three are `isLocal`;
-    /// see `isOnDevice`.
+    /// FoundationModels framework, iOS/macOS 26+) and `geminiNano` is
+    /// Android's (AICore, through ML Kit's GenAI APIs): no key, no account,
+    /// no server on either. `local` is a loopback Ollama server the reader
+    /// runs themselves. All three are `isLocal`; see `isOnDevice`.
+    ///
+    /// A phone only ever has one of the two system models, and which one is
+    /// not this enum's business: each platform's build lists the kinds it can
+    /// offer (`ProviderVendor.displayed(forKinds:)`), so the other never
+    /// reaches a screen.
     public enum Kind: String, Sendable, Hashable, Codable, CaseIterable {
-        case anthropic, openAI, chatGPT, openRouter, local, appleIntelligence, downloadedModel
+        case anthropic, openAI, chatGPT, openRouter, local, appleIntelligence, geminiNano, downloadedModel
 
         /// Runs without credentials: nothing to store, validate, or revoke.
         public var isOnDevice: Bool {
-            self == .local || self == .appleIntelligence || self == .downloadedModel
+            self == .local || self == .appleIntelligence || self == .geminiNano || self == .downloadedModel
         }
     }
     public var kind: Kind
@@ -80,19 +84,30 @@ public struct ProviderInfo: Sendable, Hashable {
     public var supportsPromptCaching: Bool
     /// True for on-device models — enables the zero-egress privacy mode.
     public var isLocal: Bool
+    /// The name Settings shows for this model, when the catalogue has one
+    /// ("Claude Opus 5"); see `name` for the fallback.
+    public var displayName: String?
+
+    /// What the reader sees: the catalogue's name, or one derived from the
+    /// id for a model the catalogue has no row for. Never the bare id.
+    public var name: String {
+        displayName ?? ModelDisplayName.name(for: modelID)
+    }
 
     public init(
         kind: Kind,
         modelID: String,
         contextBudget: Int,
         supportsPromptCaching: Bool,
-        isLocal: Bool
+        isLocal: Bool,
+        displayName: String? = nil
     ) {
         self.kind = kind
         self.modelID = modelID
         self.contextBudget = contextBudget
         self.supportsPromptCaching = supportsPromptCaching
         self.isLocal = isLocal
+        self.displayName = displayName
     }
 }
 

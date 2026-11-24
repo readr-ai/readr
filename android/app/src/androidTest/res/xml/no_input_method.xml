@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The metadata every input method needs. Nothing is configured: the point
+     of com.readrai.readr.NoInputMethod is that it has no input view. -->
+<input-method xmlns:android="http://schemas.android.com/apk/res/android" />

@@ -46,6 +46,15 @@ struct ProviderSettingsView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 10) {
                     sectionLabel("MODEL")
+                    // Which model Ask is actually using, in one line — with
+                    // four cards and a runtime default, the cards alone
+                    // leave the reader to work it out (F11).
+                    Text(model.askUsesLine)
+                        .font(.footnote)
+                        .foregroundStyle(theme.muted)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.bottom, 4)
+                        .accessibilityIdentifier("settings.askUses")
                     // One card per company, not per connection method: the
                     // ChatGPT subscription and an OpenAI API key are two doors
                     // into the same account and used to sit here as two
@@ -257,7 +266,8 @@ struct ProviderSettingsView: View {
                     kind: pickerKind,
                     models: model.models(for: pickerKind),
                     selection: model.activeSelection,
-                    enabled: pickerEnabled
+                    enabled: pickerEnabled,
+                    theme: theme
                 ) { modelID in
                     model.makeActive(kind: pickerKind, modelID: modelID)
                 }
@@ -329,14 +339,13 @@ struct ProviderSettingsView: View {
                 }
             }
 
+            #if os(iOS)
             if kind == .downloadedModel {
-                #if os(iOS)
-                DownloadedModelControls(
-                    modelID: currentDownloadedModelID, theme: theme,
-                    onChange: { Task { await model.validate(kind) } }
-                )
-                #endif
+                DownloadedModelControls(modelID: model.activeSelection?.kind == .downloadedModel ? model.activeSelection!.modelID : (model.models(for: kind).first?.modelID ?? ProviderCatalog.defaultModel(for: kind).modelID)) {
+                    Task { await model.validate(.downloadedModel) }
+                }
             }
+            #endif
             if kind.isOnDevice {
                 // A manual re-check for when the reader has just started
                 // Ollama or pulled the model, or switched Apple Intelligence
@@ -417,15 +426,6 @@ struct ProviderSettingsView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    /// The downloadable model the card's controls act on: the active
-    /// selection when it is one, else the best model this device can hold.
-    private var currentDownloadedModelID: String {
-        if let selection = model.activeSelection, selection.kind == .downloadedModel {
-            return selection.modelID
-        }
-        return model.defaultModelID(for: .downloadedModel)
-    }
-
     /// The OpenRouter id the picker row names: the active selection when it
     /// is an OpenRouter one, else the catalog default (what Make Active
     /// would choose).
@@ -446,12 +446,11 @@ struct ProviderSettingsView: View {
     /// Names one door into a vendor, used only on cards that offer more than
     /// one.
     private func methodLabel(for kind: ProviderInfo.Kind) -> String {
-        switch kind {
-        case .chatGPT: return "SUBSCRIPTION"
-        case .openRouter: return "SIGN IN OR KEY"
-        case .anthropic, .openAI: return "API KEY"
-        case .local, .appleIntelligence, .downloadedModel: return "ON-DEVICE"
-        }
+        // Derived from what the method IS, not from a list of kinds: a new
+        // on-device model gets the right pill without an edit here.
+        if kind.isOnDevice { return "ON-DEVICE" }
+        if kind == .chatGPT { return "SUBSCRIPTION" }
+        return kind.offersSignIn ? "SIGN IN OR KEY" : "API KEY"
     }
 
     /// A single sentence telling a disconnected card what to do, phrased from
@@ -459,6 +458,7 @@ struct ProviderSettingsView: View {
     /// status line takes over) and for Local, whose readiness is a probe
     /// rather than a thing the reader supplies.
     private func connectHint(_ vendor: ProviderVendor) -> String? {
+        if vendor.methods == [.downloadedModel] { return "Download Qwen once, then ask offline. No account or API key is needed." }
         guard !vendor.methods.contains(where: { model.hasCredential[$0] ?? false }) else {
             return nil
         }
@@ -472,14 +472,14 @@ struct ProviderSettingsView: View {
         case (false, true):
             return "Paste an API key to connect."
         case (false, false):
-            switch vendor.methods {
-            case [.appleIntelligence]:
-                return "Apple's on-device model. Nothing to set up, nothing leaves your device."
-            case [.downloadedModel]:
-                return "A stronger model that runs on this iPhone after a one-time download. Private and free; slower than the cloud."
-            default:
+            // No credential of any kind: a system model. Local is the one
+            // exception — its readiness is a probe against a server the
+            // reader runs, not something they supply here — so it says
+            // nothing rather than promising there is nothing to set up.
+            guard vendor.methods.allSatisfy(\.isOnDevice), !vendor.methods.contains(.local) else {
                 return nil
             }
+            return "The model built into this device. Nothing to set up, nothing leaves your device."
         }
     }
 
@@ -536,7 +536,10 @@ struct ProviderSettingsView: View {
     /// produces, so the control and its result read as one affordance.
     private func makeActiveButton(for kind: ProviderInfo.Kind) -> some View {
         Button {
-            model.makeActive(kind: kind, modelID: model.defaultModelID(for: kind))
+            model.makeActive(
+                kind: kind,
+                modelID: ProviderCatalog.defaultModel(for: kind).modelID
+            )
         } label: {
             Text("Make Active")
                 .font(.caption2.weight(.semibold))
@@ -565,10 +568,12 @@ struct ProviderSettingsView: View {
     /// The per-provider sign-in button title — also the accessibility label
     /// the UI tests assert.
     private func signInLabel(for kind: ProviderInfo.Kind) -> String {
+        // Only the kinds that offer a browser sign-in have a name to put in
+        // this button; nothing else ever renders it.
         switch kind {
         case .chatGPT: return "Sign in with ChatGPT"
         case .openRouter: return "Sign in with OpenRouter"
-        case .anthropic, .openAI, .local, .appleIntelligence, .downloadedModel: return "Sign in with subscription"
+        default: return "Sign in with subscription"
         }
     }
 
@@ -587,6 +592,10 @@ struct ProviderSettingsView: View {
     /// The provider console where a key is created, or nil for kinds that
     /// don't use keys.
     private func keyConsole(for kind: ProviderInfo.Kind) -> (url: URL, slug: String)? {
+        // ChatGPT connects by subscription sign-in only and the on-device
+        // kinds need no key at all — both answer `usesAPIKey` false, so
+        // neither has to be listed here.
+        guard kind.usesAPIKey else { return nil }
         switch kind {
         case .anthropic:
             return (URL(string: "https://console.anthropic.com/settings/keys")!, "anthropic")
@@ -594,9 +603,7 @@ struct ProviderSettingsView: View {
             return (URL(string: "https://platform.openai.com/api-keys")!, "openai")
         case .openRouter:
             return (URL(string: "https://openrouter.ai/keys")!, "openrouter")
-        case .chatGPT, .local, .appleIntelligence, .downloadedModel:
-            // ChatGPT connects by subscription sign-in only; the on-device
-            // kinds need no key.
+        default:
             return nil
         }
     }
@@ -630,7 +637,7 @@ struct ProviderSettingsView: View {
             return CardStatus(
                 kindRawValue: kind.rawValue,
                 text: kind == .local ? "Checking Ollama…"
-                    : kind.isOnDevice ? "Checking this device…" : "Validating…",
+                    : kind == .appleIntelligence ? "Checking this device…" : "Validating…",
                 textColor: theme.muted,
                 dotColor: theme.faint.opacity(0.55),
                 showsSpinner: true,
@@ -784,7 +791,10 @@ private struct OpenRouterModelRow: View {
         Button(action: onTap) {
             HStack(spacing: 8) {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(model?.name ?? modelID)
+                    // An id neither list knows still gets a name — the
+                    // registered one, or one made from the id. Never the
+                    // wire id as the title.
+                    Text(model?.name ?? ProviderCatalog.resolve(modelID: modelID, for: .openRouter).name)
                         .font(.callout)
                         .foregroundStyle(theme.inkColor)
                         .lineLimit(1)
@@ -818,105 +828,42 @@ private struct ModelPicker: View {
     let models: [ProviderInfo]
     let selection: ProviderSelection?
     let enabled: Bool
+    let theme: ReadingTheme
     let onSelect: (String) -> Void
 
+    /// The id the picker and its caption show: a stored selection resolved
+    /// through the catalogue, so a retired id (`claude-sonnet-4-6`) shows as
+    /// its successor — the model Ask will actually use — rather than a
+    /// blank menu over a caption naming a model that no longer exists.
     private var currentModelID: String {
-        if let selection, selection.kind == kind { return selection.modelID }
+        if let selection, selection.kind == kind {
+            return ProviderCatalog.resolve(modelID: selection.modelID, for: kind).modelID
+        }
         return models.first?.modelID ?? ""
     }
 
     var body: some View {
-        Picker("Model", selection: Binding(
-            get: { currentModelID },
-            set: { onSelect($0) }
-        )) {
-            ForEach(models, id: \.modelID) { info in
-                Text(DownloadedModelCatalog.spec(for: info.modelID)?.displayName ?? info.modelID).tag(info.modelID)
+        VStack(alignment: .leading, spacing: 3) {
+            Picker("Model", selection: Binding(
+                get: { currentModelID },
+                set: { onSelect($0) }
+            )) {
+                // Names, not wire ids: "Claude Opus 5", not claude-opus-5.
+                ForEach(models, id: \.modelID) { info in
+                    Text(info.name).tag(info.modelID)
+                }
             }
+            .font(.callout)
+            .disabled(!enabled)
+            .accessibilityIdentifier("settings.model.\(kind.rawValue)")
+            // The id stays, as a caption, for whoever needs to match it to
+            // a vendor console or a bill — the picker sheet's id caption,
+            // dimmed with the picker.
+            Text(currentModelID)
+                .font(.caption)
+                .foregroundStyle(theme.faint)
+                .opacity(enabled ? 1 : 0.5)
+                .accessibilityIdentifier("settings.modelID.\(kind.rawValue)")
         }
-        .font(.callout)
-        .disabled(!enabled)
     }
 }
-
-
-#if os(iOS)
-/// The downloaded-model card's own controls: what a Download costs before it
-/// starts (App Review 4.2.3(ii)), its progress with a Cancel, Delete
-/// afterwards, and a plain retry — the Hub client resumes partial blobs, so
-/// a failed download never starts from zero.
-private struct DownloadedModelControls: View {
-    let modelID: String
-    let theme: ReadingTheme
-    /// Fired when the model's state settles (downloaded, deleted, failed,
-    /// cancelled) so the card re-validates.
-    let onChange: () -> Void
-
-    @ObservedObject private var store = MLXModelStore.shared
-
-    private var spec: DownloadedModelSpec? { DownloadedModelCatalog.spec(for: modelID) }
-
-    var body: some View {
-        // Read once per body: the state may come from a directory scan.
-        let state = store.state(for: modelID)
-        VStack(alignment: .leading, spacing: 8) {
-            switch state {
-            case .notDownloaded:
-                Button {
-                    store.download(modelID)
-                } label: {
-                    CardActionLabel(
-                        title: "Download \(spec?.displayName ?? "model") · \(spec?.downloadSizeDescription ?? "")",
-                        systemImage: "arrow.down.circle", theme: theme, prominent: true
-                    )
-                }
-                .buttonStyle(.plain)
-                .accessibilityIdentifier("settings.download.model")
-                Text("A one-time download of about \(spec?.downloadSizeDescription ?? "a few GB") — best on Wi-Fi. It stays on this device until you delete it here.")
-                    .font(.caption2)
-                    .foregroundStyle(theme.faint)
-                    .fixedSize(horizontal: false, vertical: true)
-            case .downloading(let fraction):
-                HStack(spacing: 12) {
-                    ProgressView(value: fraction) {
-                        Text("Downloading \(spec?.displayName ?? "model")… \(Int(fraction * 100))%")
-                            .font(.caption)
-                            .foregroundStyle(theme.muted)
-                    }
-                    .tint(theme.iris)
-                    .accessibilityIdentifier("settings.download.progress")
-                    Button("Cancel") { store.cancelDownload(modelID) }
-                        .buttonStyle(.plain)
-                        .font(.caption)
-                        .foregroundStyle(theme.muted)
-                        .accessibilityIdentifier("settings.download.cancel")
-                }
-            case .downloaded:
-                HStack(spacing: 12) {
-                    Text("Downloaded · \(spec?.downloadSizeDescription ?? "")")
-                        .font(.caption)
-                        .foregroundStyle(theme.muted)
-                    Button("Delete", role: .destructive) { store.delete(modelID) }
-                        .buttonStyle(.plain)
-                        .font(.caption)
-                        .foregroundStyle(.red)
-                        .accessibilityIdentifier("settings.download.delete")
-                }
-            case .failed(let message):
-                Text(message)
-                    .font(.caption)
-                    .foregroundStyle(.orange)
-                    .fixedSize(horizontal: false, vertical: true)
-                Button {
-                    store.dismissFailure(modelID)
-                    store.download(modelID)
-                } label: {
-                    CardActionLabel(title: "Try again", systemImage: "arrow.clockwise", theme: theme)
-                }
-                .buttonStyle(.plain)
-            }
-        }
-        .onChange(of: state) { _, _ in onChange() }
-    }
-}
-#endif

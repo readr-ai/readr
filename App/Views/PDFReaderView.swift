@@ -1,6 +1,19 @@
 import SwiftUI
 import ReadrKit
 
+/// Where "Listen from here" should start, in narration coordinates: a
+/// chapter of the book's text and a character offset into it. Both surfaces
+/// hand the host one of these, so the seek rule is chosen in one place.
+struct ListenAnchor: Equatable {
+    var chapterIndex: Int
+    var characterOffset: Int
+    /// False when the exact spot couldn't be recovered and this is the best
+    /// approximation — a highlight's phrase found by search, or the top of its
+    /// page. Logged, so a "started in the wrong place" report can tell the
+    /// two apart.
+    var isExact: Bool
+}
+
 /// The native PDF surface's selection-dependent annotation actions, published
 /// up to the host reader while the surface is mounted (nil otherwise). The
 /// host owns every annotation keyboard shortcut registration — a single
@@ -19,6 +32,15 @@ struct PDFAnnotationActions {
     /// Navigate the live PDF to a page (R1: Notes-list "Show in book" jumps a
     /// PDF annotation to its page, mirroring the text reader's chapter jump).
     var goToPage: (Int) -> Void
+    /// The narration chapter for the page in view — the Listen button's
+    /// anchor while the PDF is up. Nil when that page has no chapter (a
+    /// legacy import whose chapters skipped text-less pages; see
+    /// `PDFReaderController.chapterIndex(forPage:)`).
+    var narrationChapterInView: () -> Int?
+    /// Turn the pages with the voice: show the page holding this narration
+    /// chapter, once per page the voice crosses onto. The surface owns the
+    /// page, so the host's text-mode state is never touched for a PDF.
+    var followNarration: (Int) -> Void
     /// Recolor a stored PDF highlight AND its live PDFKit overlay in one step
     /// (R2: a Notes-list color change must repaint the page, not just the
     /// store). No-op on the page when the highlight isn't currently overlaid.
@@ -45,23 +67,18 @@ struct PDFReaderView: View {
     let book: Book
     let url: URL
     var onAsk: (Selection) -> Void
+    /// "Listen from here" on a PDF selection or highlight.
+    var onListen: (ListenAnchor) -> Void
     /// Published while this surface is mounted so the host's shortcuts and
     /// toolbar Ask reach the PDF selection (it lives in `controller`, private
     /// to this view).
     @Binding var annotationActions: PDFAnnotationActions?
+    /// The host's `ReaderView.showsWideChrome`: whether the nav bar has room
+    /// for this surface's four controls on top of the host's. Required, so no
+    /// host can forget it — when false the PDF chrome rides the bottom bar.
+    let wideChrome: Bool
 
     @EnvironmentObject private var model: AppModel
-    #if os(iOS)
-    /// Placement of `pdf.search` depends on width: the compact iPhone nav bar
-    /// silently collapses trailing `.primaryAction` items past TWO, and the
-    /// host reader already spends both on Appearance + Notes there — so a third
-    /// trailing item (this search button) would be hidden in an overflow "…"
-    /// menu, taking `reader.notes` with it. On compact width we route search to
-    /// the bottom bar (mirroring the ebook `searchButton`); regular width (iPad)
-    /// has nav-bar room, so it stays up top like macOS.
-    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
-    private var isRegularWidth: Bool { horizontalSizeClass == .regular }
-    #endif
     @StateObject private var controller = PDFReaderController()
     /// Strip visibility persists across books like the other reader prefs.
     @AppStorage("pdfShowsThumbnails") private var showThumbnails = false
@@ -108,6 +125,8 @@ struct PDFReaderView: View {
                     noteSelection: { controller.noteCurrentSelection() },
                     askSelection: { controller.askCurrentSelection() },
                     goToPage: { controller.goToPage($0) },
+                    narrationChapterInView: { controller.chapterIndex(forPage: controller.currentPageIndex) },
+                    followNarration: { controller.followNarration(toChapter: $0) },
                     recolorHighlight: { controller.recolorHighlight($0, to: $1) },
                     removeHighlight: { controller.removeHighlight($0) }
                 )
@@ -191,7 +210,8 @@ struct PDFReaderView: View {
             model: model,
             book: book,
             url: url,
-            onAsk: onAsk
+            onAsk: onAsk,
+            onListen: onListen
         )
         .overlay(alignment: .bottom) { bottomOverlay }
     }
@@ -241,7 +261,11 @@ struct PDFReaderView: View {
             .help("Table of contents")
             .accessibilityIdentifier("pdf.toc")
             .popover(isPresented: $showTOC, arrowEdge: .bottom) {
-                PDFOutlineList(controller: controller) { showTOC = false }
+                PDFOutlineList(
+                    controller: controller,
+                    bookmarks: pageBookmarks,
+                    onRemoveBookmark: { model.removeBookmark($0) }
+                ) { showTOC = false }
             }
         }
         ToolbarItem(id: "pdf.thumbnails", placement: navPlacement) {
@@ -253,23 +277,20 @@ struct PDFReaderView: View {
             .accessibilityIdentifier("pdf.thumbnails")
         }
         ToolbarItem(id: "pdf.bookmark", placement: navPlacement) {
-            bookmarkMenu
+            bookmarkToggle
         }
         ToolbarItem(id: "pdf.search", placement: searchPlacement) {
             searchButton
         }
     }
 
-    /// The iPhone nav bar silently collapses items past TWO in each of the
-    /// leading (`.navigation`) and trailing (`.primaryAction`) groups. The host
-    /// reader already fills the compact trailing group (Appearance + Notes), and
-    /// this view alone adds three leading controls (Contents, Thumbnails,
-    /// Bookmark) — over the leading budget too. So on compact iPhone all of the
-    /// PDF chrome lives in the bottom bar (Apple-Books style); regular width
-    /// (iPad) / macOS have nav-bar room and keep it up top.
+    /// A nav bar folds the items it cannot fit into a "…" menu, and this view
+    /// adds four to the host's. Unless the host says the bar is wide (see
+    /// `wideChrome`), all of the PDF chrome lives in the bottom bar,
+    /// Apple-Books style; a wide iPad and macOS keep it up top.
     private var navPlacement: ToolbarItemPlacement {
         #if os(iOS)
-        isRegularWidth ? .navigation : .bottomBar
+        wideChrome ? .navigation : .bottomBar
         #else
         .navigation
         #endif
@@ -277,7 +298,7 @@ struct PDFReaderView: View {
 
     private var searchPlacement: ToolbarItemPlacement {
         #if os(iOS)
-        isRegularWidth ? .primaryAction : .bottomBar
+        wideChrome ? .primaryAction : .bottomBar
         #else
         .primaryAction
         #endif
@@ -314,57 +335,30 @@ struct PDFReaderView: View {
             .sorted { ($0.pdfPageIndex ?? 0) < ($1.pdfPageIndex ?? 0) }
     }
 
-    /// Split control: primary click toggles the bookmark on the current page
-    /// (the icon fills when the page is bookmarked); the menu lists all page
-    /// bookmarks for jumping.
-    private var bookmarkMenu: some View {
-        Menu {
-            Button {
-                toggleBookmark()
-            } label: {
-                Label(
-                    currentBookmark == nil ? "Add Bookmark" : "Remove Bookmark",
-                    systemImage: currentBookmark == nil ? "bookmark" : "bookmark.slash"
-                )
-            }
-            .keyboardShortcut("d", modifiers: .command)
-            if !pageBookmarks.isEmpty {
-                Divider()
-                ForEach(pageBookmarks) { bookmark in
-                    Button {
-                        controller.goToPage(bookmark.pdfPageIndex ?? 0)
-                    } label: {
-                        Label(
-                            bookmark.snippet.isEmpty
-                                ? "Page \((bookmark.pdfPageIndex ?? 0) + 1)"
-                                : bookmark.snippet,
-                            systemImage: "bookmark.fill"
-                        )
-                    }
-                }
-            }
-        } label: {
-            Label(
-                "Bookmarks",
-                systemImage: currentBookmark == nil ? "bookmark" : "bookmark.fill"
-            )
-        } primaryAction: {
-            toggleBookmark()
-        }
-        .help("Bookmark this page (⌘D)")
-        .accessibilityIdentifier("pdf.bookmark")
+    /// The ribbon: filled on a bookmarked page; a tap (⌘D) adds or removes
+    /// the bookmark. The page bookmarks list in Contents, as in the text
+    /// reader.
+    private var bookmarkToggle: some View {
+        BookmarkRibbonButton(
+            isBookmarked: currentBookmark != nil,
+            identifier: "pdf.bookmark",
+            action: toggleBookmark
+        )
     }
 
     private func toggleBookmark() {
         if let existing = currentBookmark {
             model.removeBookmark(existing)
         } else {
+            // No snippet: a page bookmark's label is its page number, which
+            // every row derives from `pdfPageIndex` (storing "Page N" was a
+            // string that could go stale against its own source).
             model.addBookmark(Bookmark(
                 bookID: book.id,
                 chapterIndex: 0,
                 characterOffset: 0,
                 pdfPageIndex: controller.currentPageIndex,
-                snippet: "Page \(controller.currentPageIndex + 1)",
+                snippet: "",
                 createdAt: Date()
             ))
         }
@@ -419,7 +413,9 @@ struct PDFReaderView: View {
     let book: Book
     let url: URL
     var onAsk: (Selection) -> Void
+    var onListen: (ListenAnchor) -> Void
     @Binding var annotationActions: PDFAnnotationActions?
+    let wideChrome: Bool
 
     var body: some View {
         ContentUnavailableView("PDF rendering unavailable", systemImage: "doc.richtext")

@@ -264,4 +264,44 @@ final class ProviderActivationTests: XCTestCase {
         )
         XCTAssertEqual(relaunched.selection?.kind, .anthropic)
     }
+
+    // MARK: - Un-choosing mid-flight
+
+    /// `clearSelection` bumps the dropped kind's generation, the way every
+    /// other selection change does, so a check that began against the old
+    /// selection cannot commit afterwards. The `.validating` marker it left
+    /// goes with it: the run that would have replaced it is discarded, and
+    /// leaving the marker would freeze the card on "Validating…" forever.
+    func testClearSelectionDiscardsACheckStartedBeforeIt() async throws {
+        try store.save(.apiKey("sk-good"), for: .openAI)
+        factory.scriptValidationError(nil, for: .openAI)
+        let manager = self.manager!
+        manager.setActive(kind: .openAI)
+        factory.scriptOnValidate({ manager.clearSelection() }, for: .openAI)
+
+        _ = await manager.validate(.openAI)
+
+        XCTAssertNil(manager.explicitSelection, "un-choosing stands")
+        XCTAssertNil(
+            manager.validationState(.openAI),
+            "the discarded run writes no result, and leaves no marker behind"
+        )
+    }
+
+    /// A deferred takeover that was in flight when the reader un-chose must
+    /// stand down too — an async completion never re-selects what they just
+    /// dropped.
+    func testValidateAndActivateStandsDownWhenTheSelectionWasClearedMidFlight() async throws {
+        try await establishWorkingOpenAI()
+
+        try store.save(.apiKey("sk-ant-good"), for: .anthropic)
+        factory.scriptValidationError(nil, for: .anthropic)
+        let manager = self.manager!
+        factory.scriptOnValidate({ manager.clearSelection() }, for: .anthropic)
+        manager.clearValidation(.anthropic)
+        XCTAssertFalse(manager.requestActivation(of: .anthropic))
+
+        _ = await manager.validateAndActivate(.anthropic)
+        XCTAssertNil(manager.explicitSelection, "nothing was chosen while the check ran")
+    }
 }

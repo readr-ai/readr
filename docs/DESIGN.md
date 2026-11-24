@@ -13,7 +13,7 @@ LiquidText, Yomu), and verified AppKit/PDFKit implementation patterns.
    PDFs natively, with the same annotation model as EPUBs.
 2. **Your highlights are alive, not trapped.** Apple Books has no annotation
    export at all (its own users' most-cited complaint). In Readr every
-   highlight/note streams into a Notes panel as you read, exports as clean
+   highlight/note streams into a Highlights panel as you read, exports as clean
    Markdown in one click, and can be composed into an article by the AI.
 3. **Ask the book, with receipts.** Select any passage → Ask. Answers are
    grounded in the book and cite the passages they came from.
@@ -65,14 +65,14 @@ truth for every token; this section mirrors it.
 ```
 NavigationSplitView
 ├── Sidebar                       (translucent source list)
-│   ├── Home                      (Continue Reading + Recently Added)
+│   ├── Home                      (Continue Reading + Not started yet)
 │   ├── LIBRARY
 │   │   ├── All Books
-│   │   ├── Books                 (EPUB/text)
+│   │   ├── Ebooks                (EPUB/text)
 │   │   ├── PDFs
 │   │   └── Finished
-│   └── NOTES
-│       └── Highlights & Notes    (review + export + article studio)
+│   └── HIGHLIGHTS
+│       └── Highlights            (review + export + article studio)
 └── Detail                        (grid / home / notes review)
 
 Reader: opens in its OWN WINDOW on macOS (WindowGroup(for: Book.ID.self),
@@ -86,36 +86,64 @@ Providers) via gear in the library toolbar + macOS Settings scene.
 
 ### Home
 - **Continue Reading**: horizontally scrolling large cards (cover, title,
-  progress ring/bar, "N min left in chapter" when known). One click resumes at
-  the exact position. Sorted by `lastOpenedAt`. A "Chapter N of M" line under
-  the card carries the ✦ Recap action (see Recap below) for text books.
-- **Recently Added** row.
+  author, hairline progress, the Continue pill, "Chapter N of M"). One click
+  resumes at the exact position. Sorted by `lastOpenedAt`. Nothing on the
+  card is an AI moment (Recap greets the reader inside the book — see Recap).
+- **Connect an AI model** card between the shelves while no model is
+  connected; gone the moment one is. (It used to live only in the empty
+  state, which a first run never shows now that a sample book is seeded.)
+- **Not started yet** row: books never opened, newest import first. Not
+  "Recently Added" — in a small library that repeated the shelf above.
 - Empty state: warm illustration + "Add your first book" (Import button + the
   whole window is a drop target). Second card nudges AI provider setup.
 
 ### Library grid
 - Adaptive grid 150–200pt, hover effects, progress bar under in-progress
   covers, badges: "PDF" tag on PDFs, "Finished" checkmark.
-- Sort menu: Recent / Title / Author. (List view: post-v2.)
+- Sort menu, labelled with the current order: Recent / Title / Author.
+  (List view: post-v2.)
+- Progress caption only where there is progress ("31% · ~9 min left",
+  "Finished"); an unopened book gets the bare hairline, not "Not started".
 - Context menu per book: Open, Open in New Window (macOS), Mark as
-  Finished / Mark as Still Reading, Highlights & Notes, Create Article…,
+  Finished / Mark as Still Reading, Highlights, Create Article…,
   Delete Book… (confirmation; removes retained source + cover).
-- Drag & drop import everywhere + Import button + File > Import (⌘I).
+- Drag & drop import everywhere + Import button (many files at once) +
+  File > Import (⌘I).
 
 ### Reader window
-Toolbar (unifiedCompact, auto-hides in full screen):
-- **Leading**: TOC popover (chapter list, current chapter bold, click to jump);
-  Bookmarks menu (toggle bookmark ⌘D + list of bookmarks, click to jump).
+Toolbar (unifiedCompact, auto-hides in full screen) — seven controls, the
+same on every platform (the macOS bar used to carry seventeen, with the
+appearance controls inline; September 2026 UX review, F3):
+- **Leading**: Contents popover — the book's bookmarks first (chapter in
+  caps, snippet in serif, tap to jump, ✕ to remove), then the chapter list
+  (current chapter bold, a faint ribbon on a chapter that holds a bookmark);
+  the bookmark **ribbon**, a toggle (⌘D) that fills on a bookmarked page.
+  There is no bookmarks menu (F9).
 - **Center**: book title · chapter title (window title/subtitle).
 - **Trailing**: In-book search (⌘F, popover: field + result list with
   snippets, ⏎ jumps, works across chapters; PDFs use PDFKit findString);
-  Appearance popover (NOT a menu): theme tiles (Paper/Sepia/Night) with
-  live preview swatches, font size − / A / +, layout picker
-  (Scroll / Page / Two pages), PDF: Original pages ↔ Reading view toggle;
-  Ask the Book (sparkles, ⌘⇧A) — opens Ask panel with or without selection;
-  Notes panel toggle (highlighter icon, ⌘⇧N) — `.inspector`.
+  **Aa** — the Appearance popover (NOT a menu): text size, theme tiles
+  (Paper/Sepia/Dark) with live preview, typeface, line spacing,
+  justification, layout (Scroll / Single page / Two pages on macOS), and
+  for PDFs Original pages ↔ Reading view; Listen (⌘⇧L);
+  Ask the Book (✦, ⌘⇧A) — opens Ask panel with or without selection;
+  Highlights panel toggle (highlighter icon, ⌘⇧N) — `.inspector`.
+- **Sheets** share one header grammar: AI surfaces (Ask, Article) carry
+  ✦ + a caps title in the principal slot; reading surfaces carry their
+  title; Done is always on the right. One note editor (`NoteEditor`)
+  wherever a note is edited from (F4).
+- **Listen** (⌘⇧L): the now-reading card insets the page from the bottom —
+  chapter in caps, the sentence being read, a hairline of chapter progress,
+  speed · ◀ ● ▶ · Sleep, ✕ in the corner. The voice is chosen in the Aa
+  popover (voices resolved for the book before the first Listen, so it
+  works there first); chapter skips are in Contents, which takes the voice
+  along. Ask opened while the voice reads pauses it, is about the sentence
+  being read, and resumes it on Done — unless the reader restarted or
+  paused the voice themselves meanwhile.
 - Footer (text modes): "Page x of y · ~N min left in chapter" (estimated from
   ~240 wpm until measured), page-turn arrows; ←/→ keys and trackpad swipe.
+  Scroll layout on the Mac carries previous/next-chapter arrows in its
+  footer (⌥⌘← / ⌥⌘→ everywhere), since it has no page edges to turn.
 - Position restore: exact character offset (`ReadingPosition.characterOffset`),
   not just the chapter.
 
@@ -135,10 +163,11 @@ Toolbar (unifiedCompact, auto-hides in full screen):
   per-line page-space rects + quoted text + color + note (PDF file is never
   mutated), and re-created as PDFKit annotation overlays on load. TOC from
   `PDFOutline`, search via `findString`, thumbnails sidebar, bookmark = page.
-- Every highlight (EPUB and PDF) appears in the Notes panel instantly.
+- Every highlight (EPUB and PDF) appears in the Highlights panel instantly.
 
-### Notes panel (inspector, ⌘⇧N)
-- Right-hand inspector column (min 280 / ideal 340): this book's annotations
+### Highlights panel (inspector, ⌘⇧N)
+- Right-hand inspector column (min 280 / ideal 340), the Highlights tab
+  beside Ask on the Mac and iPad: this book's annotations
   in reading order — color dot, quoted text (serif), note beneath, chapter/page
   locator. Click → jump to it in the book. Swipe/context: edit note, change
   color, delete. Filter chips by color; search field.
@@ -151,7 +180,7 @@ Toolbar (unifiedCompact, auto-hides in full screen):
   home — annotations are never trapped inside a book.
 
 ### Article studio
-- Entry: Notes panel CTA, sidebar section, book context menu.
+- Entry: Highlights panel CTA, sidebar section, book context menu.
 - Flow: pick highlights (all pre-checked, color filter) → optional guidance
   field ("what should the article emphasize?") → Compose (streams) → editable
   Markdown editor → Export `.md` (fileExporter) / Copy / Share.
@@ -159,7 +188,16 @@ Toolbar (unifiedCompact, auto-hides in full screen):
   Settings.
 
 ### Ask panel
-- Now openable with no selection (whole-book questions). Shows selection quote
+- **Lives beside the page.** On the Mac and a regular-width iPad, ✦ Ask
+  opens the reader's inspector on an **Ask** tab beside **Highlights** — one
+  column, two tabs, the page readable and scrollable next to the answer.
+  On iPhone it stays a full-height sheet (owner decision, September 2026).
+- **One conversation per book, per session.** The reader owns the
+  conversation (`AskViewModel`); closing the sheet, or switching the
+  inspector to Highlights and back, resumes it. A new ✦ Ask on another
+  passage points the same conversation at that passage. "New conversation"
+  in the column header starts over.
+- Openable with no selection (whole-book questions). Shows selection quote
   when present, streams the answer, citations as clickable disclosure rows
   (future: jump-to-passage). Tier badge stays ("whole book" / "passages").
 - Scope is a labelled two-way choice, not a switch: an "Answers from"
@@ -170,27 +208,32 @@ Toolbar (unifiedCompact, auto-hides in full screen):
   position to scope to.
 
 ### Recap
-- **Recap** is the ✦ Recap action under Home's Continue Reading cards and
-  the first starter row in the reader's Ask panel — not a second toolbar
-  button beside Ask (it opened the same panel; two doors into one room,
-  dropped in 3.3.1). The card opens the Ask panel with "Recap what I've
-  read so far — no spoilers" already sent — nothing to type — and a
-  "where am I" line above the
-  transcript ("Chapter 7 of 24 · 31% · The Whale", `ReadingPositionSummary`
-  in ReadrKit) saying where the recap stops. The answer is built only from
-  the text before that point (`ReadingFrontier`).
+- **Recap** is the reader's welcome-back line and the first starter row in
+  the Ask panel — not a toolbar button beside Ask (dropped in 3.3.1: two
+  doors into one room) and not an action on the Home card (dropped after the
+  September 2026 UX review: a bookshelf card is not a control panel, and
+  every pill treatment tried there read as clutter).
+- **The welcome-back line** (`WelcomeBack` in ReadrKit): when a book is
+  opened a day or more after it was last opened, and it has a saved
+  position, a one-line card sits above the page — "✦ Welcome back — it’s
+  been 6 days · Chapter 1 of 12 · 31% · Down the Rabbit-Hole · Recap ›" with
+  a ✕. Recap opens the Ask panel with "Recap what I've read so far — no
+  spoilers" already sent and a "where am I" line above the transcript
+  (`ReadingPositionSummary`); the answer is built only from the text before
+  that point (`ReadingFrontier`). The line goes after three page turns, or
+  on ✕ or Recap, and is never persisted, so it can only return after another
+  absence.
+- How it knows: `BookState.lastOpenedAt` is already stamped on every open;
+  `AppModel.markOpened` keeps the stamp it replaced and the reader takes it
+  once on restore (`takeLastOpenedBeforeOpen`). Nothing new is stored.
 - Offered only where there is a reading position to recap up to: EPUBs,
   plain text, and PDFs in the extracted-text view. Native PDF pages get no
-  button, and PDFs get no card action — a page is not a frontier, and a
-  recap without one would spoil.
+  line — a page is not a frontier, and a recap without one would spoil.
 - No provider: the panel opens into its guided empty state and sends the
   recap the moment a key is connected from there. It is sent once per open,
   never on a re-render.
-- Iris stays reserved for AI moments: the card's Recap is the ✦ mark in
-  iris; the reader's is a plain toolbar item like Listen.
-- The card's Recap opens the book, then the recap: `AppModel.pendingRecapBookID`
-  carries the request to the reader, which consumes it on appearance (or on
-  change, when its macOS window is already open).
+- Iris stays reserved for AI moments: the ✦ mark on the line, and nothing
+  on the Home shelf.
 
 ## Data model (ReadrKit)
 
@@ -243,8 +286,11 @@ All new fields optional/additive so existing `library.json` files decode.
 
 ## Keyboard shortcuts
 
-⌘I import · ⌘F find in book · ⌘D toggle bookmark · ⌘⇧N notes panel ·
-⌘⇧A ask (about the selection when text is selected, else the whole book) ·
+⌘I import · ⌘F find in book · ⌘D toggle bookmark · ⌘⇧N Highlights panel
+(opens the inspector on Highlights; from the Ask tab, switches to Highlights;
+from Highlights, closes it) · ⌘⇧A ask (about the selection when text is
+selected, else the book so far — in the inspector's Ask tab on the Mac and
+iPad, a sheet on iPhone) · ⌥⌘← / ⌥⌘→ previous / next chapter ·
 ⌘⇧H highlight the selection (last-used marker color) · ⌘⇧M highlight the
 selection and open its note editor · ←/→ page turn · ⌘+/⌘− text size.
 The annotation shortcuts work in both the text reader and the native PDF

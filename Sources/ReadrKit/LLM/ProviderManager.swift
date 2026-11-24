@@ -9,6 +9,26 @@ public struct ProviderSelection: Sendable, Equatable, Codable {
         self.kind = kind
         self.modelID = modelID
     }
+
+    /// The model by the name the catalogue gives it (a retired id by its
+    /// successor's) — the sidebar's line.
+    public var modelName: String {
+        ProviderCatalog.resolve(modelID: modelID, for: kind).name
+    }
+
+    /// The model and the card it lives on, the way Settings says it:
+    /// "Claude Opus 5 · Claude (Anthropic)". A vendor with two ways in says
+    /// which one is meant ("GPT-5.4 · OpenAI via ChatGPT"); `connected`
+    /// false adds the state that stops Ask. One source for every surface
+    /// that names the active model. (September 2026 UX review, F11.)
+    public func summary(connected: Bool) -> String {
+        let vendor = ProviderVendor.vendor(for: kind)
+        var card = vendor?.title ?? kind.rawValue
+        if let vendor, vendor.hasMultipleMethods {
+            card += kind.usesAPIKey ? " via API key" : " via ChatGPT"
+        }
+        return "\(modelName) · \(card)" + (connected ? "" : " — not connected")
+    }
 }
 
 /// Selects the active provider, resolves it against the `ProviderCatalog`, and
@@ -52,7 +72,9 @@ public final class ProviderManager: @unchecked Sendable {
                 case .appleIntelligence:
                     return "The on-device model isn't available here. Turn on Apple Intelligence in Settings, or connect another provider in Settings → AI Providers."
                 case .downloadedModel:
-                    return "The downloaded model isn't ready. Download it in Settings → AI Providers, or connect another provider."
+                    return "Download a model in Settings → AI Providers first."
+                case .geminiNano:
+                    return "Gemini Nano isn't available on this phone."
                 }
             case .localMismatch:
                 return "The local model is misconfigured. Re-select a model in Settings → AI Providers."
@@ -104,6 +126,12 @@ public final class ProviderManager: @unchecked Sendable {
     private let tokenRefresher: TokenRefresher?
     private let now: @Sendable () -> Date
     private let defaults: UserDefaults?
+    /// The connection methods this build actually has. A `Kind` is a method,
+    /// not a platform: `.geminiNano` exists in the enum on an iPhone and
+    /// `.appleIntelligence` exists on an Android phone, and neither can ever
+    /// answer a question there. The build says which ones it has once, here,
+    /// so no screen has to hold its own copy of the list and drift from it.
+    private let supportedKinds: Set<ProviderInfo.Kind>
     private var _selection: ProviderSelection?
     /// In-flight refresh per kind so concurrent callers share one exchange —
     /// refresh tokens are often single-use, so a duplicate POST could revoke
@@ -154,6 +182,10 @@ public final class ProviderManager: @unchecked Sendable {
     ///     anything persisted in `defaults`.
     ///   - defaults: when non-nil, the active selection is restored from and
     ///     persisted to this store, so it survives relaunch.
+    ///   - supportedKinds: the connection methods this build has. Anything
+    ///     outside it is never configured, never available, and cannot be
+    ///     activated — the default is every kind, for tests and for a build
+    ///     that has them all.
     public init(
         store: CredentialStore,
         factory: @escaping ProviderFactory,
@@ -161,7 +193,8 @@ public final class ProviderManager: @unchecked Sendable {
         persistingIn defaults: UserDefaults? = nil,
         tokenRefresher: TokenRefresher? = nil,
         now: @escaping @Sendable () -> Date = { Date() },
-        defaultSelection: DefaultSelection? = nil
+        defaultSelection: DefaultSelection? = nil,
+        supportedKinds: Set<ProviderInfo.Kind> = Set(ProviderInfo.Kind.allCases)
     ) {
         self.store = store
         self.factory = factory
@@ -169,7 +202,14 @@ public final class ProviderManager: @unchecked Sendable {
         self.tokenRefresher = tokenRefresher
         self.now = now
         self.defaultSelection = defaultSelection
+        self.supportedKinds = supportedKinds
         self._selection = selection ?? Self.loadSelection(from: defaults)
+    }
+
+    /// Whether this build has this connection method at all. False is not a
+    /// state the reader can fix: the method does not exist here.
+    public func supports(_ kind: ProviderInfo.Kind) -> Bool {
+        supportedKinds.contains(kind)
     }
 
     // MARK: - Selection
@@ -196,6 +236,38 @@ public final class ProviderManager: @unchecked Sendable {
         Self.save(selection, to: defaults)
     }
 
+    /// Un-choose: drop the reader's explicit selection, so the app's default
+    /// (where it supplies one) applies again and `explicitSelection` reads
+    /// nil — "nothing chosen", the state the onboarding copy speaks to.
+    ///
+    /// The mirror of `setActive` on the persistence side: the selection goes
+    /// out of `defaults` through the same door it was written through, so a
+    /// relaunch finds nothing chosen rather than a provider nobody picked.
+    ///
+    /// Not a mirror on the validation side, deliberately. `setActive` forgets
+    /// the kind's verdict and freshness stamp because it names a *different
+    /// model*, and the old verdict described the old one; nothing about any
+    /// credential changes here, only which provider Ask reaches for. So every
+    /// kind keeps what it proved this session and no sweep re-probes (and
+    /// re-bills) a key that passed a moment ago.
+    ///
+    /// The dropped kind's generation is still bumped, as every selection
+    /// change bumps it: a `validate(_:)` that began against the old selection
+    /// must not commit over the un-choosing. Its `.validating` marker is the
+    /// one thing that cannot survive — the run that would have replaced it is
+    /// now discarded, and a marker nothing will ever replace freezes the
+    /// settings card on "Validating…" (the same trap `setActive` avoids).
+    ///
+    /// A no-op when nothing was explicitly chosen.
+    public func clearSelection() {
+        lock.lock(); defer { lock.unlock() }
+        guard let dropped = _selection else { return }
+        _validationGeneration[dropped.kind, default: 0] += 1
+        if _validation[dropped.kind] == .validating { _validation[dropped.kind] = nil }
+        _selection = nil
+        Self.save(nil, to: defaults)
+    }
+
     /// Called after a new credential for `kind` has been stored: decides
     /// whether the active selection moves to it now, or only after
     /// validation clears the key (`validateAndActivate(_:)`).
@@ -212,6 +284,10 @@ public final class ProviderManager: @unchecked Sendable {
     /// Returns `true` when `kind` is (now) the active selection.
     @discardableResult
     public func requestActivation(of kind: ProviderInfo.Kind) -> Bool {
+        // A method this build doesn't have cannot become the selection, so a
+        // stored credential for one — synced from another platform, restored
+        // from a backup — can't strand Ask on a provider that isn't here.
+        guard supports(kind) else { return false }
         if let current = explicitSelection {
             if current.kind == kind { return true }
             if isConfigured(current.kind) { return false }
@@ -241,6 +317,9 @@ public final class ProviderManager: @unchecked Sendable {
     /// recent explicit choice.
     @discardableResult
     public func validateAndActivate(_ kind: ProviderInfo.Kind) async -> ValidationState? {
+        // Nothing to validate and nothing to activate: this build has no such
+        // method. Nil, the same "this one stood down" every other caller gets.
+        guard supports(kind) else { return nil }
         let selectionAtRequest = selection
         await validate(kind)
         guard let settled = validationState(kind) else { return nil }
@@ -265,8 +344,16 @@ public final class ProviderManager: @unchecked Sendable {
         return try? JSONDecoder().decode(ProviderSelection.self, from: data)
     }
 
-    private static func save(_ selection: ProviderSelection, to defaults: UserDefaults?) {
-        guard let defaults, let data = try? JSONEncoder().encode(selection) else { return }
+    /// The only door to the persisted selection: `nil` removes the key, so
+    /// `setActive` and `clearSelection` cannot drift apart on what "nothing
+    /// chosen" looks like on disk.
+    private static func save(_ selection: ProviderSelection?, to defaults: UserDefaults?) {
+        guard let defaults else { return }
+        guard let selection else {
+            defaults.removeObject(forKey: selectionDefaultsKey)
+            return
+        }
+        guard let data = try? JSONEncoder().encode(selection) else { return }
         defaults.set(data, forKey: selectionDefaultsKey)
     }
 
@@ -560,6 +647,10 @@ public final class ProviderManager: @unchecked Sendable {
     /// Callers that need a verified-usable signal should prefer
     /// `isValidated(_:)`, which is only true after a successful `validate(_:)`.
     public func isConfigured(_ kind: ProviderInfo.Kind) -> Bool {
+        // A method this build doesn't have is never configured — not even an
+        // on-device one, which needs no credential and would otherwise report
+        // itself ready on a device that cannot run it.
+        guard supports(kind) else { return false }
         if let state = validationState(kind) {
             return state == .active
         }
@@ -583,6 +674,11 @@ public final class ProviderManager: @unchecked Sendable {
     /// until a check says otherwise.
     public func availableKinds() -> [ProviderInfo.Kind] {
         ProviderInfo.Kind.allCases.filter { isConfigured($0) }
+    }
+
+    /// The kinds this build has, in the enum's own order.
+    public func platformKinds() -> [ProviderInfo.Kind] {
+        ProviderInfo.Kind.allCases.filter(supports)
     }
 
     // MARK: - Resolution

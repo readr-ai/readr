@@ -60,6 +60,64 @@ final class SpeechPlaylistTests: XCTestCase {
         XCTAssertEqual(playlist.seek(toChapter: 0, characterOffset: 14)?.text, "Alpha two.")
     }
 
+    // MARK: Seeking from a selection
+
+    func testSeekToTheSentenceContainingASelectionKeepsThatSentence() {
+        // A reader who selects words mid-sentence and presses "Listen from
+        // here" means *this* sentence — the page rule, which skips to the next
+        // whole one, would silently drop the words they pointed at.
+        var playlist = SpeechPlaylist(book: makeBook())
+        XCTAssertEqual(
+            playlist.seek(toChapter: 0, characterOffset: 5, anchor: .sentenceContaining)?.text,
+            "Alpha one."
+        )
+        XCTAssertEqual(
+            playlist.seek(toChapter: 0, characterOffset: 15, anchor: .sentenceContaining)?.text,
+            "Alpha two."
+        )
+        XCTAssertEqual(
+            playlist.seek(toChapter: 0, characterOffset: 0, anchor: .sentenceContaining)?.text,
+            "Alpha one.",
+            "A selection starting exactly on a sentence start takes that sentence"
+        )
+        XCTAssertEqual(playlist.position?.characterOffset, 0)
+    }
+
+    func testSeekContainingAnOffsetInTheGapBetweenSentencesFallsForward() {
+        // Offset 10 is the space between "Alpha one." and "Alpha two." — in no
+        // sentence, so the next one is the reader's.
+        var playlist = SpeechPlaylist(book: makeBook())
+        XCTAssertEqual(
+            playlist.seek(toChapter: 0, characterOffset: 10, anchor: .sentenceContaining)?.text,
+            "Alpha two."
+        )
+    }
+
+    func testSeekContainingAnOffsetInAnUnspeakableRunFallsForward() {
+        // An image placeholder is never a segment; a selection that starts on
+        // it lands on the first sentence after it rather than finding nothing.
+        let book = makeBook(chapters: [
+            ("One", "\u{FFFC}\n\nReal prose here. And more.", true),
+        ])
+        var playlist = SpeechPlaylist(book: book)
+        XCTAssertEqual(
+            playlist.seek(toChapter: 0, characterOffset: 0, anchor: .sentenceContaining)?.text,
+            "Real prose here."
+        )
+    }
+
+    func testSeekContainingPastTheEndOfAChapterRollsIntoTheNextOne() {
+        var playlist = SpeechPlaylist(book: makeBook())
+        let segment = playlist.seek(toChapter: 0, characterOffset: 9_999, anchor: .sentenceContaining)
+        XCTAssertEqual(segment?.text, "Beta one.")
+        XCTAssertEqual(segment?.chapterIndex, 2)
+    }
+
+    func testSeekContainingOutsideTheBookFindsNothing() {
+        var playlist = SpeechPlaylist(book: makeBook())
+        XCTAssertNil(playlist.seek(toChapter: 99, characterOffset: 0, anchor: .sentenceContaining))
+    }
+
     func testSeekFromTheTopOfAChapterStartsAtItsFirstSentence() {
         var playlist = SpeechPlaylist(book: makeBook())
         XCTAssertEqual(playlist.seek(toChapter: 2)?.text, "Beta one.")
@@ -337,5 +395,47 @@ extension SpeechPlaylistTests {
         // a property of the cache, so the check is that the walk's result and
         // the later advance agree exactly.
         XCTAssertEqual(playlist.segments(inChapter: 2).map(\.text), ["Beta one.", "Beta two."])
+    }
+
+    // MARK: - The chapters continuous playback will read
+
+    /// The same rule `moveToChapter(after:)` walks by, asked without walking:
+    /// what a lock screen's chapter playlist may offer, so ⏭ never lands on a
+    /// row auto-advance would refuse to play.
+    func testNarratableChaptersAreTheOnesContinuousPlaybackWouldVisit() {
+        let book = makeBook()
+        XCTAssertEqual(book.narratableChapterIndices, [0, 2], "the notes document is not a track")
+
+        var playlist = SpeechPlaylist(book: book)
+        playlist.seek(toChapter: 0)
+        XCTAssertEqual(playlist.advanceToNextChapter()?.chapterIndex, 2, "and the walk agrees")
+    }
+
+    /// An empty chapter is not a track either — a PDF page carrying only an
+    /// image, or a spine document with nothing but a heading lifted out of it.
+    func testAChapterWithNothingToSayIsNotNarratable() {
+        let book = makeBook(chapters: [
+            ("One", "Alpha one.", true),
+            ("Plate", "   \n ", true),
+            ("Two", "Beta one.", true),
+        ])
+        XCTAssertEqual(book.narratableChapterIndices, [0, 2])
+    }
+
+    /// And neither is one whose only "text" is footnote markers, which
+    /// narration mutes before it segments.
+    func testAMarkerOnlyChapterIsNotNarratable() {
+        let book = Book(
+            metadata: BookMetadata(title: "Test"),
+            chapters: [
+                Chapter(title: "One", order: 0, text: "Alpha one."),
+                Chapter(
+                    title: "Markers", order: 1, text: "12",
+                    formatSpans: [FormatSpan(start: 0, end: 2, kind: .superscript)]
+                ),
+            ],
+            estimatedTokenCount: 10
+        )
+        XCTAssertEqual(book.narratableChapterIndices, [0])
     }
 }

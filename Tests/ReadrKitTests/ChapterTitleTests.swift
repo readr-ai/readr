@@ -73,6 +73,45 @@ final class ChapterTitleTests: XCTestCase {
         XCTAssertEqual(book.chapterDisplayTitle(1), "Second")
     }
 
+    /// Narration counts the other way: `NarrationPosition.chapterIndex` and
+    /// `SpeechPlaylist`'s cursor are positions in the `chapters` array itself,
+    /// not in reading order. A playlist titled through the reading-order
+    /// lookup is one row out of step for a book whose array is shuffled.
+    func testTitlesInStoredOrderFollowTheChaptersArray() {
+        let book = Book(
+            metadata: BookMetadata(title: "Shuffled"),
+            chapters: [
+                Chapter(title: "Second", order: 1, text: "b"),
+                Chapter(title: "First", order: 0, text: "a"),
+            ],
+            estimatedTokenCount: 2
+        )
+        XCTAssertEqual(book.chapterDisplayTitlesInStoredOrder, ["Second", "First"])
+        XCTAssertEqual(
+            book.chapters.indices.map(book.chapterDisplayTitle),
+            ["First", "Second"],
+            "the reading-order lookup is unchanged — the two are different questions"
+        )
+    }
+
+    /// An untitled chapter still asks the table of contents in reading order,
+    /// and counts its fallback number there: two chapters must not both come
+    /// out "Chapter 2" because the array happened to be shuffled.
+    func testStoredOrderTitlesStillAskTheTOCInReadingOrder() {
+        let book = Book(
+            metadata: BookMetadata(
+                title: "Shuffled",
+                tableOfContents: [TOCEntry(title: "Part One", chapterIndex: 1)]
+            ),
+            chapters: [
+                Chapter(title: nil, order: 1, text: "b"),
+                Chapter(title: nil, order: 0, text: "a"),
+            ],
+            estimatedTokenCount: 2
+        )
+        XCTAssertEqual(book.chapterDisplayTitlesInStoredOrder, ["Part One", "Chapter 1"])
+    }
+
     /// The summary's title is this lookup, so the caption and the header
     /// can never name the same chapter differently.
     func testTheSummaryUsesTheSameLookup() {

@@ -7,13 +7,19 @@ final class DownloadedModelCatalogTests: XCTestCase {
 
     private let gigabyte: Int64 = 1_000_000_000
 
-    func testAnEightGigabytePhoneIsOfferedTheFourBModelFirst() {
+    func testAnEightGigabytePhoneDefaultsToTheTwoBModel() {
         let offered = DownloadedModelCatalog.models(forPhysicalMemory: 8 * gigabyte)
-        XCTAssertEqual(offered.map(\.displayName), ["Qwen3.5 4B", "Qwen3.5 2B"])
+        XCTAssertEqual(offered.map(\.displayName), ["Qwen3.5 2B"])
         XCTAssertEqual(
             DownloadedModelCatalog.recommendedModel(forPhysicalMemory: 8 * gigabyte)?.repository,
-            "mlx-community/Qwen3.5-4B-4bit"
+            "mlx-community/Qwen3.5-2B-4bit"
         )
+    }
+
+    func testLargerModelIsAnExplicitChoiceOnTwelveGigabyteHardware() {
+        let models = DownloadedModelCatalog.models(forPhysicalMemory: 12 * gigabyte)
+        XCTAssertEqual(models.map(\.displayName), ["Qwen3.5 2B", "Qwen3.5 4B"])
+        XCTAssertEqual(DownloadedModelCatalog.recommendedModel(forPhysicalMemory: 12 * gigabyte)?.displayName, "Qwen3.5 2B")
     }
 
     func testASixGigabytePhoneGetsOnlyTheTwoBModel() {

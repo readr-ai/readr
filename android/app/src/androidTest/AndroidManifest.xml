@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <!-- The keyboard the instrumented run switches to; see
+             NoInputMethod and ReadrTestRunner. It lives in the test APK, so
+             nothing about it ships to a reader. -->
+        <service
+            android:name="com.readrai.readr.NoInputMethod"
+            android:exported="true"
+            android:label="No keyboard (Readr tests)"
+            android:permission="android.permission.BIND_INPUT_METHOD">
+            <intent-filter>
+                <action android:name="android.view.InputMethod" />
+            </intent-filter>
+            <meta-data
+                android:name="android.view.im"
+                android:resource="@xml/no_input_method" />
+        </service>
+    </application>
+</manifest>

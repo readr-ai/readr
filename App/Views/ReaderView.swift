@@ -34,11 +34,27 @@ struct ReaderView: View {
     /// voice — is the one moving.
     @State private var narrationResumeAnchor: Int?
     @State private var didRestorePosition = false
-    /// Set once the reader is on screen and its position restored. A recap
-    /// asked for by the library (`AppModel.pendingRecapBookID`) is only
-    /// presented after this, so the sheet never goes up over a reader that
-    /// is still being pushed and the frontier it uses is the restored one.
-    @State private var hasAppeared = false
+    /// The welcome-back line (`WelcomeBack`): a one-line card above the page
+    /// offering a spoiler-free recap, set on restore when the reader has
+    /// been away a day or more, and cleared after a few page turns, on ✕, or
+    /// on Recap. Never persisted.
+    @State private var welcomeBack: WelcomeBackLine?
+    /// The character range of the spread in view (paged layouts), reported
+    /// by the surface. The bookmark ribbon is filled when a bookmark falls
+    /// inside it — "the page in view", not "this exact anchor", so a
+    /// repagination (text size, window width) never unfills a bookmarked
+    /// page or lets ⌘D add a second bookmark to it.
+    @State private var visibleRange: Range<Int>?
+    /// A PDF page bookmark picked from the Reading view's Contents: switch
+    /// to the original pages, then go to the page once the surface is up.
+    @State private var pendingPDFPage: Int?
+    /// Page turns the reader has made since the line went up.
+    @State private var pageTurnsSinceWelcome = 0
+    /// The (chapter, anchor) the last counted turn landed on. Both values'
+    /// `onChange` handlers report a turn, and a jump changes both in one
+    /// pass, so a turn counts only when the page is a new one — and the
+    /// restore's own writes, which land on this page, count for nothing.
+    @State private var lastCountedPage = PagePosition(chapter: 0, anchor: 0)
     /// The committed text selection in chapter coordinates, reported by the
     /// reading surfaces. Drives the selection-dependent keyboard shortcuts
     /// (⇧⌘H highlight, ⇧⌘M note, and the selection-aware ⇧⌘A ask) — the
@@ -59,12 +75,32 @@ struct ReaderView: View {
     /// annotation-shortcut registration and dispatches per mode — a single
     /// owner, so no mode can register a duplicate key equivalent.
     @State private var pdfAnnotationActions: PDFAnnotationActions?
-    /// The Ask panel's request — selection, scope and any question to send
-    /// on open — and, by being non-nil, the fact that it is presented. One
-    /// value carries the whole presentation, so `.sheet(item:)` gives every
-    /// opening a fresh identity and nothing lingers for the next one.
+    /// Set by "Listen from here": the selected sentence may have begun on the
+    /// page before the one the reader is looking at, and following the voice
+    /// there would flip the page backwards — the very regression the Listen
+    /// button's begins-after rule exists for. So the page holds until the
+    /// voice reaches it (or moves on to another sentence).
+    @State private var holdsPageForSelectionStart = false
+    @State private var heldSentenceStart: Int?
+    /// The Ask sheet's opening (iPhone): non-nil presents the sheet. The
+    /// conversation itself is the book's, on the app model, already pointed
+    /// at this request by `presentAsk`.
     @State private var askRequest: AskRequest?
-    @State private var showNotes = false
+    /// The inspector column: Highlights (⌘⇧N) or ✦ Ask (⌘⇧A) — one column,
+    /// two tabs, the page readable beside either. On iPhone the inspector
+    /// is a sheet and Ask stays its own full-height sheet (owner decision,
+    /// September 2026), so the tab strip shows only where Ask lives here —
+    /// or where it already is, after an iPad narrowed with Ask open.
+    @State private var showInspector = false
+    @State private var inspectorTab: InspectorTab = .highlights
+    /// The voice was paused because Ask opened over it; it resumes when
+    /// Ask goes away (the sheet dismisses, or the inspector leaves the Ask
+    /// tab). A reader can't listen to page 5 while reading an answer
+    /// about page 4.
+    @State private var narrationPausedForAsk = false
+    /// The chapter the voice is in, for the card's kicker — resolved when the
+    /// voice crosses a chapter, not on every tick (the title walks the TOC).
+    @State private var narratedChapterTitle: String?
     @State private var showTOC = false
     @State private var showSearch = false
     @State private var showAppearance = false
@@ -135,14 +171,43 @@ struct ReaderView: View {
     /// opening a book sees where the controls live.
     @State private var showChrome = true
 
-    /// Regular width (iPad full screen / wide multitasking): the nav bar has
-    /// room for the full reader chrome, so the iPhone bottom bar — a
-    /// workaround for the compact nav bar collapsing trailing items past two
-    /// (see `toolbarContent`) — steps aside and everything rides up top,
-    /// macOS-style. `nil` (undetermined) falls back to the compact
-    /// arrangement, as does an iPad squeezed to compact in Split View.
+    /// Whether the reader is at least `wideChromeMinimumWidth` wide — a
+    /// measured fact, kept as the Bool rather than the width so the view
+    /// re-renders only when the answer changes, not on every frame of a
+    /// sidebar or window animation. False until measured.
+    @State private var readerIsWide = false
+
+    /// The size class alone — the right question for what to PRESENT (Ask as
+    /// an inspector column beside the page, see `usesAskInspector`), as
+    /// opposed to what the nav bar can FIT (`showsWideChrome`).
     private var isRegularWidth: Bool { horizontalSizeClass == .regular }
+
+    /// Below this width the nav bar cannot hold the full reader chrome.
+    /// Measured on iPadOS 26 with the PDF surface's nine items and an inline
+    /// title: an 11-inch iPad in portrait with the sidebar open gives the
+    /// reader ~514pt and Find and Highlights fold into a "…" menu; a 13-inch
+    /// in the same pose gives ~712pt and everything fits. The band between is
+    /// unmeasured and treated as narrow — a 13-inch Split View at 50/50
+    /// (~683pt) takes the bottom bar rather than risk the fold.
+    private static let wideChromeMinimumWidth: CGFloat = 700
     #endif
+
+    /// Whether the nav bar has room for the full reader chrome, so the iPhone
+    /// bottom bar — a workaround for a nav bar folding items it cannot fit
+    /// (see `toolbarContent`) — steps aside and everything rides up top,
+    /// macOS-style. On iOS this needs BOTH a regular size class and a measured
+    /// width clearing `wideChromeMinimumWidth`: the class alone said "room" on
+    /// an 11-inch iPad with the sidebar open, and there was none. An iPad
+    /// squeezed by the sidebar, the Highlights inspector, Split View or Stage
+    /// Manager keeps the compact arrangement; an unmeasured first frame does
+    /// too. macOS windows are never that narrow (`minWidth` 900).
+    private var showsWideChrome: Bool {
+        #if os(iOS)
+        horizontalSizeClass == .regular && readerIsWide
+        #else
+        true
+        #endif
+    }
 
     private var layout: PageLayout {
         let stored = PageLayout(rawValue: layoutRaw) ?? .singlePage
@@ -200,6 +265,14 @@ struct ReaderView: View {
 
     var body: some View {
         content
+            #if os(iOS)
+            // The chrome layout keys on this (see `showsWideChrome`). The
+            // transform yields the Bool, so the action fires only when the
+            // reader crosses the threshold, not per frame.
+            .onGeometryChange(for: Bool.self) { $0.size.width >= Self.wideChromeMinimumWidth } action: {
+                readerIsWide = $0
+            }
+            #endif
             .navigationTitle(book.metadata.title)
             #if os(macOS)
             // Toolbar center per spec: book title · chapter title.
@@ -228,9 +301,14 @@ struct ReaderView: View {
             #endif
             .background(hiddenFontShortcuts)
             .background(hiddenAnnotationShortcuts)
-            .sheet(item: $askRequest) { request in
-                AskPanelView(app: model, book: book, request: request)
-                    .environmentObject(model)
+            .sheet(item: $askRequest, onDismiss: resumeNarrationAfterAsk) { _ in
+                AskPanelView(
+                    book: book,
+                    conversation: model.askConversation(for: book),
+                    presentation: .sheet,
+                    onNewConversation: startNewConversation
+                )
+                .environmentObject(model)
             }
             .sheet(item: $editingNote) { highlight in
                 NoteEditor(
@@ -273,68 +351,27 @@ struct ReaderView: View {
                         minHeight: 140, maxHeight: 420
                     )
             }
+            .overlay(alignment: .topTrailing) { appearancePopoverAnchor }
             #endif
-            .inspector(isPresented: $showNotes) {
-                NotesPanel(
-                    book: book,
-                    onJumpHighlight: { highlight in
-                        guard let index = book.chapters.firstIndex(
-                            where: { $0.id == highlight.chapterID }
-                        ) else { return }
-                        jump(toChapter: index, offset: highlight.range.lowerBound)
-                        // iPhone: the inspector is a covering sheet — close it
-                        // so the reader sees the jump land. iPad/macOS side
-                        // columns stay open beside the page.
-                        #if os(iOS)
-                        if UIDevice.current.userInterfaceIdiom == .phone {
-                            showNotes = false
-                        }
-                        #endif
-                    },
-                    // R1: a PDF note jumps to its page through the same funnel
-                    // the on-page bookmarks/outline use — the controller's
-                    // goToPage, published up via `pdfAnnotationActions` while
-                    // the native PDF surface is mounted.
-                    onJumpPDF: { highlight in
-                        pdfAnnotationActions?.goToPage(highlight.pageIndex)
-                        // iPhone: the inspector covers the page as a sheet —
-                        // close it so the jump is visible, mirroring the text
-                        // path above. iPad/macOS side columns stay open.
-                        #if os(iOS)
-                        if UIDevice.current.userInterfaceIdiom == .phone {
-                            showNotes = false
-                        }
-                        #endif
-                    },
-                    // R2: recolor/delete of a PDF highlight from the Notes
-                    // list must reconcile the live PDFKit overlay, not just the
-                    // store — route through the controller (via the published
-                    // actions) so the on-page paint matches after the edit.
-                    onRecolorPDF: pdfAnnotationActions.map { actions in
-                        { (highlight: PDFHighlight, color: HighlightColor) in
-                            actions.recolorHighlight(highlight, color)
-                        }
-                    },
-                    onDeletePDF: pdfAnnotationActions.map { actions in
-                        { (highlight: PDFHighlight) in
-                            actions.removeHighlight(highlight)
-                        }
-                    },
-                    onClose: { showNotes = false }
-                )
+            .inspector(isPresented: $showInspector) {
+                inspectorColumn
                 .inspectorColumnWidth(min: 280, ideal: 340, max: 480)
+            }
+            .onChange(of: showInspector) { _, shown in
+                if !shown { resumeNarrationAfterAsk() }
+            }
+            .onChange(of: inspectorTab) { _, tab in
+                if tab != .ask { resumeNarrationAfterAsk() }
+            }
+            // The voice starting again while Ask is open — the card's ●, the
+            // lock screen, a headphone pinch — means the reader took over:
+            // Ask's pause no longer applies, and neither does its resume. A
+            // pause they press after that is theirs to keep.
+            .onChange(of: narration.isUnderway) { _, underway in
+                if underway { narrationPausedForAsk = false }
             }
             .onAppear {
                 restoreOnce()
-                // A recap the library asked for is for ONE book. Any reader
-                // appearing for a different one means that request has gone
-                // stale (the push was abandoned, another book was opened),
-                // and it must not fire a paid recap the reader never asked
-                // for the next time that book happens to open.
-                if let pending = model.pendingRecapBookID, pending != book.id {
-                    model.pendingRecapBookID = nil
-                }
-                hasAppeared = true
                 updateMinutesCache()
                 // The page follows the voice: narration reports the sentence
                 // it moves to, and the reader turns to it.
@@ -372,9 +409,12 @@ struct ReaderView: View {
                 // really leaving: a presented sheet can take this view off
                 // screen too (the same reason `restoreOnce` guards against a
                 // second `onAppear`), and asking the book about the passage it
-                // just read must not cut the narration off.
+                // just read must not cut the narration off. An answer still
+                // streaming stops too: the transcript keeps what arrived, and
+                // nothing streams for a book nobody is reading.
                 if !isPresentingOverlay {
                     narration.stop()
+                    model.askConversation(for: book).cancel()
                 }
             }
             .onChange(of: chapterIndex) { _, newValue in
@@ -385,6 +425,8 @@ struct ReaderView: View {
                 savePositionTask = nil
                 saveTextPosition(chapterIndex: newValue, characterOffset: anchorToPersist)
                 updateMinutesCache()
+                // A chapter the voice crossed is not a page the reader turned.
+                if !narration.isActive { noteReaderTurnedPage() }
                 // The selection's range belongs to the old chapter. The text
                 // views also report nil when their content is replaced, but
                 // that arrives async — clear eagerly so a shortcut can't race
@@ -410,26 +452,264 @@ struct ReaderView: View {
                 // they are — their page is the anchor again.
                 narrationResumeAnchor = nil
                 scheduleAnchorSave(after: 1, throttled: false)
+                noteReaderTurnedPage()
             }
             // Build the retrieval index in the background when the book opens
             // so the first "ask" is fast. Safe to call repeatedly.
             .task(id: book.id) { await model.ensureIndexed(book) }
-            // The library's Continue Reading card asked for a recap of this
-            // book. Keyed on both the pending id and appearance, so it runs
-            // once the reader is on screen with its position restored — and
-            // again if the library asks while this reader is already open
-            // (macOS: `openWindow` fronts the existing window instead of
-            // making one, so `onAppear` never fires). Presenting straight
-            // from the task works on the iPhone simulator; no deferral.
-            .task(id: RecapTrigger(pending: model.pendingRecapBookID, appeared: hasAppeared)) {
-                consumePendingRecap()
+            .onChange(of: pdfAnnotationActions != nil) { _, mounted in
+                if mounted, let page = pendingPDFPage {
+                    pdfAnnotationActions?.goToPage(page)
+                    pendingPDFPage = nil
+                }
+            }
+            // Scroll layout has no page turns to count, so there the
+            // welcome-back line goes after a stretch of reading time instead.
+            .task(id: welcomeBackScrollTimerRunning) {
+                guard welcomeBackScrollTimerRunning else { return }
+                try? await Task.sleep(for: .seconds(WelcomeBack.scrollReadingBeforeDismissal))
+                guard !Task.isCancelled else { return }
+                withAnimation(.easeOut(duration: 0.2)) { welcomeBack = nil }
             }
     }
 
-    /// What re-runs the pending-recap task: see its `.task(id:)`.
-    private struct RecapTrigger: Equatable {
-        var pending: UUID?
-        var appeared: Bool
+    private var welcomeBackScrollTimerRunning: Bool {
+        welcomeBack != nil && layout == .scroll
+    }
+
+    // MARK: - Inspector
+
+    enum InspectorTab { case highlights, ask }
+
+    /// Where ✦ Ask lives: the inspector column on the Mac and on a regular
+    /// iPad, its own sheet on iPhone (an iPhone in landscape reports a
+    /// regular width; the idiom, not the width, is the decision).
+    private var usesAskInspector: Bool {
+        #if os(macOS)
+        return true
+        #else
+        return UIDevice.current.userInterfaceIdiom != .phone && isRegularWidth
+        #endif
+    }
+
+    /// The Ask tab is shown where Ask lives in the inspector — and stays
+    /// shown on an iPad that narrowed to compact with Ask open, so the
+    /// conversation never vanishes behind Highlights mid-answer.
+    private var inspectorShowsAskTab: Bool {
+        usesAskInspector || inspectorTab == .ask
+    }
+
+    private var inspectorColumn: some View {
+        VStack(spacing: 0) {
+            if inspectorShowsAskTab {
+                inspectorTabs
+            }
+            if inspectorShowsAskTab, inspectorTab == .ask {
+                askColumn
+            } else {
+                highlightsPanel
+            }
+        }
+        .background(style.theme.background)
+    }
+
+    /// Highlights · ✦ Ask, the selected one underlined (ink for Highlights,
+    /// iris for the AI tab).
+    private var inspectorTabs: some View {
+        HStack(alignment: .bottom, spacing: 18) {
+            inspectorTabButton(
+                .highlights, title: "Highlights", count: model.annotationCount(for: book),
+                id: "inspector.tab.highlights", help: "Highlights and notes (⇧⌘N)"
+            )
+            inspectorTabButton(
+                .ask, title: "\(AppTheme.aiGlyph) Ask", count: nil,
+                id: "inspector.tab.ask",
+                help: isImageOnlyPDF ? ScannedPDFCopy.needsText("Ask") : "Ask the book (⇧⌘A)"
+            )
+            .disabled(isImageOnlyPDF)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 14)
+        .padding(.top, 10)
+        .overlay(alignment: .bottom) { style.theme.line.frame(height: 1) }
+    }
+
+    private func inspectorTabButton(
+        _ tab: InspectorTab, title: String, count: Int?, id: String, help: String
+    ) -> some View {
+        let selected = inspectorTab == tab
+        let tint = tab == .ask ? style.theme.iris : style.theme.inkColor
+        return Button {
+            selectInspectorTab(tab)
+        } label: {
+            HStack(alignment: .firstTextBaseline, spacing: 5) {
+                Text(title)
+                    .font(.system(size: 13, weight: selected ? .semibold : .regular))
+                    .foregroundStyle(selected ? tint : style.theme.muted)
+                if let count, count > 0 {
+                    Text("\(count)")
+                        .font(.system(size: 11))
+                        .foregroundStyle(style.theme.faint)
+                }
+            }
+            .padding(.bottom, 8)
+            .overlay(alignment: .bottom) {
+                Rectangle()
+                    .fill(selected ? tint : .clear)
+                    .frame(height: 2)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(help)
+        .accessibilityAddTraits(selected ? [.isSelected] : [])
+        .accessibilityIdentifier(id)
+    }
+
+    /// A tab tap. The Ask tab on a conversation nobody has opened yet
+    /// opens it on the book so far — a conversation has a frontier only
+    /// once it has been pointed somewhere.
+    private func selectInspectorTab(_ tab: InspectorTab) {
+        if tab == .ask, !model.askConversation(for: book).hasBeenOpened {
+            model.askConversation(for: book).open(bookRequest())
+        }
+        inspectorTab = tab
+    }
+
+    /// The Ask column: the book's conversation, in the inspector.
+    private var askColumn: some View {
+        AskPanelView(
+            book: book,
+            conversation: model.askConversation(for: book),
+            presentation: .inspector,
+            onNewConversation: startNewConversation
+        )
+        .environmentObject(model)
+    }
+
+    private var highlightsPanel: some View {
+        NotesPanel(
+            book: book,
+            onJumpHighlight: { highlight in
+                guard let index = book.chapters.firstIndex(
+                    where: { $0.id == highlight.chapterID }
+                ) else { return }
+                jump(toChapter: index, offset: highlight.range.lowerBound)
+                // iPhone: the inspector is a covering sheet — close it
+                // so the reader sees the jump land. iPad/macOS side
+                // columns stay open beside the page.
+                #if os(iOS)
+                if UIDevice.current.userInterfaceIdiom == .phone {
+                    showInspector = false
+                }
+                #endif
+            },
+            // R1: a PDF note jumps to its page through the same funnel
+            // the on-page bookmarks/outline use — the controller's
+            // goToPage, published up via `pdfAnnotationActions` while
+            // the native PDF surface is mounted.
+            onJumpPDF: { highlight in
+                pdfAnnotationActions?.goToPage(highlight.pageIndex)
+                // iPhone: the inspector covers the page as a sheet —
+                // close it so the jump is visible, mirroring the text
+                // path above. iPad/macOS side columns stay open.
+                #if os(iOS)
+                if UIDevice.current.userInterfaceIdiom == .phone {
+                    showInspector = false
+                }
+                #endif
+            },
+            // R2: recolor/delete of a PDF highlight from the Notes
+            // list must reconcile the live PDFKit overlay, not just the
+            // store — route through the controller (via the published
+            // actions) so the on-page paint matches after the edit.
+            onRecolorPDF: pdfAnnotationActions.map { actions in
+                { (highlight: PDFHighlight, color: HighlightColor) in
+                    actions.recolorHighlight(highlight, color)
+                }
+            },
+            onDeletePDF: pdfAnnotationActions.map { actions in
+                { (highlight: PDFHighlight) in
+                    actions.removeHighlight(highlight)
+                }
+            },
+            onClose: { showInspector = false }
+        )
+    }
+
+    /// Show the Ask panel for `request`: the inspector's Ask column where
+    /// that is where Ask lives — or where it already is — else the sheet.
+    /// Either way over the book's one conversation, pointed at this
+    /// request; a draft in the composer and the scope choice survive.
+    private func presentAsk(_ request: AskRequest) {
+        pauseNarrationForAsk()
+        model.askConversation(for: book).open(request)
+        if usesAskInspector || (showInspector && inspectorTab == .ask) {
+            inspectorTab = .ask
+            showInspector = true
+        } else {
+            askRequest = request
+        }
+    }
+
+    /// A question about the book so far: no passage, scoped to what has
+    /// been read.
+    private func bookRequest() -> AskRequest {
+        AskRequest(selection: nil, scope: askScope(selection: nil), initialQuestion: nil)
+    }
+
+    /// Ask opened while the voice was reading: pause it. Listening to the
+    /// next page while reading an answer about this one is nobody's wish.
+    private func pauseNarrationForAsk() {
+        guard narration.isUnderway else { return }
+        narration.pause()
+        narrationPausedForAsk = true
+    }
+
+    /// Ask went away: the voice picks up the sentence it paused on, if it
+    /// was Ask that paused it and nothing else has moved it since (a reader
+    /// who pressed pause themselves keeps their pause; a book that ran out
+    /// stays finished rather than re-speaking its last sentence).
+    private func resumeNarrationAfterAsk() {
+        guard narrationPausedForAsk else { return }
+        narrationPausedForAsk = false
+        if narration.status == .paused { narration.play() }
+    }
+
+    /// While the voice reads, Ask with no selection is about the sentence
+    /// being read — "what does this passage mean" means the one the reader
+    /// just heard. Nil when the voice isn't reading this chapter — or has
+    /// been paused by the reader, who may have read on by eye since: a
+    /// question then is about the book, not a sentence from pages back.
+    /// (Paused by Ask itself still counts as reading.)
+    private func narratedSentenceSelection() -> (Selection, Range<Int>)? {
+        guard narration.isUnderway || narrationPausedForAsk,
+              let position = narration.position, position.chapterIndex == chapterIndex,
+              let chapter, let sentence = narration.currentSentenceRange else { return nil }
+        let start = max(0, min(sentence.lowerBound, chapter.text.count))
+        let end = min(chapter.text.count, sentence.upperBound)
+        guard end > start else { return nil }
+        let range = start..<end
+        return (model.makeSelection(in: chapter, range: range), range)
+    }
+
+    /// Start over: a fresh conversation, open on the book at large.
+    private func startNewConversation() {
+        model.startNewAskConversation(for: book).open(bookRequest())
+    }
+
+    /// The Highlights button (⌘⇧N): opens the inspector on Highlights, or
+    /// switches an inspector that is showing Ask to Highlights, or closes
+    /// an inspector already showing Highlights.
+    private func toggleHighlightsPanel() {
+        if showInspector, inspectorTab == .ask {
+            inspectorTab = .highlights
+        } else if showInspector {
+            showInspector = false
+        } else {
+            inspectorTab = .highlights
+            showInspector = true
+        }
     }
 
     // MARK: - Reading surface
@@ -443,9 +723,11 @@ struct ReaderView: View {
                     onAsk: { selection in
                         // A native PDF page is not a reading position: no
                         // frontier, so the whole document is in scope.
-                        askRequest = AskRequest(selection: selection, scope: .wholeBook, initialQuestion: nil)
+                        presentAsk(AskRequest(selection: selection, scope: .wholeBook, initialQuestion: nil))
                     },
-                    annotationActions: $pdfAnnotationActions
+                    onListen: { anchor in listen(from: anchor) },
+                    annotationActions: $pdfAnnotationActions,
+                    wideChrome: showsWideChrome
                 )
             } else if isImageOnlyPDF {
                 // The retained file is gone (or was never copied), and every
@@ -464,13 +746,30 @@ struct ReaderView: View {
                 ContentUnavailableView("No readable content", systemImage: "doc")
             }
         }
-        // The Listen bar insets the reading surface rather than floating over
-        // it: the page turns itself to follow the voice, so the bar must never
+        // The welcome-back line insets the page from the top for the same
+        // reason the Listen card insets it from the bottom: nothing floats
+        // over the words.
+        .safeAreaInset(edge: .top, spacing: 0) {
+            if let welcomeBack {
+                welcomeBackBar(welcomeBack)
+            }
+        }
+        // The Listen card insets the reading surface rather than floating over
+        // it: the page turns itself to follow the voice, so the card must never
         // cover the sentence being read.
         .safeAreaInset(edge: .bottom, spacing: 0) {
             if narration.isActive {
-                ListenBar(narration: narration, style: style) {
+                ListenBar(
+                    narration: narration,
+                    style: style,
+                    chapterTitle: narratedChapterTitle,
+                    surface: layout == .scroll ? style.theme.background : style.theme.paper
+                ) {
                     narration.stop()
+                }
+                .onChange(of: narration.position?.chapterIndex ?? chapterIndex, initial: true) {
+                    _, index in
+                    narratedChapterTitle = book.chapterDisplayTitle(index)
                 }
             }
         }
@@ -546,6 +845,7 @@ struct ReaderView: View {
                     onLinkTap: handleLinkTap,
                     canOverflowBackward: linearIndex(before: chapterIndex) != nil,
                     canOverflowForward: linearIndex(after: chapterIndex) != nil,
+                    onVisibleRange: { visibleRange = $0 },
                     onOverflow: { direction in
                         // Paging past a chapter's edge flows into the next/
                         // previous LINEAR chapter: forward lands on its first
@@ -598,6 +898,11 @@ struct ReaderView: View {
             ? 0
             : Double(linearPosition) / Double(linearTotal)
         return HStack(spacing: 14) {
+            #if os(macOS)
+            // Scroll layout has no page edges and no flick on the Mac, so
+            // the footer carries the chapter arrows (⌥⌘← / ⌥⌘→).
+            chapterArrow(direction: -1)
+            #endif
             ReaderProgressTrack(
                 fraction: fraction,
                 ink: style.theme.inkColor,
@@ -610,6 +915,9 @@ struct ReaderView: View {
                     .monospacedDigit()
                     .lineLimit(1)
             }
+            #if os(macOS)
+            chapterArrow(direction: +1)
+            #endif
         }
         .padding(.horizontal, 20)
         .frame(height: 40)
@@ -617,6 +925,25 @@ struct ReaderView: View {
         .overlay(alignment: .top) {
             Rectangle().fill(style.theme.line).frame(height: 1)
         }
+    }
+
+    /// Previous / next chapter, for the scroll footer on the Mac.
+    private func chapterArrow(direction: Int) -> some View {
+        let target = direction < 0 ? linearIndex(before: chapterIndex) : linearIndex(after: chapterIndex)
+        return Button {
+            if let target { jump(toChapter: target) }
+        } label: {
+            Image(systemName: direction < 0 ? "chevron.left" : "chevron.right")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(style.theme.muted)
+                .frame(width: 24, height: 24)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(target == nil)
+        .help(direction < 0 ? "Previous chapter (⌥⌘←)" : "Next chapter (⌥⌘→)")
+        .accessibilityLabel(direction < 0 ? "Previous chapter" : "Next chapter")
+        .accessibilityIdentifier(direction < 0 ? "prevChapter" : "nextChapter")
     }
 
     private func updateMinutesCache() {
@@ -655,60 +982,28 @@ struct ReaderView: View {
         }
         #endif
         ToolbarItemGroup(placement: .navigation) {
-            // Chapter chevrons are a macOS-only affordance. On iOS they read
-            // as mystery buttons pinned over the page (nothing like Apple
-            // Books) — touch navigation is swiping/edge-tapping through pages
-            // (paged mode flows across chapter walls), the horizontal flick
-            // in scroll mode, and the Contents list.
-            #if os(macOS)
-            Button {
-                if let previous = linearIndex(before: chapterIndex) {
-                    jump(toChapter: previous)
-                }
-            } label: {
-                Image(systemName: "chevron.left")
-            }
-            .accessibilityIdentifier("prevChapter")
-            .accessibilityLabel("Previous chapter")
-            .help("Previous chapter")
-            .disabled(linearIndex(before: chapterIndex) == nil || isPDFOriginal)
-
-            Button {
-                if let next = linearIndex(after: chapterIndex) {
-                    jump(toChapter: next)
-                }
-            } label: {
-                Image(systemName: "chevron.right")
-            }
-            .accessibilityIdentifier("nextChapter")
-            .accessibilityLabel("Next chapter")
-            .help("Next chapter")
-            .disabled(linearIndex(after: chapterIndex) == nil || isPDFOriginal)
-
-            if !isPDFOriginal {
+            // Contents and the bookmark ribbon. No chapter chevrons: the
+            // page edges turn pages (and flow across chapter walls), and
+            // Contents jumps anywhere — a second pair of arrows in the bar
+            // was two more controls for nothing new. iPad regular width
+            // carries these up top, macOS-style; compact keeps them in the
+            // bottom bar below.
+            if showsWideChrome, !isPDFOriginal {
                 tocButton
-                bookmarksMenu
+                bookmarkToggle
             }
-            #else
-            // iPad regular width: contents/bookmarks ride up top, macOS-style;
-            // compact keeps them in the bottom bar below.
-            if isRegularWidth, !isPDFOriginal {
-                tocButton
-                bookmarksMenu
-            }
-            #endif
         }
         // Lesson from v1 (twice-observed in CI): the iPhone nav bar silently
         // collapses trailing items past TWO — and a secondaryAction group's
         // "…" button itself counts as one. So COMPACT iOS gets exactly
         // Appearance + Notes up top (UI tests tap `reader.notes` directly)
         // and everything else lives in the bottom bar, Apple-Books style.
-        // Regular width (iPad) has nav-bar room like macOS, so it drops the
-        // phone bottom bar and carries the full chrome up top — same
-        // buttons, same accessibility identifiers, different placement (the
-        // UI tests look items up by id, never by bar).
+        // A WIDE reader (see `showsWideChrome`) has nav-bar room like macOS,
+        // so it drops the phone bottom bar and carries the full chrome up top
+        // — same buttons, same accessibility identifiers, different placement
+        // (the UI tests look items up by id, never by bar).
         #if os(iOS)
-        if isRegularWidth {
+        if showsWideChrome {
             ToolbarItemGroup(placement: .primaryAction) {
                 if !isPDFOriginal {
                     searchButton
@@ -726,7 +1021,7 @@ struct ReaderView: View {
             ToolbarItemGroup(placement: .bottomBar) {
                 if !isPDFOriginal {
                     tocButton
-                    bookmarksMenu
+                    bookmarkToggle
                     Spacer()
                     searchButton
                 } else {
@@ -737,21 +1032,16 @@ struct ReaderView: View {
             }
         }
         #else
-        // macOS trailing area, Marginalia style: the appearance popover is
-        // replaced by inline design controls — layout segments, an A / A font
-        // stepper, and three theme dots (the `reader.appearance` id rides on
-        // the layout segment container for compatibility).
+        // macOS trailing area: Find · Aa · Listen · ✦ Ask · Highlights. The
+        // appearance controls used to sit inline here — layout segments, a
+        // font stepper, a Text menu, three theme dots, a PDF display menu:
+        // seventeen controls across the bar. They live behind the same Aa
+        // popover iOS has (September 2026 UX review, F3).
         ToolbarItemGroup(placement: .primaryAction) {
             if !isPDFOriginal {
                 searchButton
             }
-            layoutSegmentControl
-            fontStepperControl
-            typographyMenu
-            themeDotsControl
-            if model.isPDF(book), !isImageOnlyPDF {
-                pdfDisplayMenu
-            }
+            appearanceButton
             listenButton
             askButton
             notesButton
@@ -787,20 +1077,79 @@ struct ReaderView: View {
             // The reading anchor, so narration picks up at the top of the page
             // in view rather than at the chapter's start.
             //
-            // Recorded because a device test saw narration begin near the top
-            // of the chapter after paging to its last page, and every route
-            // that turns a page does write this anchor — so the next report of
-            // it needs the number that was actually handed over, not another
-            // description of where the page looked. A chapter index and an
-            // offset, never any of the text (see DiagnosticsLog).
-            DiagnosticsLog.shared.record(
-                .info, .reader,
-                "Narration start: chapter \(chapterIndex) offset \(pagedAnchor)"
-            )
-            narration.start(
-                book: book, chapterIndex: chapterIndex, characterOffset: pagedAnchor
-            )
+            // With the original PDF pages up, the page in view is the
+            // anchor: the text-mode `chapterIndex`/`pagedAnchor` are only ever
+            // written by the text surface, so on a PDF read page by page they
+            // still point at wherever text mode was last left (page 1, for
+            // most readers) — and Listen started the document over. The
+            // surface publishes the page's chapter while mounted; under a
+            // sheet (the shortcut still fires) the saved page stands in.
+            if model.isPDF(book), isPDFOriginal {
+                let chapter = pdfAnnotationActions?.narrationChapterInView()
+                    ?? model.position(for: book)?.pdfPageIndex
+                guard let chapter, book.chapters.indices.contains(chapter) else {
+                    DiagnosticsLog.shared.record(
+                        .warning, .reader, "Narration start refused: PDF page has no chapter"
+                    )
+                    return
+                }
+                // Pressing Listen again on the page the voice stopped on picks
+                // up at that sentence, as text mode does through its anchor.
+                let resume = narration.position.flatMap {
+                    $0.chapterIndex == chapter ? $0.sentenceStart : nil
+                }
+                startNarration(
+                    chapter: chapter, offset: resume ?? 0, anchor: .nextSentenceStart,
+                    origin: "page in view"
+                )
+            } else {
+                startNarration(
+                    chapter: chapterIndex, offset: pagedAnchor, anchor: .nextSentenceStart,
+                    origin: "page top"
+                )
+            }
         }
+    }
+
+    /// "Listen from here": read aloud from the sentence containing a selection
+    /// or highlight, on either surface. Restarts a voice already reading
+    /// rather than layering a second one.
+    private func listen(from anchor: ListenAnchor) {
+        guard book.chapters.indices.contains(anchor.chapterIndex) else {
+            DiagnosticsLog.shared.record(
+                .warning, .reader,
+                "Listen from here refused: chapter \(anchor.chapterIndex) is not in the book"
+            )
+            return
+        }
+        holdsPageForSelectionStart = true
+        heldSentenceStart = nil
+        startNarration(
+            chapter: anchor.chapterIndex, offset: anchor.characterOffset,
+            anchor: .sentenceContaining,
+            origin: anchor.isExact ? "selection" : "selection, approximate"
+        )
+    }
+
+    /// The one place narration is started from this view. Recorded because a
+    /// device test saw narration begin near the top of the chapter after
+    /// paging to its last page, and every route that turns a page does write
+    /// the anchor — so the next report of it needs the number that was
+    /// actually handed over, not another description of where the page
+    /// looked. A chapter index, an offset and where they came from — never
+    /// any of the text (see DiagnosticsLog).
+    private func startNarration(
+        chapter: Int, offset: Int, anchor: SpeechPlaylist.SeekAnchor, origin: String
+    ) {
+        if anchor == .nextSentenceStart {
+            holdsPageForSelectionStart = false
+            heldSentenceStart = nil
+        }
+        DiagnosticsLog.shared.record(
+            .info, .reader,
+            "Narration start (\(origin)): chapter \(chapter) offset \(offset)"
+        )
+        narration.start(book: book, chapterIndex: chapter, characterOffset: offset, anchor: anchor)
     }
 
     /// Keep the page under the voice. Narration reports each sentence it moves
@@ -809,11 +1158,33 @@ struct ReaderView: View {
     /// position that gets persisted is where the reader actually listened to.
     private func followNarration(_ position: NarrationPosition) {
         guard book.chapters.indices.contains(position.chapterIndex) else { return }
+        // Original PDF pages: the surface owns the page, so it turns the page
+        // (once per page the voice crosses onto) and the text-mode state —
+        // `chapterIndex`, `pagedAnchor`, their saves — is left alone; a
+        // `jump` here would count as a reader move and drop the resume
+        // anchor and the selection on every page. Cheap check first: the
+        // actions exist only while the PDF surface is mounted, and
+        // `isPDFOriginal` touches the filesystem.
+        if pdfAnnotationActions != nil || (model.isPDF(book) && isPDFOriginal) {
+            pdfAnnotationActions?.followNarration(position.chapterIndex)
+            return
+        }
         guard position.chapterIndex == chapterIndex else {
             jump(toChapter: position.chapterIndex, offset: position.characterOffset)
             return
         }
         narrationResumeAnchor = position.sentenceStart
+        if holdsPageForSelectionStart {
+            // Still inside the selected sentence and behind the page the
+            // reader is on: hold the page. Anything else releases the hold.
+            if position.characterOffset < pagedAnchor,
+               heldSentenceStart == nil || heldSentenceStart == position.sentenceStart {
+                heldSentenceStart = position.sentenceStart
+                return
+            }
+            holdsPageForSelectionStart = false
+            heldSentenceStart = nil
+        }
         guard position.characterOffset != pagedAnchor else { return }
         narrationMove.isActive = true
         pagedAnchor = position.characterOffset
@@ -862,7 +1233,7 @@ struct ReaderView: View {
 
     /// True while something is presented over the reader.
     private var isPresentingOverlay: Bool {
-        askRequest != nil || showNotes || showTOC || showSearch || showAppearance
+        askRequest != nil || showInspector || showTOC || showSearch || showAppearance
             || editingNote != nil || footnotePopup != nil
     }
 
@@ -899,95 +1270,168 @@ struct ReaderView: View {
         .accessibilityLabel("Table of contents")
         .help("Table of contents")
         .popover(isPresented: $showTOC) {
-            // Marginalia-themed contents: serif rows on the elevated surface
-            // (the default white List clashed with the reading page — seen in
-            // the CI gallery), sized to a half sheet on iPhone instead of a
-            // full screen for a handful of rows.
-            let toc = book.flattenedTOC
-            VStack(alignment: .leading, spacing: 0) {
-                Text("CONTENTS")
-                    .font(.system(size: 10.5, weight: .semibold))
-                    .kerning(1.5)
-                    .foregroundStyle(style.theme.faint)
-                    .padding(.horizontal, 20)
-                    .padding(.top, 18)
-                    .padding(.bottom, 6)
-                if toc.isEmpty {
-                    // No parsed TOC (plain text, PDFs): fall back to the
-                    // spine, one row per chapter.
-                    List(0..<book.chapters.count, id: \.self) { index in
-                        tocRow(
-                            title: book.chapterDisplayTitle(index),
-                            depth: 0,
-                            isCurrent: index == chapterIndex
-                        ) {
-                            jump(toChapter: index)
-                        }
-                    }
-                    .listStyle(.plain)
-                    .scrollContentBackground(.hidden)
-                } else {
-                    // The book's REAL table of contents — the spine list
-                    // mislabeled front matter and multi-entry documents as
-                    // "Chapter N". Current row: the last entry at/before the
-                    // reading position's chapter.
-                    let currentID = toc.last(
-                        where: { $0.entry.chapterIndex <= chapterIndex }
-                    )?.id
-                    List(toc) { row in
-                        tocRow(
-                            title: row.entry.title,
-                            depth: row.depth,
-                            isCurrent: row.id == currentID
-                        ) {
-                            jump(toTOCEntry: row.entry)
-                        }
-                    }
-                    .listStyle(.plain)
-                    .scrollContentBackground(.hidden)
-                }
-            }
-            // Height hugs the row count (header + ~34pt rows) instead of a
-            // fixed ideal — a two-chapter book in an iPad popover was ~60%
-            // dead cream below the rows. Long books cap where scrolling
-            // takes over; iPhone's sheet detents below override this anyway.
-            .frame(
-                minWidth: 260, idealWidth: 300,
-                idealHeight: min(
-                    420,
-                    64 + CGFloat(toc.isEmpty ? book.chapters.count : toc.count) * 34
-                )
-            )
-            .background(style.theme.elevated)
-            #if os(iOS)
-            .presentationDetents([.medium, .large])
-            .presentationDragIndicator(.visible)
-            #endif
-            .presentationBackground(style.theme.elevated)
+            contentsPopover
         }
     }
 
+    /// Marginalia-themed contents on the elevated surface, sized to its rows
+    /// (`contentsPopoverFrame`) and a half sheet on iPhone. Bookmarks list
+    /// first — every one of them, page bookmarks included, so a bookmark
+    /// made on a PDF's original pages is still there (and removable) from
+    /// the Reading view — then the chapter list. There is no bookmarks
+    /// menu (September 2026 UX review, F9).
+    private var contentsPopover: some View {
+        let toc = book.flattenedTOC
+        let text = textBookmarks
+        let pages = pageBookmarks
+        let bookmarkedRows = bookmarkedRows(in: toc, bookmarks: text)
+        let bookmarkedChapters = Set(text.map(\.chapterIndex))
+        return LazyVStack(alignment: .leading, spacing: 0) {
+            if !text.isEmpty || !pages.isEmpty {
+                ContentsSectionHeader(title: "BOOKMARKS", theme: style.theme)
+                ForEach(text) { bookmark in
+                    ContentsBookmarkRow(
+                        kicker: book.chapterDisplayTitle(bookmark.chapterIndex),
+                        snippet: bookmark.snippet,
+                        theme: style.theme,
+                        accessibilityLabel: bookmarkLabel(for: bookmark),
+                        onJump: {
+                            showTOC = false
+                            jump(toChapter: bookmark.chapterIndex, offset: bookmark.characterOffset)
+                        },
+                        onRemove: { model.removeBookmark(bookmark) }
+                    )
+                }
+                ForEach(pages) { bookmark in
+                    let page = (bookmark.pdfPageIndex ?? 0) + 1
+                    ContentsBookmarkRow(
+                        kicker: "Page \(page)",
+                        snippet: bookmark.snippet == "Page \(page)" ? "" : bookmark.snippet,
+                        theme: style.theme,
+                        accessibilityLabel: "Bookmark on page \(page) of the original pages",
+                        onJump: {
+                            // A page is the original pages' place: show them,
+                            // and go to the page once the surface is up.
+                            showTOC = false
+                            pendingPDFPage = bookmark.pdfPageIndex
+                            pdfShowsOriginal = true
+                        },
+                        onRemove: { model.removeBookmark(bookmark) }
+                    )
+                }
+            }
+            ContentsSectionHeader(title: "CONTENTS", theme: style.theme)
+            if toc.isEmpty {
+                // No parsed TOC (plain text, PDFs): fall back to the spine,
+                // one row per chapter.
+                ForEach(0..<book.chapters.count, id: \.self) { index in
+                    tocRow(
+                        title: book.chapterDisplayTitle(index),
+                        depth: 0,
+                        isCurrent: index == chapterIndex,
+                        hasBookmark: bookmarkedChapters.contains(index)
+                    ) {
+                        jump(toChapter: index)
+                    }
+                }
+            } else {
+                // The book's REAL table of contents — the spine list
+                // mislabeled front matter and multi-entry documents as
+                // "Chapter N". Current row: the last entry at/before the
+                // reading position's chapter.
+                let currentID = toc.last(
+                    where: { $0.entry.chapterIndex <= chapterIndex }
+                )?.id
+                ForEach(toc) { row in
+                    tocRow(
+                        title: row.entry.title,
+                        depth: row.depth,
+                        isCurrent: row.id == currentID,
+                        hasBookmark: bookmarkedRows.contains(row.id)
+                    ) {
+                        jump(toTOCEntry: row.entry)
+                    }
+                }
+            }
+        }
+        .padding(.top, 6)
+        .contentsPopoverFrame(theme: style.theme)
+        #if os(iOS)
+        .presentationDetents([.medium, .large])
+        .presentationDragIndicator(.visible)
+        #endif
+    }
+
+    /// Which TOC rows hold a bookmark: the last row at or before each
+    /// bookmark's place — not every row that happens to share the
+    /// bookmark's spine document (a Part's six sub-entries are six places,
+    /// and one bookmark is in one of them).
+    private func bookmarkedRows(in toc: [FlatTOCEntry], bookmarks: [Bookmark]) -> Set<Int> {
+        guard !toc.isEmpty else { return [] }
+        let places: [(chapter: Int, offset: Int)] = toc.map { row in
+            let offset = row.entry.fragment
+                .flatMap { book.chapters.indices.contains(row.entry.chapterIndex)
+                    ? book.chapters[row.entry.chapterIndex].anchors?[$0] : nil } ?? 0
+            return (row.entry.chapterIndex, offset)
+        }
+        var marked: Set<Int> = []
+        for bookmark in bookmarks {
+            var hit: Int?
+            for (index, place) in places.enumerated()
+            where (place.chapter, place.offset) <= (bookmark.chapterIndex, bookmark.characterOffset) {
+                hit = toc[index].id
+            }
+            if let hit { marked.insert(hit) }
+        }
+        return marked
+    }
     /// One Contents row, shared by the real-TOC and fallback lists. Nested
-    /// TOC entries indent by depth.
+    /// TOC entries indent by depth; a row holding a bookmark shows a faint
+    /// ribbon (decorative: the row's label stays the title).
     private func tocRow(
-        title: String, depth: Int, isCurrent: Bool, action: @escaping () -> Void
+        title: String, depth: Int, isCurrent: Bool, hasBookmark: Bool = false,
+        action: @escaping () -> Void
     ) -> some View {
         Button {
             showTOC = false
             action()
         } label: {
-            Text(title)
-                .font(.system(size: 14.5, design: .serif))
-                .fontWeight(isCurrent ? .bold : .regular)
-                .foregroundStyle(style.theme.inkColor)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.leading, CGFloat(depth) * 14)
-                .padding(.vertical, 3)
-                .contentShape(Rectangle())
+            HStack(spacing: 8) {
+                Text(title)
+                    .font(.system(size: 14.5, design: .serif))
+                    .fontWeight(isCurrent ? .bold : .regular)
+                    .foregroundStyle(style.theme.inkColor)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                if hasBookmark {
+                    ContentsBookmarkMarker(theme: style.theme)
+                        .accessibilityHidden(true)
+                }
+            }
+            .padding(.leading, 12 + CGFloat(depth) * 14)
+            .padding(.trailing, 12)
+            .padding(.vertical, 7)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .listRowBackground(Color.clear)
-        .listRowSeparatorTint(style.theme.line)
+        .accessibilityLabel(title)
+        .accessibilityHint(hasBookmark ? "Has a bookmark" : "")
+    }
+
+    /// Text-mode bookmarks in reading order.
+    private var textBookmarks: [Bookmark] {
+        model.bookmarks(for: book)
+            .filter { $0.pdfPageIndex == nil }
+            .sorted {
+                ($0.chapterIndex, $0.characterOffset) < ($1.chapterIndex, $1.characterOffset)
+            }
+    }
+
+    /// PDF page bookmarks in page order (a PDF read in the Reading view
+    /// still has them).
+    private var pageBookmarks: [Bookmark] {
+        model.bookmarks(for: book)
+            .filter { $0.pdfPageIndex != nil }
+            .sorted { ($0.pdfPageIndex ?? 0) < ($1.pdfPageIndex ?? 0) }
     }
 
     /// TOC jump: the entry's chapter, at its fragment anchor when it carries
@@ -1000,42 +1444,15 @@ struct ReaderView: View {
         jump(toChapter: entry.chapterIndex, offset: offset)
     }
 
-    private var bookmarksMenu: some View {
-        Menu {
-            Button(
-                currentBookmark == nil ? "Add Bookmark" : "Remove Bookmark",
-                action: toggleBookmark
-            )
-            .keyboardShortcut("d", modifiers: .command)
-
-            let bookmarks = model.bookmarks(for: book)
-            if !bookmarks.isEmpty {
-                Divider()
-                ForEach(bookmarks) { bookmark in
-                    Menu {
-                        Button("Go to Bookmark") {
-                            jump(
-                                toChapter: bookmark.chapterIndex,
-                                offset: bookmark.characterOffset
-                            )
-                        }
-                        Button("Remove", role: .destructive) {
-                            model.removeBookmark(bookmark)
-                        }
-                    } label: {
-                        Text(bookmarkLabel(for: bookmark))
-                    }
-                }
-            }
-        } label: {
-            Label(
-                "Bookmarks",
-                systemImage: currentBookmark == nil ? "bookmark" : "bookmark.fill"
-            )
-        }
-        .accessibilityIdentifier("reader.bookmarks")
-        .accessibilityLabel("Bookmarks")
-        .help("Bookmarks — ⌘D adds or removes one here")
+    /// The ribbon: filled on a bookmarked page, and a single tap (⌘D) adds
+    /// or removes the bookmark. The list of bookmarks lives in Contents —
+    /// a menu of submenus here was two clicks to jump anywhere.
+    private var bookmarkToggle: some View {
+        BookmarkRibbonButton(
+            isBookmarked: currentBookmark != nil,
+            identifier: "reader.bookmarks",
+            action: toggleBookmark
+        )
     }
 
     private var searchButton: some View {
@@ -1059,192 +1476,64 @@ struct ReaderView: View {
         }
     }
 
-    #if os(iOS)
-    /// iOS keeps the Aa popover (the nav bar has no room for inline
-    /// controls); the popover itself is restyled to the Marginalia tokens.
+    /// The Aa popover — text size, theme, font, spacing, layout, and the
+    /// PDF pages/text switch — on both platforms.
+    ///
+    /// iOS presents it from the toolbar button. macOS presents it from an
+    /// anchor in the content (`appearancePopoverAnchor`) in an AppKit
+    /// popover of its own: SwiftUI's bridged `.popover` re-showed itself
+    /// on every re-render of the presenter — from the toolbar item, and
+    /// from the content too — until AppKit gave up with an exception from
+    /// `_postWindowNeedsUpdateConstraints`; the app hung, then died, on
+    /// every Aa click in CI's macOS lane (crash reports and thread samples
+    /// in the ci-screenshots branch). See `MacPopover`.
     private var appearanceButton: some View {
-        Button { showAppearance = true } label: {
+        let button = Button {
+            // The Voice section needs the book's voices resolved — before
+            // the first Listen too, since this is where the narrator is
+            // chosen. Once per book; nothing starts reading.
+            narration.prepareVoices(for: book)
+            showAppearance = true
+        } label: {
             Label("Appearance", systemImage: "textformat.size")
         }
         .accessibilityIdentifier("reader.appearance")
         .accessibilityLabel("Appearance")
         .help("Appearance — theme, text size (⌘+ / ⌘−), layout")
-        .popover(isPresented: $showAppearance) {
-            AppearancePopover(
-                themeRaw: $themeRaw,
-                layoutRaw: $layoutRaw,
-                fontSize: $fontSize,
-                fontRaw: $fontRaw,
-                lineSpacingRaw: $lineSpacingRaw,
-                isJustified: $isJustified,
-                // An image-only PDF has no Reading view to offer.
-                isPDF: model.isPDF(book) && !isImageOnlyPDF,
-                pdfShowsOriginal: $pdfShowsOriginal
-            )
-        }
+        #if os(iOS)
+        return button.popover(isPresented: $showAppearance) { appearancePopover }
+        #else
+        return button
+        #endif
     }
-    #endif
+
+    private var appearancePopover: some View {
+        AppearancePopover(
+            themeRaw: $themeRaw,
+            layoutRaw: $layoutRaw,
+            fontSize: $fontSize,
+            fontRaw: $fontRaw,
+            lineSpacingRaw: $lineSpacingRaw,
+            isJustified: $isJustified,
+            // An image-only PDF has no Reading view to offer.
+            isPDF: model.isPDF(book) && !isImageOnlyPDF,
+            pdfShowsOriginal: $pdfShowsOriginal,
+            narration: narration
+        )
+    }
 
     #if os(macOS)
-    /// Inline layout segments: quiet text buttons; the selected one gets a
-    /// paper pill. Carries the `reader.appearance` compatibility identifier.
-    private var layoutSegmentControl: some View {
-        HStack(spacing: 2) {
-            layoutSegment("Scroll", .scroll)
-            layoutSegment("Page", .singlePage)
-            layoutSegment("Spread", .doublePage)
+    /// A one-point anchor under the toolbar's Aa button, so the popover
+    /// hangs from where it was asked for — in an AppKit popover of its own
+    /// (`MacPopover`), not SwiftUI's bridged one (see `appearanceButton`).
+    private var appearancePopoverAnchor: some View {
+        MacPopover(isPresented: $showAppearance) {
+            appearancePopover
+                .environment(\.popoverDismiss, PopoverDismiss { showAppearance = false })
         }
-        .padding(2)
-        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(style.theme.line, lineWidth: 1))
-        .help("Reading layout")
-        .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("reader.appearance")
-        .accessibilityLabel("Appearance")
-    }
-
-    private func layoutSegment(_ label: String, _ value: PageLayout) -> some View {
-        let selected = layout == value
-        return Button { layoutRaw = value.rawValue } label: {
-            Text(label)
-                .font(.system(size: 11.5, weight: .medium))
-                .foregroundStyle(selected ? style.theme.inkColor : style.theme.muted)
-                .padding(.horizontal, 9)
-                .padding(.vertical, 4)
-                .background(
-                    RoundedRectangle(cornerRadius: 6)
-                        .fill(selected ? style.theme.paper : .clear)
-                )
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .help("\(label) layout")
-        .accessibilityLabel(label)
-        .accessibilityAddTraits(selected ? .isSelected : [])
-    }
-
-    /// Inline A / A font stepper: serif glyphs, hairline divider and border.
-    private var fontStepperControl: some View {
-        HStack(spacing: 0) {
-            Button { adjustFontSize(-1) } label: {
-                Text("A")
-                    .font(.system(size: 11, design: .serif))
-                    .foregroundStyle(style.theme.inkColor)
-                    .padding(.horizontal, 10)
-                    .frame(height: 25)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .disabled(fontSize <= Double(ReaderStyle.fontSizeRange.lowerBound))
-            .help("Smaller text (⌘−)")
-            .accessibilityLabel("Smaller text")
-            .accessibilityIdentifier("appearance.textSmaller")
-
-            Rectangle().fill(style.theme.line).frame(width: 1, height: 25)
-
-            Button { adjustFontSize(+1) } label: {
-                Text("A")
-                    .font(.system(size: 15, design: .serif))
-                    .foregroundStyle(style.theme.inkColor)
-                    .padding(.horizontal, 10)
-                    .frame(height: 25)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .disabled(fontSize >= Double(ReaderStyle.fontSizeRange.upperBound))
-            .help("Larger text (⌘+)")
-            .accessibilityLabel("Larger text")
-            .accessibilityIdentifier("appearance.textLarger")
-        }
-        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(style.theme.line, lineWidth: 1))
-    }
-
-    /// Inline theme dots: 18pt paper swatches with a hairline border; the
-    /// selected one gets an ink ring.
-    private var themeDotsControl: some View {
-        HStack(spacing: 7) {
-            ForEach(ReadingTheme.allCases) { option in
-                themeDot(option)
-            }
-        }
-        .padding(.horizontal, 4)
-    }
-
-    private func themeDot(_ option: ReadingTheme) -> some View {
-        let selected = option == style.theme
-        return Button { themeRaw = option.rawValue } label: {
-            ZStack {
-                Circle()
-                    .fill(option.paper)
-                    .overlay(Circle().strokeBorder(style.theme.line, lineWidth: 1))
-                    .frame(width: 18, height: 18)
-                if selected {
-                    Circle()
-                        .strokeBorder(style.theme.inkColor, lineWidth: 1.5)
-                        .frame(width: 24, height: 24)
-                }
-            }
-            .frame(width: 24, height: 24)
-            .contentShape(Circle())
-        }
-        .buttonStyle(.plain)
-        .help("\(option.displayName) theme")
-        .accessibilityLabel(option.displayName)
-        .accessibilityIdentifier("appearance.theme.\(option.rawValue)")
-        .accessibilityAddTraits(selected ? .isSelected : [])
-    }
-
-    /// Typeface, line spacing and justification. iOS reaches these through the
-    /// Aa popover; the macOS toolbar has no room for three more inline
-    /// controls, so they live behind one `textformat` menu next to the stepper.
-    /// Identifiers match the popover's so the same assertions work on either
-    /// platform.
-    private var typographyMenu: some View {
-        Menu {
-            Picker("Font", selection: $fontRaw) {
-                ForEach(ReaderFont.allCases) { option in
-                    Text(option.displayName).tag(option.rawValue)
-                }
-            }
-            .pickerStyle(.inline)
-            .accessibilityIdentifier("appearance.font")
-
-            Picker("Line spacing", selection: $lineSpacingRaw) {
-                ForEach(ReaderLineSpacing.allCases) { option in
-                    Text(option.displayName)
-                        .tag(option.rawValue)
-                        .accessibilityIdentifier("appearance.spacing.\(option.rawValue)")
-                }
-            }
-            .pickerStyle(.inline)
-
-            Divider()
-
-            Toggle("Justify text", isOn: $isJustified)
-                .accessibilityIdentifier("appearance.justify")
-        } label: {
-            Label("Text", systemImage: "textformat")
-        }
-        .help("Typeface, line spacing and justification")
-        .accessibilityLabel("Text options")
-        .accessibilityIdentifier("reader.typography")
-    }
-
-    /// PDFs keep their display switch in the appearance area: original pages
-    /// (native PDFKit) or the extracted reading view.
-    private var pdfDisplayMenu: some View {
-        Menu {
-            Picker("PDF display", selection: $pdfShowsOriginal) {
-                Text("Original pages").tag(true)
-                Text("Reading view").tag(false)
-            }
-            .pickerStyle(.inline)
-            .labelsHidden()
-        } label: {
-            Label("PDF display", systemImage: "doc.richtext")
-        }
-        .help("Show the PDF's original pages, or its extracted text with highlights")
-        .accessibilityLabel("PDF display")
-        .accessibilityIdentifier("reader.pdfDisplay")
+        .frame(width: 1, height: 1)
+        .padding(.trailing, 150)
+        .accessibilityHidden(true)
     }
     #endif
 
@@ -1285,61 +1574,130 @@ struct ReaderView: View {
     /// published actions.
     private func askTheBook() {
         if isPDFOriginal {
-            askRequest = AskRequest(
+            presentAsk(AskRequest(
                 selection: pdfAnnotationActions?.askSelection(), scope: .wholeBook, initialQuestion: nil
-            )
+            ))
         } else if let chapter, let selected = currentSelection.value {
-            askRequest = AskRequest(
+            presentAsk(AskRequest(
                 selection: model.makeSelection(in: chapter, range: selected),
                 scope: askScope(selection: selected),
                 initialQuestion: nil
-            )
+            ))
+        } else if let (selection, range) = narratedSentenceSelection() {
+            // Listening: the question is about the sentence being read.
+            presentAsk(AskRequest(
+                selection: selection, scope: askScope(selection: range), initialQuestion: nil
+            ))
         } else {
             // No selection: a question about the book — scoped to what has
             // been read, with the panel's switch to widen it.
-            askRequest = AskRequest(selection: nil, scope: askScope(selection: nil), initialQuestion: nil)
+            presentAsk(bookRequest())
         }
     }
 
     /// Recap: Ask, with "recap what I've read so far" already sent. The
     /// answer stops where the reader stopped (`askScope`), and the panel
-    /// says where that is. Reached from Home's Continue Reading card (see
-    /// below); inside the reader the Ask panel's first starter row is the
-    /// recap, so the toolbar carries one ✦ entry point, not two doors into
-    /// the same panel (owner feedback, 3.3.1). A native PDF page is not a
-    /// reading position, so a PDF never gets a recap.
+    /// says where that is. Reached from the welcome-back line; the Ask
+    /// panel's first starter row is the recap too, so the toolbar carries
+    /// one ✦ entry point, not two doors into the same panel (owner
+    /// feedback, 3.3.1). A native PDF page is not a reading position, so a
+    /// PDF never gets a recap.
     private func openRecap() {
         let scope = askScope(selection: nil)
         guard scope.isScoped else { return }
-        askRequest = AskRequest(selection: nil, scope: scope, initialQuestion: AskPanelView.recapQuestion)
+        welcomeBack = nil
+        presentAsk(AskRequest(selection: nil, scope: scope, initialQuestion: AskPanelView.recapQuestion))
     }
 
-    /// The library's Continue Reading card asked for a recap of this book
-    /// (`AppModel.pendingRecapBookID`). Runs from the `.task(id:)` in `body`
-    /// once the reader has appeared; the pending id is cleared at the moment
-    /// the request is set, and only then — a task that runs too early leaves
-    /// it for the run that can act on it.
-    private func consumePendingRecap() {
-        guard hasAppeared, model.pendingRecapBookID == book.id else { return }
-        let scope = askScope(selection: nil)
-        guard scope.isScoped else {
-            // A PDF card never offers Recap, but the id must not outlive a
-            // request the reader cannot be shown.
-            model.pendingRecapBookID = nil
-            return
+    // MARK: - Welcome back
+
+    /// One page turn by the reader, counted once per new page (see
+    /// `lastCountedPage`). After `WelcomeBack.pageTurnsBeforeDismissal` the
+    /// line goes: the reader has evidently picked the thread up.
+    private func noteReaderTurnedPage() {
+        guard welcomeBack != nil else { return }
+        let page = PagePosition(chapter: chapterIndex, anchor: pagedAnchor)
+        guard page != lastCountedPage else { return }
+        lastCountedPage = page
+        pageTurnsSinceWelcome += 1
+        if pageTurnsSinceWelcome >= WelcomeBack.pageTurnsBeforeDismissal {
+            withAnimation(.easeOut(duration: 0.2)) { welcomeBack = nil }
         }
-        askRequest = AskRequest(selection: nil, scope: scope, initialQuestion: AskPanelView.recapQuestion)
-        model.pendingRecapBookID = nil
+    }
+
+    /// "✦ Welcome back — it’s been 6 days · Chapter 1 of 12 · 31% · Recap ›"
+    /// on the elevated surface, sized to the reading measure.
+    private func welcomeBackBar(_ line: WelcomeBackLine) -> some View {
+        HStack(spacing: 12) {
+            Text(AppTheme.aiGlyph)
+                .font(.system(size: 17))
+                .foregroundStyle(style.theme.iris)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Welcome back \u{2014} \(line.absence)")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(style.theme.inkColor)
+                    .accessibilityIdentifier("reader.welcomeBack")
+                if let caption = line.caption {
+                    Text(caption)
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(style.theme.muted)
+                        .lineLimit(1)
+                }
+            }
+            Spacer(minLength: 8)
+            Button(action: openRecap) {
+                HStack(spacing: 3) {
+                    Text("Recap")
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 10, weight: .semibold))
+                }
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(style.theme.iris)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("Recap what you've read so far, spoiler-free")
+            .accessibilityLabel("Recap what you've read so far")
+            .accessibilityIdentifier("reader.welcomeRecap")
+            Button {
+                withAnimation(.easeOut(duration: 0.2)) { welcomeBack = nil }
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(style.theme.faint)
+                    .frame(width: 28, height: 28)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("Dismiss")
+            .accessibilityLabel("Dismiss")
+            .accessibilityIdentifier("reader.welcomeDismiss")
+        }
+        .padding(.vertical, 10)
+        .padding(.horizontal, 14)
+        .background(style.theme.elevated, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .strokeBorder(style.theme.line, lineWidth: 1)
+        )
+        .frame(maxWidth: 620)
+        .padding(.horizontal, 16)
+        .padding(.top, 8)
+        .padding(.bottom, 4)
+        .frame(maxWidth: .infinity)
+        .background(layout == .scroll ? style.theme.background : style.theme.paper)
+        .transition(.move(edge: .top).combined(with: .opacity))
     }
 
     private var notesButton: some View {
-        Button { showNotes.toggle() } label: {
+        Button(action: toggleHighlightsPanel) {
             Label("Highlights", systemImage: "highlighter")
         }
         .keyboardShortcut("n", modifiers: [.command, .shift])
         .accessibilityIdentifier("reader.notes")
         .accessibilityLabel("Highlights")
-        .help("Highlights & notes (⇧⌘N)")
+        .help("Highlights (⇧⌘N) — from the Ask tab, switches to Highlights")
     }
 
     /// Invisible buttons so ⌘+/⌘− resize text without opening the Appearance
@@ -1347,6 +1705,15 @@ struct ReaderView: View {
     /// that popover is on screen.
     private var hiddenFontShortcuts: some View {
         Group {
+            // Chapter navigation from the keyboard in every layout.
+            Button("Next chapter") {
+                if let next = linearIndex(after: chapterIndex) { jump(toChapter: next) }
+            }
+            .keyboardShortcut(.rightArrow, modifiers: [.command, .option])
+            Button("Previous chapter") {
+                if let previous = linearIndex(before: chapterIndex) { jump(toChapter: previous) }
+            }
+            .keyboardShortcut(.leftArrow, modifiers: [.command, .option])
             Button("Larger text") { adjustFontSize(+1) }
                 .keyboardShortcut("+", modifiers: .command)
             // ⌘= is what most keyboards actually produce for "⌘+".
@@ -1405,6 +1772,17 @@ struct ReaderView: View {
         guard book.chapters.indices.contains(index) else { return }
         pagedAnchor = max(0, offset)
         chapterIndex = index
+        // A reader's move to another chapter while the voice reads takes the
+        // voice along — Contents is the card's chapter skip. Without this the
+        // voice kept reading where it was and `followNarration` turned the
+        // page straight back. The voice's own chapter crossings arrive here
+        // with its chapter, so they are left alone; a paused voice moves but
+        // stays paused.
+        if narration.isActive, let position = narration.position, position.chapterIndex != index {
+            let wasUnderway = narration.isUnderway
+            narration.start(book: book, chapterIndex: index, characterOffset: offset)
+            if !wasUnderway { narration.pause() }
+        }
         if layout == .scroll {
             // Scroll mode has no anchor binding into the text view — hand it
             // the offset so search hits / bookmarks / notes-panel jumps
@@ -1516,11 +1894,32 @@ struct ReaderView: View {
     private func restoreOnce() {
         guard !didRestorePosition else { return }
         didRestorePosition = true
+        // The stamp this open replaced decides the welcome-back line. Taken
+        // BEFORE the reader stamps again, and taken once — a reopen later in
+        // the session measures from now, not from an absence already greeted.
+        let lastOpened = model.takeLastOpenedBeforeOpen(for: book)
         model.markOpened(book)
-        if let position = model.position(for: book) {
+        let position = model.position(for: book)
+        if let position {
             pagedAnchor = max(0, position.characterOffset)
             chapterIndex = min(max(0, position.chapterIndex), max(0, book.chapters.count - 1))
         }
+        // The restored page is where the count starts: the writes above
+        // report as changes, and they must not count as page turns.
+        lastCountedPage = PagePosition(chapter: chapterIndex, anchor: pagedAnchor)
+        let now = Date()
+        // A native PDF page is not a reading position: no frontier, no recap.
+        guard !isPDFOriginal, !isImageOnlyPDF,
+              WelcomeBack.shouldOffer(
+                  lastOpenedAt: lastOpened, now: now, hasProgress: WelcomeBack.hasProgress(position)
+              ),
+              let lastOpened, let position else { return }
+        let caption = ReadingPositionSummary(
+            book: book, position: position, lengths: model.readingLengths(for: book)
+        )?.caption
+        welcomeBack = WelcomeBackLine(
+            absence: WelcomeBack.absencePhrase(from: lastOpened, to: now), caption: caption
+        )
     }
 
     // MARK: - Bookmarks
@@ -1532,9 +1931,18 @@ struct ReaderView: View {
         layout == .scroll ? 0 : pagedAnchor
     }
 
+    /// The bookmark on the page in view — the one the ribbon shows and ⌘D
+    /// removes. Paged layouts: a text bookmark whose offset falls in the
+    /// visible spread (so a repagination never unfills a bookmarked page).
+    /// Scroll layout: any text bookmark in this chapter — a scrolling
+    /// chapter has no page to be more precise about. Never a PDF page
+    /// bookmark: those belong to the original pages.
     private var currentBookmark: Bookmark? {
-        model.bookmarks(for: book).first {
-            $0.chapterIndex == chapterIndex && $0.characterOffset == currentAnchorOffset
+        textBookmarks.first { bookmark in
+            guard bookmark.chapterIndex == chapterIndex else { return false }
+            if layout == .scroll { return true }
+            if let visibleRange { return visibleRange.contains(bookmark.characterOffset) }
+            return bookmark.characterOffset == pagedAnchor
         }
     }
 
@@ -1633,18 +2041,20 @@ struct ReaderView: View {
             }
 
         case .ask:
-            let range: Range<Int>
-            switch target {
-            case let .selection(selected):
-                range = selected
-            case let .span(span):
-                range = highlight(withID: span.id)?.range ?? span.range
-            }
-            askRequest = AskRequest(
+            let range = self.range(for: target)
+            presentAsk(AskRequest(
                 selection: model.makeSelection(in: chapter, range: range),
                 scope: askScope(selection: range),
                 initialQuestion: nil
-            )
+            ))
+
+        case .listen:
+            // The chapter the menu was opened in, like every sibling case —
+            // not the view's current one, which a chapter turn could move.
+            let index = book.chapters.firstIndex { $0.id == chapter.id } ?? chapterIndex
+            listen(from: ListenAnchor(
+                chapterIndex: index, characterOffset: range(for: target).lowerBound, isExact: true
+            ))
 
         case .copy:
             let copied: String
@@ -1665,6 +2075,18 @@ struct ReaderView: View {
         }
     }
 
+    /// The live range a menu target stands for: a selection as given, a
+    /// highlight's stored range (which may have been re-ranged since the span
+    /// was painted), falling back to the span's.
+    private func range(for target: AnnotationTarget) -> Range<Int> {
+        switch target {
+        case let .selection(selected):
+            return selected
+        case let .span(span):
+            return highlight(withID: span.id)?.range ?? span.range
+        }
+    }
+
     /// Slices with `String.Index` — materializing `Array(chapter.text)` would
     /// copy the whole chapter per copy action.
     private func substring(of chapter: Chapter, range: Range<Int>) -> String {
@@ -1678,6 +2100,23 @@ struct ReaderView: View {
         // prefix clamps to the text's end, matching the old upper-bound clamp.
         return String(text[lower...].prefix(range.upperBound - lowerOffset))
     }
+}
+
+// MARK: - Welcome back
+
+/// What the welcome-back line says: the absence ("it’s been 6 days") and
+/// where the reader is ("Chapter 1 of 12 · 31% · Down the Rabbit-Hole").
+struct WelcomeBackLine: Equatable {
+    var absence: String
+    var caption: String?
+}
+
+/// A page, as the reader's chapter and anchor identify one — what the
+/// welcome-back count compares to tell a new page from the same one
+/// reported twice.
+private struct PagePosition: Equatable {
+    var chapter: Int
+    var anchor: Int
 }
 
 // MARK: - Footnote popup

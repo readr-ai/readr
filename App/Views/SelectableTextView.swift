@@ -35,6 +35,8 @@ enum AnnotationAction: Equatable {
     case note
     case ask
     case copy
+    /// Read aloud from the start of the sentence the target sits in.
+    case listen
     /// Span targets only.
     case remove
 }
@@ -63,6 +65,7 @@ private func makeAnnotationMenu(
         onNote: { fire(.note) },
         onAsk: { fire(.ask) },
         onCopy: { fire(.copy) },
+        onListen: { fire(.listen) },
         onRemove: removeAction
     )
 }

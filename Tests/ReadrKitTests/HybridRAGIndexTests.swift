@@ -140,4 +140,24 @@ final class HybridRAGIndexTests: XCTestCase {
         XCTAssertEqual(dogs.chapterIndex, 0)
         XCTAssertEqual(space.chapterIndex, 1)
     }
+
+    /// The chapter alone points at a chapter; the offset points at the
+    /// passage. Both ride through retrieval so a citation can be opened where
+    /// the answer actually leaned.
+    func testRetrievedPassagesCarryTheirCharacterOffset() async throws {
+        let book = makeDogsAndSpaceBook()
+        let index = HybridRAGIndex()
+        try await index.build(for: book, embeddings: LocalEmbeddingProvider())
+
+        let results = try await index.retrieve(
+            query: "planets orbiting the sun", bookID: book.id, limit: 1
+        )
+        let passage = try XCTUnwrap(results.first)
+        let offset = try XCTUnwrap(passage.characterOffset)
+        let chapter = book.chaptersInReadingOrder[try XCTUnwrap(passage.chapterIndex)]
+
+        XCTAssertEqual(
+            String(Array(chapter.text)[offset...].prefix(passage.text.count)), passage.text
+        )
+    }
 }

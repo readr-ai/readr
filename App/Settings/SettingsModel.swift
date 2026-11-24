@@ -44,9 +44,13 @@ final class SettingsModel: ObservableObject {
     /// Every provider kind the app knows about, in display order: the two
     /// sign-in paths lead (lowest-friction first-run), then the key-only
     /// cloud providers, then Local.
-    static let allKinds: [ProviderInfo.Kind] = [
-        .appleIntelligence, .downloadedModel, .chatGPT, .openRouter, .anthropic, .openAI, .local,
-    ]
+    static var allKinds: [ProviderInfo.Kind] {
+        var kinds: [ProviderInfo.Kind] = [.appleIntelligence, .chatGPT, .openRouter, .anthropic, .openAI, .local]
+        #if os(iOS)
+        kinds.insert(.downloadedModel, at: 1)
+        #endif
+        return kinds
+    }
 
     let kinds: [ProviderInfo.Kind] = SettingsModel.allKinds
 
@@ -76,12 +80,8 @@ final class SettingsModel: ObservableObject {
         // it (iOS/macOS 26 on Apple Intelligence hardware); a switched-off
         // Apple Intelligence shows as the card's status, not as absence.
         if !OnDeviceModel.isEligibleDevice { hidden.insert(.appleIntelligence) }
-        // Downloaded models run on MLX, which only the iOS app links, and
-        // need a Metal GPU and 6 GB or more of memory.
         #if os(iOS)
         if !MLXLLMProvider.isSupportedDevice { hidden.insert(.downloadedModel) }
-        #else
-        hidden.insert(.downloadedModel)
         #endif
         return allKinds.filter { !hidden.contains($0) }
     }
@@ -92,9 +92,12 @@ final class SettingsModel: ObservableObject {
     /// swapped out.
     var displayedKinds: [ProviderInfo.Kind] {
         var kinds = Self.displayedKinds
-        if let chosen = manager.explicitSelection?.kind, chosen.isOnDevice, chosen != .local, !kinds.contains(chosen) {
-            kinds.insert(chosen, at: 0)
+        if manager.explicitSelection?.kind == .appleIntelligence, !kinds.contains(.appleIntelligence) {
+            kinds.insert(.appleIntelligence, at: 0)
         }
+        #if os(iOS)
+        if manager.explicitSelection?.kind == .downloadedModel, !kinds.contains(.downloadedModel) { kinds.insert(.downloadedModel, at: 0) }
+        #endif
         return kinds
     }
 
@@ -123,9 +126,6 @@ final class SettingsModel: ObservableObject {
         var paths = ["Add an API key"]
         if displayed.contains(.appleIntelligence) {
             paths.append("use the model built into this device")
-        }
-        if displayed.contains(.downloadedModel) {
-            paths.append("download a model")
         }
         if displayed.contains(where: { oauthConfig(for: $0) != nil }) {
             paths.append("sign in")
@@ -184,6 +184,20 @@ final class SettingsModel: ObservableObject {
     /// until the user has chosen one.
     var activeKind: ProviderInfo.Kind? { activeSelection?.kind }
 
+    /// Which model Ask is actually using, in one line: "Ask uses Claude
+    /// Opus 5 · Claude (Anthropic)". Connected means usable — a stored key
+    /// the check rejected, Ollama not running, Apple Intelligence switched
+    /// off all add "— not connected", the way the card's dot goes red.
+    /// Read from the manager directly before the first refresh has mirrored
+    /// it, so the first frame does not flash the wrong state.
+    var askUsesLine: String {
+        guard let selection = activeSelection ?? manager.selection else {
+            return "Ask uses no model yet — connect one below."
+        }
+        let connected = configured[selection.kind] ?? manager.isConfigured(selection.kind)
+        return "Ask uses " + selection.summary(connected: connected)
+    }
+
     /// Kick off (or refresh) validation for a kind and mirror the result:
     /// remote keys get a lightweight authenticated probe, Local hits Ollama's
     /// `api/tags`. `validation[kind]` flips to `.validating` immediately so the
@@ -237,24 +251,14 @@ final class SettingsModel: ObservableObject {
         hasCredential[kind] = manager.hasStoredCredential(kind)
     }
 
-    /// The models the picker offers. Downloaded models are filtered to what
-    /// this device's memory can hold — offering the 4B on a 6 GB phone let a
-    /// reader download 3.1 GB of weights that could never load.
     func models(for kind: ProviderInfo.Kind) -> [ProviderInfo] {
-        let all = ProviderCatalog.models(for: kind)
         #if os(iOS)
         if kind == .downloadedModel {
-            let fits = Set(DownloadedModelCatalog.models(forPhysicalMemory: MLXLLMProvider.physicalMemory).map(\.repository))
-            return all.filter { fits.contains($0.modelID) }
+            let allowed = Set(DownloadedModelCatalog.models(forPhysicalMemory: MLXLLMProvider.physicalMemory).map(\.repository))
+            return ProviderCatalog.models(for: kind).filter { allowed.contains($0.modelID) }
         }
         #endif
-        return all
-    }
-
-    /// What "Make Active" chooses for a kind: the catalog default, except
-    /// for downloaded models, where it is the best one this device can run.
-    func defaultModelID(for kind: ProviderInfo.Kind) -> String {
-        models(for: kind).first?.modelID ?? ProviderCatalog.defaultModel(for: kind).modelID
+        return ProviderCatalog.models(for: kind)
     }
 
     /// Bring in the OpenRouter catalogue: the disk copy when it is fresh,
@@ -303,6 +307,11 @@ final class SettingsModel: ObservableObject {
             // The error says what failed and what to do — a prefix here just
             // repeats it ("Couldn't save the key. …nothing was saved.").
             errorMessage = error.readerFacingMessage
+            // The kind, never the key: the log is redacted, but a Keychain
+            // failure's description doesn't carry the secret to begin with.
+            DiagnosticsLog.shared.record(
+                .error, .provider, "saving the \(kind.rawValue) API key failed", error: error
+            )
         }
     }
 
@@ -343,6 +352,9 @@ final class SettingsModel: ObservableObject {
             // user backed out — no error to show
         } catch {
             errorMessage = error.readerFacingMessage
+            DiagnosticsLog.shared.record(
+                .error, .provider, "sign-in to \(kind.rawValue) failed", error: error
+            )
         }
     }
 

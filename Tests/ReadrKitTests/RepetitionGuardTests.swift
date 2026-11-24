@@ -26,6 +26,25 @@ final class RepetitionGuardTests: XCTestCase {
         XCTAssertTrue(keep.hasSuffix("The hole is deep."), keep)
     }
 
+    /// The real thing, verbatim from the simulator: three sentences ending in
+    /// quoted speech, then the same three again. Each ends `!"` — the quote
+    /// after the terminator hid the sentence boundary, so the guard saw one
+    /// endless sentence and let the loop through.
+    func testASentenceEndingInAClosingQuoteStillEnds() {
+        let block = "She meets the Queen of Hearts, who is very angry and says, \"Off with their heads!\" "
+            + "Alice then meets the Mad Hatter, who is very confused and says, \"Why is it so late?\" "
+            + "Alice then meets the Caterpillar, who is very slow and says, \"Eat, eat, eat!\" "
+        XCTAssertEqual(RepetitionGuard.completedSentences(in: block).count, 3)
+        XCTAssertEqual(guardian.verdict(for: block), .fine)
+        guard case let .looping(keep) = guardian.verdict(for: block + block) else {
+            return XCTFail("the same three quoted sentences again is a loop")
+        }
+        XCTAssertEqual(keep, block.trimmingCharacters(in: .whitespaces))
+        // Curly quotes and a bracket close the same way.
+        let curly = "He said, \u{201C}Off with their heads!\u{201D} Then he left (for good). And that was all. "
+        XCTAssertEqual(RepetitionGuard.completedSentences(in: curly).count, 3)
+    }
+
     func testPunctuationAndCaseDoNotHideARepeat() {
         let text = "I'm sorry, I can't help with that. i'm sorry i cant help with that! "
         guard case let .looping(keep) = guardian.verdict(for: text) else {

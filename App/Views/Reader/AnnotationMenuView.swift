@@ -25,6 +25,9 @@ struct AnnotationMenuView: View {
     /// Ask the book about this selection.
     var onAsk: () -> Void
     var onCopy: () -> Void
+    /// Read aloud from here — the sentence the selection (or highlight) sits
+    /// in. Nil hides the control, for hosts with no narration (previews).
+    var onListen: (() -> Void)? = nil
     /// Only shown in edit mode.
     var onRemove: (() -> Void)?
 
@@ -82,6 +85,19 @@ struct AnnotationMenuView: View {
                 : "Ask the book about this passage")
             .accessibilityLabel("Ask")
             .accessibilityIdentifier("annotation.ask")
+
+            if let onListen {
+                Button(action: onListen) {
+                    Image(systemName: "headphones")
+                        .font(.system(size: 11))
+                        .annotationTouchTarget()
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(theme.muted)
+                .help("Listen from here")
+                .accessibilityLabel("Listen from here")
+                .accessibilityIdentifier("annotation.listen")
+            }
 
             Button(action: onCopy) {
                 Image(systemName: "doc.on.doc")

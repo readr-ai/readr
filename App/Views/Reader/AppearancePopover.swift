@@ -5,8 +5,8 @@ import ReadrKit
 import UIKit
 #endif
 
-/// The Aa popover (iOS keeps it; macOS shows the same controls inline in the
-/// toolbar), Marginalia style: a serif A / A font stepper, three theme dots
+/// The Aa popover, on every platform (the macOS toolbar used to show the
+/// same controls inline), Marginalia style: a serif A / A font stepper, three theme dots
 /// (paper swatches, ink ring when selected), a hairline segmented layout
 /// picker, and — for PDFs — the original-pages ↔ reading-view switch.
 ///
@@ -22,7 +22,13 @@ struct AppearancePopover: View {
     @Binding var isJustified: Bool
     var isPDF: Bool = false
     @Binding var pdfShowsOriginal: Bool
+    /// The reader's narration, for the Voice section: the narrator is
+    /// chosen here, once, rather than on every Listen card.
+    var narration: NarrationModel? = nil
     @Environment(\.dismiss) private var dismiss
+    /// The host's own way to close the popover, when it is not a SwiftUI
+    /// presentation (`MacPopover` on macOS); `dismiss` otherwise.
+    @Environment(\.popoverDismiss) private var popoverDismiss
     /// Content height reported by the layout, driving the sheet's detent so
     /// the sheet always fits the controls exactly — no hand-tuned heights to
     /// drift when a section is added or Dynamic Type grows the text.
@@ -44,6 +50,30 @@ struct AppearancePopover: View {
     }
 
     var body: some View {
+        #if os(iOS)
+        if isSheetPresentation {
+            // The sheet takes the measured height of the controls. When a
+            // short screen (an iPhone in landscape) clamps the detent, the
+            // sections scroll rather than falling off the bottom — the Voice
+            // and PDF sections are the ones that would.
+            ScrollView { content }
+                .scrollBounceBehavior(.basedOnSize)
+                .presentationDetents(
+                    measuredHeight > 0 ? [.height(measuredHeight)] : [.medium]
+                )
+                .presentationDragIndicator(.visible)
+                .presentationBackground(theme.elevated)
+        } else {
+            content
+                .presentationBackground(theme.elevated)
+        }
+        #else
+        content
+            .presentationBackground(theme.elevated)
+        #endif
+    }
+
+    private var content: some View {
         VStack(alignment: .leading, spacing: 18) {
             Text("Appearance")
                 .font(.system(size: 17, weight: .semibold, design: .serif))
@@ -72,6 +102,12 @@ struct AppearancePopover: View {
 
             section("Layout") { layoutPicker }
 
+            if let narration {
+                section("Voice") {
+                    NarrationVoicePicker(narration: narration, theme: theme)
+                }
+            }
+
             if isPDF {
                 section("PDF") {
                     Picker("PDF display", selection: $pdfShowsOriginal) {
@@ -93,19 +129,12 @@ struct AppearancePopover: View {
         .frame(width: isSheetPresentation ? nil : 320, alignment: .leading)
         .frame(maxWidth: isSheetPresentation ? .infinity : nil, alignment: .leading)
         .background(theme.elevated)
-        #if os(iOS)
         // Size the adapted sheet to the measured content height, so it fits
         // exactly at any Dynamic Type size and never strands the controls in
         // a half-empty screen. `.medium` is the pre-measurement fallback.
         .onGeometryChange(for: CGFloat.self, of: { $0.size.height }) {
             measuredHeight = $0
         }
-        .presentationDetents(
-            measuredHeight > 0 ? [.height(measuredHeight)] : [.medium]
-        )
-        .presentationDragIndicator(.visible)
-        #endif
-        .presentationBackground(theme.elevated)
     }
 
     /// A captioned group: a faint section label above its control row.
@@ -320,7 +349,7 @@ struct AppearancePopover: View {
         // result immediately (and keeps popover-covered toolbar buttons
         // tappable for the UI screenshot walk). Theme/font stay open so they
         // preview live.
-        return Button { layoutRaw = value.rawValue; dismiss() } label: {
+        return Button { layoutRaw = value.rawValue; close() } label: {
             segmentLabel(label, selected: selected)
         }
         .buttonStyle(.plain)
@@ -329,10 +358,34 @@ struct AppearancePopover: View {
         .accessibilityAddTraits(selected ? .isSelected : [])
     }
 
+    private func close() {
+        if let popoverDismiss { popoverDismiss() } else { dismiss() }
+    }
+
     private func adjust(_ delta: Double) {
         fontSize = min(
             max(fontSize + delta, Double(ReaderStyle.fontSizeRange.lowerBound)),
             Double(ReaderStyle.fontSizeRange.upperBound)
         )
+    }
+}
+
+/// How a popover that is not a SwiftUI presentation asks to be closed —
+/// `MacPopover` supplies one; a SwiftUI sheet or popover leaves it nil and
+/// the content falls back to `dismiss`.
+struct PopoverDismiss {
+    let close: () -> Void
+    init(_ close: @escaping () -> Void) { self.close = close }
+    func callAsFunction() { close() }
+}
+
+private struct PopoverDismissKey: EnvironmentKey {
+    static let defaultValue: PopoverDismiss? = nil
+}
+
+extension EnvironmentValues {
+    var popoverDismiss: PopoverDismiss? {
+        get { self[PopoverDismissKey.self] }
+        set { self[PopoverDismissKey.self] = newValue }
     }
 }
