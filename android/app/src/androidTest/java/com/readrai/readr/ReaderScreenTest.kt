@@ -215,6 +215,8 @@ class ReaderScreenTest {
         compose.waitUntil(10_000) { label().startsWith("PDF page 2 of 2") }
         compose.onNodeWithTag("reader.originalPdf").performClick()
         awaitTag("reader.pdfOriginal")
+        awaitTag("reader.pdfPage.0")
+        awaitTag("reader.pdfPage.1")
         compose.waitForIdle()
         assertEquals("Opening the original must preserve page two", 1, model.chapterIndex)
     }

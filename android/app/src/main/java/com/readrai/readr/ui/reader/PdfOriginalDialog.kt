@@ -93,7 +93,7 @@ private fun PdfPageImage(file: File, index: Int) {
         Text("Page ${index + 1}", style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(8.dp))
         val image = bitmap?.getOrNull()
         when {
-            image != null -> Image(image.asImageBitmap(), "Original PDF page ${index + 1}", Modifier.fillMaxWidth().aspectRatio(image.width.toFloat() / image.height))
+            image != null -> Image(image.asImageBitmap(), "Original PDF page ${index + 1}", Modifier.fillMaxWidth().aspectRatio(image.width.toFloat() / image.height).testTag("reader.pdfPage.$index"))
             bitmap?.isFailure == true -> Text("This page couldn't be rendered. Try re-importing the PDF.", Modifier.padding(24.dp))
             else -> Box(Modifier.fillMaxWidth().height(360.dp), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
         }
