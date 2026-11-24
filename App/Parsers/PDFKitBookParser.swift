@@ -1,6 +1,7 @@
 #if canImport(PDFKit)
 import Foundation
 import PDFKit
+import Vision
 import ReadrKit
 
 /// PDF import via Apple's PDFKit — no third-party dependency. Extracts text one
@@ -8,9 +9,8 @@ import ReadrKit
 /// add proper outline/TOC-aware chaptering). Encrypted/locked PDFs are rejected.
 ///
 /// A PDF with no text layer — a scanned book, or screenshots exported as a
-/// PDF — is not rejected: PDFKit renders its pages fine. It imports with one
-/// empty chapter per page and `isImageOnly` set, so the reader shows the
-/// original pages and says which text features have nothing to work with.
+/// PDF — receives local Vision OCR. Pages still lacking recognizable text
+/// remain blank chapters; `isImageOnly` is set only when no page has text.
 /// The page-to-chapter rule itself is `PDFPageChapters` in ReadrKit.
 struct PDFKitBookParser: BookParser {
     func canParse(_ url: URL) -> Bool {
@@ -35,7 +35,9 @@ struct PDFKitBookParser: BookParser {
             guard let page = document.page(at: index) else {
                 throw BookParserError.corrupted("page \(index + 1) could not be loaded")
             }
-            pageTexts.append(page.string)
+            try Task.checkCancellation()
+            let native = page.string ?? ""
+            pageTexts.append(native.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? try recognize(page, number: index + 1) : native)
         }
         let pages = PDFPageChapters.build(fromPageTexts: pageTexts)
 
@@ -60,5 +62,27 @@ struct PDFKitBookParser: BookParser {
             estimatedTokenCount: estimateTokens(fullText)
         )
     }
+    /// Vision is bundled with the OS. No model download or passage upload.
+    private func recognize(_ page: PDFPage, number: Int) throws -> String {
+        let bounds = page.bounds(for: .mediaBox)
+        let scale = 2200 / max(bounds.width, bounds.height, 1)
+        let thumbnail = page.thumbnail(of: CGSize(width: bounds.width * scale, height: bounds.height * scale), for: .mediaBox)
+        #if os(macOS)
+        let image = thumbnail.cgImage(forProposedRect: nil, context: nil, hints: nil)
+        #else
+        let image = thumbnail.cgImage
+        #endif
+        guard let image else { throw BookParserError.corrupted("Page \(number) could not be rendered for text recognition") }
+        let request = VNRecognizeTextRequest()
+        request.recognitionLevel = .accurate
+        request.usesLanguageCorrection = true
+        request.automaticallyDetectsLanguage = true
+        do { try VNImageRequestHandler(cgImage: image).perform([request]) }
+        catch { throw BookParserError.corrupted("Text recognition failed on page \(number). Try importing the PDF again.") }
+        // Vision supplies lines in reading order. Blank plates remain blank
+        // chapters; OCR text uses exactly the same coordinates as narration.
+        return (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }.joined(separator: "\n")
+    }
+
 }
 #endif

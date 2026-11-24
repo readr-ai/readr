@@ -203,6 +203,19 @@ public final class AndroidLibrary {
     }
   }
 
+  /// Import text extracted locally by the Android PDF renderer/OCR. Original
+  /// pages remain retained; each page keeps a chapter slot, including blanks.
+  public func importPDF(_ originalPath: String, pageTextsJSON: String, title: String) async throws -> String {
+    try await readerFacing {
+      let texts = try JSONDecoder().decode([String].self, from: Data(pageTextsJSON.utf8))
+      guard !texts.isEmpty else { throw BookParserError.corrupted("PDF has no pages") }
+      let pages = PDFPageChapters.build(fromPageTexts: texts.map(Optional.some))
+      let metadata = BookMetadata(title: title, tableOfContents: pages.chapters.map { TOCEntry(title: $0.title ?? "Page", chapterIndex: $0.order) }, isImageOnly: pages.isImageOnly ? true : nil)
+      let book = Book(metadata: metadata, chapters: pages.chapters, estimatedTokenCount: estimateTokens(pages.chapters.map(\.text).joined(separator: "\n\n")))
+      return try add(book, original: originalPath, ext: "pdf")
+    }
+  }
+
   /// Import an EPUB that Kotlin has unzipped into `extractedDirectory`;
   /// `originalPath` is the .epub itself, kept under Books/.
   public func importEPUB(_ extractedDirectory: String, originalPath: String, fallbackTitle: String) async throws -> String {

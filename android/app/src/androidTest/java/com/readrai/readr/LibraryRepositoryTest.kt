@@ -35,6 +35,54 @@ class LibraryRepositoryTest {
     fun tearDown() { root.deleteRecursively() }
 
     @Test
+    fun importsPdfPagesAsOrderedReadableChapters() = runTest {
+        val file = makePdf(false)
+        val book = repository.import(Uri.fromFile(file))
+        assertEquals(2, book.chapterCount)
+        assertTrue(repository.chapterText(book.id, 0).contains("Alice follows the rabbit."))
+        assertTrue(repository.chapterText(book.id, 1).contains("The second page ends the story."))
+        assertTrue(book.archivePath!!.endsWith(".pdf"))
+        assertFalse(book.isImageOnly)
+    }
+
+    @Test
+    fun scannedPdfHasOfflineOcrTextForNarration() = runTest {
+        val book = repository.import(Uri.fromFile(makePdf(true)))
+        assertEquals(2, book.chapterCount)
+        assertTrue(repository.chapterText(book.id, 0), repository.chapterText(book.id, 0).contains("Alice follows the rabbit."))
+        assertFalse(book.isImageOnly)
+    }
+
+    @Test
+    fun damagedPdfIsRejectedInsteadOfImportedAsGibberish() = runTest {
+        val file = File(root, "damaged.pdf").apply { writeText("%PDF-1.7\nnot a document") }
+        try { repository.import(Uri.fromFile(file)); org.junit.Assert.fail("Expected damaged PDF rejection") }
+        catch (e: Exception) { assertTrue(e.message.orEmpty(), e.message.orEmpty().contains("PDF")) }
+        assertTrue(repository.books.value.isEmpty())
+    }
+
+    private fun makePdf(scanned: Boolean): File {
+        val document = android.graphics.pdf.PdfDocument()
+        for ((index, text) in listOf("Alice follows the rabbit.", "The second page ends the story.").withIndex()) {
+            val page = document.startPage(android.graphics.pdf.PdfDocument.PageInfo.Builder(612, 792, index + 1).create())
+            val paint = android.graphics.Paint().apply { textSize = 22f; color = android.graphics.Color.BLACK; isAntiAlias = true }
+            if (scanned) {
+                val bitmap = android.graphics.Bitmap.createBitmap(1224, 1584, android.graphics.Bitmap.Config.ARGB_8888)
+                val canvas = android.graphics.Canvas(bitmap)
+                canvas.drawColor(android.graphics.Color.WHITE); paint.textSize = 44f
+                canvas.drawText(text, 64f, 150f, paint)
+                page.canvas.drawBitmap(bitmap, null, android.graphics.Rect(0, 0, 612, 792), null)
+                document.finishPage(page); bitmap.recycle()
+            } else {
+                page.canvas.drawText(text, 32f, 75f, paint); document.finishPage(page)
+            }
+        }
+        val file = File(root, if (scanned) "scanned.pdf" else "story.pdf")
+        file.outputStream().use { document.writeTo(it) }; document.close()
+        return file
+    }
+
+    @Test
     fun safeFileNamesNeverEscapeTheStagingDirectory() {
         assertEquals("secrets.xml", LibraryRepository.safeFileName("../../shared_prefs/secrets.xml"))
         assertEquals("book.epub", LibraryRepository.safeFileName("primary:Download/book.epub"))

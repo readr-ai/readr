@@ -16,6 +16,10 @@ android {
         versionCode = 1
         versionName = "0.1.0"
         testInstrumentationRunner = "com.readrai.readr.ReadrTestRunner"
+        // Third-party AARs include 32-bit libraries. Package only ABIs for
+        // which ReadrKit's Swift/JNI facade is actually built.
+        ndk.abiFilters += (System.getenv("READR_ANDROID_ABIS") ?: "arm64-v8a,x86_64")
+            .split(',').map { it.trim() }.filter { it.isNotEmpty() }
         // No instrumented test may hang the run. Compose's `waitForIdle` —
         // inside every `performClick`, `performScrollToNode`, `assertExists`
         // — waits on `Espresso.onIdle()`, which has no timeout of its own: a
@@ -96,3 +100,6 @@ dependencies {
     androidTestImplementation(platform(libs.androidx.compose.bom))
     androidTestImplementation(libs.androidx.ui.test.junit4)
 }
+
+// Offline text recognition for scanned PDF pages.
+dependencies { implementation("cz.adaptech.tesseract4android:tesseract4android:4.9.0") }

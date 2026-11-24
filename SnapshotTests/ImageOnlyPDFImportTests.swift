@@ -52,6 +52,15 @@ final class ImageOnlyPDFImportTests: XCTestCase {
         XCTAssertTrue(model.isPDF(book))
     }
 
+    func testScannedTextPDFGetsLocalOCRForListening() async throws {
+        let url = try makePDF(named: "scanned-story", pages: [.scan("Alice follows the rabbit."), .text("Second page.")])
+        let book = try await PDFKitBookParser().parse(url)
+        XCTAssertNil(book.metadata.isImageOnly)
+        XCTAssertEqual(book.chapters.count, 2)
+        XCTAssertTrue(book.chapters[0].text.contains("Alice follows the rabbit."), book.chapters[0].text)
+        XCTAssertTrue(book.chapters[1].text.contains("Second page."))
+    }
+
     // MARK: - Books with text are untouched
 
     func testTextPDFIsNotFlaggedAndKeepsItsText() async throws {
@@ -142,6 +151,7 @@ final class ImageOnlyPDFImportTests: XCTestCase {
         case text(String)
         /// A page carrying nothing but a bitmap — what a scanner writes.
         case image
+        case scan(String)
     }
 
     private func makePDF(named name: String, pages: [Page]) throws -> URL {
@@ -162,6 +172,12 @@ final class ImageOnlyPDFImportTests: XCTestCase {
                     CGPath(rect: mediaBox.insetBy(dx: 72, dy: 72), transform: nil), nil
                 )
                 CTFrameDraw(frame, context)
+            case .scan(let text):
+                let bitmap = try XCTUnwrap(CGContext(data: nil, width: 1224, height: 1584, bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue))
+                bitmap.setFillColor(CGColor(gray: 1, alpha: 1)); bitmap.fill(CGRect(x: 0, y: 0, width: 1224, height: 1584))
+                bitmap.textPosition = CGPoint(x: 64, y: 1400)
+                CTLineDraw(CTLineCreateWithAttributedString(NSAttributedString(string: text, attributes: [.font: CTFontCreateWithName("Helvetica" as CFString, 44, nil), .foregroundColor: NSColor.black])), bitmap)
+                context.draw(try XCTUnwrap(bitmap.makeImage()), in: mediaBox)
             case .image:
                 context.draw(try scannedPageBitmap(), in: mediaBox.insetBy(dx: 36, dy: 36))
             }

@@ -27,7 +27,7 @@ public enum PDFPageChapters {
     ///   flag agree.
     public static func build(fromPageTexts pageTexts: [String?]) -> Result {
         let chapters = pageTexts.enumerated().map { index, pageText in
-            let text = pageText ?? ""
+            let text = normalize(pageText ?? "")
             let hasText = text.contains { !$0.isWhitespace }
             return Chapter(title: "Page \(index + 1)", order: index, text: hasText ? text : "")
         }
@@ -35,5 +35,41 @@ public enum PDFPageChapters {
             chapters: chapters,
             isImageOnly: !chapters.isEmpty && !chapters.contains(where: \.hasText)
         )
+    }
+    /// Remove layout-only wraps before offsets are assigned. Paragraph breaks
+    /// and real in-line hyphens remain; all downstream narration uses these
+    /// same normalized chapter coordinates.
+    public static func normalizedOffset(ofCharacter offset: Int, in raw: String) -> Int {
+        let units = normalizedUnits(raw)
+        return units.firstIndex { $0.source >= max(0, offset) } ?? units.count
+    }
+
+    public static func normalizedText(_ raw: String) -> String { normalize(raw) }
+
+    private struct Unit { var character: Character; var source: Int }
+    private static func normalize(_ raw: String) -> String { String(normalizedUnits(raw).map(\.character)) }
+
+    private static func normalizedUnits(_ raw: String) -> [Unit] {
+        var units = raw.enumerated().compactMap { index, character -> Unit? in
+            if character == "\u{00ad}" { return nil }
+            return Unit(character: character == "\r\n" || character == "\r" ? "\n" : character, source: index)
+        }
+        func replace(_ pattern: String, with replacement: String) {
+            let text = String(units.map(\.character))
+            guard let regex = try? NSRegularExpression(pattern: pattern) else { return }
+            for match in regex.matches(in: text, range: NSRange(text.startIndex..., in: text)).reversed() {
+                guard let range = Range(match.range, in: text) else { continue }
+                let lower = text.distance(from: text.startIndex, to: range.lowerBound)
+                let upper = text.distance(from: text.startIndex, to: range.upperBound)
+                let source = units[lower].source
+                units.replaceSubrange(lower..<upper, with: replacement.map { Unit(character: $0, source: source) })
+            }
+        }
+        replace(#"(?<=[\p{L}])-\n[ \t]*(?=[\p{Ll}])"#, with: "")
+        replace(#"[ \t]*\n(?:[ \t]*\n)+[ \t]*"#, with: "\n\n")
+        replace(#"(?<!\n)[ \t]*\n[ \t]*(?!\n)"#, with: " ")
+        while units.first?.character.isWhitespace == true { units.removeFirst() }
+        while units.last?.character.isWhitespace == true { units.removeLast() }
+        return units
     }
 }

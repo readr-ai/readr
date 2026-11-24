@@ -170,6 +170,7 @@ fun ReaderScreen(
     val appearance by settings.appearance.collectAsState()
     val palette = LocalReadingPalette.current
     var showChrome by rememberSaveable { mutableStateOf(true) }
+    var showsOriginalPdf by rememberSaveable { mutableStateOf(false) }
     var sheet by rememberSaveable { mutableStateOf<ReaderSheet?>(null) }
     val density = LocalDensity.current
     /** The Listen card's own height, taken off the page rather than laid over it. */
@@ -437,6 +438,9 @@ fun ReaderScreen(
                 },
                 actions = {
                     if (ready != null) {
+                        if (model.archive?.extension.equals("pdf", ignoreCase = true)) {
+                            androidx.compose.material3.TextButton(onClick = { showsOriginalPdf = true }, modifier = Modifier.testTag("reader.originalPdf")) { Text("PDF", color = palette.ink) }
+                        }
                         // What is being read, and how it reads: the one AI
                         // moment (the only iris in the bar), the type, and the
                         // marks the reader has made.
@@ -534,6 +538,11 @@ fun ReaderScreen(
         }
 
         val ready = model.state as? ReaderViewModel.State.Ready
+        if (showsOriginalPdf) model.archive?.let { file ->
+            PdfOriginalDialog(file, model.chapterIndex, narration.chapterIndex.takeIf { narration.isUnderway },
+                onPage = { page -> if (page != model.chapterIndex) model.jump(page, 0) },
+                onDismiss = { showsOriginalPdf = false })
+        }
         when (sheet) {
             ReaderSheet.Contents -> if (ready != null) ContentsSheet(
                 contents = ready.contents,
@@ -1299,7 +1308,9 @@ private fun PageSurface(
                         !scrolling && set != null && pages.isNotEmpty() -> {
                             val last = minOf(spreadStart + columns, pages.size)
                             val minutes = LayoutPaginator.minutes(set.pagination.wordsRemaining[spreadStart])
-                            val pageText = if (last - spreadStart > 1) {
+                            val pageText = if (model.archive?.extension?.equals("pdf", ignoreCase = true) == true) {
+                                "PDF page ${model.chapterIndex + 1} of ${ready.chapters.size}"
+                            } else if (last - spreadStart > 1) {
                                 "Pages ${spreadStart + 1}–$last of ${pages.size}"
                             } else {
                                 "Page ${spreadStart + 1} of ${pages.size}"

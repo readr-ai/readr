@@ -197,6 +197,29 @@ class ReaderScreenTest {
         nodes("reader.bookmarks").firstOrNull()?.config?.getOrElseNullable(SemanticsProperties.ContentDescription) { null }?.firstOrNull() ?: ""
 
     @Test
+    fun pdfFooterAndOriginalViewKeepTheDocumentsPageNumber() = runBlocking {
+        val file = File(root, "two-pages.pdf")
+        val document = android.graphics.pdf.PdfDocument()
+        try {
+            for (index in 1..2) {
+                val page = document.startPage(android.graphics.pdf.PdfDocument.PageInfo.Builder(612, 792, index).create())
+                page.canvas.drawText("A short paragraph on page $index.", 30f, 80f, android.graphics.Paint().apply { textSize = 18f })
+                document.finishPage(page)
+            }
+            file.outputStream().use { document.writeTo(it) }
+        } finally { document.close() }
+        val pdf = repository.import(Uri.fromFile(file))
+        val model = open(pdf.id)
+        assertEquals("PDF page 1 of 2", spreadLabel())
+        compose.runOnIdle { model.jump(1, 0) }
+        compose.waitUntil(10_000) { label().startsWith("PDF page 2 of 2") }
+        compose.onNodeWithTag("reader.originalPdf").performClick()
+        awaitTag("reader.pdfOriginal")
+        compose.waitForIdle()
+        assertEquals("Opening the original must preserve page two", 1, model.chapterIndex)
+    }
+
+    @Test
     fun opensOnTheFirstPageAndTurnsWithTaps() {
         val model = open()
         assertEquals("Chapter 1", kicker())
