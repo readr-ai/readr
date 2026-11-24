@@ -11,6 +11,8 @@ plugins {
 android {
     namespace = "com.readrai.readr"
     compileSdk = 36
+    // Match the Swift Android SDK and CI; strip release debug data with r27d.
+    ndkVersion = "27.3.13750724"
 
     defaultConfig {
         applicationId = "com.readrai.readr"
