@@ -555,7 +555,7 @@ public final class AndroidProviders {
 
   /// The one sentence the phone's own card carries while nothing is set up.
   static let onDeviceHint =
-    "The model built into this phone. Nothing to set up, nothing leaves your phone."
+    "Private answers on compatible phones. A model download may be needed."
 
   /// Names one door into a vendor — derived from what the method is, as the
   /// Apple screen's `methodLabel` does.
