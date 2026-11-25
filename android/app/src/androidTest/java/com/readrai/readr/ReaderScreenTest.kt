@@ -13,6 +13,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.SemanticsNodeInteraction
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.click
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.longClick
@@ -130,7 +131,7 @@ class ReaderScreenTest {
                 }
             }
         }
-        if (paged) waitForPages() else awaitTag("reader.page")
+        if (paged) waitForPages() else compose.waitUntil(20_000) { nodes("reader.page").isNotEmpty() || nodes("reader.pdfOriginal").isNotEmpty() || nodes("reader.noText").isNotEmpty() }
         return model
     }
 
@@ -197,13 +198,32 @@ class ReaderScreenTest {
     private fun bookmarkLabel(): String =
         nodes("reader.bookmarks").firstOrNull()?.config?.getOrElseNullable(SemanticsProperties.ContentDescription) { null }?.firstOrNull() ?: ""
 
+    @Test fun imageOnlyPdfOpensOriginalAndExplainsUnavailableTextActions() = runBlocking {
+        val file = File(root, "blank-plate.pdf")
+        val document = android.graphics.pdf.PdfDocument()
+        try {
+            val page = document.startPage(android.graphics.pdf.PdfDocument.PageInfo.Builder(612, 792, 1).create())
+            document.finishPage(page)
+            file.outputStream().use { document.writeTo(it) }
+        } finally { document.close() }
+        val pdf = repository.import(Uri.fromFile(file))
+        assertTrue(pdf.isImageOnly)
+        open(pdf.id, paged = false)
+        awaitTag("reader.pdfOriginal")
+        compose.onNodeWithContentDescription("Back to reading text").performClick()
+        awaitTag("reader.noText")
+        compose.onNodeWithTag("reader.ask").assertIsNotEnabled()
+        compose.onNodeWithTag("reader.listen").assertIsNotEnabled()
+        Unit
+    }
+
     @Test
     fun originalPdfDoesNotReportAnEarlierPageWhileItsImagesLoad() {
         val file = File(root, "original-two-pages.pdf")
         val document = android.graphics.pdf.PdfDocument()
         try {
             for (index in 1..2) {
-                val page = document.startPage(android.graphics.pdf.PdfDocument.PageInfo.Builder(612, 792, index).create())
+                val page = document.startPage(android.graphics.pdf.PdfDocument.PageInfo.Builder(612, if (index == 2) 150 else 792, index).create())
                 page.canvas.drawText("Original page $index", 30f, 80f, android.graphics.Paint().apply { textSize = 18f })
                 document.finishPage(page)
             }
@@ -217,7 +237,7 @@ class ReaderScreenTest {
         awaitTag("reader.pdfPage.1")
         compose.waitUntil(10_000) { observed.isNotEmpty() }
         compose.waitForIdle()
-        assertTrue("Opening page two must never report a placeholder's page: $observed", observed.all { it == 1 })
+        assertTrue("Opening a short final page must preserve its anchor: $observed", observed.all { it == 1 })
     }
 
     @Test

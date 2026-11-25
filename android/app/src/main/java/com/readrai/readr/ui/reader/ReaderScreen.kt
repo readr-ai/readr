@@ -171,6 +171,8 @@ fun ReaderScreen(
     val palette = LocalReadingPalette.current
     var showChrome by rememberSaveable { mutableStateOf(true) }
     var showsOriginalPdf by rememberSaveable { mutableStateOf(false) }
+    val imageOnly = (model.state as? ReaderViewModel.State.Ready)?.isImageOnly == true
+    LaunchedEffect(imageOnly) { if (imageOnly) showsOriginalPdf = true }
     var sheet by rememberSaveable { mutableStateOf<ReaderSheet?>(null) }
     val density = LocalDensity.current
     /** The Listen card's own height, taken off the page rather than laid over it. */
@@ -237,6 +239,7 @@ fun ReaderScreen(
     }
 
     fun openAsk(selection: AskSelection?) {
+        if (imageOnly) return
         showChrome = true
         // Listening to the next page while reading an answer about this one is
         // nobody's wish; dismissing the sheet gives the voice back.
@@ -359,7 +362,15 @@ fun ReaderScreen(
                     TextButton(onClick = onBack) { Text("Back to library") }
                 }
             }
-            is ReaderViewModel.State.Ready -> PageSurface(
+            is ReaderViewModel.State.Ready -> if (s.isImageOnly) {
+                Box(Modifier.fillMaxSize().padding(32.dp), contentAlignment = Alignment.Center) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text("No recognizable text was found in this PDF. Read the original pages; Ask, search and Listen need a readable text layer.",
+                            color = palette.ink, modifier = Modifier.testTag("reader.noText"))
+                        TextButton(onClick = { showsOriginalPdf = true }) { Text("Open original pages") }
+                    }
+                }
+            } else PageSurface(
                 model = model,
                 ready = s,
                 appearance = appearance,
@@ -446,6 +457,7 @@ fun ReaderScreen(
                         // marks the reader has made.
                         IconButton(
                             onClick = { openAsk(null) },
+                            enabled = !imageOnly,
                             modifier = Modifier.testTag("reader.ask").semantics { contentDescription = "Ask the book" },
                         ) {
                             Text(Marginalia.aiGlyph, fontSize = 17.sp, color = palette.iris)
@@ -519,6 +531,7 @@ fun ReaderScreen(
                     BookmarkAction(model, palette)
                     IconButton(
                         onClick = { toggleListening() },
+                        enabled = !imageOnly,
                         modifier = Modifier
                             .testTag("reader.listen")
                             .semantics {
@@ -530,7 +543,7 @@ fun ReaderScreen(
                             Modifier.size(18.dp),
                         )
                     }
-                    IconButton(onClick = { sheet = ReaderSheet.Search }, modifier = Modifier.testTag("reader.search")) {
+                    IconButton(onClick = { sheet = ReaderSheet.Search }, enabled = !imageOnly, modifier = Modifier.testTag("reader.search")) {
                         Icon(Icons.Filled.Search, contentDescription = "Find in book", tint = palette.ink)
                     }
                 }

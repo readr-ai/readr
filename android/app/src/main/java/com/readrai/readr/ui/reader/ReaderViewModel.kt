@@ -37,7 +37,7 @@ class ReaderViewModel(private val library: suspend () -> LibraryRepository, val 
     sealed interface State {
         data object Loading : State
         data class Failed(val message: String) : State
-        data class Ready(val title: String, val chapters: List<ChapterSummary>, val contents: Contents) : State
+        data class Ready(val title: String, val chapters: List<ChapterSummary>, val contents: Contents, val isImageOnly: Boolean = false) : State
     }
 
     /**
@@ -195,14 +195,14 @@ class ReaderViewModel(private val library: suspend () -> LibraryRepository, val 
             chapterIndex = position?.chapterIndex?.coerceIn(0, chapters.size - 1) ?: 0
             anchor = maxOf(0, position?.utf16Offset ?: 0)
             persisted = chapterIndex to anchor
-            state = State.Ready(book.title, chapters, contents)
+            state = State.Ready(book.title, chapters, contents, book.isImageOnly)
             // Ask's index, off the critical path. Building it is seconds on a
             // long book, and the reader is about to spend minutes on page one
             // — which is a far better moment to pay for it than after they
             // have typed a question and are watching a spinner. Fire and
             // forget: a failure here costs nothing, because `ask` builds
             // (and waits for) whatever is missing.
-            viewModelScope.launch { runCatching { repo.prepareAsk(bookId) } }
+            if (!book.isImageOnly) viewModelScope.launch { runCatching { repo.prepareAsk(bookId) } }
             loadChapter()
             reload(repo)
         } catch (e: Exception) {

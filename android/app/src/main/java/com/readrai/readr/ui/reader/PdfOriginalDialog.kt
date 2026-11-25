@@ -5,6 +5,7 @@ import android.graphics.Color
 import android.graphics.pdf.PdfRenderer
 import android.os.ParcelFileDescriptor
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.interaction.DragInteraction
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -39,6 +40,10 @@ fun PdfOriginalDialog(file: File, page: Int, spokenPage: Int?, onPage: (Int) -> 
     val list = rememberLazyListState(initialFirstVisibleItemIndex = page.coerceAtLeast(0))
     val openingPage = remember(file.path) { page }
     var positioned by remember(file.path) { mutableStateOf(false) }
+    var userNavigating by remember(file.path) { mutableStateOf(false) }
+    LaunchedEffect(list) {
+        list.interactionSource.interactions.collect { if (it is DragInteraction.Start) userNavigating = true }
+    }
     var seeded by remember(file.path) { mutableStateOf(false) }
     var readyPages by remember(file.path) { mutableStateOf(emptySet<Int>()) }
     LaunchedEffect(count) {
@@ -55,16 +60,21 @@ fun PdfOriginalDialog(file: File, page: Int, spokenPage: Int?, onPage: (Int) -> 
         // Bitmap dimensions replace the placeholders. Restore the intended
         // anchor after that layout, before publishing any reading position.
         withFrameNanos { }
-        list.scrollToItem(openingPage.coerceIn(0, (count?.getOrNull() ?: 1) - 1))
+        val target = openingPage.coerceIn(0, (count?.getOrNull() ?: 1) - 1)
+        if (!userNavigating) { list.scrollToItem(target); onPage(target) }
         positioned = true
     }
     LaunchedEffect(spokenPage, positioned) {
         if (!positioned) return@LaunchedEffect
         val pages = count?.getOrNull() ?: return@LaunchedEffect
-        if (spokenPage != null && spokenPage in 0 until pages) list.animateScrollToItem(spokenPage)
+        if (spokenPage != null && spokenPage in 0 until pages) {
+            userNavigating = false
+            list.animateScrollToItem(spokenPage)
+            onPage(spokenPage)
+        }
     }
-    LaunchedEffect(list, positioned) {
-        if (!positioned) return@LaunchedEffect
+    LaunchedEffect(list, positioned, userNavigating) {
+        if (!positioned || !userNavigating) return@LaunchedEffect
         snapshotFlow {
             val info = list.layoutInfo
             // The last page may be shorter than the viewport. Its preceding
