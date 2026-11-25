@@ -4,7 +4,7 @@ import ReadrKit
 /// Routes narration only to the platform's Kokoro runtime. A missing/failed
 /// engine reports a recoverable failure; it never constructs a system TTS
 /// synthesizer. The selected engine alone may advance the active utterance.
-final class RoutingSpeechEngine: SpeechEngine, SpeechPrefetching, SpeechRateAdjusting {
+final class RoutingSpeechEngine: SpeechEngine, SpeechPrefetching, SpeechRateAdjusting, NarrationVoiceCataloguing {
     weak var delegate: (any SpeechEngineDelegate)?
 
     /// Built on macOS only, and only outside the BNNS crash gate. iOS is
@@ -83,6 +83,11 @@ final class RoutingSpeechEngine: SpeechEngine, SpeechPrefetching, SpeechRateAdju
         #if os(iOS)
         mlx?.delegate = self
         #endif
+    }
+
+    func voices(for language: String) -> [SpeechVoice] {
+        guard readrVoiceRuntime != nil, KokoroSpeechEngine.supports(language: language) else { return [] }
+        return [KokoroSpeechEngine.pickerVoice]
     }
 
     var state: SpeechEngineState {

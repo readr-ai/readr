@@ -369,18 +369,17 @@ final class ReadrListenUITests: XCTestCase {
         appearance.tap()
         let voice = element(app, "appearance.voice")
         XCTAssertTrue(voice.waitForExistence(timeout: 5), "the Aa popover should offer the voice")
-        XCTAssertFalse(
-            ((voice.value as? String) ?? "").isEmpty,
-            "The row should name the book's voice before anything has been read aloud"
+        XCTAssertEqual(
+            voice.value as? String, "Readr Voice",
+            "The row should name the book's neural voice before the first Listen"
         )
+        XCTAssertFalse(element(app, "listen.bar").exists, "Resolving voices must not start playback")
         voice.tap()
-        XCTAssertTrue(menuRow(app, containing: "More voices").waitForExistence(timeout: 5))
-        let none = NSPredicate(format: "label CONTAINS %@ OR title CONTAINS %@",
-                               "No voices installed", "No voices installed")
-        XCTAssertFalse(
-            app.descendants(matching: .any).matching(none).firstMatch.exists,
-            "The voices are resolved for the popover, not only when narration starts"
-        )
+        XCTAssertTrue(menuRow(app, containing: "Kokoro").waitForExistence(timeout: 5))
+        XCTAssertFalse(menuRow(app, containing: "More voices").exists,
+                       "The picker must not send readers to system voice downloads")
+        XCTAssertFalse(menuRow(app, containing: "unavailable for this device").exists,
+                       "The selected test engine supplies an English neural voice")
     }
 
     // Contents is the card's chapter skip: a jump there takes the voice
@@ -431,12 +430,12 @@ final class ReadrListenUITests: XCTestCase {
         let voice = element(app, "appearance.voice")
         XCTAssertTrue(voice.waitForExistence(timeout: 5), "the Aa popover should offer the voice")
         voice.tap()
-        // Better voices are a system download, and the menu says so whether or
-        // not this simulator has any installed beyond the default.
         XCTAssertTrue(
-            menuRow(app, containing: "More voices").waitForExistence(timeout: 5),
-            "The voice menu should say where more voices come from"
+            menuRow(app, containing: "Natural English narration").waitForExistence(timeout: 5),
+            "The voice menu should explain the on-device Kokoro narrator"
         )
+        XCTAssertFalse(menuRow(app, containing: "More voices").exists,
+                       "System voice download instructions must not return")
     }
 
     // MARK: - Stopping

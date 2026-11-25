@@ -14,7 +14,7 @@ import ReadrKit
 /// It records the same state a real engine does and simply never completes an
 /// utterance on its own, so narration stays exactly where a test put it.
 /// Normal launches never construct it (see `NarrationModel`).
-final class UITestStubSpeechEngine: SpeechEngine {
+final class UITestStubSpeechEngine: SpeechEngine, NarrationVoiceCataloguing {
     weak var delegate: (any SpeechEngineDelegate)?
     private(set) var state: SpeechEngineState = .idle
 
@@ -41,6 +41,12 @@ final class UITestStubSpeechEngine: SpeechEngine {
     /// real engine sends when it has nothing prepared.
     static var holdEnabled: Bool {
         ProcessInfo.processInfo.arguments.contains("-uiTestNarrationHold")
+    }
+
+    // The external synthesizer fixture advertises the same English Kokoro
+    // catalogue without requiring the simulator to have a Metal runtime.
+    func voices(for language: String) -> [SpeechVoice] {
+        KokoroSpeechEngine.supports(language: language) ? [KokoroSpeechEngine.pickerVoice] : []
     }
 
     func speak(_ request: SpeechRequest) {

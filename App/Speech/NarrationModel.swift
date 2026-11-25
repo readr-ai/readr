@@ -82,7 +82,7 @@ final class NarrationModel: ObservableObject {
     /// The synthesizer behind narration. `-uiTestSilentNarration` swaps in a
     /// soundless stand-in so UI tests drive the real pipeline deterministically
     /// (see `UITestStubSpeechEngine`); normal launches always get the router.
-    private let engine: any SpeechEngine
+    private let engine: any SpeechEngine & NarrationVoiceCataloguing
     /// The same engine, typed — router-only calls (audio-session teardown,
     /// Kokoro prefetch) go through this instead of scattered downcasts that
     /// would silently no-op if the engine type ever changed. Nil only under
@@ -136,14 +136,17 @@ final class NarrationModel: ObservableObject {
         return voices.first { $0.id == voiceID }?.name
     }
 
-    init(defaults: UserDefaults = .standard) {
+    init(defaults: UserDefaults = .standard, engine: (any SpeechEngine & NarrationVoiceCataloguing)? = nil) {
         self.defaults = defaults
-        if UITestStubSpeechEngine.isEnabled {
+        if let engine {
+            self.engine = engine
+            self.router = engine as? RoutingSpeechEngine
+        } else if UITestStubSpeechEngine.isEnabled {
             self.engine = UITestStubSpeechEngine()
             self.router = nil
         } else {
-            // Platform voices by default, Kokoro ("Readr Voice") when the
-            // picker chooses it — routed per request by voice id.
+            // One platform Kokoro runtime; availability and voice metadata
+            // come from that instance, independently of playback.
             let router = RoutingSpeechEngine()
             self.engine = router
             self.router = router
@@ -299,12 +302,12 @@ final class NarrationModel: ObservableObject {
         guard voicesBookID != book.id else { return }
         voicesBookID = book.id
         let language = book.metadata.language ?? "en"
-        let supported = KokoroSpeechEngine.supports(language: language)
-        readrVoiceOffered = supported && RoutingSpeechEngine.isReadrVoiceAvailable
+        voices = engine.voices(for: language).filter { KokoroSpeechEngine.isKokoroVoiceID($0.id) }
+        readrVoiceOffered = !voices.isEmpty
         readrVoiceUnavailable = !readrVoiceOffered
-        voices = readrVoiceOffered ? [KokoroSpeechEngine.pickerVoice] : []
-        // Retire persisted system choices. They must never resurrect a fallback.
-        voiceID = KokoroSpeechEngine.defaultVoiceID
+        // Keep an offered neural choice; retire stale system IDs without
+        // inventing a voice the selected engine cannot actually serve.
+        voiceID = voices.first(where: { $0.id == voiceID })?.id ?? voices.first?.id
 
     }
 
