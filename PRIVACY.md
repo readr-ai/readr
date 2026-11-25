@@ -9,10 +9,13 @@ built not to collect anything.
 
 ## What Readr collects
 
-**Nothing.** Readr has no analytics, telemetry, or crash-reporting code, no
-accounts, and no server of its own. The app never phones home. (Readr is open
-source under the MIT license — you can verify this in the code at
-<https://github.com/readr-ai/readr>.)
+**Nothing.** Readr collects no analytics, telemetry or crash reports, has no
+accounts, and runs no server. The app never phones home. Android's Gemini
+Nano SDK includes instrumentation classes required for initialization; Readr
+removes their upload backend registration and scheduling components, so SDK
+metric events are rejected locally before storage or upload. Readr is open
+source under the MIT license — you can verify this at
+<https://github.com/readr-ai/readr>.
 
 ## Where your data lives
 

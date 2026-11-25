@@ -25,6 +25,30 @@ class NanoModelTest {
     private val model get() = NanoModel(context)
 
     @Test
+    fun realSdkClientInitializesWithoutMissingTelemetryClasses() {
+        // Client construction needs no model or AICore. Exercise it directly:
+        // readiness on an unsupported emulator returns before this boundary.
+        val client = com.google.mlkit.genai.prompt.Generation.getClient()
+        client.close()
+    }
+
+    @Test
+    fun sdkMetricEventsAreRejectedBeforePersistenceOrUpload() = kotlinx.coroutines.runBlocking {
+        com.google.android.datatransport.runtime.TransportRuntime.initialize(context)
+        val factory = com.google.android.datatransport.runtime.TransportRuntime.getInstance()
+            .newFactory(com.google.android.datatransport.cct.CCTDestination.INSTANCE)
+        val transport = factory.getTransport("readr-privacy-regression", String::class.java,
+            com.google.android.datatransport.Encoding.of("json"),
+            com.google.android.datatransport.Transformer<String, ByteArray> { it.toByteArray() })
+        val result = kotlinx.coroutines.CompletableDeferred<Exception?>()
+        transport.schedule(com.google.android.datatransport.Event.ofTelemetry("synthetic privacy probe")) { result.complete(it) }
+        val failure = kotlinx.coroutines.withTimeout(5_000) { result.await() }
+        org.junit.Assert.assertNotNull("No upload backend may accept an SDK event", failure)
+        org.junit.Assert.assertTrue(failure.toString(), failure?.message.orEmpty().contains("not registered"))
+        Unit
+    }
+
+    @Test
     fun mergedAppHasNoTelemetryUploadComponents() {
         val info = context.packageManager.getPackageInfo(context.packageName,
             android.content.pm.PackageManager.GET_PERMISSIONS or android.content.pm.PackageManager.GET_SERVICES or android.content.pm.PackageManager.GET_RECEIVERS)

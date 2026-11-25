@@ -40,6 +40,13 @@
         android:label="@string/app_name"
         android:supportsRtl="true"
         android:theme="@style/Theme.Readr">
+        <!-- ML Kit needs the transport classes to initialize, but metrics must
+             have no registered backend, persistence or scheduling path. Without
+             discovery metadata DefaultScheduler rejects events before storage. -->
+        <service android:name="com.google.android.datatransport.runtime.backends.TransportBackendDiscovery" tools:node="remove" />
+        <service android:name="com.google.android.datatransport.runtime.scheduling.jobscheduling.JobInfoSchedulerService" tools:node="remove" />
+        <receiver android:name="com.google.android.datatransport.runtime.scheduling.jobscheduling.AlarmManagerSchedulerBroadcastReceiver" tools:node="remove" />
+
         <activity
             android:name=".MainActivity"
             android:exported="true"
