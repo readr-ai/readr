@@ -13,11 +13,17 @@ permissions:
 jobs:
   reader-kit:
     name: Build & test ReadrKit
-    runs-on: macos-14
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
-      - name: Select Xcode
-        run: sudo xcode-select -switch /Applications/Xcode_15.4.app
+      - name: Select Xcode 26
+        run: |
+          XCODE=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -1)
+          if [ -z "$XCODE" ]; then
+            echo "::error::No Xcode 26.x on this runner image."
+            exit 1
+          fi
+          sudo xcode-select -s "$XCODE"
       - name: Build
         run: swift build
       - name: Test
