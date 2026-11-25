@@ -227,12 +227,10 @@ private fun wordUnder(layout: TextLayoutResult, position: Offset): TextRange {
     }
     // A page with no word on it at all — a picture, a rule — still answers a
     // press with the one character under it rather than with nothing.
-    if (letter == NO_CHARACTER) return TextRange(pressed, pressed + 1)
-    var start = letter
-    while (start > 0 && isWordCharacter(text, start - 1)) start--
-    var end = letter + 1
-    while (end < text.length && isWordCharacter(text, end)) end++
-    return TextRange(start, end)
+    if (letter == NO_CHARACTER) return layout.getWordBoundary(pressed)
+    // Expand from the resolved glyph using the platform's Unicode boundaries,
+    // preserving combining marks, surrogate pairs and dictionary-based scripts.
+    return layout.getWordBoundary(letter)
 }
 
 /**
