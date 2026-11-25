@@ -71,6 +71,9 @@ jobs:
         run: echo "JAVA_HOME_25=$JAVA_HOME_25_X64" >> "$GITHUB_ENV"
 
       - uses: android-actions/setup-android@v3
+        with:
+          # The legacy SDK package named "tools" has been removed upstream.
+          packages: platform-tools
       - name: Install NDK and emulator packages
         run: |
           yes | sdkmanager --licenses >/dev/null
