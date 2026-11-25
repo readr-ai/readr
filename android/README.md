@@ -300,22 +300,26 @@ source**: it, `genai-common` and `mlkit:common` ship under Google's
 proprietary licence. The rest of what it pulls in is
 `play-services-basement`/`-base`/`-tasks` (Android SDK Licence),
 `firebase-components`/`-annotations`/`-encoders`/`-encoders-json` and Guava
-(Apache 2.0), `genai-schema`, and `datatransport:transport-api`. That is the
+(Apache 2.0), `genai-schema`, and the Apache-licensed datatransport API, runtime and CCT classes. That is the
 whole Google closure on the runtime classpath, and it is written down here
 because an app that promises the on-device path sends nothing anywhere owes the
 reader a plain answer about what it links against.
 
-**Two datatransport modules are excluded on purpose** (`app/build.gradle.kts`):
-`transport-backend-cct` and `transport-runtime`, Google's own event-upload
-stack. Merging them put `ACCESS_NETWORK_STATE`, a `TransportBackendDiscovery`
-service naming the CCT logging backend, a `JobInfoSchedulerService` and an
-alarm receiver into Readr's manifest — an upload path a reader can read in the
-permission list, for events this app never sends. Readr registers no transport;
-with both excluded the permission and all three components are gone from the
-merged manifest, ML Kit's initialiser still runs, and `NanoModel.readiness()`
-still answers on an emulator without throwing (`NanoModelTest`). Anything ML
-Kit itself needs from datatransport would fail loudly at build time, and
-`transport-api` — interfaces only — is still there.
+**Transport classes are retained; upload registration is removed.** The pinned
+SDK directly references `CCTDestination` and `TransportRuntime` when creating
+its client. Excluding their libraries causes a runtime linkage failure, even
+though compilation and unsupported-emulator readiness checks pass.
+`AndroidManifest.xml` removes `TransportBackendDiscovery` (including CCT's
+backend metadata), `JobInfoSchedulerService`, the alarm receiver and
+`ACCESS_NETWORK_STATE`. With no registered backend, the transport scheduler
+rejects SDK metric events before persistence or upload. This is not a public
+ML Kit telemetry opt-out API. The SDK still contains instrumentation code;
+Readr does not register an upload backend.
+
+`NanoModelTest` creates the real SDK client without AICore, checks the merged
+package components, and sends a synthetic transport event to assert local
+rejection. These tests cover packaging and initialization; supported physical
+hardware remains required for real Nano answers.
 
 **Answering** is the kit's recipe and Kotlin's model call, exactly the split
 the Apple app's `FoundationModelsProvider` makes. `NanoProvider` (Swift) runs

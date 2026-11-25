@@ -123,6 +123,9 @@ class NanoModel(context: Context) : OnDeviceModel {
      * guessed number reported as the model's own would be worse than none.
      */
     override fun windowTokens(): Long {
+        // The SDK can return a built-in token limit without AICore. It is not
+        // a model capability on unsupported hardware; keep the facade honest.
+        if (!hasSystemSupport()) return 0L
         tokenLimit.takeIf { it > 0 }?.let { return it }
         val reported = onALeash(STATUS_TIMEOUT_MS, 0L) {
             runBlocking { client()?.getTokenLimit()?.toLong() ?: 0L }
