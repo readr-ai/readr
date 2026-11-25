@@ -43,7 +43,12 @@ Only when you explicitly connect a cloud AI provider and ask it something:
   Apple Intelligence hardware), questions never leave the device at all: the
   model runs inside the OS, needs no account or key, and Readr makes no
   network request on that path.
-- If no AI provider is connected, Readr makes **one kind** of network request:
+- With a **Downloaded model** on supported iPhone/iPad hardware, weights
+  are fetched from huggingface.co only after you tap Download and see the
+  size (about 1.8 GB for 2B or 3.1 GB for the optional 4B tier). Inference
+  opens that local snapshot without network requests; questions stay on the
+  device. Remove the files from the same Settings card whenever needed.
+- Independently of your AI provider, Readr can make a model-download request:
   a one-time download of the Readr Voice narration model from
   huggingface.co, the first time an English book is read aloud. On a Mac
   that is ~104MB of Kokoro-82M CoreML weights

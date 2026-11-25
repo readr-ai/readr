@@ -69,11 +69,11 @@ public struct ProviderInfo: Sendable, Hashable {
     /// offer (`ProviderVendor.displayed(forKinds:)`), so the other never
     /// reaches a screen.
     public enum Kind: String, Sendable, Hashable, Codable, CaseIterable {
-        case anthropic, openAI, chatGPT, openRouter, local, appleIntelligence, geminiNano
+        case anthropic, openAI, chatGPT, openRouter, local, appleIntelligence, geminiNano, downloadedModel
 
         /// Runs without credentials: nothing to store, validate, or revoke.
         public var isOnDevice: Bool {
-            self == .local || self == .appleIntelligence || self == .geminiNano
+            self == .local || self == .appleIntelligence || self == .geminiNano || self == .downloadedModel
         }
     }
     public var kind: Kind

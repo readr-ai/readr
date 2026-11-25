@@ -72,6 +72,9 @@ packages:
   swift-huggingface:
     url: https://github.com/huggingface/swift-huggingface.git
     exactVersion: "0.10.0"
+  MLXLLM:
+    url: https://github.com/ml-explore/mlx-swift-lm
+    exactVersion: "3.31.4"
   # Readium's paginated navigator (reflow/fonts/decorations) is an optional
   # rendering upgrade tracked for a later milestone:
   # ReadiumNavigator:
@@ -106,6 +109,12 @@ targets:
         platformFilter: iOS
       - package: MLX
         product: MLX
+        platformFilter: iOS
+      - package: MLXLLM
+        product: MLXLLM
+        platformFilter: iOS
+      - package: MLXLLM
+        product: MLXLMCommon
         platformFilter: iOS
       - package: swift-huggingface
         product: HuggingFace

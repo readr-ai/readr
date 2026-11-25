@@ -341,6 +341,11 @@ public enum ProviderCatalog {
         ),
     ]
 
+    public static let downloadedModels: [ProviderInfo] = DownloadedModelCatalog.all.map { spec in
+        ProviderInfo(kind: .downloadedModel, modelID: spec.repository, contextBudget: spec.contextBudget,
+                     supportsPromptCaching: false, isLocal: true, displayName: spec.displayName)
+    }
+
     /// Every selectable model, across all kinds — built from the kinds, so a
     /// new kind can't be left out of the list.
     public static var all: [ProviderInfo] { ProviderInfo.Kind.allCases.flatMap(models(for:)) }
@@ -355,6 +360,7 @@ public enum ProviderCatalog {
         case .local: return localModels
         case .appleIntelligence: return appleIntelligenceModels
         case .geminiNano: return geminiNanoModels
+        case .downloadedModel: return downloadedModels
         }
     }
 

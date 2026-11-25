@@ -96,6 +96,13 @@ final class AppModel: ObservableObject {
         var onDeviceDefault: ProviderManager.DefaultSelection?
         if !isUITest {
             onDeviceDefault = {
+                #if os(iOS)
+                if MLXLLMProvider.isSupportedDevice,
+                   let model = DownloadedModelCatalog.recommendedModel(forPhysicalMemory: MLXLLMProvider.physicalMemory),
+                   MLXModelStore.snapshotIsComplete(for: model.repository, in: .default) {
+                    return ProviderSelection(kind: .downloadedModel, modelID: model.repository)
+                }
+                #endif
                 guard OnDeviceModel.readiness(maxAge: 5) == .ready else { return nil }
                 return ProviderSelection(
                     kind: .appleIntelligence,
