@@ -95,20 +95,15 @@ final class MLXLLMProvider: LLMProvider, OnDeviceReadinessReporting, @unchecked 
                         await Self.classifierReply(instructions: instructions, prompt: prompt, container: container)
                     }
                     try await MLXGPULease.shared.withLease {
-                        let session = ChatSession(
-                            container,
-                            instructions: plan.instructions,
-                            generateParameters: GenerateParameters(
-                                maxTokens: plan.answerTokens, temperature: 0.5, topP: 0.9, repetitionPenalty: 1.1
-                            ),
-                            // Qwen3.5's template opens a <think> block unless
-                            // told not to; the reasoning would eat the answer.
-                            additionalContext: ["enable_thinking": false]
-                        )
+                        let generation = try await Self.startGeneration(
+                            container: container, instructions: plan.instructions, prompt: plan.prompt,
+                            parameters: GenerateParameters(maxTokens: plan.answerTokens, temperature: 0.5, topP: 0.9, repetitionPenalty: 1.1))
+                        try await SDKGenerationLifetime.run(generation.1) {
                         var shown = SnapshotAnswerStream(source: plan.copiedSentenceSource)
                         var content = ""
                         var judgedCount = 0
-                        for try await chunk in session.streamResponse(to: plan.prompt) {
+                        for await event in generation.0 {
+                            guard let chunk = event.chunk else { continue }
                             try Task.checkCancellation()
                             guard MLXGPULease.shared.isForeground else { throw MLXGPULeaseError.backgrounded }
                             content += chunk
@@ -125,6 +120,7 @@ final class MLXLLMProvider: LLMProvider, OnDeviceReadinessReporting, @unchecked 
                         if !settled.delta.isEmpty { continuation.yield(ChatChunk(textDelta: settled.delta)) }
                         let tail = shown.finish()
                         if !tail.delta.isEmpty { continuation.yield(ChatChunk(textDelta: tail.delta)) }
+                        }
                     }
                     continuation.finish()
                 } catch {
@@ -140,16 +136,37 @@ final class MLXLLMProvider: LLMProvider, OnDeviceReadinessReporting, @unchecked 
     static func classifierReply(instructions: String, prompt: String, container: ModelContainer) async -> String {
         do {
             return try await MLXGPULease.shared.withLease {
-                let session = ChatSession(
-                    container,
-                    instructions: instructions,
-                    generateParameters: GenerateParameters(maxTokens: 4, temperature: 0),
-                    additionalContext: ["enable_thinking": false]
-                )
-                return try await session.respond(to: prompt)
+                let generation = try await startGeneration(container: container, instructions: instructions,
+                    prompt: prompt, parameters: GenerateParameters(maxTokens: 4, temperature: 0))
+                return try await SDKGenerationLifetime.run(generation.1) {
+                    var output = ""
+                    for await event in generation.0 {
+                        try Task.checkCancellation()
+                        guard MLXGPULease.shared.isForeground else { throw MLXGPULeaseError.backgrounded }
+                        output += event.chunk ?? ""
+                    }
+                    return output
+                }
             }
         } catch {
             return ""
+        }
+    }
+
+    /// Own the SDK's worker handle directly: ChatSession only exposes a stream
+    /// whose termination requests cancellation without awaiting worker teardown.
+    private static func startGeneration(container: ModelContainer, instructions: String,
+        prompt: String, parameters: GenerateParameters
+    ) async throws -> (AsyncStream<Generation>, Task<Void, Never>) {
+        try await container.perform { context in
+            try Task.checkCancellation()
+            let input = try await context.processor.prepare(input: UserInput(
+                chat: [.system(instructions), .user(prompt)], additionalContext: ["enable_thinking": false]))
+            try Task.checkCancellation()
+            let iterator = try TokenIterator(input: input, model: context.model,
+                cache: context.model.newCache(parameters: parameters), parameters: parameters)
+            return MLXLMCommon.generateTask(promptTokenCount: input.text.tokens.size,
+                modelConfiguration: context.configuration, tokenizer: context.tokenizer, iterator: iterator)
         }
     }
 
