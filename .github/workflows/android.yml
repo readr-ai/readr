@@ -24,7 +24,8 @@ env:
 jobs:
   android:
     name: Build, kit tests on emulator, instrumented tests
-    runs-on: ubuntu-latest
+    # Swift 6.3.3 provides Ubuntu 24.04 binaries, not Ubuntu 26.04.
+    runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
