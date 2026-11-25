@@ -63,5 +63,8 @@ class LibraryViewModel(private val open: suspend () -> LibraryRepository) : View
         }
     }
 
+    suspend fun resumeLabel(book: BookSummary): String =
+        if (repository?.position(book.id) != null) "Continue reading" else "Start reading"
+
     fun clearMessage() { _message.value = null }
 }

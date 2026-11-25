@@ -24,7 +24,8 @@ env:
 jobs:
   android:
     name: Build, kit tests on emulator, instrumented tests
-    runs-on: ubuntu-latest
+    # Swift 6.3.3 provides Ubuntu 24.04 binaries, not Ubuntu 26.04.
+    runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
@@ -70,6 +71,9 @@ jobs:
         run: echo "JAVA_HOME_25=$JAVA_HOME_25_X64" >> "$GITHUB_ENV"
 
       - uses: android-actions/setup-android@v3
+        with:
+          # The legacy SDK package named "tools" has been removed upstream.
+          packages: platform-tools
       - name: Install NDK and emulator packages
         run: |
           yes | sdkmanager --licenses >/dev/null
@@ -90,11 +94,16 @@ jobs:
         working-directory: android
         run: ./gradlew :readrkit:publishSwiftKit
 
-      - name: Build app and test APKs (x86_64 for the emulator)
+      - name: Lint and build app and test APKs (x86_64 for the emulator)
         working-directory: android
         env:
           READR_ANDROID_ABIS: x86_64
-        run: ./gradlew :app:assembleDebug :app:assembleDebugAndroidTest
+        run: ./gradlew :app:lintDebug :app:assembleDebug :app:assembleDebugAndroidTest
+
+      - name: Verify native libraries and APK alignment
+        run: |
+          python3 android/scripts/verify-native-packaging.py android/app/build/outputs/apk/debug/app-debug.apk
+          "$ANDROID_HOME/build-tools/35.0.0/zipalign" -c -P 16 4 android/app/build/outputs/apk/debug/app-debug.apk
 
       - name: Cross-compile the ReadrKit test suite for x86_64 Android
         run: swift build --swift-sdk x86_64-unknown-linux-android28 --build-tests

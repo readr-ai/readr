@@ -12,7 +12,7 @@ final class NarrationEnginePolicyTests: XCTestCase {
 
     // MARK: - Platform voices
 
-    func testAPlatformVoiceIsAlwaysThePlatformEngine() {
+    func testAStoredSystemVoiceIsUnavailableRatherThanSpoken() {
         // Whatever the Kokoro runtimes are doing, a request that did not ask
         // for Readr Voice never lands on one.
         for coreML in [false, true] {
@@ -25,7 +25,7 @@ final class NarrationEnginePolicyTests: XCTestCase {
                         mlxKokoroFailed: mlxFailed
                     )
                     XCTAssertEqual(
-                        NarrationEnginePolicy.engine(for: situation), .platform,
+                        NarrationEnginePolicy.engine(for: situation), .unavailable,
                         "\(situation)"
                     )
                 }
@@ -45,14 +45,14 @@ final class NarrationEnginePolicyTests: XCTestCase {
         XCTAssertEqual(NarrationEnginePolicy.engine(for: situation), .coreMLKokoro)
     }
 
-    func testReadrVoiceOnMacOSFallsToPlatformOnlyWithoutACoreMLEngine() {
+    func testMissingCoreMLEngineDoesNotFallBackToASystemVoice() {
         // The OS gate (macOS 26.4–26.5) or a failed download: the request
         // should not have been a Readr Voice one, and the platform reads.
         let situation = Situation(
             requestsReadrVoice: true, coreMLKokoroAvailable: false,
             mlxKokoroAvailable: false, mlxKokoroFailed: false
         )
-        XCTAssertEqual(NarrationEnginePolicy.engine(for: situation), .platform)
+        XCTAssertEqual(NarrationEnginePolicy.engine(for: situation), .unavailable)
     }
 
     // MARK: - Readr Voice on iOS (MLX engine present)
@@ -68,7 +68,7 @@ final class NarrationEnginePolicyTests: XCTestCase {
         XCTAssertEqual(NarrationEnginePolicy.engine(for: situation), .mlxKokoro)
     }
 
-    func testReadrVoiceOnIOSFallsToPlatformOnlyOnceMLXHasFailed() {
+    func testFailedMLXEngineDoesNotFallBackToASystemVoice() {
         // The one platform row for Readr Voice on iOS. The app never issues
         // a Readr Voice request to a failed engine without re-preparing it
         // first, so this row is a backstop, not a fallback the reader hears.
@@ -76,7 +76,7 @@ final class NarrationEnginePolicyTests: XCTestCase {
             requestsReadrVoice: true, coreMLKokoroAvailable: false,
             mlxKokoroAvailable: true, mlxKokoroFailed: true
         )
-        XCTAssertEqual(NarrationEnginePolicy.engine(for: situation), .platform)
+        XCTAssertEqual(NarrationEnginePolicy.engine(for: situation), .unavailable)
     }
 
     func testIOSNeverFallsBackToCoreMLEvenWhenItLooksUsable() {
@@ -111,13 +111,13 @@ final class NarrationEnginePolicyTests: XCTestCase {
                     for mlxFailed in [false, true] {
                         let expected: NarrationEngineChoice
                         if !readr {
-                            expected = .platform
+                            expected = .unavailable
                         } else if mlxAvail {
-                            expected = mlxFailed ? .platform : .mlxKokoro
+                            expected = mlxFailed ? .unavailable : .mlxKokoro
                         } else if coreML {
                             expected = .coreMLKokoro
                         } else {
-                            expected = .platform
+                            expected = .unavailable
                         }
                         rows.append(Row(
                             readr: readr, coreML: coreML, mlxAvail: mlxAvail,

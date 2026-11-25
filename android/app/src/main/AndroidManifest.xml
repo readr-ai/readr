@@ -1,9 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
-    <!-- Only the provider the reader connected is ever called: an API-key
-         check and an Ask question go to that host and nowhere else. The
-         on-device path makes no request at all. -->
+    <!-- Provider requests go to the host the reader connected. Explicit model
+         installation fetches public weights from their pinned sources; no
+         question or book text enters that download path. -->
     <uses-permission android:name="android.permission.INTERNET" />
 
     <!-- Listen with the screen off. The service is a media-playback one and
@@ -17,8 +17,8 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <!-- media3-common declares this for ExoPlayer's bandwidth meter, which
-         nothing here builds: the sound is the phone's own synthesizer and
-         narration makes no request at all (PRIVACY.md). Taken back out, so
+         nothing here builds: the sound is local Kokoro PCM playback and synthesis makes no
+         network request (PRIVACY.md). Taken back out, so
          the app's permission list stays the one sentence it has always been. -->
     <uses-permission
         android:name="android.permission.ACCESS_NETWORK_STATE"
@@ -40,6 +40,13 @@
         android:label="@string/app_name"
         android:supportsRtl="true"
         android:theme="@style/Theme.Readr">
+        <!-- ML Kit needs the transport classes to initialize, but metrics must
+             have no registered backend, persistence or scheduling path. Without
+             discovery metadata DefaultScheduler rejects events before storage. -->
+        <service android:name="com.google.android.datatransport.runtime.backends.TransportBackendDiscovery" tools:node="remove" />
+        <service android:name="com.google.android.datatransport.runtime.scheduling.jobscheduling.JobInfoSchedulerService" tools:node="remove" />
+        <receiver android:name="com.google.android.datatransport.runtime.scheduling.jobscheduling.AlarmManagerSchedulerBroadcastReceiver" tools:node="remove" />
+
         <activity
             android:name=".MainActivity"
             android:exported="true"
@@ -67,10 +74,8 @@
 
         <!-- Where a headset's play/pause lands. media3 routes it to the
              session on the service above; declaring it is what gives the
-             system a target to send `ACTION_MEDIA_BUTTON` to, since the sound
-             is made by the text-to-speech engine's process and not this one —
-             so the framework does not otherwise recognise Readr as the app
-             that is playing. -->
+             system a target to send `ACTION_MEDIA_BUTTON` to, so hardware controls keep working across
+             sessions and process restarts. -->
         <receiver
             android:name="androidx.media3.session.MediaButtonReceiver"
             android:exported="true">

@@ -20,6 +20,10 @@ import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Text
+import androidx.compose.runtime.collectAsState
+import androidx.compose.ui.platform.LocalContext
+import com.readrai.readr.kit.KokoroModelStore
+import com.readrai.readr.kit.KokoroState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -149,7 +153,13 @@ private fun StatusLine(narration: NarrationModel, palette: ReadingPalette) {
         )
         return
     }
-    val sentence = narration.sentence
+    val context = LocalContext.current
+    val store = remember(context) { KokoroModelStore.get(context) }
+    val voiceState by store.state.collectAsState()
+    val sentence = if (narration.status == "preparing") {
+        (voiceState as? KokoroState.Downloading)?.let { "Downloading Readr Voice · ${(it.progress * 100).toInt()}% · 132 MB" }
+            ?: "Preparing Readr Voice…"
+    } else narration.sentence
     Text(
         sentence,
         fontFamily = FontFamily.Serif,

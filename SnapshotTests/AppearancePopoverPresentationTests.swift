@@ -62,6 +62,28 @@ final class AppearancePopoverPresentationTests: XCTestCase {
         var body: some View { Host(generation: $ticker.generation) }
     }
 
+    func testAppearancePopoverPresentsWhenHostAttachesAfterFirstUpdate() {
+        let ticker = Ticker()
+        let host = NSHostingView(rootView: Root(ticker: ticker))
+        host.frame = CGRect(x: 0, y: 0, width: 900, height: 700)
+        host.layoutSubtreeIfNeeded()
+        // SwiftUI may create/update the representable before a window exists.
+        let unattachedDeadline = Date().addingTimeInterval(0.2)
+        while Date() < unattachedDeadline {
+            RunLoop.main.run(mode: .default, before: Date().addingTimeInterval(0.01))
+        }
+        let window = NSWindow(contentRect: host.frame, styleMask: [.titled], backing: .buffered, defer: false)
+        window.contentView = host
+        window.makeKeyAndOrderFront(nil)
+        defer { window.orderOut(nil) }
+        let deadline = Date().addingTimeInterval(2)
+        while Date() < deadline {
+            RunLoop.main.run(mode: .default, before: Date().addingTimeInterval(0.02))
+            if NSApp.windows.contains(where: { String(describing: type(of: $0)).contains("Popover") }) { return }
+        }
+        XCTFail("Aa must present after its initially unattached host reaches a window")
+    }
+
     func testAppearancePopoverPresentsWithoutALayoutLoop() {
         let ticker = Ticker()
         let host = NSHostingView(rootView: Root(ticker: ticker))

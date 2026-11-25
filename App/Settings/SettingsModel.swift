@@ -44,9 +44,13 @@ final class SettingsModel: ObservableObject {
     /// Every provider kind the app knows about, in display order: the two
     /// sign-in paths lead (lowest-friction first-run), then the key-only
     /// cloud providers, then Local.
-    static let allKinds: [ProviderInfo.Kind] = [
-        .appleIntelligence, .chatGPT, .openRouter, .anthropic, .openAI, .local,
-    ]
+    static var allKinds: [ProviderInfo.Kind] {
+        var kinds: [ProviderInfo.Kind] = [.appleIntelligence, .chatGPT, .openRouter, .anthropic, .openAI, .local]
+        #if os(iOS)
+        kinds.insert(.downloadedModel, at: 1)
+        #endif
+        return kinds
+    }
 
     let kinds: [ProviderInfo.Kind] = SettingsModel.allKinds
 
@@ -76,6 +80,9 @@ final class SettingsModel: ObservableObject {
         // it (iOS/macOS 26 on Apple Intelligence hardware); a switched-off
         // Apple Intelligence shows as the card's status, not as absence.
         if !OnDeviceModel.isEligibleDevice { hidden.insert(.appleIntelligence) }
+        #if os(iOS)
+        if !MLXLLMProvider.isSupportedDevice { hidden.insert(.downloadedModel) }
+        #endif
         return allKinds.filter { !hidden.contains($0) }
     }
 
@@ -88,6 +95,9 @@ final class SettingsModel: ObservableObject {
         if manager.explicitSelection?.kind == .appleIntelligence, !kinds.contains(.appleIntelligence) {
             kinds.insert(.appleIntelligence, at: 0)
         }
+        #if os(iOS)
+        if manager.explicitSelection?.kind == .downloadedModel, !kinds.contains(.downloadedModel) { kinds.insert(.downloadedModel, at: 0) }
+        #endif
         return kinds
     }
 
@@ -242,7 +252,13 @@ final class SettingsModel: ObservableObject {
     }
 
     func models(for kind: ProviderInfo.Kind) -> [ProviderInfo] {
-        ProviderCatalog.models(for: kind)
+        #if os(iOS)
+        if kind == .downloadedModel {
+            let allowed = Set(DownloadedModelCatalog.models(forPhysicalMemory: MLXLLMProvider.physicalMemory).map(\.repository))
+            return ProviderCatalog.models(for: kind).filter { allowed.contains($0.modelID) }
+        }
+        #endif
+        return ProviderCatalog.models(for: kind)
     }
 
     /// Bring in the OpenRouter catalogue: the disk copy when it is fresh,

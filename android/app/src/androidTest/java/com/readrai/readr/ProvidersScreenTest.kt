@@ -18,7 +18,7 @@ import com.readrai.readr.data.LibraryRepository
 import com.readrai.readr.data.ProvidersRepository
 import com.readrai.readr.kit.KeystoreSecretStore
 import com.readrai.readr.kit.Kit
-import com.readrai.readr.kit.NanoProbe
+import com.readrai.readr.kit.NanoModel
 import com.readrai.readr.ui.library.LibraryScreen
 import com.readrai.readr.ui.library.LibraryViewModel
 import com.readrai.readr.ui.settings.ProvidersScreen
@@ -57,7 +57,7 @@ class ProvidersScreenTest {
         // the secrets file belonging to the test Keystore alias. Nothing here
         // reads or writes the reader's library or the reader's provider keys.
         context.deleteSharedPreferences(KeystoreSecretStore.fileName(TEST_ALIAS))
-        kit = Kit.open(root, KeystoreSecretStore(context, alias = TEST_ALIAS), NanoProbe(context))
+        kit = Kit.open(root, KeystoreSecretStore(context, alias = TEST_ALIAS), NanoModel(context))
         repository = ProvidersRepository(kit)
         library = LibraryRepository(context, kit)
     }
@@ -70,7 +70,8 @@ class ProvidersScreenTest {
 
     /** Settings on its own, as the gear opens it. */
     private fun openSettings() {
-        compose.setContent { ReadrTheme { ProvidersScreen(ProvidersViewModel { repository }, onBack = {}) } }
+        val model = ProvidersViewModel { repository }
+        compose.setContent { ReadrTheme { ProvidersScreen(model, onBack = {}) } }
         awaitTag("settings.askUses")
     }
 
@@ -91,6 +92,8 @@ class ProvidersScreenTest {
 
     @Test
     fun theGearOnTheShelfOpensSettings() {
+        val libraryModel = LibraryViewModel { library }
+        val providersModel = ProvidersViewModel { repository }
         compose.setContent {
             ReadrTheme {
                 val nav = rememberNavController()
@@ -100,13 +103,13 @@ class ProvidersScreenTest {
                         // Settings from the shelf must not seed or read the
                         // books on the phone this test is running on.
                         LibraryScreen(
-                            LibraryViewModel { library },
+                            libraryModel,
                             onOpen = {},
                             onSettings = { nav.navigate("settings") },
                         )
                     }
                     composable("settings") {
-                        ProvidersScreen(ProvidersViewModel { repository }) { nav.popBackStack() }
+                        ProvidersScreen(providersModel) { nav.popBackStack() }
                     }
                 }
             }
@@ -130,6 +133,7 @@ class ProvidersScreenTest {
             assertEquals("Paste an API key to connect.", textOf("settings.hint.$vendor"))
             assertEquals("API KEY", textOf("settings.badge.$vendor"))
         }
+        compose.onNodeWithTag("settings.expand.openai").performScrollTo().performClick()
         assertEquals("Not connected", textOf("settings.status.openAI"))
     }
 
@@ -141,6 +145,7 @@ class ProvidersScreenTest {
     @Test
     fun aKeyConnectsACardAndCanBeMadeActive() {
         openSettings()
+        compose.onNodeWithTag("settings.expand.openai").performScrollTo().performClick()
         compose.onNodeWithTag("settings.apiKey.openAI").performScrollTo().performTextInput("sk-test-not-a-real-key")
         compose.onNodeWithTag("settings.saveKey.openAI").performScrollTo().performClick()
 
@@ -181,6 +186,34 @@ class ProvidersScreenTest {
             "a model this phone cannot run is never offered as the one to use",
             nodes("settings.makeActive.geminiNano").isEmpty(),
         )
+    }
+
+    /**
+     * And on a phone that CAN run it, the same card is the one Ask uses: the
+     * check comes back ready, the card says Connected, and the line at the top
+     * names the phone's own model without the reader choosing anything.
+     *
+     * No emulator can generate, so the phone that can is stated —
+     * [FakeOnDeviceModel] in place of `NanoModel`, over the same scratch root.
+     */
+    @Test
+    fun aPhoneThatCanRunNanoLeadsWithIt() {
+        val nano = Kit.open(root, KeystoreSecretStore(context, alias = TEST_ALIAS), FakeOnDeviceModel())
+        val repo = ProvidersRepository(nano)
+        val model = ProvidersViewModel { repo }
+        compose.setContent { ReadrTheme { ProvidersScreen(model, onBack = {}) } }
+        awaitTag("settings.askUses")
+
+        compose.onNodeWithTag("settings.card.android").performScrollTo().assertIsDisplayed()
+        compose.waitUntil(30_000) { textOf("settings.status.geminiNano") == "Connected" }
+        assertEquals("Ask uses Gemini Nano · On this phone", askUses())
+        // The default needs no "Make active": the card already holds the slot.
+        awaitTag("settings.activeBadge.geminiNano")
+        assertTrue(
+            "nothing to paste into an on-device card",
+            nodes("settings.apiKey.geminiNano").isEmpty(),
+        )
+        compose.onNodeWithTag("settings.recheck.geminiNano").performScrollTo().assertIsDisplayed()
     }
 
     private companion object {

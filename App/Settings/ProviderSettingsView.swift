@@ -339,6 +339,13 @@ struct ProviderSettingsView: View {
                 }
             }
 
+            #if os(iOS)
+            if kind == .downloadedModel {
+                DownloadedModelControls(modelID: model.activeSelection?.kind == .downloadedModel ? model.activeSelection!.modelID : (model.models(for: kind).first?.modelID ?? ProviderCatalog.defaultModel(for: kind).modelID)) {
+                    Task { await model.validate(.downloadedModel) }
+                }
+            }
+            #endif
             if kind.isOnDevice {
                 // A manual re-check for when the reader has just started
                 // Ollama or pulled the model, or switched Apple Intelligence
@@ -451,6 +458,7 @@ struct ProviderSettingsView: View {
     /// status line takes over) and for Local, whose readiness is a probe
     /// rather than a thing the reader supplies.
     private func connectHint(_ vendor: ProviderVendor) -> String? {
+        if vendor.methods == [.downloadedModel] { return "Download Qwen once, then ask offline. No account or API key is needed." }
         guard !vendor.methods.contains(where: { model.hasCredential[$0] ?? false }) else {
             return nil
         }

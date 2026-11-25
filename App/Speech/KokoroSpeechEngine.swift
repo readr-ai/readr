@@ -8,14 +8,10 @@ import ReadrKit
 /// espeak-free G2P). See docs/ROADMAP.md M10 — the A/B listen chose Kokoro
 /// over the platform voices decisively.
 ///
-/// The DEFAULT narrator for English books since v3.2.0 (an explicitly chosen
-/// platform voice still wins, and non-English books keep the platform
-/// voices). The ~104MB model downloads automatically on the first Listen —
-/// PRIVACY.md and the store copy disclose that one fixed-CDN fetch — and
-/// until it's in, `RoutingSpeechEngine` narrates through the platform voice
-/// and switches over at a sentence boundary. The router is also the failure
-/// story: any post-ready synthesis fault re-routes that sentence to the
-/// platform voice rather than pausing narration.
+/// English narration uses Kokoro only. The ~104MB model downloads on the
+/// first Listen, as disclosed in PRIVACY.md and the store copy. Narration
+/// waits while the model is prepared; a download or synthesis failure pauses
+/// with a recoverable error. No platform voice reads in its place.
 ///
 /// Shape: synthesize the whole sentence (Kokoro is not a streaming engine —
 /// 100–250ms for a typical sentence on Apple silicon), then play it with
@@ -27,7 +23,7 @@ import ReadrKit
 /// the page still follows per sentence; only mid-sentence resume precision
 /// degrades to the sentence start.
 ///
-/// Main-thread-confined like `AVSpeechEngine`; synthesis hops to the
+/// Main-thread-confined; synthesis hops to the
 /// `KokoroAneManager` actor and back, and playback is `SentenceAudioPlayer`,
 /// the one `AVAudioPlayer` contract both Kokoro engines share.
 ///
@@ -109,8 +105,8 @@ final class KokoroSpeechEngine: NSObject, ReadrVoiceEngine {
 
     /// Where the voice stands between "picked" and "audible": the model is a
     /// ~104MB first-use download, and the Listen bar shows this so the wait
-    /// is never silent. While it isn't `.ready`, `RoutingSpeechEngine` narrates
-    /// through the platform voice and switches over at a sentence boundary.
+    /// is visible. Until it is `.ready`, narration waits for this engine;
+    /// the router never substitutes a platform voice.
     /// `.unsupported` here means this OS build crashes the process inside
     /// Apple's BNNS during Kokoro inference (FluidAudio#817/#844); the engine
     /// refuses every request. See `NeuralVoiceAvailability`.

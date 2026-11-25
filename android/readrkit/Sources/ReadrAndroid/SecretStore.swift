@@ -62,8 +62,6 @@ enum AndroidBridgeError: LocalizedError, CustomStringConvertible {
   case unknownHighlightColor(String)
   /// Save pressed with nothing in the field.
   case emptyAPIKey
-  /// Ask reached the phone's own model before A3c taught it to answer.
-  case onDeviceModelNotReady
   /// A debug endpoint override that pointed somewhere other than this device.
   case endpointNotLoopback(String)
 
@@ -77,7 +75,6 @@ enum AndroidBridgeError: LocalizedError, CustomStringConvertible {
     case .unknownBookmark: return "That bookmark is no longer in your library."
     case .unknownHighlightColor: return "That highlight colour isn't available."
     case .emptyAPIKey: return "Paste an API key to connect."
-    case .onDeviceModelNotReady: return "Gemini Nano isn't ready on this phone yet."
     case .endpointNotLoopback: return "Readr can only be pointed at a server on this device."
     }
   }
@@ -94,7 +91,6 @@ enum AndroidBridgeError: LocalizedError, CustomStringConvertible {
     case .unknownBookmark(let id): return "no bookmark with id \(id)"
     case .unknownHighlightColor(let name): return "unknown highlight color \(name)"
     case .emptyAPIKey: return "empty API key"
-    case .onDeviceModelNotReady: return "on-device provider is a placeholder until A3c"
     case .endpointNotLoopback(let host): return "endpoint override is not loopback: \(host)"
     }
   }

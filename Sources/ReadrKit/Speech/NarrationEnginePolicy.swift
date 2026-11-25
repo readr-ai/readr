@@ -6,19 +6,16 @@ public enum NarrationEngineChoice: Equatable, Sendable {
     case mlxKokoro
     /// The platform synthesizer (`AVSpeechSynthesizer`).
     case platform
+    /// No supported neural narrator. Report a recoverable error, never a system voice.
+    case unavailable
 }
 
 /// Which engine speaks a request — the one routing rule, kept pure so every
 /// row of it is table-tested (`NarrationEnginePolicyTests`).
 ///
-/// The app's `RoutingSpeechEngine` evaluates this per sentence. Since 3.3.1
-/// the rule has no fallback in it: a Readr Voice request goes to the Kokoro
-/// engine whether or not its model is in, and the engine *waits* for it —
-/// narration shows "Preparing Readr Voice" and starts the moment it is
-/// ready. The platform voice reads only what was never Readr Voice's — a
-/// non-English book, an Apple voice the reader picked under "Other voices"
-/// — or a Readr Voice request the engine has already given up on
-/// (`.failed`), which the app never issues without a retry first.
+/// The app applies this per sentence. A missing/failed Kokoro engine or a
+/// legacy system-voice choice is unavailable. Downloading still selects Kokoro,
+/// which prepares and waits. A system voice never reads in its place.
 public enum NarrationEnginePolicy {
 
     /// Everything the rule looks at.
@@ -57,11 +54,11 @@ public enum NarrationEnginePolicy {
     /// passes the CoreML gate: one runtime and one model download per
     /// platform, and no BNNS exposure at all on the phone.
     public static func engine(for situation: Situation) -> NarrationEngineChoice {
-        guard situation.requestsReadrVoice else { return .platform }
+        guard situation.requestsReadrVoice else { return .unavailable }
         if situation.mlxKokoroAvailable {
-            return situation.mlxKokoroFailed ? .platform : .mlxKokoro
+            return situation.mlxKokoroFailed ? .unavailable : .mlxKokoro
         }
-        return situation.coreMLKokoroAvailable ? .coreMLKokoro : .platform
+        return situation.coreMLKokoroAvailable ? .coreMLKokoro : .unavailable
     }
 
     /// The Kokoro runtime a platform prepares (downloads and warms) for

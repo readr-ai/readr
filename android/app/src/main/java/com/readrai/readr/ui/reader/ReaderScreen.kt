@@ -170,6 +170,9 @@ fun ReaderScreen(
     val appearance by settings.appearance.collectAsState()
     val palette = LocalReadingPalette.current
     var showChrome by rememberSaveable { mutableStateOf(true) }
+    var showsOriginalPdf by rememberSaveable { mutableStateOf(false) }
+    val imageOnly = (model.state as? ReaderViewModel.State.Ready)?.isImageOnly == true
+    LaunchedEffect(imageOnly) { if (imageOnly) showsOriginalPdf = true }
     var sheet by rememberSaveable { mutableStateOf<ReaderSheet?>(null) }
     val density = LocalDensity.current
     /** The Listen card's own height, taken off the page rather than laid over it. */
@@ -236,6 +239,7 @@ fun ReaderScreen(
     }
 
     fun openAsk(selection: AskSelection?) {
+        if (imageOnly) return
         showChrome = true
         // Listening to the next page while reading an answer about this one is
         // nobody's wish; dismissing the sheet gives the voice back.
@@ -358,7 +362,15 @@ fun ReaderScreen(
                     TextButton(onClick = onBack) { Text("Back to library") }
                 }
             }
-            is ReaderViewModel.State.Ready -> PageSurface(
+            is ReaderViewModel.State.Ready -> if (s.isImageOnly) {
+                Box(Modifier.fillMaxSize().padding(32.dp), contentAlignment = Alignment.Center) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text("No recognizable text was found in this PDF. Read the original pages; Ask, search and Listen need a readable text layer.",
+                            color = palette.ink, modifier = Modifier.testTag("reader.noText"))
+                        TextButton(onClick = { showsOriginalPdf = true }) { Text("Open original pages") }
+                    }
+                }
+            } else PageSurface(
                 model = model,
                 ready = s,
                 appearance = appearance,
@@ -437,11 +449,15 @@ fun ReaderScreen(
                 },
                 actions = {
                     if (ready != null) {
+                        if (model.archive?.extension.equals("pdf", ignoreCase = true)) {
+                            androidx.compose.material3.TextButton(onClick = { showsOriginalPdf = true }, modifier = Modifier.testTag("reader.originalPdf")) { Text("PDF", color = palette.ink) }
+                        }
                         // What is being read, and how it reads: the one AI
                         // moment (the only iris in the bar), the type, and the
                         // marks the reader has made.
                         IconButton(
                             onClick = { openAsk(null) },
+                            enabled = !imageOnly,
                             modifier = Modifier.testTag("reader.ask").semantics { contentDescription = "Ask the book" },
                         ) {
                             Text(Marginalia.aiGlyph, fontSize = 17.sp, color = palette.iris)
@@ -515,6 +531,7 @@ fun ReaderScreen(
                     BookmarkAction(model, palette)
                     IconButton(
                         onClick = { toggleListening() },
+                        enabled = !imageOnly,
                         modifier = Modifier
                             .testTag("reader.listen")
                             .semantics {
@@ -526,7 +543,7 @@ fun ReaderScreen(
                             Modifier.size(18.dp),
                         )
                     }
-                    IconButton(onClick = { sheet = ReaderSheet.Search }, modifier = Modifier.testTag("reader.search")) {
+                    IconButton(onClick = { sheet = ReaderSheet.Search }, enabled = !imageOnly, modifier = Modifier.testTag("reader.search")) {
                         Icon(Icons.Filled.Search, contentDescription = "Find in book", tint = palette.ink)
                     }
                 }
@@ -534,6 +551,11 @@ fun ReaderScreen(
         }
 
         val ready = model.state as? ReaderViewModel.State.Ready
+        if (showsOriginalPdf) model.archive?.let { file ->
+            PdfOriginalDialog(file, model.chapterIndex, narration.chapterIndex.takeIf { narration.isUnderway },
+                onPage = { page -> if (page != model.chapterIndex) model.jump(page, 0) },
+                onDismiss = { showsOriginalPdf = false })
+        }
         when (sheet) {
             ReaderSheet.Contents -> if (ready != null) ContentsSheet(
                 contents = ready.contents,
@@ -1299,7 +1321,9 @@ private fun PageSurface(
                         !scrolling && set != null && pages.isNotEmpty() -> {
                             val last = minOf(spreadStart + columns, pages.size)
                             val minutes = LayoutPaginator.minutes(set.pagination.wordsRemaining[spreadStart])
-                            val pageText = if (last - spreadStart > 1) {
+                            val pageText = if (model.archive?.extension?.equals("pdf", ignoreCase = true) == true) {
+                                "PDF page ${model.chapterIndex + 1} of ${ready.chapters.size}"
+                            } else if (last - spreadStart > 1) {
                                 "Pages ${spreadStart + 1}–$last of ${pages.size}"
                             } else {
                                 "Page ${spreadStart + 1} of ${pages.size}"

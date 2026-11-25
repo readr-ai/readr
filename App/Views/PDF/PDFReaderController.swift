@@ -751,14 +751,14 @@ final class PDFReaderController: NSObject, ObservableObject {
                let offset = TextRangeConvert.characterOffset(
                    fromUTF16Location: utf16Range.location, in: page.string ?? ""
                ) {
-                return ListenAnchor(chapterIndex: chapter, characterOffset: offset, isExact: true)
+                return ListenAnchor(chapterIndex: chapter, characterOffset: narrationOffset(offset, page: page, chapter: chapter), isExact: true)
             }
         }
         // A rect-only selection, or a range PDFKit couldn't place in its own
         // text: the phrase, then the top of the page.
         return ListenAnchor(
             chapterIndex: chapter,
-            characterOffset: offset(ofPhrase: selection.string ?? "", onPage: page) ?? 0,
+            characterOffset: narrationOffset(offset(ofPhrase: selection.string ?? "", onPage: page) ?? 0, page: page, chapter: chapter),
             isExact: false
         )
     }
@@ -781,15 +781,24 @@ final class PDFReaderController: NSObject, ObservableObject {
             let utf16Range = selection.range(at: 0, on: page)
             if utf16Range.location != NSNotFound,
                let offset = TextRangeConvert.characterOffset(fromUTF16Location: utf16Range.location, in: pageText) {
-                return ListenAnchor(chapterIndex: chapter, characterOffset: offset, isExact: true)
+                return ListenAnchor(chapterIndex: chapter, characterOffset: narrationOffset(offset, page: page, chapter: chapter), isExact: true)
             }
         }
         let firstLine = highlight.quotedText.split(separator: " ").prefix(6).joined(separator: " ")
         return ListenAnchor(
             chapterIndex: chapter,
-            characterOffset: offset(ofPhrase: firstLine, onPage: page) ?? 0,
+            characterOffset: narrationOffset(offset(ofPhrase: firstLine, onPage: page) ?? 0, page: page, chapter: chapter),
             isExact: false
         )
+    }
+
+    /// Old imports retain raw PDFKit offsets; newly normalized imports need
+    /// an explicit map rather than treating a layout wrap as spoken text.
+    private func narrationOffset(_ offset: Int, page: PDFPage, chapter: Int) -> Int {
+        guard let book, book.chapters.indices.contains(chapter) else { return offset }
+        let raw = page.string ?? ""
+        guard book.chapters[chapter].text == PDFPageChapters.normalizedText(raw) else { return offset }
+        return PDFPageChapters.normalizedOffset(ofCharacter: offset, in: raw)
     }
 
     /// The Character offset of a phrase's first occurrence on a page.

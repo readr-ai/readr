@@ -6,6 +6,7 @@ import android.provider.OpenableColumns
 import android.util.Log
 import com.readrai.readr.kit.Kit
 import java.io.File
+import kotlinx.serialization.encodeToString
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -58,7 +59,10 @@ class LibraryRepository(private val context: Context, private val kit: Kit) {
         context.contentResolver.openInputStream(uri)?.use { input -> original.outputStream().use { input.copyTo(it) } }
             ?: throw ImportFailed("Readr couldn't read that file.")
         val json = try {
-            if (displayName.lowercase().endsWith(".epub") || isZip(original)) {
+            if (displayName.lowercase().endsWith(".pdf") || isPdf(original)) {
+                val pages = PdfExtractor.pages(context, original)
+                kit.library.importPDF(original.absolutePath, kitJson.encodeToString(pages), title).await()
+            } else if (displayName.lowercase().endsWith(".epub") || isZip(original)) {
                 val extracted = File(staging, original.name + ".d")
                 try {
                     EpubExtractor.extract(original.inputStream(), extracted)
@@ -221,6 +225,8 @@ class LibraryRepository(private val context: Context, private val kit: Kit) {
         context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c ->
             if (c.moveToFirst()) c.getString(0) else null
         }?.takeIf { it.isNotBlank() } ?: uri.lastPathSegment?.substringAfterLast('/')?.substringAfterLast(':') ?: "book"
+
+    private fun isPdf(file: File): Boolean = file.inputStream().use { val header = ByteArray(5); it.read(header) == 5 && header.contentEquals("%PDF-".toByteArray()) }
 
     private fun isZip(file: File): Boolean = file.inputStream().use { s ->
         val h = ByteArray(4); s.read(h) == 4 && h[0] == 0x50.toByte() && h[1] == 0x4B.toByte()

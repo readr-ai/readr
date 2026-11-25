@@ -212,23 +212,163 @@ no phone runs), and Apple's system model is not a thing an Android phone has.
 There is no browser sign-in yet, so the card badges and connect hints say
 "API key" rather than repeating the kit's "sign in or key".
 
-Gemini Nano's readiness is Kotlin's to answer: `kit/NanoProbe` implements the
-facade's `OnDeviceProbe` and reports one bare token — `ready`, `unavailable`
-or `unsupported` (a bridged protocol method may not throw or return an
-optional). The *sentence* a reader sees is the kit's
-(`ProviderManager.ProviderError.notConfigured(.geminiNano)`), supplied by the
-facade, so Kotlin writes no copy. It is asked on every read of the selection —
-cached for five seconds, since one settings payload asks several times — so
-the phone's own model is the default *while* the phone can run it and the
-reader is back to "nothing chosen" the moment it cannot.
+### On this phone: Gemini Nano
 
-What the probe can see is the system: Android 14+ and an installed, non-stub
-`com.google.android.aicore` (declared in the manifest's `<queries>`, or
-Android 11+ hides the package). It still answers `unsupported` until A3c
-brings ML Kit's own check and the model: this build cannot drive Nano, and a
-card that could be made active would point Ask at a provider that can only
-refuse. A card is offerable at all only when a check came back *ready* (an
-on-device one) or a key is stored (a cloud one).
+The phone's own model is Kotlin's to drive, because AICore is an Android API.
+`kit/NanoModel` implements the facade's `OnDeviceModel` — one object for all
+three questions the facade has: whether this phone can run the model, how much
+it can hold, and what it says when asked something.
+
+**Readiness** is one bare token, never a sentence: `ready`, `unavailable` (with
+an optional reason code after a colon — `unavailable:downloading`) or
+`unsupported` (a bridged protocol method may not throw or return an optional).
+The *sentence* a reader sees is written on the Swift side — the kit's
+`ProviderManager.ProviderError.notConfigured(.geminiNano)` for a phone that
+cannot run it, `OnDevice.swift`'s own line for one still downloading — so
+Kotlin writes no reader-facing copy. The phone's own model is the default
+*while* the phone can run it, and the reader is back to "nothing chosen" the
+moment it cannot.
+
+**Reading that readiness never asks the phone.** `ProviderManager` calls the
+facade's `defaultSelection` closure with its own lock held, and asking is a JNI
+upcall into ML Kit (`checkStatus`, on a five-second leash) — so a probe from
+inside that closure would hold every reader of the selection behind a wedged
+AICore, on whatever thread happened to ask. `OnDeviceModelBox.readiness`
+therefore answers out of a cache and calls nothing; `refreshReadiness()` is the
+only caller of the model, and the facade runs it — off that lock, and before
+the selection is read — from the paths that legitimately touch the model: the
+settings payload, the empty-state sentence, a credential check, "Check again",
+and the ask (`prepareAsk`, `ask`, `hasAnyProvider`, `isActiveOnDevice`). The
+cached answer stands for five seconds, since one settings payload reads it
+several times. On the ask paths a reader who has chosen a provider for
+themselves is not asked at all: the default closure is not consulted then, so
+the phone has no say in the answer and there is nothing to refresh. A cache
+nobody has filled yet reads as `unsupported` — until the phone has been asked,
+"nothing chosen" is the honest answer. "Check again" throws the cached answer
+away and fetches another on the spot.
+
+A phone whose model is `DOWNLOADABLE` — offered, but not on the device — is
+one `download()` away from ready, and ML Kit fetches nothing until an app asks.
+Readiness reports `unavailable:downloadable` and Settings offers **Download Gemini
+Nano**. Reading status never initiates a download. After the reader starts it,
+AICore owns scheduling and network/battery decisions; the card reports
+`unavailable:downloading` without a fabricated percentage. A failed download
+can be checked and retried. Bind/configuration failures remain retryable rather
+than being mislabeled as permanently unsupported hardware.
+
+**The window** is not the budget. `windowTokens()` is what the runtime reports
+(`GenerativeModel.getTokenLimit()`, asked once and cached, `0` when it cannot
+say — the facade then falls back to 4,096, the figure Apple's FoundationModels
+answers with). `ProviderCatalog.geminiNanoModels`' `contextBudget` of 2,000 is
+a different number entirely: how much of the book `AdaptiveContextStrategy` may
+*gather*, deliberately below the window so that the passages still leave room
+for the conversation, the instructions and the answer. Spent as if it were the
+window, a five-turn conversation over a long book was answered from passages
+`SmallModelPrompt.fit` had trimmed away.
+
+**Every call into ML Kit runs on a leash.** `checkStatus`, `getTokenLimit` and
+the cancellation join all bind to AICore, and a phone with a broken or
+half-installed one can sit inside that bind without ever suspending — which a
+coroutine timeout cannot interrupt. Each runs on a thread of its own and is
+waited for with a bounded `join` (five seconds; two for a cancel), so the Swift
+caller — a cooperative thread, and sometimes a settings screen — is never held
+longer than that.
+
+**Eligibility**, plainly: Android 14 or newer; a flagship whose
+`com.google.android.aicore` is installed and is not the do-nothing stub
+(declared in the manifest's `<queries>`, or Android 11+ hides the package);
+ML Kit's own `GenerativeModel.checkStatus()` answering `AVAILABLE`; and Readr
+on screen — AICore refuses a backgrounded app, so a generation started from the
+background fails with a sentence rather than hanging for the timeout. Anything
+else is `unsupported`, and a card is offerable at all only when a check came
+back *ready* (an on-device one) or a key is stored (a cloud one). Every ML Kit
+call is wrapped: a check that cannot be made is not a model that can answer.
+Emulators and Firebase Test Lab devices all ship the stub, which is why nothing
+in CI ever generates for real.
+
+**Privacy**: nothing leaves the phone. AICore runs the model locally, there is
+no key and no account, and the passages a question carries — the book the
+reader is holding — are never sent anywhere. The app's `INTERNET` permission is
+for the cloud provider a reader connected, and the on-device path makes no
+request at all.
+
+#### What `genai-prompt` brings, and what it is licensed under
+
+`com.google.mlkit:genai-prompt:1.0.0-beta4` is pinned, and it is **not open
+source**: it, `genai-common` and `mlkit:common` ship under Google's
+[ML Kit Terms of Service](https://developers.google.com/ml-kit/terms), a
+proprietary licence. The rest of what it pulls in is
+`play-services-basement`/`-base`/`-tasks` (Android SDK Licence),
+`firebase-components`/`-annotations`/`-encoders`/`-encoders-json` and Guava
+(Apache 2.0), `genai-schema`, and the Apache-licensed datatransport API, runtime and CCT classes. That is the
+whole Google closure on the runtime classpath, and it is written down here
+because an app that promises the on-device path sends nothing anywhere owes the
+reader a plain answer about what it links against.
+
+**Transport classes are retained; upload registration is removed.** The pinned
+SDK directly references `CCTDestination` and `TransportRuntime` when creating
+its client. Excluding their libraries causes a runtime linkage failure, even
+though compilation and unsupported-emulator readiness checks pass.
+`AndroidManifest.xml` removes `TransportBackendDiscovery` (including CCT's
+backend metadata), `JobInfoSchedulerService`, the alarm receiver and
+`ACCESS_NETWORK_STATE`. With no registered backend, the transport scheduler
+rejects SDK metric events before persistence or upload. This is not a public
+ML Kit telemetry opt-out API. The SDK still contains instrumentation code;
+Readr does not register an upload backend.
+
+`NanoModelTest` creates the real SDK client without AICore, checks the merged
+package components, and sends a synthetic transport event to assert local
+rejection. These tests cover packaging and initialization; supported physical
+hardware remains required for real Nano answers.
+
+**Answering** is the kit's recipe and Kotlin's model call, exactly the split
+the Apple app's `FoundationModelsProvider` makes. `NanoProvider` (Swift) runs
+`SmallModelPrompt.plan` — the tier, the one-word off-topic classifier hop, the
+answer-style rules, and the window arithmetic against the model's own window —
+then generates through `NanoModel` and feeds the answer into
+`SnapshotAnswerStream`, which is what decides the reader sees settled sentences
+only, no repeats (`RepetitionGuard`), and nothing pasted out of the passages.
+The classifier hop is **greedy** and three tokens wide — it is a routing
+decision, and warmth there only turns one word into another — while the answer
+keeps a temperature of 0.5, because greedy decoding is what sends a small model
+round the same sentence. `isSystemPromptAvailable` is asked once per client:
+instructions ride in ML Kit's system slot where the model has one and are
+folded into the prompt where it does not.
+
+**Deltas travel; Swift accumulates.** ML Kit's callback is `onNewText`, and the
+argument is read as what its name says — the new text. `OnDeviceSink.delta`
+adds it to the answer so far, because `SnapshotAnswerStream` reads the whole
+answer, and the accumulating happens once, on the side that owns the shape. The
+AAR carries no javadoc and publishes neither a sources nor a javadoc jar, so
+the name is the whole documentation; the one hedge is a chunk that begins with
+everything already sent and is longer, which is a cumulative snapshot and would
+double every word — its tail is taken instead, and the fact is logged once.
+
+**Cancelling.** `cancel` returns only once the Kotlin job is cancelled and the
+sink can no longer be called (`cancelAndJoin`, bounded), which is what lets the
+facade let go of that sink. A cancelled generation reports **neither** ending —
+and ML Kit's own `CANCELLED` is read the same way, as no report at all, since a
+reader who stopped an answer must not then be shown a failure.
+
+`OnDeviceSink` is the one callback that travels Swift → Kotlin, so unlike
+`SecretStore`, `AskSink` and `OnDeviceModel` it is a **class** rather than a
+protocol: jextract can only carry a concrete jextracted type into a
+Java-implemented method. Failures come back through it as reason codes
+(`background`, `busy`, `declined`, `tooLong`, `unavailable`) that the facade
+turns into sentences.
+
+Its **lifetime is the facade's**, and stated rather than assumed:
+`OnDeviceModelBox` keeps a strong reference to each live generation's sink and
+drops it when an ending arrives or when `cancel` comes back. jextract's
+generated thunk allocates an `UnsafeMutablePointer<OnDeviceSink>` per call and
+hands the address to a Java wrapper registered with swift-java's *auto* arena;
+it exposes no way to free that allocation, and when the wrapper is collected
+the arena calls `SwiftObjects.destroy` on the value it points at. So without a
+reference of our own the object's life would be the Java wrapper's, decided by
+a garbage collector — which is not a thing a late callback can be reasoned
+about against.
+
+### Keys, and what choosing a provider means
 
 Saving a key does not choose a provider: `AndroidProviders.connect` runs the
 kit's own rule — `requestActivation` then `validateAndActivate` — so an
@@ -239,7 +379,9 @@ makes inside those calls, goes through one facade function that also writes
 `provider-selection.json`; the manager's own `persistingIn` is nil, because
 `UserDefaults` on Android is a plist in a directory nobody owns. `disconnect`
 takes the key, the cached check, and — when it named that card — the selection
-with it. The screen's on-open sweep is `validateIfStale(kind, 300)`: a
+with it, through the kit's `ProviderManager.clearSelection()`: only the
+disconnected kind is forgotten, so the other cards keep what this session
+already checked and are not re-billed a validation call. The screen's on-open sweep is `validateIfStale(kind, 300)`: a
 credential check posts a paid one-token completion, and walking in and out of
 Settings must not repeat it.
 
@@ -259,11 +401,12 @@ runs `AskService` against `AndroidProviders`' active provider. The index is
 built off the critical path: `prepareAsk` starts it when the book opens, on a
 detached task, and a question asked before it lands waits on that same task
 rather than starting a second one. Neither builds it at all when the book
-would route whole-book anyway — decided on `AdaptiveContextStrategy`'s own
-numbers (a non-local provider, and a text inside 60% of its context budget),
-because that tier never asks for a passage. That rule is *copied* from the
-strategy, so a test pins the two together (`KIT FOLLOW-UP` in `Ask.swift`)
-until the kit exposes the decision itself.
+would route whole-book anyway — because that tier never asks for a passage.
+The prediction is the strategy's own: `AndroidLibrary.routesWholeBook` calls
+`AdaptiveContextStrategy.routesWholeBook` with the inputs the strategy gets,
+including the shared `ReadingLengthCache`, so there is no second copy of the
+rule to drift. A test still checks the prediction against the tier actually
+taken, end to end.
 
 An index and the build filling it are **one entry** in that LRU: evicting
 drops both, and a question always takes the index from the same entry it
@@ -378,36 +521,36 @@ labels, the sleep durations and theirs — so Kotlin draws the controls from
 `SpeechSettings.rateSteps` and `SleepTimer.minuteOptions` rather than from a
 copy of them that goes quietly stale.
 
-`kit/PlatformSpeechBackend` is `android.speech.tts.TextToSpeech` behind the
-kit's engine protocol. **There is no pause**, on the phone or in here.
-`TextToSpeech` cannot pause, so `BridgedSpeechEngine` answers the kit's
-`SpeechEngine.pausesInPlace` with `false`, and `NarrationController` stops the
-backend on a pause and re-speaks the sentence from the last word boundary — as
-a *fresh request* — on play. That is the same path a sleep-timer stop already
-resumes by, it is unit-tested in the kit against a mock engine, and it is the
-reason this class no longer fakes a pause of its own: it used to stop the
-utterance, remember the boundary, re-speak the tail under the same request id
-and add the cut back into every boundary it reported afterwards, so the kit was
-never told the text had been shortened. Now word boundaries are plain offsets
-into the string handed over, `state()` never answers `paused`, and the platform
-is given the request id itself — the controller never speaks one request twice,
-so an id is enough to tell a late report from a stopped utterance apart from the
-one in flight.
+`kit/KokoroSpeechBackend` runs Kokoro-82M v1 int8 with official ONNX Runtime
+1.23.2. Misaki English dictionaries and a small neural G2P fallback pronounce
+unknown words instead of silently dropping them. Heart, Bella and Michael are
+the named English voices. There is no Android `TextToSpeech` implementation or
+system-voice fallback in the app.
 
-Two other rules live here. An engine that **fails to start** kills the backend:
-it is shut down, and every later request is refused on the spot rather than
-parked waiting for a readiness that is not coming (the card then holds with the
-facade's explanation, instead of sitting on Pause with a sentence and no word
-about why). And the **resolved voice is cached** per (voice, language):
-resolving walks `tts.voices`, which is every voice installed on the phone, and
-the answer cannot change between two sentences of one book — while an engine
-left with no language it has data for refuses the sentence rather than taking it
-and saying nothing. Network voices are never offered — reading is a zero-egress
-promise (PRIVACY.md), and a voice that needs a connection would send the
-sentence to a server. The speed reaches the engine on the platform's own scale:
-Android documents that scale as proportional, and the facade's ceiling constant
-is a calibration chosen so the kit's AVFoundation-shaped curve comes back out
-straight — a 1.5× label really is 1.5×.
+`KokoroModelStore` owns the explicitly started 132 MB download. The upstream
+archive is size/hash checked, extracted with an exact filename allowlist into a
+staging directory and installed only when complete. Interrupted or failed
+preparation is visible and retryable. The bundled pronunciation/OCR assets and
+the two native inference AARs are SHA-256 checked by `verifyLocalInference` on
+all builds. `ndk.abiFilters` matches `READR_ANDROID_ABIS`, so an AAR cannot add a
+32-bit ABI without the Swift facade it needs.
+
+`BridgedSpeechEngine.pausesInPlace` remains false: pausing stops the active
+request, and play reissues its remainder through the kit. Kokoro reports a
+sentence range when PCM playback begins; it does not invent word timestamps.
+The controller's bounded lookahead crosses the same bridge, preparing up to two
+future sentences while current PCM plays. The buffer is bounded by sample
+count, and changed/stopped request ids reject stale callbacks. Speed reaches
+Kokoro on the existing proportional calibration and is checked against actual
+audio duration.
+
+PDFs now enter a real PDF path. Android 15+ extracts the native text layer;
+scans and older devices use bundled, local Tesseract English OCR. Original pages
+are retained and the reader's PDF control opens a native page rendering with
+figures intact. Each page is one chapter, so narration and saved page positions
+stay aligned. Password-locked/corrupt files fail explicitly. EPUB, TXT and
+Markdown retain their existing import paths; DRM and arbitrary binary ebook
+formats are not claimed as supported.
 
 `ui/listen/ListenCard` is the post-#101 now-reading card, insetting the reading
 surface from the bottom rather than floating over it — the page turns itself to
@@ -541,63 +684,21 @@ always been.
 
 ### The voice
 
-The narrator is chosen in the **Appearance sheet**, as it is in the Apple app's
-Aa popover and for the same reason: it is a decision made once, not a control
-reached for mid-sentence. `ui/listen/VoicePicker` draws it, and decides nothing
-— `AndroidNarration.voicesJSON()` answers the whole payload: the voices for the
-book's own language first, everything else behind "Other voices", which voice
-is reading, which one the kit *recommends* (`VoiceSelector` with no stored
-preference — marked, and not the same thing as the row that is checked), and
-the sentence for a list with nothing in it. Every ordering is the kit's
-`VoiceSelector`, the same ranking the Apple picker lists by and the same rule
-narration resolves the reading voice with; Kotlin re-ranks nothing and words
-nothing.
+Appearance selects Heart, Bella or Michael through the existing voice picker.
+`AndroidNarration.voicesJSON()` still owns grouping, recommendation and selected
+voice state; Kotlin supplies the Kokoro inventory. The pre-session label is
+"Heart · Kokoro". The picker has no installed-system voice enumeration and
+never sends the reader to Android's system TTS settings.
 
-**One language for the picker and the reader.** `AndroidNarration` takes the
-device's language tag from Kotlin (`Locale.getDefault().toLanguageTag()` —
-Foundation's current locale on Android is not the reader's) and
-`narrationLanguage` is the book's own if it declares one, else that. Both
-`voicesJSON()` and `resolveVoiceIfNeeded()` use it. They used to differ: an
-untagged book was grouped under the reader's locale with a row marked
-"Recommended", and then read in whatever the engine's default was — so on a
-phone whose default is French, an English file was listed in English and read
-in French, with the tick nowhere near the recommendation.
+Settings provides download/progress/cancel/retry controls. Listen reports
+preparation separately from audible playback; its card shows download progress
+or "Preparing Readr Voice" and returns to the sentence when playback begins.
+A synthesis/playback failure pauses with guidance, never with another narrator.
 
-**Two silences, two sentences.** `SpeechBackend.voicesJSON()` answers
-`{"ready":…,"voices":[…]}`, because "the engine has not started up yet" and
-"this phone has no voice data" are both an empty list and want opposite words.
-The facade emits `emptyText` only when the engine has answered with nothing,
-and a `looking` flag with "Looking for voices…" otherwise; sending a reader to
-a settings screen while the list is on its way is simply wrong.
-
-**The row costs nothing to draw, and nothing polls.** `VoiceRow` names the
-voice from the preferences file — `narrationVoiceID2` (the iOS key) with
-`narrationVoiceName` beside it (Android's own key: the id is a machine name and
-the readable half is composed from the phone's list), falling back to the
-facade's "Phone's default voice" out of the static `optionsJSON()`. Only the
-tap that *opens the picker* calls `prepareVoices()`, which is what builds a
-listening session and starts a `TextToSpeech` engine; doing that when the row
-merely appeared started one on every trip to the Appearance sheet. When the
-engine reports in, `PlatformSpeechBackend` fires `NarrationEvents.voicesReady`
-unconditionally (it used to sit below an early return for "no sentence was
-waiting", which is exactly the picker's case), the facade pushes
-`NarrationObserver.voicesChanged()`, and the row fills in — where it used to
-ask twenty-four times a quarter-second apart because there was nothing to wait
-on. Picking applies mid-sentence through the kit's settings path.
-
-Android gives a voice a machine name and no human one, in two shapes —
-`en-us-x-sfg#female_1-local`, where a `#` marks the variant, and
-`en-us-x-tpd-local`, where nothing does; Google's engine ships nine local
-English voices of the second shape, so `PlatformSpeechBackend` reads the `x-`
-token as well, or the picker is nine rows that cannot be told apart.
-
-Not yet: the read-along underline. Two follow-ups worth doing. `NarrationModel`
-both is pushed to (`NarrationObserver`) and pulls (`refresh()` after every
-control, and once a second), so the same state arrives twice by two routes —
-one push path would be less to reason about. And that voice display name is
-still composed on the Kotlin side (`displayName`/`variant` above): it is the
-one reader-facing string here that the facade does not own, and moving the
-composition behind `voicesJSON()` would finish the rule.
+Narration still preserves its existing media session, notification, headset,
+audio-focus, sleep and persistence behavior. The read-along boundary is a whole
+sentence, not a measured word alignment. Moving all observer/refresh state onto
+one push path remains a follow-up; this change does not remove the watchdog.
 
 ## Layout on device
 

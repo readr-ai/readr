@@ -29,3 +29,10 @@ protocol ReadrVoiceEngine: SpeechEngine {
     /// so a request routed in the same turn sees an engine that will try.
     func prepare()
 }
+
+/// Voice metadata belongs to the selected engine, independently of whether a
+/// model is loaded or an utterance has started. The UI never probes another
+/// engine to decide what this one can offer.
+protocol NarrationVoiceCataloguing {
+    func voices(for language: String) -> [SpeechVoice]
+}

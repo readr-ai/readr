@@ -74,6 +74,7 @@ public extension ProviderVendor {
         // one of them, never both, and never the other one's card.
         ProviderVendor(id: "apple", title: "On this device", methods: [.appleIntelligence]),
         ProviderVendor(id: "android", title: "On this phone", methods: [.geminiNano]),
+        ProviderVendor(id: "downloaded", title: "Downloaded model", methods: [.downloadedModel]),
         ProviderVendor(id: "openai", title: "OpenAI", methods: [.chatGPT, .openAI]),
         ProviderVendor(id: "openrouter", title: "OpenRouter", methods: [.openRouter]),
         ProviderVendor(id: "anthropic", title: "Claude (Anthropic)", methods: [.anthropic]),

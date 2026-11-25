@@ -127,7 +127,10 @@ val LocalReadingPalette = staticCompositionLocalOf { Marginalia.paper }
 private fun ReadingPalette.colorScheme(): ColorScheme {
     val base = if (isDark) darkColorScheme() else lightColorScheme()
     return base.copy(
-        primary = iris,
+        primary = if (isDark) Color(0xFFAECAA6) else Color(0xFF3D5844),
+        onPrimary = if (isDark) Color(0xFF18251B) else Color(0xFFF8FAF6),
+        primaryContainer = if (isDark) Color(0xFF283C2C) else Color(0xFFDEE7D8),
+        onPrimaryContainer = if (isDark) Color(0xFFDFEAD9) else Color(0xFF253B2B),
         background = background,
         surface = page,
         surfaceContainer = elevated,
@@ -143,8 +146,8 @@ private fun ReadingPalette.colorScheme(): ColorScheme {
 
 val readrTypography = Typography(
     titleLarge = TextStyle(fontFamily = FontFamily.Serif, fontWeight = FontWeight.SemiBold, fontSize = 22.sp),
-    titleMedium = TextStyle(fontFamily = FontFamily.Serif, fontWeight = FontWeight.Medium, fontSize = 17.sp),
-    bodyLarge = TextStyle(fontFamily = FontFamily.Serif, fontSize = 18.sp, lineHeight = 31.sp),
+    titleMedium = TextStyle(fontFamily = FontFamily.SansSerif, fontWeight = FontWeight.Medium, fontSize = 17.sp),
+    bodyLarge = TextStyle(fontFamily = FontFamily.SansSerif, fontSize = 16.sp, lineHeight = 24.sp),
     bodyMedium = TextStyle(fontFamily = FontFamily.SansSerif, fontSize = 14.sp),
     labelSmall = TextStyle(fontFamily = FontFamily.SansSerif, fontSize = 11.sp, letterSpacing = 1.sp),
 )

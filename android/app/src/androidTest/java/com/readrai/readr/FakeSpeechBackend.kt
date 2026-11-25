@@ -84,6 +84,10 @@ class FakeSpeechBackend(private val events: NarrationEvents) : SpeechBackend {
 
     override fun state(): String = state
 
+    var prefetched = "[]"
+    override fun prefetch(requestsJSON: String) { prefetched = requestsJSON }
+    override fun secondsBuffered(requestsJSON: String): Double = 0.0
+
     override fun voicesJSON(): String = """{"ready":$voicesReady,"voices":$voices}"""
 
     // MARK: Driving it from a test

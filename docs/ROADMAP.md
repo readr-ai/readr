@@ -32,6 +32,10 @@ highlights→article) together, per project direction.
 - [x] Providers: Anthropic, OpenAI, Local (Ollama) with SSE streaming
 - [x] On this device: Apple's on-device model (FoundationModels, iOS/macOS 26)
       as a zero-setup provider, default until the reader chooses one
+- [x] Downloaded-model integration: Qwen3.5 2B first, optional 4B on 12 GB+
+      iPhones/iPads; explicit download, validated offline load and shared MLX
+      ownership with narration. Physical-device quality/memory checks remain
+      required before release; build success does not qualify either tier.
 - [x] Provider catalog + manager (selection, factory, local-mismatch guard)
 - [x] Provider settings UI: API key, OAuth sign-in, local model, model picker
 - [x] Loopback OAuth server + browser coordinator (app)
