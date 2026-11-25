@@ -51,6 +51,19 @@ class PageSelectionTest {
         constraints = Constraints(maxWidth = with(density) { 240.dp.roundToPx() }),
     )
 
+    @Test fun longPressPreservesCombiningMarksAndUnicodeWordBoundaries() {
+        for (text in listOf("cafe\u0301 noir", "你好世界")) {
+            val result = measurer.measure(AnnotatedString(text), style,
+                constraints = Constraints(maxWidth = with(density) { 240.dp.roundToPx() }))
+            val state = PageSelectionState()
+            state.layout = result
+            val index = if (text.startsWith("cafe")) 2 else 1
+            val selected = state.selectWord(result, result.getBoundingBox(index).center)
+            val expected = result.getWordBoundary(index)
+            assertEquals(text, expected, selected)
+        }
+    }
+
     /** Somewhere inside the last word of the last line, in layout coordinates. */
     private fun lastWord(result: TextLayoutResult): Offset {
         val end = result.getLineEnd(result.lineCount - 1, visibleEnd = true)
