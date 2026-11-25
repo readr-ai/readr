@@ -2,6 +2,26 @@ import XCTest
 @testable import ReadrKit
 
 final class PDFTextNormalizationTests: XCTestCase {
+    func testLargeHyphenatedPageNormalizesWithinImportBudget() {
+        let raw = String(repeating: "a-\na ", count: 100_000)
+        let completed = expectation(description: "normalize a valid large page within ten seconds")
+        DispatchQueue.global().async {
+            XCTAssertEqual(PDFPageChapters.normalizedText(raw), String(repeating: "aa ", count: 100_000).trimmingCharacters(in: .whitespaces))
+            completed.fulfill()
+        }
+        wait(for: [completed], timeout: 10)
+    }
+
+    func testLongHorizontalWhitespaceDoesNotTriggerRegexBacktracking() {
+        let raw = "a" + String(repeating: " ", count: 100_000) + "\nb"
+        let completed = expectation(description: "normalize a whitespace-heavy page within ten seconds")
+        DispatchQueue.global().async {
+            XCTAssertEqual(PDFPageChapters.normalizedText(raw), "a b")
+            completed.fulfill()
+        }
+        wait(for: [completed], timeout: 10)
+    }
+
     func testWrappedWordsAreJoinedForNarrationWithoutLosingParagraphs() {
         let result = PDFPageChapters.build(fromPageTexts: ["A won-\nderful story\ncontinues here.\n\nA new paragraph."])
         XCTAssertEqual(result.chapters[0].text, "A wonderful story continues here.\n\nA new paragraph.")

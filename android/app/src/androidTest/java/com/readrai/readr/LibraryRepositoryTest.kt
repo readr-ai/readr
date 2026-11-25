@@ -35,6 +35,24 @@ class LibraryRepositoryTest {
     fun tearDown() { root.deleteRecursively() }
 
     @Test
+    fun pdfExtractionRejectsPageAndTextBudgetsBeforeImport() = runTest {
+        val file = makePdf(false)
+        val budgets = listOf(
+            com.readrai.readr.data.PdfExtractor.Limits(maxPages = 1),
+            com.readrai.readr.data.PdfExtractor.Limits(maxPageCharacters = 10),
+            com.readrai.readr.data.PdfExtractor.Limits(maxTotalCharacters = 30),
+        )
+        for (budget in budgets) {
+            try {
+                com.readrai.readr.data.PdfExtractor.pages(context, file, budget)
+                org.junit.Assert.fail("Expected oversized PDF rejection for $budget")
+            } catch (e: LibraryRepository.ImportFailed) {
+                assertTrue(e.message.orEmpty(), e.message.orEmpty().contains("too large"))
+            }
+        }
+    }
+
+    @Test
     fun importsPdfPagesAsOrderedReadableChapters() = runTest {
         val file = makePdf(false)
         val book = repository.import(Uri.fromFile(file))

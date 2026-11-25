@@ -13,7 +13,8 @@ import kotlinx.coroutines.ensureActive
 
 /** Native text extraction on Android 15+, local bundled Tesseract OCR for scans/older phones. */
 object PdfExtractor {
-    suspend fun pages(context: Context, file: File): List<String> {
+    data class Limits(val maxPages: Int = 10_000, val maxPageCharacters: Int = 1_000_000, val maxTotalCharacters: Int = 10_000_000)
+    suspend fun pages(context: Context, file: File, limits: Limits = Limits()): List<String> {
         var recognizer: TessBaseAPI? = null
         fun ocr(): TessBaseAPI {
             recognizer?.let { return it }
@@ -39,12 +40,31 @@ object PdfExtractor {
             ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY).use { descriptor ->
                 PdfRenderer(descriptor).use { document ->
                     require(document.pageCount > 0) { "This PDF has no pages." }
+                    fun tooLarge(): Nothing = throw LibraryRepository.ImportFailed("This PDF is too large to extract safely. Import a smaller section of the book.")
+                    if (document.pageCount > limits.maxPages) tooLarge()
                     val pages = ArrayList<String>(document.pageCount)
+                    var totalCharacters = 0
+                    fun addPage(text: String) {
+                        if (text.length > limits.maxPageCharacters || text.length > limits.maxTotalCharacters - totalCharacters) tooLarge()
+                        totalCharacters += text.length
+                        pages.add(text)
+                    }
                     for (index in 0 until document.pageCount) {
                         currentCoroutineContext().ensureActive()
                         document.openPage(index).use { page ->
-                            val text = if (Build.VERSION.SDK_INT >= 35) page.textContents.joinToString("\n") { it.text } else ""
-                            if (text.isNotBlank()) { pages.add(text); return@use }
+                            val text = if (Build.VERSION.SDK_INT >= 35) {
+                                val buffer = StringBuilder()
+                                val remaining = minOf(limits.maxPageCharacters, limits.maxTotalCharacters - totalCharacters)
+                                for (fragment in page.textContents) {
+                                    currentCoroutineContext().ensureActive()
+                                    val separator = if (buffer.isEmpty()) 0 else 1
+                                    if (fragment.text.length.toLong() + separator > remaining.toLong() - buffer.length) tooLarge()
+                                    if (separator != 0) buffer.append('\n')
+                                    buffer.append(fragment.text)
+                                }
+                                buffer.toString()
+                            } else ""
+                            if (text.isNotBlank()) { addPage(text); return@use }
                             val scale = 2200f / maxOf(page.width, page.height).coerceAtLeast(1)
                             val bitmap = Bitmap.createBitmap(maxOf(1, (page.width * scale).toInt()), maxOf(1, (page.height * scale).toInt()), Bitmap.Config.ARGB_8888)
                             bitmap.eraseColor(Color.WHITE)
@@ -52,7 +72,7 @@ object PdfExtractor {
                                 page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
                                 val engine = ocr()
                                 engine.setImage(bitmap)
-                                pages.add(engine.utF8Text.orEmpty())
+                                addPage(engine.utF8Text.orEmpty())
                                 engine.clear()
 
                             } finally { bitmap.recycle() }
@@ -62,6 +82,7 @@ object PdfExtractor {
                 }
             }
         } catch (e: kotlinx.coroutines.CancellationException) { throw e }
+        catch (e: LibraryRepository.ImportFailed) { throw e }
         catch (e: SecurityException) { throw LibraryRepository.ImportFailed("This PDF is password protected. Import an unlocked copy.") }
         catch (e: Exception) { throw LibraryRepository.ImportFailed("Readr couldn't read this PDF. Check that it opens elsewhere and import an unlocked, undamaged copy.") }
         finally { recognizer?.recycle() }

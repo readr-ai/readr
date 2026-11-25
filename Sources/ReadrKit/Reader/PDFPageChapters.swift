@@ -54,22 +54,48 @@ public enum PDFPageChapters {
             if character == "\u{00ad}" { return nil }
             return Unit(character: character == "\r\n" || character == "\r" ? "\n" : character, source: index)
         }
-        func replace(_ pattern: String, with replacement: String) {
-            let text = String(units.map(\.character))
-            guard let regex = try? NSRegularExpression(pattern: pattern) else { return }
-            for match in regex.matches(in: text, range: NSRange(text.startIndex..., in: text)).reversed() {
-                guard let range = Range(match.range, in: text) else { continue }
-                let lower = text.distance(from: text.startIndex, to: range.lowerBound)
-                let upper = text.distance(from: text.startIndex, to: range.upperBound)
-                let source = units[lower].source
-                units.replaceSubrange(lower..<upper, with: replacement.map { Unit(character: $0, source: source) })
+        func horizontal(_ character: Character) -> Bool { character == " " || character == "\t" }
+        // Join only a lowercase continuation of a letter-hyphen line wrap.
+        // Scan once: neither regex backtracking nor shifting array suffixes is
+        // bounded for untrusted pages containing long whitespace/wrap runs.
+        var joined: [Unit] = []
+        joined.reserveCapacity(units.count)
+        var index = 0
+        while index < units.count {
+            if units[index].character == "-", index > 0, units[index - 1].character.isLetter,
+               index + 1 < units.count, units[index + 1].character == "\n" {
+                var next = index + 2
+                while next < units.count && horizontal(units[next].character) { next += 1 }
+                if next < units.count, units[next].character.isLowercase {
+                    index = next
+                    continue
+                }
+            }
+            joined.append(units[index])
+            index += 1
+        }
+        units = []
+        units.reserveCapacity(joined.count)
+        index = 0
+        while index < joined.count {
+            let start = index
+            var newlines = 0
+            while index < joined.count && (horizontal(joined[index].character) || joined[index].character == "\n") {
+                if joined[index].character == "\n" { newlines += 1 }
+                index += 1
+            }
+            if index == start {
+                units.append(joined[index]); index += 1
+            } else if newlines == 0 {
+                units.append(contentsOf: joined[start..<index])
+            } else {
+                let source = joined[start].source
+                units.append(Unit(character: newlines == 1 ? " " : "\n", source: source))
+                if newlines > 1 { units.append(Unit(character: "\n", source: source)) }
             }
         }
-        replace(#"(?<=[\p{L}])-\n[ \t]*(?=[\p{Ll}])"#, with: "")
-        replace(#"[ \t]*\n(?:[ \t]*\n)+[ \t]*"#, with: "\n\n")
-        replace(#"(?<!\n)[ \t]*\n[ \t]*(?!\n)"#, with: " ")
-        while units.first?.character.isWhitespace == true { units.removeFirst() }
-        while units.last?.character.isWhitespace == true { units.removeLast() }
-        return units
+        guard let first = units.firstIndex(where: { !$0.character.isWhitespace }),
+              let last = units.lastIndex(where: { !$0.character.isWhitespace }) else { return [] }
+        return Array(units[first...last])
     }
 }
