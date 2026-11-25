@@ -35,20 +35,17 @@ final class MLXModelStore: ObservableObject {
     func isDownloaded(_ repository: String) -> Bool { Self.snapshotDirectory(for: repository, in: cache) != nil }
     nonisolated static func snapshotIsComplete(for repository: String, in cache: HubCache) -> Bool { snapshotDirectory(for: repository, in: cache) != nil }
     nonisolated static func snapshotDirectory(for repository: String, in cache: HubCache) -> URL? {
-        guard DownloadedModelCatalog.spec(for: repository) != nil, let repo = Repo.ID(rawValue: repository) else { return nil }
-        let snapshots = cache.snapshotsDirectory(repo: repo, kind: .model)
-        let revisions = (try? FileManager.default.contentsOfDirectory(atPath: snapshots.path)) ?? []
-        // A snapshot's commit directory pins the actual downloaded revision.
-        // No Hub client is called to resolve the branch during inference.
-        let pinned = UserDefaults.standard.string(forKey: "Readr.downloaded.snapshot." + repository)
-        let ordered = pinned.map { [$0] } ?? []
-        return (ordered + revisions.sorted().reversed().filter { $0 != pinned }).map { snapshots.appendingPathComponent($0) }
-            .first(where: DownloadedModelSnapshot.isComplete)
+        guard DownloadedModelCatalog.spec(for: repository) != nil,
+              let manifest = ApprovedQwenManifests.manifest(for: repository),
+              let repo = Repo.ID(rawValue: repository) else { return nil }
+        let directory = cache.snapshotsDirectory(repo: repo, kind: .model).appendingPathComponent(manifest.revision)
+        return ApprovedModelSnapshot.isVerified(directory, manifest: manifest) ? directory : nil
     }
     func download(_ repository: String) {
         guard downloads[repository] == nil, deletions[repository] == nil, !isDownloaded(repository) else { return }
         guard let specification = DownloadedModelCatalog.spec(for: repository),
               specification.minimumPhysicalMemory <= MLXLLMProvider.physicalMemory,
+              let manifest = ApprovedQwenManifests.manifest(for: repository),
               let repo = Repo.ID(rawValue: repository) else {
             transient[repository] = .failed("Choose a model from the download list."); return
         }
@@ -56,8 +53,8 @@ final class MLXModelStore: ObservableObject {
         let client = HubClient(cache: cache)
         downloads[repository] = Task { [weak self] in
             do {
-                let snapshot = try await client.downloadSnapshot(of: repo,
-                    matching: ["*.safetensors", "*.json", "*.txt", "*.model", "*.tiktoken", "*.jinja"],
+                let snapshot = try await client.downloadSnapshot(of: repo, revision: manifest.revision,
+                    matching: manifest.files.keys.sorted(),
                     progressHandler: { [weak self] progress in
                         guard case .downloading? = self?.transient[repository] else { return }
                         let value = min(1, max(0, progress.fractionCompleted))
@@ -66,9 +63,8 @@ final class MLXModelStore: ObservableObject {
                     })
                 try Task.checkCancellation()
                 guard let self else { return }
-                if DownloadedModelSnapshot.isComplete(snapshot) {
-                    UserDefaults.standard.set(snapshot.lastPathComponent, forKey: "Readr.downloaded.snapshot." + repository)
-                }
+                try await ApprovedModelSnapshot.verifyInBackground(snapshot, manifest: manifest)
+                try Task.checkCancellation()
                 if self.deletions[repository] == nil {
                     self.transient[repository] = self.isDownloaded(repository) ? nil : .failed("The model files are incomplete. Tap Download to retry.")
                 }
@@ -121,7 +117,8 @@ final class MLXModelStore: ObservableObject {
         try Task.checkCancellation()
         guard deletions[repository] == nil else { throw OnDeviceModelError.unavailable("This model is being removed.") }
         if let loaded = containers[repository] { return loaded }
-        guard let directory = Self.snapshotDirectory(for: repository, in: cache) else { throw OnDeviceModelError.unavailable("Download this model in Settings first.") }
+        guard let manifest = ApprovedQwenManifests.manifest(for: repository),
+              let directory = Self.snapshotDirectory(for: repository, in: cache) else { throw OnDeviceModelError.unavailable("Download this model in Settings first.") }
         let task: Task<ModelContainer, Error>
         let generation: Int
         if let existing = loads[repository] { task = existing; generation = loadGeneration[repository, default: 0] }
@@ -130,7 +127,8 @@ final class MLXModelStore: ObservableObject {
             generation = loadGeneration[repository, default: 0] + 1
             loadGeneration[repository] = generation
             task = Task {
-                try await MLXGPULease.shared.withLease {
+                try await ApprovedModelSnapshot.verifyInBackground(directory, manifest: manifest)
+                return try await MLXGPULease.shared.withLease {
                     Memory.cacheLimit = MLXKokoroSpeechEngine.gpuCacheLimit
                     return try await withError {
                         try await loadModelContainer(from: NoNetworkModelDownloader(), using: TransformersTokenizerLoader(), configuration: ModelConfiguration(directory: directory))
