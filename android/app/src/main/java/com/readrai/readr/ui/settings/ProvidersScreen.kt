@@ -46,6 +46,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
@@ -234,6 +235,11 @@ private fun KindRow(
         }
 
         if (kind.isOnDevice) {
+            val nano = (LocalContext.current.applicationContext as? com.readrai.readr.ReadrApplication)?.onDeviceModel
+            val downloadable = nano?.canDownload?.collectAsState()?.value == true
+            if (kind.kind == "geminiNano" && downloadable) {
+                Button(onClick = { nano?.downloadModel(); model.recheck(kind.kind) }, modifier = Modifier.testTag("settings.downloadNano")) { Text("Download Gemini Nano") }
+            }
             // A manual re-check for when the phone has just finished fetching
             // the model — the mockup's "Check again".
             TextButton(

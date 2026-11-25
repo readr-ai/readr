@@ -232,7 +232,7 @@ public final class NarrationEvents {
 
   /// The utterance could not be spoken. `diagnostic` is for the log — the
   /// sentence the reader sees is this side's (`AndroidNarration.holdText`),
-  /// the same rule `NanoProbe` follows: Kotlin reports a state, never copy.
+  /// the same rule `NanoModel` follows: Kotlin reports a state, never copy.
   public func didFail(_ requestID: String, message diagnostic: String) {
     engine?.didFail(requestID, diagnostic: diagnostic)
   }

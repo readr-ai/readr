@@ -23,7 +23,7 @@ import com.readrai.readr.kit.AndroidNarration
 import com.readrai.readr.kit.KeystoreSecretStore
 import com.readrai.readr.kit.KitLimits
 import com.readrai.readr.kit.Kit
-import com.readrai.readr.kit.NanoProbe
+import com.readrai.readr.kit.NanoModel
 import com.readrai.readr.kit.NarrationEvents
 import com.readrai.readr.ui.ask.AnswerBlock
 import com.readrai.readr.ui.ask.AnswerMarkdown
@@ -69,10 +69,10 @@ class KitBridgeTest {
     }
 
     /** A second handle on the same library, as a relaunch would open it. */
-    private fun reopen(probe: com.readrai.readr.kit.OnDeviceProbe = NanoProbe(context)): Kit = openKit(probe)
+    private fun reopen(model: com.readrai.readr.kit.OnDeviceModel = NanoModel(context)): Kit = openKit(model)
 
-    private fun openKit(probe: com.readrai.readr.kit.OnDeviceProbe = NanoProbe(context)): Kit =
-        Kit.open(root, KeystoreSecretStore(context, alias = TEST_ALIAS), probe)
+    private fun openKit(model: com.readrai.readr.kit.OnDeviceModel = NanoModel(context)): Kit =
+        Kit.open(root, KeystoreSecretStore(context, alias = TEST_ALIAS), model)
 
     private fun clearTestSecrets() {
         context.deleteSharedPreferences(KeystoreSecretStore.fileName(TEST_ALIAS))
@@ -110,6 +110,21 @@ class KitBridgeTest {
          * enough for a cold emulator.
          */
         val TEST_TIMEOUT = 3.minutes
+
+        /**
+         * How long a phone that cannot answer promptly takes to say whether
+         * it can run its own model. Three seconds: shorter than `NanoModel`'s
+         * five-second leash, and long enough that a second thread blocked
+         * behind it is unmistakable rather than a slow emulator.
+         */
+        const val SLOW_READINESS_MS = 3_000L
+
+        /**
+         * `ProviderCatalog.geminiNanoModels`' budget: how much of the book
+         * `AdaptiveContextStrategy` may gather for the phone's own model. It
+         * is not, and must not be used as, the model's context window.
+         */
+        const val ASSEMBLY_BUDGET_TOKENS = 2_000L
 
         /** Filler with enough of a subject that retrieval has something to find. */
         const val WONDERLAND =
@@ -779,13 +794,13 @@ class KitBridgeTest {
 
     /**
      * The phone's own model is the answer while the reader has chosen
-     * nothing — but only on a phone that can actually run it. The probe is
-     * asked on every read, so one library says different things on two
-     * different phones.
+     * nothing — but only on a phone that can actually run it. The phone is
+     * asked on the way into the payload, so one library says different things
+     * on two different phones.
      */
     @Test
     fun aPhoneThatCanRunNanoStartsWithIt() {
-        val ready = reopen(FixedProbe.READY)
+        val ready = reopen(FakeOnDeviceModel())
         assertTrue(ready.providers.hasAnyProvider())
         val settings = providerSettings(from = ready)
         assertEquals("geminiNano", settings.selection?.kind)
@@ -793,11 +808,117 @@ class KitBridgeTest {
         assertTrue(settings.askUsesLine, settings.askUsesLine.startsWith("Ask uses Gemini Nano"))
         assertTrue(settings.vendors.first().kinds.single().isActive)
 
-        val cannot = reopen(FixedProbe.UNSUPPORTED)
+        val cannot = reopen(FakeOnDeviceModel(state = FakeOnDeviceModel.UNSUPPORTED))
         assertFalse("nothing is chosen, and nothing is assumed", cannot.providers.hasAnyProvider())
         val without = providerSettings(from = cannot)
         assertNull(without.selection)
         assertEquals("Ask uses no model yet — connect one below.", without.askUsesLine)
+    }
+
+    /**
+     * A phone that changes its mind is followed — after a refresh, and only
+     * after one.
+     *
+     * The readiness the default selection is decided from is a CACHED answer:
+     * the manager calls that closure holding its own lock, and asking the
+     * phone from in there would put a five-second ML Kit bind inside a mutex
+     * every reader of the selection waits on. So a model that goes away is
+     * still reported as ready while the cache stands, and "Check again" —
+     * which empties the cache and asks again — is what moves it.
+     */
+    @Test
+    fun theCardFollowsThePhoneAfterARefresh() = runTest(timeout = TEST_TIMEOUT) {
+        val phone = FakeOnDeviceModel()
+        val nano = reopen(phone)
+        assertEquals("geminiNano", providerSettings(from = nano).selection?.kind)
+
+        // Back to back with the payload above, and a cached answer stands for
+        // five seconds: what is being read here is the cache, not the phone.
+        phone.state = FakeOnDeviceModel.UNSUPPORTED
+        assertEquals(
+            "the answer in hand stands until something asks for a new one",
+            "geminiNano",
+            providerSettings(from = nano).selection?.kind,
+        )
+
+        // "Check again": the cached answer is thrown away and the phone is
+        // asked on the spot, off the manager's lock.
+        val status = kitJson.decodeFromString<ValidationStatus>(nano.providers.validate("geminiNano").await())
+        assertEquals(ValidationStatus.INVALID, status.state)
+        val after = providerSettings(from = nano)
+        assertNull("one refresh is all it takes", after.selection)
+        assertEquals("Ask uses no model yet — connect one below.", after.askUsesLine)
+        assertFalse(nano.providers.hasAnyProvider())
+    }
+
+    /**
+     * Reading the selection asks the phone nothing at all.
+     *
+     * `ProviderManager` resolves the default selection under its own lock, so
+     * every probe made from that closure is an ML Kit bind held inside a
+     * mutex — and on a phone whose AICore is broken, five seconds of one. The
+     * facade asks on the way IN and reads the answer from there, which is
+     * what this counts: repeated payloads and repeated "is there anything to
+     * ask with" inside one cache window ask the phone exactly nothing more.
+     */
+    @Test
+    fun readingTheSelectionNeverAsksThePhone() {
+        val phone = FakeOnDeviceModel()
+        val nano = reopen(phone)
+
+        providerSettings(from = nano)
+        val asked = phone.readinessCalls.get()
+        assertTrue("the first payload did ask the phone", asked >= 1)
+
+        // Well inside the five seconds a cached answer stands for: every one
+        // of these reads the selection, and none of them may reach the model.
+        repeat(3) {
+            providerSettings(from = nano)
+            assertTrue(nano.providers.hasAnyProvider())
+        }
+        assertEquals(
+            "nothing under the manager's lock asked the phone again",
+            asked,
+            phone.readinessCalls.get(),
+        )
+    }
+
+    /**
+     * A slow phone never holds the manager's lock.
+     *
+     * This is the bug the cache is for. `ProviderManager.selection` resolves
+     * the default WITH ITS LOCK HELD, so a readiness probe made from that
+     * closure runs an ML Kit bind — up to five seconds of one on a phone
+     * whose AICore is broken — inside the mutex every other provider
+     * operation needs. Choosing a provider, saving a key, reading a
+     * validation state: all of them queue behind a check none of them asked
+     * for, on whatever thread they happened to run on.
+     *
+     * So: one thread asks whether there is anything to ask with, against a
+     * phone that takes [SLOW_READINESS_MS] to answer, and the other thread
+     * chooses a provider while that is in flight. The choice must not wait
+     * for the phone.
+     */
+    @Test
+    fun aSlowPhoneNeverHoldsTheManagersLock() {
+        val phone = FakeOnDeviceModel(readinessDelayMillis = SLOW_READINESS_MS)
+        val nano = reopen(phone)
+        val asking = Thread { nano.providers.hasAnyProvider() }
+        asking.start()
+        // Long enough that the probe is under way, and a small fraction of it.
+        Thread.sleep(SLOW_READINESS_MS / 6)
+        assertTrue("the phone is being asked right now", phone.readinessCalls.get() >= 1)
+
+        val started = System.nanoTime()
+        nano.providers.setActive("anthropic", "claude-opus-5")
+        val waited = (System.nanoTime() - started) / 1_000_000
+
+        asking.join(SLOW_READINESS_MS * 2)
+        assertFalse("the asking thread finished", asking.isAlive)
+        assertTrue(
+            "choosing a provider waited ${waited}ms on a check of a model it does not use",
+            waited < SLOW_READINESS_MS / 3,
+        )
     }
 
     /**
@@ -881,22 +1002,48 @@ class KitBridgeTest {
      * Taking away the key of the model Ask was pointed at leaves nothing
      * chosen — here and on disk. A selection naming a card with no credential
      * behind it would say "Ask uses GPT-5.6 — not connected" for ever.
+     *
+     * And the un-choosing is confined to the kind that lost its key: the
+     * OTHER card, checked a moment ago and still holding its key, is still
+     * "Connected" afterwards. Dropping the selection by rebuilding the
+     * manager used to forget every check this session had made, so a
+     * disconnect quietly re-billed a one-token validation call on every
+     * other provider the reader had connected.
      */
     @Test
-    fun disconnectDropsTheSelectionItNamed() = runTest(timeout = TEST_TIMEOUT) {
-        FakeChatServer().use { server ->
-            kit.providers.overrideEndpoint("openAI", server.origin)
-            kit.providers.saveAPIKey("openAI", "sk-test-not-a-real-key")
-            kit.providers.connect("openAI").await()
-            assertEquals("openAI", providerSettings().selection?.kind)
+    fun disconnectDropsTheSelectionItNamedAndNothingElse() = runTest(timeout = TEST_TIMEOUT) {
+        FakeChatServer().use { keeper ->
+            kit.providers.overrideEndpoint("anthropic", keeper.origin)
+            kit.providers.saveAPIKey("anthropic", "sk-ant-not-a-real-key")
+            kit.providers.connect("anthropic").await()
 
-            kit.providers.disconnect("openAI")
-            val after = providerSettings()
-            assertNull("the choice goes with the key", after.selection)
-            assertNull(after.explicitSelection)
-            assertEquals("Ask uses no model yet — connect one below.", after.askUsesLine)
-            assertFalse("and it is not waiting on disk for the next launch", File(root, "provider-selection.json").exists())
-            assertFalse("nothing to ask with", kit.providers.hasAnyProvider())
+            FakeChatServer().use { server ->
+                kit.providers.overrideEndpoint("openAI", server.origin)
+                kit.providers.saveAPIKey("openAI", "sk-test-not-a-real-key")
+                kit.providers.connect("openAI").await()
+                assertEquals("openAI", providerSettings().selection?.kind)
+                assertEquals(
+                    ValidationStatus.ACTIVE,
+                    providerSettings().vendors.single { it.id == "anthropic" }.kinds.single().status.state,
+                )
+
+                kit.providers.disconnect("openAI")
+                val after = providerSettings()
+                assertNull("the choice goes with the key", after.selection)
+                assertNull(after.explicitSelection)
+                assertEquals("Ask uses no model yet — connect one below.", after.askUsesLine)
+                assertFalse("and it is not waiting on disk for the next launch", File(root, "provider-selection.json").exists())
+                val other = after.vendors.single { it.id == "anthropic" }.kinds.single()
+                assertTrue("the other key is untouched", other.hasCredential)
+                assertEquals(
+                    "the other card was checked this session and stays checked",
+                    ValidationStatus.ACTIVE,
+                    other.status.state,
+                )
+                // Un-choosing is un-choosing: the other key is still there,
+                // but nothing is pointed at it until the reader says so.
+                assertFalse("nothing chosen to ask with", kit.providers.hasAnyProvider())
+            }
         }
     }
 
@@ -1151,11 +1298,12 @@ class KitBridgeTest {
      * that fits the provider's whole-book budget rides along entire and is
      * never chunked, and one that does not is indexed first and says so.
      *
-     * KIT FOLLOW-UP: `AndroidLibrary.routesWholeBook` is a *copy* of
-     * `AdaptiveContextStrategy`'s rule, and nothing in the kit fails when the
-     * two drift apart — the symptom is an index built for a question that
-     * never reads it, or a question answered from an index nobody built. This
-     * pins the copy from the outside until the kit exposes the decision.
+     * `AndroidLibrary.routesWholeBook` now asks
+     * `AdaptiveContextStrategy.routesWholeBook` rather than restating it, so
+     * the two cannot drift; this stays as the end-to-end check that the
+     * prediction and the tier actually taken agree — the symptom of a
+     * disagreement is an index built for a question that never reads it, or
+     * a question answered from an index nobody built.
      *
      * The two fixtures straddle the ceiling (60% of the budget) rather than
      * the providers straddling the book: every provider this build offers —
@@ -1239,6 +1387,214 @@ class KitBridgeTest {
         val third = kitJson.decodeFromString<AskPosition>(kit.library.positionSummaryJSON(book.id, 2, 0))
         assertEquals(3, third.chapterNumber)
         assertTrue("progress grows with the place", third.percent > start.percent)
+    }
+
+    // MARK: The phone's own model (A3c)
+
+    /**
+     * The whole on-device path on a phone that can run the model: the kit's
+     * prompt plan, its one-word classifier hop, and cumulative snapshots
+     * turned into the deltas the sheet draws.
+     *
+     * What `SnapshotAnswerStream` promises is what is asserted here — a
+     * finished sentence arrives once, whole, and in the order it was written.
+     */
+    @Test
+    fun theOnDeviceModelStreamsSettledSentencesAndCompletesOnce() = runTest(timeout = TEST_TIMEOUT) {
+        val book = twoChapterBook()
+        val model = FakeOnDeviceModel()
+        val nano = reopen(model)
+        assertTrue("a ready phone answers with its own model", nano.providers.isActiveOnDevice())
+
+        val sink = RecordingAskSink()
+        val handle = nano.library.ask(
+            book.id, "What does Alice follow?", WHOLE_BOOK_SCOPE, "", "", nano.providers, sink,
+        )
+        assertTrue("an ask that started has a handle to cancel", handle != 0L)
+        assertTrue("no answer arrived: $sink", sink.await(RecordingAskSink.COMPLETED))
+
+        val streamed = sink.of(RecordingAskSink.TOKEN).joinToString("") { it.text }
+        assertEquals("the deltas add up to the answer", streamed, sink.of(RecordingAskSink.COMPLETED).single().text)
+        for (sentence in listOf(FakeOnDeviceModel.FIRST_SENTENCE, FakeOnDeviceModel.SECOND_SENTENCE)) {
+            assertEquals("\"$sentence\" arrives once in \"$streamed\"", 1, occurrences(streamed, sentence))
+        }
+        assertTrue(
+            "and in the order it was written: $streamed",
+            streamed.indexOf(FakeOnDeviceModel.FIRST_SENTENCE) <
+                streamed.indexOf(FakeOnDeviceModel.SECOND_SENTENCE),
+        )
+        assertEquals(1, sink.of(RecordingAskSink.COMPLETED).size)
+        assertTrue("a completed answer never also fails: $sink", sink.of(RecordingAskSink.FAILED).isEmpty())
+
+        // The grounding the sheet promises: a passage-retrieval tier, from a
+        // model that runs on the phone and knows nothing wider.
+        val routed = sink.lastTierJSON()
+        assertTrue("a routed tier is reported: $routed", routed.contains("\"tier\":\"retrieval\""))
+        val citations = kitJson.decodeFromString<List<AskCitation>>(
+            sink.of(RecordingAskSink.CITATIONS).last().text
+        )
+        assertTrue("the retrieval tier cites its passages", citations.isNotEmpty())
+
+        // The kit's own recipe ran: the classifier's short call went through
+        // the same model, and the answer was capped at a few sentences.
+        assertTrue(
+            "the classifier asked first: ${model.instructions}",
+            model.instructions.any { it.startsWith(FakeOnDeviceModel.CLASSIFIER_MARKER) },
+        )
+        assertTrue("an answer is a paragraph or two: ${model.caps}", model.caps.all { it in 1L..350L })
+    }
+
+    /** Cancelling reaches the generation itself, and says nothing more. */
+    @Test
+    fun cancellingAnOnDeviceAskStopsTheGeneration() = runTest(timeout = TEST_TIMEOUT) {
+        val book = twoChapterBook()
+        val model = FakeOnDeviceModel(answer = FakeOnDeviceModel.LONG_ANSWER, gapMillis = 250)
+        val nano = reopen(model)
+        val sink = RecordingAskSink()
+        val handle = nano.library.ask(
+            book.id, "What happens to Alice?", WHOLE_BOOK_SCOPE, "", "", nano.providers, sink,
+        )
+        assertTrue("nothing streamed to cancel: $sink", sink.await(RecordingAskSink.TOKEN))
+        nano.library.cancelAsk(handle)
+
+        // Real time: `runTest`'s virtual clock would skip straight past the
+        // words that must never arrive.
+        withContext(Dispatchers.Default) { delay(4.seconds) }
+        // The two facts kept apart: the cancel REACHED the model, and it
+        // reached it while the model was still writing. A generation that had
+        // simply run out of words would satisfy neither.
+        assertTrue(
+            "cancel never reached the generation",
+            model.cancelledWhileGenerating.get(),
+        )
+        assertEquals("a stopped generation never ends on its own", 0, model.generationsEnded.get())
+        assertTrue("a cancelled ask must not complete: $sink", sink.of(RecordingAskSink.COMPLETED).isEmpty())
+        assertTrue("a cancelled ask is not a failure: $sink", sink.of(RecordingAskSink.FAILED).isEmpty())
+    }
+
+    /**
+     * A small model that falls into a loop is cut before its first repeat
+     * reaches the reader — the kit's `RepetitionGuard`, reached through the
+     * facade rather than reimplemented on this side.
+     */
+    @Test
+    fun aLoopingOnDeviceAnswerIsCutBeforeItRepeats() = runTest(timeout = TEST_TIMEOUT) {
+        val book = twoChapterBook()
+        val nano = reopen(FakeOnDeviceModel(answer = FakeOnDeviceModel.LOOPING_ANSWER))
+        val sink = RecordingAskSink()
+        nano.library.ask(book.id, "What does Alice follow?", WHOLE_BOOK_SCOPE, "", "", nano.providers, sink)
+        assertTrue("no answer arrived: $sink", sink.await(RecordingAskSink.COMPLETED))
+
+        val answer = sink.of(RecordingAskSink.COMPLETED).single().text
+        assertEquals("the reader sees the sentence once: \"$answer\"", 1, occurrences(answer, FakeOnDeviceModel.FIRST_SENTENCE))
+        assertTrue("a cut answer is still an answer, not a failure: $sink", sink.of(RecordingAskSink.FAILED).isEmpty())
+    }
+
+    /**
+     * A question the phone's window cannot hold says so in one sentence —
+     * `SmallModelPrompt.DoesNotFit`, in the reader's words.
+     */
+    @Test
+    fun aQuestionTooLongForThePhoneSaysSo() = runTest(timeout = TEST_TIMEOUT) {
+        val book = twoChapterBook()
+        val nano = reopen(FakeOnDeviceModel())
+        val sink = RecordingAskSink()
+        nano.library.ask(
+            book.id,
+            "Why ".repeat(6_000) + "does Alice follow the White Rabbit?",
+            WHOLE_BOOK_SCOPE, "", "", nano.providers, sink,
+        )
+        assertTrue("no failure arrived: $sink", sink.await(RecordingAskSink.FAILED))
+
+        val failure = sink.of(RecordingAskSink.FAILED).single()
+        assertEquals(
+            "This question needed more of the book than Gemini Nano can hold at once.",
+            failure.text,
+        )
+        assertTrue("a failure carries a next step", failure.recovery.isNotBlank())
+        assertTrue("and never also completes: $sink", sink.of(RecordingAskSink.COMPLETED).isEmpty())
+        for (leak in listOf("DoesNotFit", "ReadrKit.", "NanoError", "Optional(")) {
+            assertFalse("no Swift internals in \"${failure.text}\"", failure.text.contains(leak))
+        }
+    }
+
+    /**
+     * The window the plan is made against is the MODEL's, not the
+     * catalogue's assembly budget.
+     *
+     * `contextBudget` (2,000) says how much of the book
+     * `AdaptiveContextStrategy` may gather; it is deliberately smaller than
+     * the window, so that what it gathers still leaves room for the
+     * conversation, the instructions and the answer. Spent as if it were the
+     * window, those things had to come out of it — and a five-turn
+     * conversation over a long book was answered from passages
+     * `SmallModelPrompt.fit` had trimmed away, or not answered at all.
+     *
+     * Asked twice, so the difference is the window and nothing else: a phone
+     * reporting 4,096 (what Apple's on-device model answers, and the
+     * facade's own fallback) against one reporting the assembly budget.
+     */
+    @Test
+    fun theWindowIsThePhonesOwnAndNotTheAssemblyBudget() = runTest(timeout = TEST_TIMEOUT) {
+        val book = longBook()
+        val turns = fiveAnsweredTurns()
+
+        val phone = FakeOnDeviceModel()
+        assertEquals("the fake states a phone's real window", 4_096L, phone.windowTokens())
+        val answered = askOnDevice(book, turns, phone)
+        assertTrue("a five-turn conversation must fit a real window: $answered", answered.of(RecordingAskSink.FAILED).isEmpty())
+        assertTrue("no answer arrived: $answered", answered.of(RecordingAskSink.COMPLETED).isNotEmpty())
+        val whole = phone.answerPrompts.single()
+
+        // The same ask on a phone that reports the assembly budget as its
+        // window: this is the bug, kept where it can be seen.
+        val squeezed = FakeOnDeviceModel(window = ASSEMBLY_BUDGET_TOKENS)
+        askOnDevice(book, turns, squeezed)
+        val cut = squeezed.answerPrompts.firstOrNull()
+        assertTrue(
+            "the assembly budget as a window left the passages alone " +
+                "(${whole.length} characters, cut to ${cut?.length})",
+            cut == null || cut.length < whole.length,
+        )
+    }
+
+    /** One on-device ask, run to its ending on a kit of its own. */
+    private suspend fun askOnDevice(
+        book: BookSummary,
+        historyJSON: String,
+        model: FakeOnDeviceModel,
+    ): RecordingAskSink {
+        val nano = reopen(model)
+        val sink = RecordingAskSink()
+        nano.library.ask(
+            book.id, "What does Alice find at the bottom?",
+            WHOLE_BOOK_SCOPE, "", historyJSON, nano.providers, sink,
+        )
+        assertTrue(
+            "neither an answer nor a failure arrived: $sink",
+            sink.await(RecordingAskSink.COMPLETED) || sink.of(RecordingAskSink.FAILED).isNotEmpty(),
+        )
+        return sink
+    }
+
+    /**
+     * Five answered turns, as the sheet keeps them — enough conversation that
+     * the passages and the history together need more than the assembly
+     * budget, which is exactly the shape the bug showed up in.
+     */
+    private fun fiveAnsweredTurns(): String = (1..5).joinToString(",", "[", "]") { turn ->
+        """{"question":"What happens in part $turn?",""" +
+            """"answerText":"$WONDERLAND","tier":"retrieval","scoped":false}"""
+    }
+
+    private fun occurrences(text: String, part: String): Int {
+        var count = 0
+        var index = text.indexOf(part)
+        while (index >= 0) {
+            count++
+            index = text.indexOf(part, index + part.length)
+        }
+        return count
     }
 
     @Test

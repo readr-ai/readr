@@ -9,6 +9,10 @@ navigation = "2.9.0"
 media3 = "1.11.0"
 serialization = "1.8.1"
 coroutines = "1.9.0"
+# ML Kit's GenAI Prompt API — Gemini Nano through AICore. Pinned exactly: these
+# are beta artifacts, and the Kotlin stdlib they were built against (2.3.21) is
+# the one this project compiles with.
+mlkitGenAiPrompt = "1.0.0-beta4"
 swiftkit = "0.6.0"
 androidxJunit = "1.3.0"
 testRunner = "1.7.0"
@@ -39,6 +43,7 @@ kotlinx-serialization-json = { group = "org.jetbrains.kotlinx", name = "kotlinx-
 kotlinx-coroutines-android = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-android", version.ref = "coroutines" }
 kotlinx-coroutines-jdk8 = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-jdk8", version.ref = "coroutines" }
 kotlinx-coroutines-test = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-test", version.ref = "coroutines" }
+mlkit-genai-prompt = { group = "com.google.mlkit", name = "genai-prompt", version.ref = "mlkitGenAiPrompt" }
 androidx-junit = { group = "androidx.test.ext", name = "junit", version.ref = "androidxJunit" }
 androidx-test-runner = { group = "androidx.test", name = "runner", version.ref = "testRunner" }
 androidx-test-rules = { group = "androidx.test", name = "rules", version.ref = "testRules" }

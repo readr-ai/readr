@@ -64,6 +64,14 @@ dependencies {
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.kotlinx.coroutines.jdk8)
+    // Gemini Nano, on the phone. Brings genai-common along (FeatureStatus,
+    // StreamingCallback, GenAiException). It ships no native library of its
+    // own — the model lives in AICore — so the jniLibs packaging above, and
+    // the 16 KB page alignment the Swift runtime needs, are untouched.
+    // The SDK directly references transport classes during initialization.
+    // Retain them; AndroidManifest.xml removes backend discovery and upload
+    // scheduling. NanoModelTest exercises initialization and rejected events.
+    implementation(libs.mlkit.genai.prompt)
     debugImplementation(libs.androidx.ui.tooling)
     debugImplementation(libs.androidx.ui.test.manifest)
     androidTestImplementation(libs.androidx.junit)
